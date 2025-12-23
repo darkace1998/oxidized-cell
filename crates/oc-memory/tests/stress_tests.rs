@@ -70,9 +70,11 @@ fn test_large_allocations() {
     for size in sizes {
         match mem.allocate(size, 0x1000, PageFlags::RW) {
             Ok(addr) => {
-                // Verify allocation by writing to beginning and end
-                mem.write::<u32>(addr, 0xAAAAAAAA).unwrap();
-                mem.write::<u32>(addr + size - 4, 0xBBBBBBBB).unwrap();
+                // Verify allocation by writing to beginning and end (if size >= 4)
+                if size >= 4 {
+                    mem.write::<u32>(addr, 0xAAAAAAAA).unwrap();
+                    mem.write::<u32>(addr + size - 4, 0xBBBBBBBB).unwrap();
+                }
                 allocations.push((addr, size));
             }
             Err(_) => {
@@ -223,15 +225,18 @@ fn test_interleaved_alloc_free() {
 fn test_write_patterns_across_allocations() {
     let mem = MemoryManager::new().unwrap();
     
-    let num_allocs = 20;
+    const NUM_ALLOCS: usize = 20;
+    const ALLOC_SIZE: u32 = 0x1000; // 4KB
+    const WORDS_PER_ALLOC: u32 = 256; // 256 * 4 = 1024 bytes (fits in 4KB)
+    
     let mut allocations = Vec::new();
     
     // Allocate multiple blocks
-    for i in 0..num_allocs {
-        if let Ok(addr) = mem.allocate(0x1000, 0x1000, PageFlags::RW) {
+    for i in 0..NUM_ALLOCS {
+        if let Ok(addr) = mem.allocate(ALLOC_SIZE, 0x1000, PageFlags::RW) {
             // Write unique pattern to each allocation
-            for j in 0..256 {
-                mem.write::<u32>(addr + j * 4, (i << 16) | j).unwrap();
+            for j in 0..WORDS_PER_ALLOC {
+                mem.write::<u32>(addr + j * 4, (i as u32) << 16 | j).unwrap();
             }
             allocations.push(addr);
         }
@@ -239,8 +244,8 @@ fn test_write_patterns_across_allocations() {
     
     // Verify all patterns are intact
     for (i, addr) in allocations.iter().enumerate() {
-        for j in 0..256 {
-            let expected = ((i as u32) << 16) | (j as u32);
+        for j in 0..WORDS_PER_ALLOC {
+            let expected = ((i as u32) << 16) | j;
             let actual = mem.read::<u32>(*addr + j * 4).unwrap();
             assert_eq!(actual, expected, 
                 "Mismatch at alloc {} offset {}: expected {:08x}, got {:08x}",
@@ -250,7 +255,7 @@ fn test_write_patterns_across_allocations() {
     
     // Clean up
     for addr in allocations {
-        mem.free(addr, 0x1000).unwrap();
+        mem.free(addr, ALLOC_SIZE).unwrap();
     }
 }
 

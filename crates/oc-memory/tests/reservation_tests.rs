@@ -221,18 +221,18 @@ fn test_reservation_different_cache_lines() {
 fn test_reservation_stress_single_line() {
     let mem = Arc::new(MemoryManager::new().unwrap());
     let addr = MAIN_MEM_BASE;
-    let num_threads = 8;
-    let iterations_per_thread = 100; // Reduced for faster test
+    const NUM_THREADS: usize = 8;
+    const ITERATIONS_PER_THREAD: usize = 100;
     
     let mut handles = vec![];
     
-    for _ in 0..num_threads {
+    for _ in 0..NUM_THREADS {
         let mem_clone = Arc::clone(&mem);
         let handle = thread::spawn(move || {
             let res = mem_clone.reservation(addr);
             let mut success_count = 0;
             
-            for _ in 0..iterations_per_thread {
+            for _ in 0..ITERATIONS_PER_THREAD {
                 // Keep trying until we succeed
                 loop {
                     let time = res.acquire();
@@ -258,7 +258,7 @@ fn test_reservation_stress_single_line() {
         total_operations += handle.join().unwrap();
     }
     
-    assert_eq!(total_operations, num_threads * iterations_per_thread);
+    assert_eq!(total_operations, NUM_THREADS * ITERATIONS_PER_THREAD);
 }
 
 #[test]

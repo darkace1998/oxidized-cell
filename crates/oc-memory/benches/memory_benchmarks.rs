@@ -51,13 +51,16 @@ fn bench_sequential_read_write(c: &mut Criterion) {
 fn bench_random_access(c: &mut Criterion) {
     let mut group = c.benchmark_group("random_access");
     
+    const NUM_OPERATIONS: usize = 1000;
+    const RANDOM_STEP: u32 = 97; // Prime number for pseudo-random distribution
+    
     let mem = MemoryManager::new().unwrap();
     let size = 65536u32;
     let addr = mem.allocate(size, 0x1000, PageFlags::RW).unwrap();
     
-    // Pre-generate random offsets
-    let offsets: Vec<u32> = (0..1000)
-        .map(|i| (i * 97) % (size / 4))
+    // Pre-generate random offsets using a pseudo-random sequence
+    let offsets: Vec<u32> = (0..NUM_OPERATIONS)
+        .map(|i| ((i as u32) * RANDOM_STEP) % (size / 4))
         .map(|i| i * 4)
         .collect();
     
