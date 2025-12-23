@@ -10,5 +10,6 @@ description = "Audio system for oxidized-cell PS3 emulator"
 oc-core.workspace = true
 tracing.workspace = true
 cpal.workspace = true
+parking_lot.workspace = true
 
 [dev-dependencies]

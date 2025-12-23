@@ -4,7 +4,7 @@ use bitflags::bitflags;
 
 bitflags! {
     /// PS3 controller button flags
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct PadButtons: u32 {
         const SELECT   = 0x0001;
         const L3       = 0x0002;
