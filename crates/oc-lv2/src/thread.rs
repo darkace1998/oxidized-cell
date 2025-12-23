@@ -197,11 +197,11 @@ impl ThreadManager {
     pub fn schedule(&self) -> Option<ThreadId> {
         let threads = self.threads.lock();
 
-        // Find the next ready thread with highest priority
+        // Find the next ready thread with highest priority (lowest number)
         let ready_thread = threads
             .values()
             .filter(|t| t.state() == ThreadState::Ready)
-            .max_by_key(|t| t.priority())
+            .min_by_key(|t| t.priority()) // Lower priority number = higher priority
             .map(|t| t.id());
 
         if let Some(id) = ready_thread {
@@ -411,10 +411,10 @@ mod tests {
     fn test_thread_scheduling() {
         let manager = ThreadManager::new();
 
-        // Create multiple threads with different priorities
-        let t1 = syscalls::sys_ppu_thread_create(&manager, 0x1000, 0, 100, 0x4000, 0, "T1")
+        // Create multiple threads with different priorities (lower number = higher priority)
+        let t1 = syscalls::sys_ppu_thread_create(&manager, 0x1000, 0, 200, 0x4000, 0, "T1")
             .unwrap();
-        let t2 = syscalls::sys_ppu_thread_create(&manager, 0x2000, 0, 200, 0x4000, 0, "T2")
+        let t2 = syscalls::sys_ppu_thread_create(&manager, 0x2000, 0, 100, 0x4000, 0, "T2")
             .unwrap();
         let t3 = syscalls::sys_ppu_thread_create(&manager, 0x3000, 0, 150, 0x4000, 0, "T3")
             .unwrap();
@@ -424,7 +424,7 @@ mod tests {
         syscalls::sys_ppu_thread_start(&manager, t2).unwrap();
         syscalls::sys_ppu_thread_start(&manager, t3).unwrap();
 
-        // Schedule - should pick highest priority (t2)
+        // Schedule - should pick highest priority (t2 with priority 100, lowest number)
         let scheduled = manager.schedule();
         assert_eq!(scheduled, Some(t2));
     }

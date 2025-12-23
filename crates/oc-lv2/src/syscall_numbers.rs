@@ -8,9 +8,9 @@ pub const SYS_PROCESS_GET_SDK_VERSION: u64 = 25;
 pub const SYS_PROCESS_GET_STATUS: u64 = 22;
 
 // PPU Thread management
-pub const SYS_PPU_THREAD_CREATE: u64 = 41;
+pub const SYS_PPU_THREAD_CREATE: u64 = 160;
 pub const SYS_PPU_THREAD_START: u64 = 53;
-pub const SYS_PPU_THREAD_JOIN: u64 = 44;
+pub const SYS_PPU_THREAD_JOIN: u64 = 161;
 pub const SYS_PPU_THREAD_DETACH: u64 = 51;
 pub const SYS_PPU_THREAD_YIELD: u64 = 43;
 pub const SYS_PPU_THREAD_GET_ID: u64 = 44;
