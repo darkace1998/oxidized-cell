@@ -81,7 +81,8 @@ pub fn clgt(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuErr
 /// Compare Logical Greater Than Word Immediate - clgti rt, ra, i10
 pub fn clgti(thread: &mut SpuThread, i10: i16, ra: u8, rt: u8) -> Result<(), SpuError> {
     let a = thread.regs.read_u32x4(ra as usize);
-    let imm = i10 as u32;
+    // Sign-extend to i32 first, then reinterpret as u32 for unsigned comparison
+    let imm = (i10 as i32) as u32;
     let result = [
         if a[0] > imm { 0xFFFFFFFF } else { 0 },
         if a[1] > imm { 0xFFFFFFFF } else { 0 },

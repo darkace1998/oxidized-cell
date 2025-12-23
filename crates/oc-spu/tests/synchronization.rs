@@ -15,16 +15,21 @@ fn test_atomic_reservation_getllar() {
     // Test Get Lock Line And Reserve (GETLLAR) operation
     let mut thread = create_test_thread();
     
-    // Set up a memory location
+    // Set up a memory location with full 128-byte data
     let test_addr = 0x20001000u64;
-    let test_data = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0];
+    let mut test_data = [0u8; 128];
+    // Fill with pattern
+    for i in 0..128 {
+        test_data[i] = (i % 256) as u8;
+    }
     
     // Perform GETLLAR (simulated)
     thread.mfc.set_reservation(test_addr, &test_data);
     
     assert!(thread.mfc.has_reservation());
     assert_eq!(thread.mfc.get_reservation_addr(), test_addr & !127); // Aligned to 128 bytes
-    assert_eq!(thread.mfc.get_reservation_data()[0], 0x12);
+    assert_eq!(thread.mfc.get_reservation_data()[0], 0x00);
+    assert_eq!(thread.mfc.get_reservation_data()[127], 127);
 }
 
 #[test]

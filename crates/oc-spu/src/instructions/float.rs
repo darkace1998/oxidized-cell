@@ -84,10 +84,10 @@ pub fn fnms(thread: &mut SpuThread, rc: u8, rb: u8, ra: u8, rt: u8) -> Result<()
 pub fn frest(thread: &mut SpuThread, ra: u8, rt: u8) -> Result<(), SpuError> {
     let a = thread.regs.read_u32x4(ra as usize);
     let result = [
-        (1.0 / f32::from_bits(a[0])).to_bits(),
-        (1.0 / f32::from_bits(a[1])).to_bits(),
-        (1.0 / f32::from_bits(a[2])).to_bits(),
-        (1.0 / f32::from_bits(a[3])).to_bits(),
+        compute_reciprocal_estimate(f32::from_bits(a[0])).to_bits(),
+        compute_reciprocal_estimate(f32::from_bits(a[1])).to_bits(),
+        compute_reciprocal_estimate(f32::from_bits(a[2])).to_bits(),
+        compute_reciprocal_estimate(f32::from_bits(a[3])).to_bits(),
     ];
     thread.regs.write_u32x4(rt as usize, result);
     thread.advance_pc();
@@ -98,14 +98,59 @@ pub fn frest(thread: &mut SpuThread, ra: u8, rt: u8) -> Result<(), SpuError> {
 pub fn frsqest(thread: &mut SpuThread, ra: u8, rt: u8) -> Result<(), SpuError> {
     let a = thread.regs.read_u32x4(ra as usize);
     let result = [
-        (1.0 / f32::from_bits(a[0]).sqrt()).to_bits(),
-        (1.0 / f32::from_bits(a[1]).sqrt()).to_bits(),
-        (1.0 / f32::from_bits(a[2]).sqrt()).to_bits(),
-        (1.0 / f32::from_bits(a[3]).sqrt()).to_bits(),
+        compute_rsqrt_estimate(f32::from_bits(a[0])).to_bits(),
+        compute_rsqrt_estimate(f32::from_bits(a[1])).to_bits(),
+        compute_rsqrt_estimate(f32::from_bits(a[2])).to_bits(),
+        compute_rsqrt_estimate(f32::from_bits(a[3])).to_bits(),
     ];
     thread.regs.write_u32x4(rt as usize, result);
     thread.advance_pc();
     Ok(())
+}
+
+/// Helper: Compute reciprocal estimate with SPU-compatible special case handling
+fn compute_reciprocal_estimate(x: f32) -> f32 {
+    if x.is_nan() {
+        // NaN input returns NaN
+        f32::NAN
+    } else if x == 0.0 {
+        // Zero returns infinity with appropriate sign
+        if x.is_sign_positive() {
+            f32::INFINITY
+        } else {
+            f32::NEG_INFINITY
+        }
+    } else if x.is_infinite() {
+        // Infinity returns zero with appropriate sign
+        if x.is_sign_positive() {
+            0.0
+        } else {
+            -0.0
+        }
+    } else {
+        // Normal case: compute reciprocal
+        1.0 / x
+    }
+}
+
+/// Helper: Compute reciprocal square root estimate with SPU-compatible special case handling
+fn compute_rsqrt_estimate(x: f32) -> f32 {
+    if x.is_nan() {
+        // NaN input returns NaN
+        f32::NAN
+    } else if x < 0.0 {
+        // Negative input returns NaN (square root of negative is undefined)
+        f32::NAN
+    } else if x == 0.0 {
+        // Zero returns positive infinity
+        f32::INFINITY
+    } else if x.is_infinite() {
+        // Positive infinity returns zero
+        0.0
+    } else {
+        // Normal case: compute reciprocal square root
+        1.0 / x.sqrt()
+    }
 }
 
 #[cfg(test)]

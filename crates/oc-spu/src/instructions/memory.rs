@@ -15,6 +15,7 @@ pub fn lqd(thread: &mut SpuThread, i10: i16, ra: u8, rt: u8) -> Result<(), SpuEr
 
 /// Load Quadword (a-form) - lqa rt, i16
 pub fn lqa(thread: &mut SpuThread, i16_val: i16, rt: u8) -> Result<(), SpuError> {
+    // Sign-extend to i32 first, then shift and cast to u32
     let addr = ((i16_val as i32) << 2) as u32;
     let value = thread.ls_read_u128(addr);
     thread.regs.write_u32x4(rt as usize, value);
