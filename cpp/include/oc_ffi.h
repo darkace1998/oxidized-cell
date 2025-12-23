@@ -52,6 +52,36 @@ void oc_ppu_jit_destroy(oc_ppu_jit_t* jit);
 int oc_ppu_jit_compile(oc_ppu_jit_t* jit, uint32_t address, const uint8_t* code, size_t size);
 
 /**
+ * Get compiled code for address
+ */
+void* oc_ppu_jit_get_compiled(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Invalidate compiled code at address
+ */
+void oc_ppu_jit_invalidate(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Clear entire JIT cache
+ */
+void oc_ppu_jit_clear_cache(oc_ppu_jit_t* jit);
+
+/**
+ * Add breakpoint at address
+ */
+void oc_ppu_jit_add_breakpoint(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Remove breakpoint at address
+ */
+void oc_ppu_jit_remove_breakpoint(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Check if breakpoint exists at address
+ */
+int oc_ppu_jit_has_breakpoint(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
  * SPU JIT compiler handle
  */
 typedef struct oc_spu_jit_t oc_spu_jit_t;
@@ -70,6 +100,36 @@ void oc_spu_jit_destroy(oc_spu_jit_t* jit);
  * Compile SPU function
  */
 int oc_spu_jit_compile(oc_spu_jit_t* jit, uint32_t address, const uint8_t* code, size_t size);
+
+/**
+ * Get compiled code for address
+ */
+void* oc_spu_jit_get_compiled(oc_spu_jit_t* jit, uint32_t address);
+
+/**
+ * Invalidate compiled code at address
+ */
+void oc_spu_jit_invalidate(oc_spu_jit_t* jit, uint32_t address);
+
+/**
+ * Clear entire JIT cache
+ */
+void oc_spu_jit_clear_cache(oc_spu_jit_t* jit);
+
+/**
+ * Add breakpoint at address
+ */
+void oc_spu_jit_add_breakpoint(oc_spu_jit_t* jit, uint32_t address);
+
+/**
+ * Remove breakpoint at address
+ */
+void oc_spu_jit_remove_breakpoint(oc_spu_jit_t* jit, uint32_t address);
+
+/**
+ * Check if breakpoint exists at address
+ */
+int oc_spu_jit_has_breakpoint(oc_spu_jit_t* jit, uint32_t address);
 
 /**
  * 128-bit atomic compare-and-swap
