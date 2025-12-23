@@ -36,6 +36,28 @@ pub enum MfcCommand {
     Unknown = 0xFF,
 }
 
+impl MfcCommand {
+    /// Get the base latency for this command type (in cycles)
+    pub fn base_latency(&self) -> u64 {
+        match self {
+            Self::Get | Self::GetU => 100,
+            Self::GetB | Self::GetF => 120,
+            Self::Put | Self::PutU => 80,
+            Self::PutB | Self::PutF => 100,
+            Self::GetLLAR => 150,
+            Self::PutLLC | Self::PutLLUC => 120,
+            Self::Barrier => 50,
+            Self::Unknown => 0,
+        }
+    }
+
+    /// Calculate transfer latency based on size (cycles per 128 bytes)
+    pub fn transfer_latency(&self, size: u32) -> u64 {
+        let blocks = (size + 127) / 128;
+        blocks as u64 * 10 // 10 cycles per 128-byte block
+    }
+}
+
 impl From<u8> for MfcCommand {
     fn from(value: u8) -> Self {
         match value {
@@ -69,6 +91,10 @@ pub struct MfcDmaCommand {
     pub tag: u8,
     /// Command opcode
     pub cmd: MfcCommand,
+    /// Issue cycle (when command was queued)
+    pub issue_cycle: u64,
+    /// Completion cycle (when command will complete)
+    pub completion_cycle: u64,
 }
 
 /// MFC state
@@ -83,6 +109,10 @@ pub struct Mfc {
     reservation_data: [u8; 128],
     /// Reservation valid flag
     reservation_valid: bool,
+    /// Current cycle counter
+    cycle_counter: u64,
+    /// Pending tags (tags with in-flight operations)
+    pending_tags: u32,
 }
 
 impl Mfc {
@@ -94,13 +124,44 @@ impl Mfc {
             reservation_addr: 0,
             reservation_data: [0; 128],
             reservation_valid: false,
+            cycle_counter: 0,
+            pending_tags: 0,
         }
     }
 
-    /// Queue a DMA command
-    pub fn queue_command(&mut self, cmd: MfcDmaCommand) {
+    /// Advance the cycle counter and update DMA completion status
+    pub fn tick(&mut self, cycles: u64) {
+        self.cycle_counter += cycles;
+        
+        // Check for completed DMA operations
+        let mut completed_cmds = Vec::new();
+        for (idx, cmd) in self.queue.iter().enumerate() {
+            if self.cycle_counter >= cmd.completion_cycle {
+                completed_cmds.push(idx);
+            }
+        }
+        
+        // Remove completed commands and update tag status
+        for idx in completed_cmds.into_iter().rev() {
+            if let Some(cmd) = self.queue.remove(idx) {
+                self.complete_tag(cmd.tag);
+            }
+        }
+    }
+
+    /// Queue a DMA command with timing
+    pub fn queue_command(&mut self, mut cmd: MfcDmaCommand) {
+        // Calculate completion time
+        let base_latency = cmd.cmd.base_latency();
+        let transfer_latency = cmd.cmd.transfer_latency(cmd.size);
+        
+        cmd.issue_cycle = self.cycle_counter;
+        cmd.completion_cycle = self.cycle_counter + base_latency + transfer_latency;
+        
         // Mark tag as pending
         self.tag_status &= !(1 << cmd.tag);
+        self.pending_tags |= 1 << cmd.tag;
+        
         self.queue.push_back(cmd);
     }
 
@@ -109,14 +170,25 @@ impl Mfc {
         self.queue.is_empty()
     }
 
-    /// Get next pending command
-    pub fn pop_command(&mut self) -> Option<MfcDmaCommand> {
-        self.queue.pop_front()
+    /// Get next pending command (for processing)
+    pub fn peek_next_command(&self) -> Option<&MfcDmaCommand> {
+        self.queue.front()
+    }
+
+    /// Get next completed command
+    pub fn pop_completed_command(&mut self) -> Option<MfcDmaCommand> {
+        if let Some(cmd) = self.queue.front() {
+            if self.cycle_counter >= cmd.completion_cycle {
+                return self.queue.pop_front();
+            }
+        }
+        None
     }
 
     /// Mark a tag as complete
     pub fn complete_tag(&mut self, tag: u8) {
         self.tag_status |= 1 << tag;
+        self.pending_tags &= !(1 << tag);
     }
 
     /// Get tag status (bitmask of completed tags)
@@ -127,6 +199,20 @@ impl Mfc {
     /// Check if specific tags are complete
     pub fn check_tags(&self, mask: u32) -> bool {
         (self.tag_status & mask) == mask
+    }
+
+    /// Get cycles until tag completion
+    pub fn cycles_until_tag_completion(&self, tag: u8) -> Option<u64> {
+        for cmd in &self.queue {
+            if cmd.tag == tag {
+                if self.cycle_counter < cmd.completion_cycle {
+                    return Some(cmd.completion_cycle - self.cycle_counter);
+                } else {
+                    return Some(0);
+                }
+            }
+        }
+        None
     }
 
     /// Set atomic reservation
@@ -165,6 +251,16 @@ impl Mfc {
     pub fn is_queue_full(&self) -> bool {
         self.queue.len() >= 16
     }
+
+    /// Get current cycle counter
+    pub fn get_cycle_counter(&self) -> u64 {
+        self.cycle_counter
+    }
+
+    /// Get pending tags bitmask
+    pub fn get_pending_tags(&self) -> u32 {
+        self.pending_tags
+    }
 }
 
 impl Default for Mfc {
@@ -182,6 +278,7 @@ mod tests {
         let mfc = Mfc::new();
         assert!(mfc.is_queue_empty());
         assert_eq!(mfc.get_tag_status(), 0xFFFFFFFF);
+        assert_eq!(mfc.get_cycle_counter(), 0);
     }
 
     #[test]
@@ -194,18 +291,52 @@ mod tests {
             size: 0x4000,
             tag: 0,
             cmd: MfcCommand::Get,
+            issue_cycle: 0,
+            completion_cycle: 0,
         };
 
         mfc.queue_command(cmd);
         assert!(!mfc.is_queue_empty());
         assert_eq!(mfc.get_tag_status() & 1, 0); // Tag 0 pending
+        assert_eq!(mfc.get_pending_tags() & 1, 1); // Tag 0 in flight
 
-        let popped = mfc.pop_command().unwrap();
-        assert_eq!(popped.lsa, 0x1000);
-        assert!(mfc.is_queue_empty());
-
-        mfc.complete_tag(0);
+        // Advance time to complete the DMA
+        let latency = MfcCommand::Get.base_latency() + MfcCommand::Get.transfer_latency(0x4000);
+        mfc.tick(latency);
+        
         assert_eq!(mfc.get_tag_status() & 1, 1); // Tag 0 complete
+        assert_eq!(mfc.get_pending_tags() & 1, 0); // Tag 0 no longer pending
+    }
+
+    #[test]
+    fn test_mfc_timing() {
+        let mut mfc = Mfc::new();
+
+        // Queue a GET command
+        let cmd = MfcDmaCommand {
+            lsa: 0x1000,
+            ea: 0x20000000,
+            size: 256, // 2 blocks
+            tag: 1,
+            cmd: MfcCommand::Get,
+            issue_cycle: 0,
+            completion_cycle: 0,
+        };
+
+        mfc.queue_command(cmd);
+        
+        // Check that completion is in the future
+        let cycles_remaining = mfc.cycles_until_tag_completion(1);
+        assert!(cycles_remaining.is_some());
+        assert!(cycles_remaining.unwrap() > 0);
+
+        // Advance halfway
+        mfc.tick(50);
+        assert_eq!(mfc.get_tag_status() & 0b10, 0); // Still pending
+
+        // Advance to completion
+        mfc.tick(100);
+        assert_eq!(mfc.get_tag_status() & 0b10, 0b10); // Now complete
     }
 
     #[test]
@@ -223,5 +354,19 @@ mod tests {
 
         mfc.clear_reservation();
         assert!(!mfc.has_reservation());
+    }
+
+    #[test]
+    fn test_command_latencies() {
+        // Test that different commands have different latencies
+        assert!(MfcCommand::Get.base_latency() > 0);
+        assert!(MfcCommand::Put.base_latency() > 0);
+        assert!(MfcCommand::GetB.base_latency() > MfcCommand::Get.base_latency());
+        assert!(MfcCommand::Barrier.base_latency() > 0);
+        
+        // Test transfer latency scales with size
+        let small_latency = MfcCommand::Get.transfer_latency(128);
+        let large_latency = MfcCommand::Get.transfer_latency(1024);
+        assert!(large_latency > small_latency);
     }
 }

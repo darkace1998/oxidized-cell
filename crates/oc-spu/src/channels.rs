@@ -51,6 +51,10 @@ pub struct SpuChannel {
     max_depth: usize,
     /// Channel count (for count channels)
     count: u32,
+    /// Timeout in cycles (0 = no timeout)
+    timeout_cycles: u64,
+    /// Cycle when waiting started (0 = not waiting)
+    wait_start_cycle: u64,
 }
 
 impl SpuChannel {
@@ -60,7 +64,34 @@ impl SpuChannel {
             data: VecDeque::with_capacity(max_depth),
             max_depth,
             count: 0,
+            timeout_cycles: 10000, // Default timeout: 10000 cycles
+            wait_start_cycle: 0,
         }
+    }
+
+    /// Set timeout in cycles
+    pub fn set_timeout(&mut self, cycles: u64) {
+        self.timeout_cycles = cycles;
+    }
+
+    /// Start waiting (called when trying to read/write but channel not ready)
+    pub fn start_wait(&mut self, current_cycle: u64) {
+        if self.wait_start_cycle == 0 {
+            self.wait_start_cycle = current_cycle;
+        }
+    }
+
+    /// Check if timeout has occurred
+    pub fn check_timeout(&self, current_cycle: u64) -> bool {
+        if self.wait_start_cycle == 0 || self.timeout_cycles == 0 {
+            return false;
+        }
+        (current_cycle - self.wait_start_cycle) >= self.timeout_cycles
+    }
+
+    /// Clear wait state
+    pub fn clear_wait(&mut self) {
+        self.wait_start_cycle = 0;
     }
 
     /// Push data to channel
@@ -68,6 +99,7 @@ impl SpuChannel {
         if self.data.len() < self.max_depth {
             self.data.push_back(value);
             self.count = self.count.saturating_add(1);
+            self.clear_wait();
             true
         } else {
             false
@@ -79,6 +111,7 @@ impl SpuChannel {
         let value = self.data.pop_front();
         if value.is_some() {
             self.count = self.count.saturating_sub(1);
+            self.clear_wait();
         }
         value
     }
@@ -107,6 +140,7 @@ impl SpuChannel {
     pub fn clear(&mut self) {
         self.data.clear();
         self.count = 0;
+        self.clear_wait();
     }
 
     /// Set direct value (for status channels)
@@ -126,6 +160,8 @@ pub struct SpuChannels {
     tag_mask: u32,
     /// Decrementer value
     decrementer: u32,
+    /// Current cycle counter
+    cycle_counter: u64,
 }
 
 impl SpuChannels {
@@ -146,6 +182,21 @@ impl SpuChannels {
             event_mask: 0,
             tag_mask: 0,
             decrementer: 0,
+            cycle_counter: 0,
+        }
+    }
+
+    /// Advance cycle counter
+    pub fn tick(&mut self, cycles: u64) {
+        self.cycle_counter += cycles;
+    }
+
+    /// Check for channel timeout on given channel
+    pub fn check_channel_timeout(&self, channel: u32) -> bool {
+        if (channel as usize) < NUM_CHANNELS {
+            self.channels[channel as usize].check_timeout(self.cycle_counter)
+        } else {
+            false
         }
     }
 
@@ -156,9 +207,27 @@ impl SpuChannels {
             SPU_RD_DECR => Some(self.decrementer),
             MFC_RD_TAG_STAT => Some(0xFFFFFFFF), // All tags complete (simplified)
             _ if (channel as usize) < NUM_CHANNELS => {
-                self.channels[channel as usize].pop()
+                let ch = &mut self.channels[channel as usize];
+                let result = ch.pop();
+                if result.is_none() {
+                    ch.start_wait(self.cycle_counter);
+                }
+                result
             }
             _ => None,
+        }
+    }
+
+    /// Try to read from channel (non-blocking, returns error if would block)
+    pub fn try_read(&mut self, channel: u32) -> Result<u32, ()> {
+        match channel {
+            SPU_RD_EVENT_STAT => Ok(0),
+            SPU_RD_DECR => Ok(self.decrementer),
+            MFC_RD_TAG_STAT => Ok(0xFFFFFFFF),
+            _ if (channel as usize) < NUM_CHANNELS => {
+                self.channels[channel as usize].pop().ok_or(())
+            }
+            _ => Err(()),
         }
     }
 
@@ -182,9 +251,23 @@ impl SpuChannels {
                 true
             }
             _ if (channel as usize) < NUM_CHANNELS => {
-                self.channels[channel as usize].push(value)
+                let ch = &mut self.channels[channel as usize];
+                let success = ch.push(value);
+                if !success {
+                    ch.start_wait(self.cycle_counter);
+                }
+                success
             }
             _ => false,
+        }
+    }
+
+    /// Try to write to channel (non-blocking, returns error if would block)
+    pub fn try_write(&mut self, channel: u32, value: u32) -> Result<(), ()> {
+        if self.write(channel, value) {
+            Ok(())
+        } else {
+            Err(())
         }
     }
 
