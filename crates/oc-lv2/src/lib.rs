@@ -11,8 +11,11 @@ pub mod prx;
 pub mod spu;
 pub mod sync;
 pub mod syscall;
+pub mod syscall_numbers;
 pub mod thread;
 pub mod time;
 
 pub use objects::ObjectManager;
+pub use process::ProcessManager;
 pub use syscall::SyscallHandler;
+pub use thread::ThreadManager;
