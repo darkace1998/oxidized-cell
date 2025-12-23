@@ -66,6 +66,12 @@ pub enum PpuError {
 
     #[error("Thread error: {0}")]
     ThreadError(String),
+
+    #[error("Memory error at 0x{addr:08x}: {message}")]
+    MemoryError { addr: u32, message: String },
+
+    #[error("Trap at 0x{addr:08x}")]
+    Trap { addr: u32 },
 }
 
 /// SPU (Synergistic Processing Unit) errors

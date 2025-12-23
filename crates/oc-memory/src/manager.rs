@@ -361,6 +361,19 @@ impl MemoryManager {
         &self.regions
     }
 
+    /// Read a big-endian u16 (PS3 is big-endian)
+    #[inline]
+    pub fn read_be16(&self, addr: u32) -> Result<u16, MemoryError> {
+        let value: u16 = self.read(addr)?;
+        Ok(u16::from_be(value))
+    }
+
+    /// Write a big-endian u16
+    #[inline]
+    pub fn write_be16(&self, addr: u32, value: u16) -> Result<(), MemoryError> {
+        self.write(addr, value.to_be())
+    }
+
     /// Read a big-endian u32 (PS3 is big-endian)
     #[inline]
     pub fn read_be32(&self, addr: u32) -> Result<u32, MemoryError> {
