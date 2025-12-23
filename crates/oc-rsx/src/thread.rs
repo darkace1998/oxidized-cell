@@ -4,6 +4,7 @@ use std::sync::Arc;
 use oc_memory::MemoryManager;
 use crate::state::RsxState;
 use crate::fifo::CommandFifo;
+use crate::methods::MethodHandler;
 
 /// RSX thread state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,54 +48,25 @@ impl RsxThread {
     fn execute_command(&mut self, method: u32, data: u32) {
         tracing::trace!("RSX method 0x{:04x} = 0x{:08x}", method, data);
         
+        // Handle special commands that need more than just state updates
         match method {
-            // NV4097_SET_SURFACE_COLOR_TARGET
-            0x0194 => {
-                self.gfx_state.surface_color_target = data;
-            }
-            // NV4097_SET_SURFACE_PITCH_A
-            0x0280 => {
-                self.gfx_state.surface_pitch[0] = data;
-            }
-            // NV4097_SET_CONTEXT_DMA_COLOR_A
-            0x0184 => {
-                self.gfx_state.context_dma_color[0] = data;
-            }
-            // NV4097_SET_SURFACE_COLOR_AOFFSET
-            0x0190 => {
-                self.gfx_state.surface_offset_color[0] = data;
-            }
-            // NV4097_SET_SURFACE_FORMAT
-            0x0180 => {
-                self.gfx_state.surface_format = data;
-            }
-            // NV4097_SET_SURFACE_CLIP_HORIZONTAL
-            0x018C => {
-                self.gfx_state.surface_clip_x = (data & 0xFFFF) as u16;
-                self.gfx_state.surface_clip_width = ((data >> 16) & 0xFFFF) as u16;
-            }
-            // NV4097_SET_SURFACE_CLIP_VERTICAL
-            0x0188 => {
-                self.gfx_state.surface_clip_y = (data & 0xFFFF) as u16;
-                self.gfx_state.surface_clip_height = ((data >> 16) & 0xFFFF) as u16;
-            }
             // NV4097_CLEAR_SURFACE
             0x1D94 => {
                 self.clear_surface(data);
+                return;
             }
             // NV4097_SET_BEGIN_END
             0x1808 => {
-                if data != 0 {
-                    self.gfx_state.primitive_type = data;
-                } else {
-                    // End primitive
+                if data == 0 {
+                    // End primitive - flush vertices
                     self.flush_vertices();
                 }
             }
-            _ => {
-                // Many methods are not yet implemented
-            }
+            _ => {}
         }
+        
+        // Use the method handler for state updates
+        MethodHandler::execute(method, data, &mut self.gfx_state);
     }
 
     /// Clear the surface
