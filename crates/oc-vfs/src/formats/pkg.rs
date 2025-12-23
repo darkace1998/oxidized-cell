@@ -98,8 +98,9 @@ impl PkgHeader {
         ]);
 
         // Read title ID and content ID from metadata
-        let title_id = String::new(); // Would be parsed from PKG metadata
-        let content_id = String::new(); // Would be parsed from PKG metadata
+        // TODO: Parse title ID and content ID from PKG metadata section
+        let title_id = String::new();
+        let content_id = String::new();
 
         Ok(Self {
             pkg_type,
@@ -153,10 +154,12 @@ impl PkgReader {
 
     /// Extract PKG contents to a directory
     pub fn extract_to(&self, _output_dir: &PathBuf) -> Result<(), std::io::Error> {
-        // Extraction logic would go here
-        // This is a placeholder for the full implementation
-        tracing::warn!("PKG extraction not yet fully implemented");
-        Ok(())
+        // TODO: Implement PKG extraction logic
+        // This requires decryption and unpacking of PKG contents
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "PKG extraction not yet implemented",
+        ))
     }
 }
 
