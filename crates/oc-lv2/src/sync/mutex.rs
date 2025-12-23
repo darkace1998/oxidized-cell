@@ -4,7 +4,6 @@ use crate::objects::{KernelObject, ObjectId, ObjectManager, ObjectType};
 use oc_core::error::KernelError;
 use parking_lot::Mutex as ParkingMutex;
 use std::sync::Arc;
-use std::time::Duration;
 
 /// Mutex attributes
 #[derive(Debug, Clone, Copy)]

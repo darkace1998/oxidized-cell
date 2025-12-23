@@ -1,6 +1,5 @@
 //! Thread management (sys_ppu_thread_*)
 
-use crate::objects::{ObjectId, ObjectManager};
 use oc_core::error::KernelError;
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -239,10 +238,10 @@ pub mod syscalls {
     pub fn sys_ppu_thread_create(
         manager: &ThreadManager,
         entry_point: u64,
-        arg: u64,
+        _arg: u64,
         priority: u32,
         stack_size: usize,
-        flags: u64,
+        _flags: u64,
         name: &str,
     ) -> Result<ThreadId, KernelError> {
         let mut attributes = ThreadAttributes::default();
@@ -286,7 +285,7 @@ pub mod syscalls {
         manager: &ThreadManager,
         thread_id: ThreadId,
     ) -> Result<(), KernelError> {
-        let thread = manager.get(thread_id)?;
+        let _thread = manager.get(thread_id)?;
         tracing::debug!("Detached thread {}", thread_id);
         Ok(())
     }

@@ -1,6 +1,7 @@
 //! System call dispatcher
 
 use crate::fs;
+use crate::memory::MemoryManager;
 use crate::objects::ObjectManager;
 use crate::process::ProcessManager;
 use crate::spu;
@@ -15,6 +16,7 @@ pub struct SyscallHandler {
     object_manager: Arc<ObjectManager>,
     process_manager: Arc<ProcessManager>,
     thread_manager: Arc<ThreadManager>,
+    memory_manager: Arc<MemoryManager>,
 }
 
 impl SyscallHandler {
@@ -24,6 +26,7 @@ impl SyscallHandler {
             object_manager: Arc::new(ObjectManager::new()),
             process_manager: Arc::new(ProcessManager::new()),
             thread_manager: Arc::new(ThreadManager::new()),
+            memory_manager: Arc::new(MemoryManager::new()),
         }
     }
 
@@ -42,10 +45,17 @@ impl SyscallHandler {
         &self.thread_manager
     }
 
+    /// Get memory manager reference
+    pub fn memory_manager(&self) -> &Arc<MemoryManager> {
+        &self.memory_manager
+    }
+
     /// Handle a system call
     pub fn handle(&self, syscall_num: u64, args: &[u64; 8]) -> Result<i64, KernelError> {
+        use crate::memory::syscalls as memory_sc;
         use crate::process::syscalls as process_sc;
         use crate::thread::syscalls as thread_sc;
+        use crate::time::syscalls as time_sc;
 
         match syscall_num {
             // Process management
@@ -65,6 +75,17 @@ impl SyscallHandler {
                 let pid = args[0] as u32;
                 let version = process_sc::sys_process_get_sdk_version(&self.process_manager, pid)?;
                 Ok(version as i64)
+            }
+
+            SYS_PROCESS_GETPPID => {
+                let pid = process_sc::sys_process_getppid(&self.process_manager);
+                Ok(pid as i64)
+            }
+
+            SYS_PROCESS_GET_STATUS => {
+                let pid = args[0] as u32;
+                let status = process_sc::sys_process_get_status(&self.process_manager, pid)?;
+                Ok(status as i64)
             }
 
             // Thread management
@@ -101,6 +122,37 @@ impl SyscallHandler {
             SYS_PPU_THREAD_EXIT => {
                 let exit_code = args[0];
                 thread_sc::sys_ppu_thread_exit(&self.thread_manager, exit_code)?;
+                Ok(0)
+            }
+
+            SYS_PPU_THREAD_START => {
+                let thread_id = args[0];
+                thread_sc::sys_ppu_thread_start(&self.thread_manager, thread_id)?;
+                Ok(0)
+            }
+
+            SYS_PPU_THREAD_JOIN => {
+                let thread_id = args[0];
+                let exit_status = thread_sc::sys_ppu_thread_join(&self.thread_manager, thread_id)?;
+                Ok(exit_status as i64)
+            }
+
+            SYS_PPU_THREAD_DETACH => {
+                let thread_id = args[0];
+                thread_sc::sys_ppu_thread_detach(&self.thread_manager, thread_id)?;
+                Ok(0)
+            }
+
+            SYS_PPU_THREAD_GET_PRIORITY => {
+                let thread_id = args[0];
+                let priority = thread_sc::sys_ppu_thread_get_priority(&self.thread_manager, thread_id)?;
+                Ok(priority as i64)
+            }
+
+            SYS_PPU_THREAD_SET_PRIORITY => {
+                let thread_id = args[0];
+                let priority = args[1] as u32;
+                thread_sc::sys_ppu_thread_set_priority(&self.thread_manager, thread_id, priority)?;
                 Ok(0)
             }
 
@@ -167,6 +219,15 @@ impl SyscallHandler {
                 Ok(0)
             }
 
+            SYS_COND_WAIT => {
+                let cond_id = args[0] as u32;
+                let mutex_id = args[1] as u32;
+                let thread_id = thread_sc::sys_ppu_thread_get_id(&self.thread_manager);
+                let timeout_usec = args[2];
+                cond::syscalls::sys_cond_wait(&self.object_manager, cond_id, mutex_id, thread_id, timeout_usec)?;
+                Ok(0)
+            }
+
             // RwLock
             SYS_RWLOCK_CREATE => {
                 let id = rwlock::syscalls::sys_rwlock_create(
@@ -188,9 +249,21 @@ impl SyscallHandler {
                 Ok(0)
             }
 
+            SYS_RWLOCK_TRYRLOCK => {
+                let rwlock_id = args[0] as u32;
+                rwlock::syscalls::sys_rwlock_try_rlock(&self.object_manager, rwlock_id)?;
+                Ok(0)
+            }
+
             SYS_RWLOCK_WLOCK => {
                 let rwlock_id = args[0] as u32;
                 rwlock::syscalls::sys_rwlock_wlock(&self.object_manager, rwlock_id)?;
+                Ok(0)
+            }
+
+            SYS_RWLOCK_TRYWLOCK => {
+                let rwlock_id = args[0] as u32;
+                rwlock::syscalls::sys_rwlock_try_wlock(&self.object_manager, rwlock_id)?;
                 Ok(0)
             }
 
@@ -231,6 +304,19 @@ impl SyscallHandler {
                 Ok(0)
             }
 
+            SYS_SEMAPHORE_TRYWAIT => {
+                let sem_id = args[0] as u32;
+                let count = args[1] as u32;
+                semaphore::syscalls::sys_semaphore_trywait(&self.object_manager, sem_id, count)?;
+                Ok(0)
+            }
+
+            SYS_SEMAPHORE_GET_VALUE => {
+                let sem_id = args[0] as u32;
+                let value = semaphore::syscalls::sys_semaphore_get_value(&self.object_manager, sem_id)?;
+                Ok(value as i64)
+            }
+
             // Event queue
             SYS_EVENT_QUEUE_CREATE => {
                 let size = args[0] as usize;
@@ -246,6 +332,24 @@ impl SyscallHandler {
                 let queue_id = args[0] as u32;
                 event::syscalls::sys_event_queue_destroy(&self.object_manager, queue_id)?;
                 Ok(0)
+            }
+
+            SYS_EVENT_QUEUE_RECEIVE => {
+                let queue_id = args[0] as u32;
+                let timeout_usec = args[1];
+                let event = event::syscalls::sys_event_queue_receive(&self.object_manager, queue_id, timeout_usec)?;
+                // In real implementation, would write event data to memory
+                Ok(0)
+            }
+
+            SYS_EVENT_QUEUE_TRYRECEIVE => {
+                let queue_id = args[0] as u32;
+                let result = event::syscalls::sys_event_queue_tryreceive(&self.object_manager, queue_id);
+                match result {
+                    Ok(_event) => Ok(0),
+                    Err(KernelError::WouldBlock) => Ok(-1),
+                    Err(e) => Err(e),
+                }
             }
 
             SYS_EVENT_PORT_CREATE => {
@@ -304,6 +408,12 @@ impl SyscallHandler {
                 Ok(0)
             }
 
+            SYS_SPU_THREAD_GROUP_JOIN => {
+                let group_id = args[0] as u32;
+                spu::syscalls::sys_spu_thread_group_join(&self.object_manager, group_id)?;
+                Ok(0)
+            }
+
             SYS_SPU_THREAD_INITIALIZE => {
                 let group_id = args[0] as u32;
                 let thread_num = args[1] as u32;
@@ -323,6 +433,24 @@ impl SyscallHandler {
                 Ok(0)
             }
 
+            SYS_SPU_THREAD_WRITE_LS => {
+                let thread_id = args[0] as u32;
+                let addr = args[1] as u32;
+                // In real implementation, would read data from memory
+                let data = vec![0u8; args[2] as usize];
+                spu::syscalls::sys_spu_thread_write_ls(&self.object_manager, thread_id, addr, &data)?;
+                Ok(0)
+            }
+
+            SYS_SPU_THREAD_READ_LS => {
+                let thread_id = args[0] as u32;
+                let addr = args[1] as u32;
+                let size = args[2] as u32;
+                let data = spu::syscalls::sys_spu_thread_read_ls(&self.object_manager, thread_id, addr, size)?;
+                // In real implementation, would write data to memory
+                Ok(data.len() as i64)
+            }
+
             // File system
             SYS_FS_OPEN => {
                 // In real impl, would read path from memory at args[0]
@@ -340,26 +468,128 @@ impl SyscallHandler {
                 Ok(0)
             }
 
-            // Time
-            SYS_TIME_GET_SYSTEM_TIME => {
-                use std::time::{SystemTime, UNIX_EPOCH};
-                let duration = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default();
-                Ok(duration.as_micros() as i64)
+            SYS_FS_READ => {
+                let fd = args[0] as u32;
+                let size = args[2] as usize;
+                // In real implementation, would write to buffer at args[1]
+                let mut buffer = vec![0u8; size];
+                let bytes_read = fs::syscalls::sys_fs_read(&self.object_manager, fd, &mut buffer)?;
+                Ok(bytes_read as i64)
             }
 
-            SYS_TIME_GET_TIMEBASE_FREQUENCY => Ok(79800000), // 79.8 MHz timebase
+            SYS_FS_WRITE => {
+                let fd = args[0] as u32;
+                let size = args[2] as usize;
+                // In real implementation, would read from buffer at args[1]
+                let buffer = vec![0u8; size];
+                let bytes_written = fs::syscalls::sys_fs_write(&self.object_manager, fd, &buffer)?;
+                Ok(bytes_written as i64)
+            }
+
+            SYS_FS_LSEEK => {
+                let fd = args[0] as u32;
+                let offset = args[1] as i64;
+                let whence = args[2] as u32;
+                let pos = fs::syscalls::sys_fs_lseek(&self.object_manager, fd, offset, whence)?;
+                Ok(pos as i64)
+            }
+
+            SYS_FS_FSTAT => {
+                let fd = args[0] as u32;
+                let stat = fs::syscalls::sys_fs_fstat(&self.object_manager, fd)?;
+                // In real implementation, would write stat to memory at args[1]
+                Ok(0)
+            }
+
+            SYS_FS_STAT => {
+                // In real impl, would read path from memory at args[0]
+                let path = "/dev_hdd0/test.txt";
+                let stat = fs::syscalls::sys_fs_stat(path)?;
+                // In real implementation, would write stat to memory at args[1]
+                Ok(0)
+            }
+
+            SYS_FS_OPENDIR => {
+                // In real impl, would read path from memory at args[0]
+                let path = "/dev_hdd0/";
+                let dir_id = fs::syscalls::sys_fs_opendir(&self.object_manager, path)?;
+                Ok(dir_id as i64)
+            }
+
+            SYS_FS_READDIR => {
+                let dir_id = args[0] as u32;
+                let entry = fs::syscalls::sys_fs_readdir(&self.object_manager, dir_id)?;
+                // In real implementation, would write entry to memory at args[1]
+                if entry.is_some() {
+                    Ok(0)
+                } else {
+                    Ok(-1) // End of directory
+                }
+            }
+
+            SYS_FS_CLOSEDIR => {
+                let dir_id = args[0] as u32;
+                fs::syscalls::sys_fs_closedir(&self.object_manager, dir_id)?;
+                Ok(0)
+            }
+
+            // Time
+            SYS_TIME_GET_SYSTEM_TIME | SYS_TIME_GET_CURRENT_TIME => {
+                let time = time_sc::sys_time_get_current_time();
+                Ok(time as i64)
+            }
+
+            SYS_TIME_GET_TIMEBASE_FREQUENCY => {
+                let freq = time_sc::sys_time_get_timebase_frequency();
+                Ok(freq as i64)
+            }
+
+            SYS_TIME_USLEEP => {
+                let usec = args[0];
+                time_sc::sys_time_usleep(usec)?;
+                Ok(0)
+            }
 
             // Memory
             SYS_MEMORY_ALLOCATE => {
-                tracing::debug!("sys_memory_allocate(size=0x{:x})", args[0]);
-                Ok(0) // Would allocate memory and return address
+                let size = args[0] as usize;
+                let page_size = args[1] as usize;
+                let flags = args[2];
+                
+                let page_size = if page_size == 0 {
+                    crate::memory::PAGE_SIZE
+                } else {
+                    page_size
+                };
+                
+                let addr = memory_sc::sys_memory_allocate(
+                    &self.memory_manager,
+                    size,
+                    page_size,
+                    flags,
+                )?;
+                Ok(addr as i64)
             }
 
             SYS_MEMORY_FREE => {
-                tracing::debug!("sys_memory_free(addr=0x{:x})", args[0]);
+                let addr = args[0];
+                memory_sc::sys_memory_free(&self.memory_manager, addr)?;
                 Ok(0)
+            }
+
+            SYS_MEMORY_GET_PAGE_ATTRIBUTE => {
+                let addr = args[0];
+                let _attr = memory_sc::sys_memory_get_page_attribute(&self.memory_manager, addr)?;
+                // In real implementation, would write to memory pointed by args[1]
+                // For now, return success
+                Ok(0)
+            }
+
+            SYS_MEMORY_GET_USER_MEMORY_SIZE => {
+                let (total, _available) = memory_sc::sys_memory_get_user_memory_size();
+                // In real implementation, would write to memory pointed by args[0] and args[1]
+                // For now, return total size as the result
+                Ok(total as i64)
             }
 
             // TTY
@@ -460,6 +690,62 @@ mod tests {
         handler
             .handle(SYS_EVENT_QUEUE_DESTROY, &destroy_args)
             .unwrap();
+    }
+
+    #[test]
+    fn test_memory_syscalls() {
+        let handler = SyscallHandler::new();
+
+        // Allocate memory
+        let mut args = [0u64; 8];
+        args[0] = 0x10000; // size
+        args[1] = 0; // page_size (use default)
+        args[2] = 0; // flags
+        let addr = handler.handle(SYS_MEMORY_ALLOCATE, &args).unwrap();
+        assert!(addr > 0);
+
+        // Get page attribute
+        let mut attr_args = [0u64; 8];
+        attr_args[0] = addr as u64;
+        handler
+            .handle(SYS_MEMORY_GET_PAGE_ATTRIBUTE, &attr_args)
+            .unwrap();
+
+        // Get user memory size
+        let size_result = handler
+            .handle(SYS_MEMORY_GET_USER_MEMORY_SIZE, &args)
+            .unwrap();
+        assert!(size_result > 0);
+
+        // Free memory
+        let mut free_args = [0u64; 8];
+        free_args[0] = addr as u64;
+        handler.handle(SYS_MEMORY_FREE, &free_args).unwrap();
+    }
+
+    #[test]
+    fn test_time_syscalls() {
+        let handler = SyscallHandler::new();
+        let args = [0u64; 8];
+
+        // Get system time
+        let time1 = handler.handle(SYS_TIME_GET_SYSTEM_TIME, &args).unwrap();
+        assert!(time1 > 0);
+
+        // Get timebase frequency
+        let freq = handler
+            .handle(SYS_TIME_GET_TIMEBASE_FREQUENCY, &args)
+            .unwrap();
+        assert_eq!(freq, 79_800_000);
+
+        // Sleep for a short time
+        let mut sleep_args = [0u64; 8];
+        sleep_args[0] = 1000; // 1ms
+        handler.handle(SYS_TIME_USLEEP, &sleep_args).unwrap();
+
+        // Check time advanced
+        let time2 = handler.handle(SYS_TIME_GET_SYSTEM_TIME, &args).unwrap();
+        assert!(time2 >= time1);
     }
 }
 

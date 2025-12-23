@@ -40,7 +40,7 @@ impl RwLock {
     }
 
     pub fn try_rlock(&self) -> Result<(), KernelError> {
-        self.inner
+        let _ = self.inner
             .try_read()
             .ok_or(KernelError::WouldBlock)?;
         Ok(())
@@ -53,7 +53,7 @@ impl RwLock {
     }
 
     pub fn try_wlock(&self) -> Result<(), KernelError> {
-        self.inner
+        let _ = self.inner
             .try_write()
             .ok_or(KernelError::WouldBlock)?;
         Ok(())

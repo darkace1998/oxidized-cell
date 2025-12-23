@@ -52,6 +52,8 @@ pub const SYS_SEMAPHORE_GET_VALUE: u64 = 122;
 // Time
 pub const SYS_TIME_GET_SYSTEM_TIME: u64 = 145;
 pub const SYS_TIME_GET_TIMEBASE_FREQUENCY: u64 = 147;
+pub const SYS_TIME_GET_CURRENT_TIME: u64 = 145; // Alias for SYS_TIME_GET_SYSTEM_TIME
+pub const SYS_TIME_USLEEP: u64 = 146;
 
 // Event queue
 pub const SYS_EVENT_QUEUE_CREATE: u64 = 128;
@@ -79,6 +81,8 @@ pub const SYS_SPU_THREAD_READ_LS: u64 = 172;
 // Memory
 pub const SYS_MEMORY_ALLOCATE: u64 = 324;
 pub const SYS_MEMORY_FREE: u64 = 325;
+pub const SYS_MEMORY_GET_PAGE_ATTRIBUTE: u64 = 327;
+pub const SYS_MEMORY_GET_USER_MEMORY_SIZE: u64 = 352;
 
 // File system
 pub const SYS_FS_OPEN: u64 = 800;

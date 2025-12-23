@@ -123,7 +123,7 @@ pub mod syscalls {
     }
 
     /// sys_process_getppid
-    pub fn sys_process_getppid(manager: &ProcessManager) -> ProcessId {
+    pub fn sys_process_getppid(_manager: &ProcessManager) -> ProcessId {
         // In PS3, this typically returns the parent process ID
         // For simplicity, we return 0 (no parent)
         0

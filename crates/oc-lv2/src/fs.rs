@@ -3,7 +3,6 @@
 use crate::objects::{KernelObject, ObjectId, ObjectManager, ObjectType};
 use oc_core::error::KernelError;
 use parking_lot::Mutex;
-use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -284,7 +283,7 @@ pub mod syscalls {
         manager: &ObjectManager,
         path: &str,
         flags: u32,
-        mode: u32,
+        _mode: u32,
     ) -> Result<ObjectId, KernelError> {
         let path = PathBuf::from(path);
         let id = manager.next_id();

@@ -45,7 +45,7 @@ impl Cond {
         mutex.unlock(thread_id)?;
 
         // Wait on the condition variable
-        let result = if let Some(duration) = timeout {
+        let result = if let Some(_duration) = timeout {
             // Note: parking_lot Condvar doesn't have a direct wait_timeout
             // This is simplified for now
             Ok(())

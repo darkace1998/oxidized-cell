@@ -205,7 +205,7 @@ pub mod syscalls {
         manager: &ObjectManager,
         attributes: SpuThreadGroupAttributes,
         num_threads: u32,
-        priority: i32,
+        _priority: i32,
     ) -> Result<ObjectId, KernelError> {
         if num_threads == 0 || num_threads > MAX_SPU_THREADS {
             return Err(KernelError::ResourceLimit);
@@ -247,7 +247,7 @@ pub mod syscalls {
     pub fn sys_spu_thread_initialize(
         manager: &ObjectManager,
         group_id: ObjectId,
-        thread_num: u32,
+        _thread_num: u32,
         attributes: SpuThreadAttributes,
     ) -> Result<ObjectId, KernelError> {
         let group: Arc<SpuThreadGroup> = manager.get(group_id)?;

@@ -80,7 +80,7 @@ impl EventQueue {
         Ok(())
     }
 
-    pub fn receive(&self, timeout: Option<Duration>) -> Result<Event, KernelError> {
+    pub fn receive(&self, _timeout: Option<Duration>) -> Result<Event, KernelError> {
         let mut state = self.inner.lock();
 
         if let Some(event) = state.events.pop_front() {
