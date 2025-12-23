@@ -1,0 +1,135 @@
+name: Build with LLVM
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'cpp/**'
+      - '.github/workflows/llvm-build.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'cpp/**'
+      - '.github/workflows/llvm-build.yml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  LLVM_VERSION: 17
+
+jobs:
+  build-with-llvm:
+    name: Build with LLVM ${{ matrix.llvm_version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        llvm_version: [17, 18, 19]
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: x86_64-apple-darwin
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - name: Install LLVM and system dependencies (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        wget https://apt.llvm.org/llvm.sh
+        chmod +x llvm.sh
+        sudo ./llvm.sh ${{ matrix.llvm_version }}
+        sudo apt-get update
+        sudo apt-get install -y \
+          cmake \
+          build-essential \
+          libasound2-dev \
+          libudev-dev \
+          libxcb-render0-dev \
+          libxcb-shape0-dev \
+          libxcb-xfixes0-dev \
+          libxkbcommon-dev \
+          libssl-dev \
+          pkg-config \
+          llvm-${{ matrix.llvm_version }}-dev \
+          libclang-${{ matrix.llvm_version }}-dev
+        
+        # Set LLVM_DIR for CMake
+        echo "LLVM_DIR=/usr/lib/llvm-${{ matrix.llvm_version }}/lib/cmake/llvm" >> $GITHUB_ENV
+
+    - name: Install LLVM and system dependencies (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install cmake llvm@${{ matrix.llvm_version }}
+        
+        # Set LLVM_DIR for CMake
+        echo "LLVM_DIR=$(brew --prefix llvm@${{ matrix.llvm_version }})/lib/cmake/llvm" >> $GITHUB_ENV
+
+    - name: Cache cargo build
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: ${{ runner.os }}-llvm${{ matrix.llvm_version }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Build with LLVM
+      run: |
+        echo "Building with LLVM_DIR=$LLVM_DIR"
+        cargo build --workspace --verbose
+
+    - name: Run tests
+      run: cargo test --workspace --verbose
+
+  build-without-llvm:
+    name: Build without LLVM (fallback mode)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install system dependencies (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          cmake \
+          build-essential \
+          libasound2-dev \
+          libudev-dev \
+          libxcb-render0-dev \
+          libxcb-shape0-dev \
+          libxcb-xfixes0-dev \
+          libxkbcommon-dev \
+          libssl-dev \
+          pkg-config
+
+    - name: Install system dependencies (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install cmake
+
+    - name: Install system dependencies (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        choco install cmake --installargs 'ADD_CMAKE_TO_PATH=System'
+
+    - name: Build without LLVM
+      run: |
+        echo "Building without LLVM (interpreter-only mode)"
+        cargo build --workspace --verbose
+
+    - name: Run tests
+      run: cargo test --workspace --verbose
