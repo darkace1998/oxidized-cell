@@ -103,8 +103,8 @@ impl Texture {
         for _ in 0..self.mipmap_levels {
             if self.format == 0x86 || self.format == 0x87 || self.format == 0x88 {
                 // Block-compressed formats: size in 4x4 blocks
-                let blocks_w = (w + 3) / 4;
-                let blocks_h = (h + 3) / 4;
+                let blocks_w = w.div_ceil(4);
+                let blocks_h = h.div_ceil(4);
                 let block_size = if self.format == 0x86 { 8 } else { 16 };
                 size += blocks_w * blocks_h * block_size;
             } else {
