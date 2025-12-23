@@ -48,7 +48,8 @@ pub fn andhi(thread: &mut SpuThread, i10: i16, ra: u8, rt: u8) -> Result<(), Spu
 /// AND Word Immediate - andi rt, ra, i10
 pub fn andi(thread: &mut SpuThread, i10: i16, ra: u8, rt: u8) -> Result<(), SpuError> {
     let a = thread.regs.read_u32x4(ra as usize);
-    let imm = i10 as u32;
+    // Sign extend i10 to i32, then convert to u32 (keeps sign-extended bits)
+    let imm = (i10 as i32) as u32;
     let result = [a[0] & imm, a[1] & imm, a[2] & imm, a[3] & imm];
     thread.regs.write_u32x4(rt as usize, result);
     thread.advance_pc();
@@ -100,7 +101,8 @@ pub fn orhi(thread: &mut SpuThread, i10: i16, ra: u8, rt: u8) -> Result<(), SpuE
 /// OR Word Immediate - ori rt, ra, i10
 pub fn ori(thread: &mut SpuThread, i10: i16, ra: u8, rt: u8) -> Result<(), SpuError> {
     let a = thread.regs.read_u32x4(ra as usize);
-    let imm = i10 as u32;
+    // Sign extend i10 to i32, then convert to u32 (keeps sign-extended bits)
+    let imm = (i10 as i32) as u32;
     let result = [a[0] | imm, a[1] | imm, a[2] | imm, a[3] | imm];
     thread.regs.write_u32x4(rt as usize, result);
     thread.advance_pc();
@@ -142,7 +144,8 @@ pub fn xorhi(thread: &mut SpuThread, i10: i16, ra: u8, rt: u8) -> Result<(), Spu
 /// XOR Word Immediate - xori rt, ra, i10
 pub fn xori(thread: &mut SpuThread, i10: i16, ra: u8, rt: u8) -> Result<(), SpuError> {
     let a = thread.regs.read_u32x4(ra as usize);
-    let imm = i10 as u32;
+    // Sign extend i10 to i32, then convert to u32 (keeps sign-extended bits)
+    let imm = (i10 as i32) as u32;
     let result = [a[0] ^ imm, a[1] ^ imm, a[2] ^ imm, a[3] ^ imm];
     thread.regs.write_u32x4(rt as usize, result);
     thread.advance_pc();
