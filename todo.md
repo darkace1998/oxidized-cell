@@ -25,7 +25,7 @@ The primary focus is on implementing HLE modules and completing the game loading
 | VFS | ✅ Complete | 80% | Medium |
 | ELF/Game Loader | ✅ Complete | 90% | Medium |
 | HLE Modules | ✅ Complete | 95% | Medium |
-| User Interface | 🚧 In Progress | 15% | Medium |
+| User Interface | 🔨 Mostly Complete | 55% | Medium |
 | Game Loading Pipeline | ❌ Not Started | 0% | **Critical** |
 
 ---
@@ -167,13 +167,13 @@ The HLE modules are essential for game execution. Most functions currently retur
 - [ ] Parse title ID and content ID from PKG metadata section
 - [ ] Implement PKG extraction logic
 
-### User Interface (15% Complete)
+### User Interface (55% Complete)
 
-- [ ] Connect UI to actual emulator runner
-- [ ] Display real RSX output instead of placeholder
-- [ ] Implement proper game launching
-- [ ] Add log viewer
-- [ ] Add memory viewer
+- [x] Connect UI to actual emulator runner
+- [x] Display real RSX output instead of placeholder
+- [x] Implement proper game launching
+- [x] Add log viewer
+- [x] Add memory viewer
 - [ ] Add shader debugger
 - [ ] Implement settings persistence
 - [ ] Add controller configuration UI

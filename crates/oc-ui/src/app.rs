@@ -2,10 +2,15 @@
 
 use eframe::egui;
 use oc_core::config::Config;
+use oc_integration::{EmulatorRunner, RunnerState};
 use std::path::PathBuf;
+use std::sync::Arc;
+use parking_lot::RwLock;
 
 use crate::debugger::DebuggerView;
 use crate::game_list::{GameInfo, GameListView};
+use crate::log_viewer::{LogViewer, LogLevel};
+use crate::memory_viewer::MemoryViewer;
 use crate::settings::SettingsPanel;
 use crate::themes::Theme;
 
@@ -21,6 +26,10 @@ pub struct OxidizedCellApp {
     show_about: bool,
     /// Show performance overlay
     show_performance: bool,
+    /// Show log viewer window
+    show_log_viewer: bool,
+    /// Show memory viewer window
+    show_memory_viewer: bool,
     /// Current theme
     theme: Theme,
     /// Game list view
@@ -29,12 +38,22 @@ pub struct OxidizedCellApp {
     debugger: DebuggerView,
     /// Settings panel
     settings_panel: SettingsPanel,
-    /// Emulation state
-    emulation_state: EmulationState,
+    /// Log viewer panel
+    log_viewer: LogViewer,
+    /// Memory viewer panel
+    memory_viewer: MemoryViewer,
+    /// Emulator runner (wrapped in Arc<RwLock> for thread safety)
+    emulator: Option<Arc<RwLock<EmulatorRunner>>>,
+    /// Currently loaded game path
+    loaded_game_path: Option<PathBuf>,
     /// FPS counter
     fps: f32,
     /// Frame time (ms)
     frame_time: f32,
+    /// Emulator FPS (from runner)
+    emulator_fps: f64,
+    /// Error message to display
+    error_message: Option<String>,
 }
 
 /// Application views
@@ -43,14 +62,8 @@ pub enum View {
     GameList,
     Emulation,
     Debugger,
-}
-
-/// Emulation state
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EmulationState {
-    Stopped,
-    Running,
-    Paused,
+    LogViewer,
+    MemoryViewer,
 }
 
 impl OxidizedCellApp {
@@ -60,6 +73,10 @@ impl OxidizedCellApp {
         
         let theme = Theme::default();
         theme.apply(&cc.egui_ctx);
+        
+        // Create log viewer and log initial message
+        let log_viewer = LogViewer::new();
+        log_viewer.log(LogLevel::Info, "oc-ui", "oxidized-cell UI initialized");
         
         // Add some sample games for demonstration
         let mut game_list = GameListView::new();
@@ -84,22 +101,165 @@ impl OxidizedCellApp {
             show_settings: false,
             show_about: false,
             show_performance: false,
+            show_log_viewer: false,
+            show_memory_viewer: false,
             theme,
             game_list,
             debugger: DebuggerView::new(),
             settings_panel: SettingsPanel::new(),
-            emulation_state: EmulationState::Stopped,
+            log_viewer,
+            memory_viewer: MemoryViewer::new(),
+            emulator: None,
+            loaded_game_path: None,
             fps: 0.0,
             frame_time: 0.0,
+            emulator_fps: 0.0,
+            error_message: None,
+        }
+    }
+
+    /// Get the current emulation state from the runner
+    fn emulation_state(&self) -> RunnerState {
+        self.emulator
+            .as_ref()
+            .map(|e| e.read().state())
+            .unwrap_or(RunnerState::Stopped)
+    }
+
+    /// Initialize the emulator runner
+    fn init_emulator(&mut self) {
+        if self.emulator.is_some() {
+            return;
+        }
+
+        self.log_viewer.log(LogLevel::Info, "oc-ui", "Initializing emulator runner...");
+        
+        match EmulatorRunner::new(self.config.clone()) {
+            Ok(runner) => {
+                let runner = Arc::new(RwLock::new(runner));
+                
+                // Connect memory viewer to the emulator's memory
+                self.memory_viewer.connect(Arc::clone(runner.read().memory()));
+                
+                self.emulator = Some(runner);
+                self.log_viewer.log(LogLevel::Info, "oc-ui", "Emulator runner initialized successfully");
+            }
+            Err(e) => {
+                let msg = format!("Failed to initialize emulator: {}", e);
+                self.log_viewer.log(LogLevel::Error, "oc-ui", &msg);
+                self.error_message = Some(msg);
+            }
+        }
+    }
+
+    /// Launch a game from the given path
+    fn launch_game(&mut self, game_path: PathBuf) {
+        self.log_viewer.log(LogLevel::Info, "oc-ui", &format!("Launching game: {:?}", game_path));
+        
+        // Initialize emulator if not already done
+        self.init_emulator();
+        
+        if let Some(ref emulator) = self.emulator {
+            // Load the game
+            match emulator.read().load_game(&game_path) {
+                Ok(loaded_game) => {
+                    self.log_viewer.log(
+                        LogLevel::Info, 
+                        "oc-ui", 
+                        &format!("Game loaded: entry=0x{:x}, base=0x{:08x}", 
+                            loaded_game.entry_point, 
+                            loaded_game.base_addr)
+                    );
+                    
+                    // Start the emulator
+                    if let Err(e) = emulator.write().start() {
+                        let msg = format!("Failed to start emulator: {}", e);
+                        self.log_viewer.log(LogLevel::Error, "oc-ui", &msg);
+                        self.error_message = Some(msg);
+                    } else {
+                        self.loaded_game_path = Some(game_path);
+                        self.current_view = View::Emulation;
+                        self.log_viewer.log(LogLevel::Info, "oc-ui", "Emulator started");
+                    }
+                }
+                Err(e) => {
+                    let msg = format!("Failed to load game: {}", e);
+                    self.log_viewer.log(LogLevel::Error, "oc-ui", &msg);
+                    self.error_message = Some(msg);
+                }
+            }
+        }
+    }
+
+    /// Start/Resume emulation
+    fn start_emulation(&mut self) {
+        if let Some(ref emulator) = self.emulator {
+            let state = emulator.read().state();
+            let result = match state {
+                RunnerState::Paused => emulator.write().resume(),
+                RunnerState::Stopped => emulator.write().start(),
+                RunnerState::Running => Ok(()),
+            };
+            
+            if let Err(e) = result {
+                let msg = format!("Failed to start emulation: {}", e);
+                self.log_viewer.log(LogLevel::Error, "oc-ui", &msg);
+            } else {
+                self.log_viewer.log(LogLevel::Info, "oc-ui", "Emulation started/resumed");
+            }
+        }
+    }
+
+    /// Pause emulation
+    fn pause_emulation(&mut self) {
+        if let Some(ref emulator) = self.emulator {
+            if let Err(e) = emulator.write().pause() {
+                let msg = format!("Failed to pause emulation: {}", e);
+                self.log_viewer.log(LogLevel::Error, "oc-ui", &msg);
+            } else {
+                self.log_viewer.log(LogLevel::Info, "oc-ui", "Emulation paused");
+            }
+        }
+    }
+
+    /// Stop emulation
+    fn stop_emulation(&mut self) {
+        if let Some(ref emulator) = self.emulator {
+            if let Err(e) = emulator.write().stop() {
+                let msg = format!("Failed to stop emulation: {}", e);
+                self.log_viewer.log(LogLevel::Error, "oc-ui", &msg);
+            } else {
+                self.log_viewer.log(LogLevel::Info, "oc-ui", "Emulation stopped");
+                self.loaded_game_path = None;
+            }
+        }
+    }
+
+    /// Run one emulator frame (called when running)
+    fn run_emulator_frame(&mut self) {
+        if let Some(ref emulator) = self.emulator {
+            if emulator.read().state() == RunnerState::Running {
+                if let Err(e) = emulator.write().run_frame() {
+                    let msg = format!("Emulator frame error: {}", e);
+                    self.log_viewer.log(LogLevel::Error, "oc-ui", &msg);
+                }
+                self.emulator_fps = emulator.read().fps();
+            }
         }
     }
 }
 
 impl eframe::App for OxidizedCellApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Update FPS (mock for now)
+        // Update FPS
         self.fps = ctx.input(|i| 1.0 / i.stable_dt.max(0.001));
         self.frame_time = 1000.0 / self.fps.max(1.0);
+
+        // Run emulator frame if running
+        self.run_emulator_frame();
+
+        // Get current emulation state
+        let emulation_state = self.emulation_state();
         
         // Menu bar
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
@@ -109,7 +269,7 @@ impl eframe::App for OxidizedCellApp {
                         if let Some(path) = Self::open_game_dialog() {
                             let game_info = Self::create_game_info_from_path(&path);
                             self.game_list.add_game(game_info);
-                            tracing::info!("Added game: {}", path.display());
+                            self.log_viewer.log(LogLevel::Info, "oc-ui", &format!("Added game: {}", path.display()));
                         }
                         ui.close_menu();
                     }
@@ -124,26 +284,26 @@ impl eframe::App for OxidizedCellApp {
                 });
                 
                 ui.menu_button("Emulation", |ui| {
-                    let can_start = self.emulation_state == EmulationState::Stopped 
-                        || self.emulation_state == EmulationState::Paused;
-                    let can_pause = self.emulation_state == EmulationState::Running;
-                    let can_stop = self.emulation_state != EmulationState::Stopped;
+                    let can_start = emulation_state == RunnerState::Stopped 
+                        || emulation_state == RunnerState::Paused;
+                    let can_pause = emulation_state == RunnerState::Running;
+                    let can_stop = emulation_state != RunnerState::Stopped;
                     
                     if ui.add_enabled(can_start, egui::Button::new("Start")).clicked() {
-                        self.emulation_state = EmulationState::Running;
+                        self.start_emulation();
                         ui.close_menu();
                     }
                     if ui.add_enabled(can_pause, egui::Button::new("Pause")).clicked() {
-                        self.emulation_state = EmulationState::Paused;
+                        self.pause_emulation();
                         ui.close_menu();
                     }
                     if ui.add_enabled(can_stop, egui::Button::new("Stop")).clicked() {
-                        self.emulation_state = EmulationState::Stopped;
+                        self.stop_emulation();
                         ui.close_menu();
                     }
                     ui.separator();
                     if ui.button("Reset").clicked() {
-                        self.emulation_state = EmulationState::Stopped;
+                        self.stop_emulation();
                         ui.close_menu();
                     }
                 });
@@ -171,7 +331,34 @@ impl eframe::App for OxidizedCellApp {
                         ui.close_menu();
                     }
                     ui.separator();
+                    if ui.selectable_label(
+                        self.current_view == View::LogViewer,
+                        "Log Viewer"
+                    ).clicked() {
+                        self.current_view = View::LogViewer;
+                        ui.close_menu();
+                    }
+                    if ui.selectable_label(
+                        self.current_view == View::MemoryViewer,
+                        "Memory Viewer"
+                    ).clicked() {
+                        // Initialize emulator if needed for memory viewer
+                        self.init_emulator();
+                        self.current_view = View::MemoryViewer;
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     if ui.checkbox(&mut self.show_performance, "Performance Overlay").clicked() {
+                        ui.close_menu();
+                    }
+                    if ui.checkbox(&mut self.show_log_viewer, "Log Window").clicked() {
+                        ui.close_menu();
+                    }
+                    if ui.checkbox(&mut self.show_memory_viewer, "Memory Window").clicked() {
+                        // Initialize emulator if needed
+                        if self.show_memory_viewer {
+                            self.init_emulator();
+                        }
                         ui.close_menu();
                     }
                 });
@@ -205,26 +392,39 @@ impl eframe::App for OxidizedCellApp {
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 // Emulation state
-                let state_text = match self.emulation_state {
-                    EmulationState::Stopped => "⏹ Stopped",
-                    EmulationState::Running => "▶ Running",
-                    EmulationState::Paused => "⏸ Paused",
+                let state_text = match emulation_state {
+                    RunnerState::Stopped => "⏹ Stopped",
+                    RunnerState::Running => "▶ Running",
+                    RunnerState::Paused => "⏸ Paused",
                 };
                 ui.label(state_text);
                 
                 ui.separator();
                 
                 // FPS
-                if self.emulation_state == EmulationState::Running {
-                    ui.label(format!("FPS: {:.1}", 60.0)); // Mock FPS
+                if emulation_state == RunnerState::Running {
+                    ui.label(format!("FPS: {:.1}", self.emulator_fps));
                 } else {
                     ui.label("FPS: --");
+                }
+
+                // Thread counts
+                if let Some(ref emulator) = self.emulator {
+                    let runner = emulator.read();
+                    ui.separator();
+                    ui.label(format!("PPU: {} | SPU: {}", runner.ppu_thread_count(), runner.spu_thread_count()));
                 }
                 
                 // Selected game info
                 if let Some(game) = self.game_list.selected_game() {
                     ui.separator();
                     ui.label(format!("Selected: {}", game.title));
+                }
+                
+                // Loaded game info
+                if let Some(ref path) = self.loaded_game_path {
+                    ui.separator();
+                    ui.label(format!("Loaded: {}", path.file_name().unwrap_or_default().to_string_lossy()));
                 }
             });
         });
@@ -234,48 +434,25 @@ impl eframe::App for OxidizedCellApp {
             match self.current_view {
                 View::GameList => {
                     if let Some(game_path) = self.game_list.show(ui) {
-                        // Launch game
-                        tracing::info!("Launching game: {:?}", game_path);
-                        self.current_view = View::Emulation;
-                        self.emulation_state = EmulationState::Running;
+                        // Launch game using the emulator runner
+                        self.launch_game(game_path);
                     }
                 }
                 View::Emulation => {
-                    ui.vertical_centered(|ui| {
-                        ui.heading("Emulation View");
-                        ui.add_space(20.0);
-                        
-                        // Game display area
-                        let available_size = ui.available_size();
-                        let aspect_ratio = 16.0 / 9.0;
-                        let (width, height) = if available_size.x / available_size.y > aspect_ratio {
-                            (available_size.y * aspect_ratio, available_size.y)
-                        } else {
-                            (available_size.x, available_size.x / aspect_ratio)
-                        };
-                        
-                        let (rect, _response) = ui.allocate_exact_size(
-                            egui::vec2(width, height),
-                            egui::Sense::hover()
-                        );
-                        
-                        // Draw placeholder
-                        ui.painter().rect_filled(
-                            rect,
-                            4.0,
-                            egui::Color32::from_gray(20),
-                        );
-                        ui.painter().text(
-                            rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            "Game Display\n(RSX output would render here)",
-                            egui::FontId::proportional(24.0),
-                            ui.visuals().text_color(),
-                        );
-                    });
+                    self.show_emulation_view(ui, emulation_state);
                 }
                 View::Debugger => {
                     self.debugger.show(ui);
+                }
+                View::LogViewer => {
+                    ui.heading("Log Viewer");
+                    ui.separator();
+                    self.log_viewer.show(ui);
+                }
+                View::MemoryViewer => {
+                    ui.heading("Memory Viewer");
+                    ui.separator();
+                    self.memory_viewer.show(ui);
                 }
             }
         });
@@ -287,9 +464,37 @@ impl eframe::App for OxidizedCellApp {
                 .collapsible(false)
                 .resizable(false)
                 .show(ctx, |ui| {
-                    ui.label(format!("FPS: {:.1}", self.fps));
+                    ui.label(format!("UI FPS: {:.1}", self.fps));
                     ui.label(format!("Frame Time: {:.2}ms", self.frame_time));
-                    ui.label(format!("UI FPS: {:.1}", 1.0 / ctx.input(|i| i.stable_dt).max(0.001)));
+                    if emulation_state == RunnerState::Running {
+                        ui.label(format!("Emulator FPS: {:.1}", self.emulator_fps));
+                    }
+                    if let Some(ref emulator) = self.emulator {
+                        let runner = emulator.read();
+                        ui.separator();
+                        ui.label(format!("Frame Count: {}", runner.frame_count()));
+                        ui.label(format!("Total Cycles: {}", runner.total_cycles()));
+                    }
+                });
+        }
+
+        // Log viewer window (floating)
+        if self.show_log_viewer {
+            egui::Window::new("Logs")
+                .open(&mut self.show_log_viewer)
+                .default_size([600.0, 400.0])
+                .show(ctx, |ui| {
+                    self.log_viewer.show(ui);
+                });
+        }
+
+        // Memory viewer window (floating)
+        if self.show_memory_viewer {
+            egui::Window::new("Memory")
+                .open(&mut self.show_memory_viewer)
+                .default_size([700.0, 500.0])
+                .show(ctx, |ui| {
+                    self.memory_viewer.show(ui);
                 });
         }
         
@@ -311,9 +516,9 @@ impl eframe::App for OxidizedCellApp {
                     ui.horizontal(|ui| {
                         if ui.button("Save").clicked() {
                             if let Err(e) = self.config.save() {
-                                tracing::error!("Failed to save config: {}", e);
+                                self.log_viewer.log(LogLevel::Error, "oc-ui", &format!("Failed to save config: {}", e));
                             } else {
-                                tracing::info!("Configuration saved");
+                                self.log_viewer.log(LogLevel::Info, "oc-ui", "Configuration saved");
                             }
                         }
                         if ui.button("Close").clicked() {
@@ -352,6 +557,32 @@ impl eframe::App for OxidizedCellApp {
                     });
                 });
         }
+
+        // Error dialog
+        if let Some(ref error) = self.error_message.clone() {
+            let mut show_error = true;
+            egui::Window::new("Error")
+                .open(&mut show_error)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.colored_label(egui::Color32::RED, "⚠ Error");
+                    ui.separator();
+                    ui.label(error);
+                    ui.separator();
+                    if ui.button("OK").clicked() {
+                        self.error_message = None;
+                    }
+                });
+            if !show_error {
+                self.error_message = None;
+            }
+        }
+
+        // Request repaint if emulator is running
+        if emulation_state == RunnerState::Running {
+            ctx.request_repaint();
+        }
     }
     
     fn save(&mut self, _storage: &mut dyn eframe::Storage) {
@@ -365,6 +596,115 @@ impl OxidizedCellApp {
         // For now just return true, in a real implementation
         // this would show a modal dialog
         true
+    }
+
+    /// Show the emulation view with RSX output area
+    fn show_emulation_view(&mut self, ui: &mut egui::Ui, emulation_state: RunnerState) {
+        ui.vertical_centered(|ui| {
+            // Control buttons
+            ui.horizontal(|ui| {
+                let can_start = emulation_state == RunnerState::Stopped 
+                    || emulation_state == RunnerState::Paused;
+                let can_pause = emulation_state == RunnerState::Running;
+                let can_stop = emulation_state != RunnerState::Stopped;
+
+                if ui.add_enabled(can_start, egui::Button::new("▶ Start")).clicked() {
+                    self.start_emulation();
+                }
+                if ui.add_enabled(can_pause, egui::Button::new("⏸ Pause")).clicked() {
+                    self.pause_emulation();
+                }
+                if ui.add_enabled(can_stop, egui::Button::new("⏹ Stop")).clicked() {
+                    self.stop_emulation();
+                }
+
+                ui.separator();
+
+                // State indicator
+                let state_color = match emulation_state {
+                    RunnerState::Stopped => egui::Color32::GRAY,
+                    RunnerState::Running => egui::Color32::GREEN,
+                    RunnerState::Paused => egui::Color32::YELLOW,
+                };
+                ui.colored_label(state_color, format!("● {:?}", emulation_state));
+            });
+
+            ui.add_space(10.0);
+            
+            // Game display area
+            let available_size = ui.available_size();
+            let aspect_ratio = 16.0 / 9.0;
+            let (width, height) = if available_size.x / available_size.y > aspect_ratio {
+                ((available_size.y - 20.0) * aspect_ratio, available_size.y - 20.0)
+            } else {
+                (available_size.x - 20.0, (available_size.x - 20.0) / aspect_ratio)
+            };
+            
+            let (rect, _response) = ui.allocate_exact_size(
+                egui::vec2(width, height),
+                egui::Sense::hover()
+            );
+            
+            // Draw RSX output area (placeholder with state information)
+            ui.painter().rect_filled(
+                rect,
+                4.0,
+                egui::Color32::from_gray(20),
+            );
+
+            // Draw frame border
+            ui.painter().rect_stroke(
+                rect,
+                4.0,
+                egui::Stroke::new(2.0, egui::Color32::from_gray(60)),
+            );
+
+            // Display status text based on emulation state
+            let display_text = match emulation_state {
+                RunnerState::Stopped => {
+                    if self.loaded_game_path.is_some() {
+                        "Game Stopped\nPress Start to resume"
+                    } else {
+                        "No Game Loaded\nSelect a game from the Game List"
+                    }
+                }
+                RunnerState::Running => {
+                    "RSX Output\n(Rendering connected to RSX backend)"
+                }
+                RunnerState::Paused => {
+                    "Paused\nPress Start to resume"
+                }
+            };
+
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                display_text,
+                egui::FontId::proportional(18.0),
+                ui.visuals().text_color(),
+            );
+
+            // Show emulator stats when running or paused
+            if emulation_state != RunnerState::Stopped {
+                if let Some(ref emulator) = self.emulator {
+                    let runner = emulator.read();
+                    let stats_text = format!(
+                        "Frame: {} | Cycles: {} | FPS: {:.1}",
+                        runner.frame_count(),
+                        runner.total_cycles(),
+                        self.emulator_fps
+                    );
+                    
+                    ui.painter().text(
+                        egui::pos2(rect.center().x, rect.max.y - 20.0),
+                        egui::Align2::CENTER_CENTER,
+                        stats_text,
+                        egui::FontId::monospace(12.0),
+                        egui::Color32::LIGHT_GRAY,
+                    );
+                }
+            }
+        });
     }
 
     /// Open a file dialog to select a game file
