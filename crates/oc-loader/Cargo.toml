@@ -11,5 +11,11 @@ oc-core.workspace = true
 oc-memory.workspace = true
 tracing.workspace = true
 bytemuck.workspace = true
+aes = "0.8"
+cbc = "0.1"
+sha1 = "0.10"
+serde = { workspace = true }
+serde_json.workspace = true
+hex = "0.4"
 
 [dev-dependencies]

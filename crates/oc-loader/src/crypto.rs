@@ -5,10 +5,15 @@
 
 use oc_core::error::LoaderError;
 use std::collections::HashMap;
-use tracing::{debug, warn};
+use tracing::{debug, warn, info};
+use aes::Aes128;
+use cbc::{Decryptor, Encryptor};
+use cbc::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use sha1::{Sha1, Digest};
+use serde::{Serialize, Deserialize};
 
 /// Key types for PS3 encryption
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum KeyType {
     /// Retail (production) keys
     Retail,
@@ -25,7 +30,7 @@ pub enum KeyType {
 }
 
 /// Encryption algorithm types
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EncryptionType {
     /// AES-128 CBC
     Aes128Cbc,
@@ -36,12 +41,57 @@ pub enum EncryptionType {
 }
 
 /// Key database entry
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KeyEntry {
     pub key_type: KeyType,
+    #[serde(with = "hex_serde")]
     pub key: Vec<u8>,
+    #[serde(with = "optional_hex_serde")]
     pub iv: Option<Vec<u8>>,
     pub description: String,
+}
+
+// Helper modules for hex serialization
+mod hex_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
+    
+    pub fn serialize<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&hex::encode(bytes))
+    }
+    
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        hex::decode(s).map_err(serde::de::Error::custom)
+    }
+}
+
+mod optional_hex_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
+    
+    pub fn serialize<S>(bytes: &Option<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match bytes {
+            Some(b) => serializer.serialize_some(&hex::encode(b)),
+            None => serializer.serialize_none(),
+        }
+    }
+    
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let opt = Option::<String>::deserialize(deserializer)?;
+        opt.map(|s| hex::decode(s).map_err(serde::de::Error::custom))
+            .transpose()
+    }
 }
 
 /// AES key size constants
@@ -49,6 +99,13 @@ const AES_128_KEY_SIZE: usize = 16;
 const AES_256_KEY_SIZE: usize = 32;
 const AES_IV_SIZE: usize = 16;
 const AES_BLOCK_SIZE: usize = 16;
+
+/// Key file format for storing encryption keys
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct KeyFileFormat {
+    pub version: u32,
+    pub keys: Vec<KeyEntry>,
+}
 
 /// Crypto engine for SELF decryption
 pub struct CryptoEngine {
@@ -147,10 +204,24 @@ impl CryptoEngine {
             ));
         }
 
-        // For now, return the encrypted data as-is since we don't have real keys
-        // A real implementation would use a proper AES library
-        warn!("AES decryption not implemented - returning encrypted data");
-        Ok(encrypted_data.to_vec())
+        // Perform actual AES-128-CBC decryption
+        if key.len() == AES_128_KEY_SIZE {
+            type Aes128CbcDec = Decryptor<Aes128>;
+            
+            let cipher = Aes128CbcDec::new_from_slices(key, iv)
+                .map_err(|e| LoaderError::DecryptionFailed(format!("Failed to create cipher: {:?}", e)))?;
+            
+            let mut buffer = encrypted_data.to_vec();
+            let decrypted_data = cipher.decrypt_padded_mut::<cbc::cipher::block_padding::Pkcs7>(&mut buffer)
+                .map_err(|e| LoaderError::DecryptionFailed(format!("Decryption failed: {:?}", e)))?;
+            
+            Ok(decrypted_data.to_vec())
+        } else {
+            // AES-256 would require Aes256 type
+            return Err(LoaderError::DecryptionFailed(
+                "AES-256 not yet implemented".to_string(),
+            ));
+        }
     }
 
     /// Encrypt data using AES
@@ -180,16 +251,22 @@ impl CryptoEngine {
             ));
         }
 
-        // Pad data to 16-byte blocks
-        let mut padded_data = plaintext.to_vec();
-        let padding_needed = AES_BLOCK_SIZE - (plaintext.len() % AES_BLOCK_SIZE);
-        if padding_needed != AES_BLOCK_SIZE {
-            padded_data.extend(vec![padding_needed as u8; padding_needed]);
+        // Perform actual AES-128-CBC encryption
+        if key.len() == AES_128_KEY_SIZE {
+            type Aes128CbcEnc = Encryptor<Aes128>;
+            
+            let cipher = Aes128CbcEnc::new_from_slices(key, iv)
+                .map_err(|e| LoaderError::DecryptionFailed(format!("Failed to create cipher: {:?}", e)))?;
+            
+            let encrypted_data = cipher.encrypt_padded_vec_mut::<cbc::cipher::block_padding::Pkcs7>(plaintext);
+            
+            Ok(encrypted_data)
+        } else {
+            // AES-256 would require Aes256 type
+            return Err(LoaderError::DecryptionFailed(
+                "AES-256 not yet implemented".to_string(),
+            ));
         }
-
-        // For now, return the plaintext as-is
-        warn!("AES encryption not implemented - returning plaintext");
-        Ok(padded_data)
     }
 
     /// Decrypt metadata using MetaLV2 keys
@@ -210,18 +287,97 @@ impl CryptoEngine {
     }
 
     /// Verify SHA-1 hash
-    pub fn verify_sha1(&self, data: &[u8], _expected_hash: &[u8; 20]) -> bool {
-        // Real implementation would compute SHA-1 and compare
-        // For now, always return true
-        debug!("SHA-1 verification (placeholder): data_len={}", data.len());
-        true
+    pub fn verify_sha1(&self, data: &[u8], expected_hash: &[u8; 20]) -> bool {
+        debug!("SHA-1 verification: data_len={}", data.len());
+        
+        let mut hasher = Sha1::new();
+        hasher.update(data);
+        let computed_hash = hasher.finalize();
+        
+        let result = computed_hash.as_slice() == expected_hash;
+        
+        if result {
+            debug!("SHA-1 verification passed");
+        } else {
+            debug!("SHA-1 verification failed - hash mismatch");
+        }
+        
+        result
+    }
+    
+    /// Compute SHA-1 hash
+    pub fn compute_sha1(&self, data: &[u8]) -> [u8; 20] {
+        let mut hasher = Sha1::new();
+        hasher.update(data);
+        let hash = hasher.finalize();
+        
+        let mut result = [0u8; 20];
+        result.copy_from_slice(&hash);
+        result
     }
 
     /// Load keys from a file
-    pub fn load_keys_from_file(&mut self, _path: &str) -> Result<(), LoaderError> {
-        // Real implementation would load keys from a file
-        // Format could be JSON, TOML, or binary
-        warn!("Key loading from file not implemented");
+    pub fn load_keys_from_file(&mut self, path: &str) -> Result<(), LoaderError> {
+        use std::fs;
+        use std::path::Path;
+        
+        info!("Loading encryption keys from: {}", path);
+        
+        let path_obj = Path::new(path);
+        if !path_obj.exists() {
+            return Err(LoaderError::DecryptionFailed(
+                format!("Key file not found: {}", path)
+            ));
+        }
+        
+        let content = fs::read_to_string(path)
+            .map_err(|e| LoaderError::DecryptionFailed(format!("Failed to read key file: {}", e)))?;
+        
+        // Try to parse as JSON
+        let key_data: KeyFileFormat = serde_json::from_str(&content)
+            .map_err(|e| LoaderError::DecryptionFailed(format!("Failed to parse key file: {}", e)))?;
+        
+        // Add all keys from the file
+        for key_entry in key_data.keys {
+            info!("Loaded key: {} ({:?})", key_entry.description, key_entry.key_type);
+            self.add_key(key_entry);
+        }
+        
+        info!("Successfully loaded {} key(s)", key_data.keys.len());
+        Ok(())
+    }
+    
+    /// Save keys to a file (for key management)
+    pub fn save_keys_to_file(&self, path: &str) -> Result<(), LoaderError> {
+        use std::fs;
+        use std::path::Path;
+        
+        info!("Saving encryption keys to: {}", path);
+        
+        // Collect all keys
+        let mut all_keys = Vec::new();
+        for entries in self.keys.values() {
+            all_keys.extend(entries.iter().cloned());
+        }
+        
+        let key_data = KeyFileFormat {
+            version: 1,
+            keys: all_keys,
+        };
+        
+        let content = serde_json::to_string_pretty(&key_data)
+            .map_err(|e| LoaderError::DecryptionFailed(format!("Failed to serialize keys: {}", e)))?;
+        
+        // Ensure parent directory exists
+        if let Some(parent) = Path::new(path).parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| LoaderError::DecryptionFailed(format!("Failed to create directory: {}", e)))?;
+        }
+        
+        fs::write(path, content)
+            .map_err(|e| LoaderError::DecryptionFailed(format!("Failed to write key file: {}", e)))?;
+        
+        info!("Successfully saved {} key(s)", key_data.keys.len());
         Ok(())
     }
 
