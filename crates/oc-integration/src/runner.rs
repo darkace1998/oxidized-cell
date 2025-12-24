@@ -275,6 +275,9 @@ impl EmulatorRunner {
         // R5 = envp (null for now)
         thread.set_gpr(5, 0);
 
+        // R13 = Thread-Local Storage (TLS) pointer
+        thread.set_gpr(13, game.tls_addr as u64);
+
         // Set program counter to entry point
         thread.set_pc(game.entry_point);
 
@@ -297,11 +300,12 @@ impl EmulatorRunner {
         self.ppu_threads.write().push(thread_arc);
 
         tracing::debug!(
-            "Created main PPU thread {}: entry=0x{:x}, stack=0x{:08x}, toc=0x{:x}",
+            "Created main PPU thread {}: entry=0x{:x}, stack=0x{:08x}, toc=0x{:x}, tls=0x{:08x}",
             thread_id,
             game.entry_point,
             game.stack_addr,
-            game.toc
+            game.toc,
+            game.tls_addr
         );
 
         Ok(thread_id)
