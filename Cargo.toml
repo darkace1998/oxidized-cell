@@ -100,6 +100,7 @@ oc-lv2 = { path = "crates/oc-lv2" }
 oc-audio = { path = "crates/oc-audio" }
 oc-input = { path = "crates/oc-input" }
 oc-vfs = { path = "crates/oc-vfs" }
+oc-hle = { path = "crates/oc-hle" }
 oc-loader = { path = "crates/oc-loader" }
 oc-ffi = { path = "crates/oc-ffi" }
 oc-ui = { path = "crates/oc-ui" }
