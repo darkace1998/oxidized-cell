@@ -2,6 +2,7 @@
 
 use crate::objects::{KernelObject, ObjectId, ObjectManager, ObjectType};
 use oc_core::error::KernelError;
+use oc_vfs::VirtualFileSystem;
 use parking_lot::Mutex;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -89,18 +90,20 @@ pub struct FileDescriptor {
 }
 
 struct FileState {
+    virtual_path: String,
     path: PathBuf,
     file: Option<std::fs::File>,
     flags: u32,
 }
 
 impl FileDescriptor {
-    pub fn new(id: ObjectId, path: PathBuf, flags: u32) -> Result<Self, KernelError> {
+    pub fn new(id: ObjectId, virtual_path: String, path: PathBuf, flags: u32) -> Result<Self, KernelError> {
         let file = Self::open_file(&path, flags)?;
 
         Ok(Self {
             id,
             inner: Mutex::new(FileState {
+                virtual_path,
                 path,
                 file: Some(file),
                 flags,
@@ -188,6 +191,10 @@ impl FileDescriptor {
 
     pub fn path(&self) -> PathBuf {
         self.inner.lock().path.clone()
+    }
+
+    pub fn virtual_path(&self) -> String {
+        self.inner.lock().virtual_path.clone()
     }
 }
 
@@ -281,13 +288,30 @@ pub mod syscalls {
     /// sys_fs_open
     pub fn sys_fs_open(
         manager: &ObjectManager,
-        path: &str,
+        vfs: &VirtualFileSystem,
+        virtual_path: &str,
         flags: u32,
         _mode: u32,
     ) -> Result<ObjectId, KernelError> {
-        let path = PathBuf::from(path);
+        // Resolve virtual path to host path using VFS
+        let host_path = vfs
+            .resolve(virtual_path)
+            .unwrap_or_else(|| PathBuf::from(virtual_path));
+        
+        tracing::debug!(
+            "sys_fs_open: virtual_path={}, host_path={:?}, flags={:#x}",
+            virtual_path,
+            host_path,
+            flags
+        );
+
         let id = manager.next_id();
-        let fd = Arc::new(FileDescriptor::new(id, path, flags)?);
+        let fd = Arc::new(FileDescriptor::new(
+            id,
+            virtual_path.to_string(),
+            host_path,
+            flags,
+        )?);
         manager.register(fd);
         Ok(id)
     }
@@ -338,9 +362,19 @@ pub mod syscalls {
     }
 
     /// sys_fs_stat
-    pub fn sys_fs_stat(path: &str) -> Result<CellFsStat, KernelError> {
-        let path = PathBuf::from(path);
-        let metadata = std::fs::metadata(path).map_err(|_| KernelError::PermissionDenied)?;
+    pub fn sys_fs_stat(vfs: &VirtualFileSystem, virtual_path: &str) -> Result<CellFsStat, KernelError> {
+        // Resolve virtual path to host path using VFS
+        let host_path = vfs
+            .resolve(virtual_path)
+            .unwrap_or_else(|| PathBuf::from(virtual_path));
+        
+        tracing::debug!(
+            "sys_fs_stat: virtual_path={}, host_path={:?}",
+            virtual_path,
+            host_path
+        );
+
+        let metadata = std::fs::metadata(host_path).map_err(|_| KernelError::PermissionDenied)?;
 
         let mut stat = CellFsStat::default();
         stat.size = metadata.len();
@@ -354,10 +388,24 @@ pub mod syscalls {
     }
 
     /// sys_fs_opendir
-    pub fn sys_fs_opendir(manager: &ObjectManager, path: &str) -> Result<ObjectId, KernelError> {
-        let path = PathBuf::from(path);
+    pub fn sys_fs_opendir(
+        manager: &ObjectManager,
+        vfs: &VirtualFileSystem,
+        virtual_path: &str,
+    ) -> Result<ObjectId, KernelError> {
+        // Resolve virtual path to host path using VFS
+        let host_path = vfs
+            .resolve(virtual_path)
+            .unwrap_or_else(|| PathBuf::from(virtual_path));
+        
+        tracing::debug!(
+            "sys_fs_opendir: virtual_path={}, host_path={:?}",
+            virtual_path,
+            host_path
+        );
+
         let id = manager.next_id();
-        let dir = Arc::new(DirectoryDescriptor::new(id, path)?);
+        let dir = Arc::new(DirectoryDescriptor::new(id, host_path)?);
         manager.register(dir);
         Ok(id)
     }
@@ -384,14 +432,16 @@ mod tests {
 
     #[test]
     fn test_fs_stat() {
+        let vfs = VirtualFileSystem::new();
         // Test stat on current directory
-        let stat = syscalls::sys_fs_stat(".").unwrap();
+        let stat = syscalls::sys_fs_stat(&vfs, ".").unwrap();
         assert!(stat.mode & 0o040000 != 0); // Directory bit
     }
 
     #[test]
     fn test_fs_open_close() {
         let manager = ObjectManager::new();
+        let vfs = VirtualFileSystem::new();
 
         // Create a temp file for testing
         let temp_path = std::env::temp_dir().join("test_oc_lv2.txt");
@@ -402,6 +452,7 @@ mod tests {
 
         let fd = syscalls::sys_fs_open(
             &manager,
+            &vfs,
             temp_path.to_str().unwrap(),
             flags::O_RDONLY,
             0,
@@ -420,12 +471,14 @@ mod tests {
     #[test]
     fn test_fs_read_write() {
         let manager = ObjectManager::new();
+        let vfs = VirtualFileSystem::new();
 
         // Create a temp file for testing
         let temp_path = std::env::temp_dir().join("test_oc_lv2_rw.txt");
 
         let fd = syscalls::sys_fs_open(
             &manager,
+            &vfs,
             temp_path.to_str().unwrap(),
             flags::O_RDWR | flags::O_CREAT | flags::O_TRUNC,
             0o644,
@@ -450,6 +503,52 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_file(temp_path);
+    }
+
+    #[test]
+    fn test_vfs_integration() {
+        let manager = ObjectManager::new();
+        let vfs = VirtualFileSystem::new();
+
+        // Create a temp directory for testing
+        let temp_dir = std::env::temp_dir().join("test_oc_lv2_vfs");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // Mount /dev_hdd0 to temp directory
+        vfs.mount("/dev_hdd0", temp_dir.clone());
+
+        // Create a test file in the temp directory
+        let test_file_path = temp_dir.join("test_file.txt");
+        {
+            let mut file = std::fs::File::create(&test_file_path).unwrap();
+            file.write_all(b"VFS test data").unwrap();
+        }
+
+        // Open the file using virtual path
+        let fd = syscalls::sys_fs_open(
+            &manager,
+            &vfs,
+            "/dev_hdd0/test_file.txt",
+            flags::O_RDONLY,
+            0,
+        )
+        .unwrap();
+
+        // Read the file
+        let mut buffer = vec![0u8; 20];
+        let bytes_read = syscalls::sys_fs_read(&manager, fd, &mut buffer).unwrap();
+        assert_eq!(bytes_read, 13);
+        assert_eq!(&buffer[..bytes_read], b"VFS test data");
+
+        // Close the file
+        syscalls::sys_fs_close(&manager, fd).unwrap();
+
+        // Test stat with virtual path
+        let stat = syscalls::sys_fs_stat(&vfs, "/dev_hdd0/test_file.txt").unwrap();
+        assert_eq!(stat.size, 13);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 }
 

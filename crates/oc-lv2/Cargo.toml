@@ -9,6 +9,7 @@ description = "LV2 kernel (HLE) for oxidized-cell PS3 emulator"
 [dependencies]
 oc-core.workspace = true
 oc-memory.workspace = true
+oc-vfs.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
 

@@ -2665,6 +2665,7 @@ version = "0.1.0"
 dependencies = [
  "oc-core",
  "oc-memory",
+ "oc-vfs",
  "parking_lot",
  "tracing",
 ]
