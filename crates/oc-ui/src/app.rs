@@ -2,6 +2,7 @@
 
 use eframe::egui;
 use oc_core::config::Config;
+use std::path::PathBuf;
 
 use crate::debugger::DebuggerView;
 use crate::game_list::{GameInfo, GameListView};
@@ -105,7 +106,11 @@ impl eframe::App for OxidizedCellApp {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("Open Game...").clicked() {
-                        // TODO: Open file dialog and add to game list
+                        if let Some(path) = Self::open_game_dialog() {
+                            let game_info = Self::create_game_info_from_path(&path);
+                            self.game_list.add_game(game_info);
+                            tracing::info!("Added game: {}", path.display());
+                        }
                         ui.close_menu();
                     }
                     ui.separator();
@@ -360,6 +365,65 @@ impl OxidizedCellApp {
         // For now just return true, in a real implementation
         // this would show a modal dialog
         true
+    }
+
+    /// Open a file dialog to select a game file
+    fn open_game_dialog() -> Option<PathBuf> {
+        let file = rfd::FileDialog::new()
+            .set_title("Open PS3 Game")
+            .add_filter("PS3 Executables", &["elf", "self", "bin", "iso"])
+            .add_filter("All Files", &["*"])
+            .pick_file();
+        
+        file
+    }
+
+    /// Create GameInfo from a file path
+    fn create_game_info_from_path(path: &PathBuf) -> GameInfo {
+        let file_name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Unknown Game")
+            .to_string();
+        
+        // Try to extract game ID from path (e.g., BLUS12345)
+        let id = path
+            .to_str()
+            .and_then(|s| {
+                // Look for PS3 game ID pattern
+                let patterns = ["BLUS", "BLES", "BLJM", "BCUS", "BCES", "BCJS"];
+                for pattern in patterns {
+                    if let Some(pos) = s.find(pattern) {
+                        let id_part = &s[pos..];
+                        if id_part.len() >= 9 {
+                            return Some(id_part[..9].to_string());
+                        }
+                    }
+                }
+                None
+            })
+            .unwrap_or_else(|| "UNKNOWN".to_string());
+
+        // Determine region from ID prefix
+        let region = match id.get(0..2) {
+            Some("BL") => "US",  // BLUS
+            Some("BE") => "EU",  // BLES
+            Some("BJ") | Some("BC") => match id.get(2..3) {
+                Some("U") => "US",
+                Some("E") => "EU", 
+                Some("J") => "JP",
+                _ => "Unknown",
+            },
+            _ => "Unknown",
+        }.to_string();
+
+        GameInfo {
+            title: file_name,
+            path: path.clone(),
+            id,
+            version: "1.00".to_string(),
+            region,
+        }
     }
 }
 

@@ -1,3 +1,23 @@
+[package]
+name = "oxidized-cell"
+version = "0.1.0"
+edition = "2021"
+description = "PS3 Emulator written in Rust"
+license = "GPL-3.0"
+repository = "https://github.com/darkace1998/-oxidized-cell-"
+
+[[bin]]
+name = "oxidized-cell"
+path = "src/main.rs"
+
+[dependencies]
+oc-ui = { path = "crates/oc-ui" }
+oc-core = { path = "crates/oc-core" }
+oc-integration = { path = "crates/oc-integration" }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+eframe = "0.29"
+
 [workspace]
 resolver = "2"
 members = [
