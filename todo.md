@@ -19,7 +19,7 @@ The primary focus is on implementing HLE modules and completing the game loading
 | SPU Interpreter | ✅ Complete | 95% | Low |
 | RSX/Vulkan Backend | 🔨 Mostly Complete | 75% | Medium |
 | JIT Compilation | ✅ Complete | 95% | Low |
-| LV2 Kernel | 🔨 Mostly Complete | 75% | High |
+| LV2 Kernel | ✅ Complete | 90% | High |
 | Audio System | ✅ Complete | 85% | Medium |
 | Input System | ✅ Complete | 80% | Medium |
 | VFS | ✅ Complete | 80% | Medium |
@@ -125,18 +125,18 @@ The HLE modules are essential for game execution. Most functions currently retur
 
 ---
 
-### 3. LV2 Kernel Enhancements (High - 75% Complete)
+### 3. LV2 Kernel Enhancements (High - 90% Complete)
 
 #### Thread Management
-- [ ] Use dedicated thread ID counter instead of thread count
-- [ ] Ensure unique IDs even after thread removal
+- [x] Use dedicated thread ID counter instead of thread count
+- [x] Ensure unique IDs even after thread removal
 
 #### SPU Management
-- [ ] Generate decrementer events in channel handling
+- [x] Generate decrementer events in channel handling
 
 #### Synchronization Primitives
-- [ ] Complete event queue implementation
-- [ ] Finalize condition variable edge cases
+- [x] Complete event queue implementation
+- [x] Finalize condition variable edge cases
 - [ ] Complete reader-writer lock implementation
 
 ---
