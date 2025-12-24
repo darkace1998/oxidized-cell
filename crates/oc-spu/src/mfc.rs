@@ -97,12 +97,23 @@ pub struct MfcDmaCommand {
     pub completion_cycle: u64,
 }
 
+/// DMA list element for list transfers
+#[derive(Debug, Clone)]
+pub struct MfcListElement {
+    /// Local storage address
+    pub lsa: u32,
+    /// Transfer size
+    pub size: u16,
+}
+
 /// MFC state
 pub struct Mfc {
     /// Command queue
     queue: VecDeque<MfcDmaCommand>,
     /// Tag group completion status (bit per tag)
     tag_status: u32,
+    /// Tag group query mask (for any/all queries)
+    tag_query_mask: u32,
     /// Atomic reservation address
     reservation_addr: u64,
     /// Atomic reservation data (128 bytes)
@@ -113,6 +124,10 @@ pub struct Mfc {
     cycle_counter: u64,
     /// Pending tags (tags with in-flight operations)
     pending_tags: u32,
+    /// Stall and notify tag
+    stall_notify_tag: u8,
+    /// List stall flag
+    list_stall: bool,
 }
 
 impl Mfc {
@@ -121,11 +136,14 @@ impl Mfc {
         Self {
             queue: VecDeque::with_capacity(16),
             tag_status: 0xFFFFFFFF, // All tags initially complete
+            tag_query_mask: 0,
             reservation_addr: 0,
             reservation_data: [0; 128],
             reservation_valid: false,
             cycle_counter: 0,
             pending_tags: 0,
+            stall_notify_tag: 0,
+            list_stall: false,
         }
     }
 
@@ -261,6 +279,201 @@ impl Mfc {
     pub fn get_pending_tags(&self) -> u32 {
         self.pending_tags
     }
+
+    /// Execute DMA GET operation (main memory -> local storage)
+    /// Returns true if operation completed immediately
+    pub fn execute_get(&mut self, lsa: u32, ea: u64, size: u32, tag: u8, 
+                       local_storage: &mut [u8], main_memory: &[u8]) -> bool {
+        if size == 0 || size > 16384 {
+            return false; // Invalid size
+        }
+
+        let cmd = MfcDmaCommand {
+            lsa,
+            ea,
+            size,
+            tag,
+            cmd: MfcCommand::Get,
+            issue_cycle: 0,
+            completion_cycle: 0,
+        };
+
+        // For small transfers, execute immediately
+        if size <= 128 {
+            self.perform_get_transfer(lsa, ea, size, local_storage, main_memory);
+            self.complete_tag(tag);
+            true
+        } else {
+            self.queue_command(cmd);
+            false
+        }
+    }
+
+    /// Execute DMA PUT operation (local storage -> main memory)
+    /// Returns true if operation completed immediately
+    pub fn execute_put(&mut self, lsa: u32, ea: u64, size: u32, tag: u8,
+                       local_storage: &[u8], main_memory: &mut [u8]) -> bool {
+        if size == 0 || size > 16384 {
+            return false; // Invalid size
+        }
+
+        let cmd = MfcDmaCommand {
+            lsa,
+            ea,
+            size,
+            tag,
+            cmd: MfcCommand::Put,
+            issue_cycle: 0,
+            completion_cycle: 0,
+        };
+
+        // For small transfers, execute immediately
+        if size <= 128 {
+            self.perform_put_transfer(lsa, ea, size, local_storage, main_memory);
+            self.complete_tag(tag);
+            true
+        } else {
+            self.queue_command(cmd);
+            false
+        }
+    }
+
+    /// Perform actual GET transfer (copy from main to local)
+    fn perform_get_transfer(&self, lsa: u32, ea: u64, size: u32,
+                           local_storage: &mut [u8], main_memory: &[u8]) {
+        let lsa_start = (lsa as usize).min(local_storage.len());
+        let lsa_end = (lsa_start + size as usize).min(local_storage.len());
+        let ea_start = (ea as usize).min(main_memory.len());
+        let ea_end = (ea_start + size as usize).min(main_memory.len());
+
+        let copy_size = (lsa_end - lsa_start).min(ea_end - ea_start);
+        if copy_size > 0 {
+            local_storage[lsa_start..lsa_start + copy_size]
+                .copy_from_slice(&main_memory[ea_start..ea_start + copy_size]);
+        }
+    }
+
+    /// Perform actual PUT transfer (copy from local to main)
+    fn perform_put_transfer(&self, lsa: u32, ea: u64, size: u32,
+                           local_storage: &[u8], main_memory: &mut [u8]) {
+        let lsa_start = (lsa as usize).min(local_storage.len());
+        let lsa_end = (lsa_start + size as usize).min(local_storage.len());
+        let ea_start = (ea as usize).min(main_memory.len());
+        let ea_end = (ea_start + size as usize).min(main_memory.len());
+
+        let copy_size = (lsa_end - lsa_start).min(ea_end - ea_start);
+        if copy_size > 0 {
+            main_memory[ea_start..ea_start + copy_size]
+                .copy_from_slice(&local_storage[lsa_start..lsa_start + copy_size]);
+        }
+    }
+
+    /// Execute DMA list operation
+    /// List is in local storage, each element is 8 bytes: 4 bytes LSA, 2 bytes size, 2 bytes reserved
+    pub fn execute_list_get(&mut self, list_addr: u32, ea: u64, list_size: u32, tag: u8,
+                            local_storage: &mut [u8], main_memory: &[u8]) -> bool {
+        let elements = self.parse_list(list_addr, list_size, local_storage);
+        
+        for elem in elements {
+            if elem.size > 0 {
+                let elem_ea = ea.wrapping_add(elem.lsa as u64);
+                self.perform_get_transfer(elem.lsa, elem_ea, elem.size as u32, 
+                                        local_storage, main_memory);
+            }
+        }
+        
+        self.complete_tag(tag);
+        true
+    }
+
+    /// Execute DMA list PUT operation
+    pub fn execute_list_put(&mut self, list_addr: u32, ea: u64, list_size: u32, tag: u8,
+                            local_storage: &[u8], main_memory: &mut [u8]) -> bool {
+        let elements = self.parse_list(list_addr, list_size, local_storage);
+        
+        for elem in elements {
+            if elem.size > 0 {
+                let elem_ea = ea.wrapping_add(elem.lsa as u64);
+                self.perform_put_transfer(elem.lsa, elem_ea, elem.size as u32,
+                                        local_storage, main_memory);
+            }
+        }
+        
+        self.complete_tag(tag);
+        true
+    }
+
+    /// Parse DMA list from local storage
+    fn parse_list(&self, list_addr: u32, list_size: u32, local_storage: &[u8]) -> Vec<MfcListElement> {
+        let mut elements = Vec::new();
+        let list_start = list_addr as usize;
+        let num_elements = (list_size / 8).min(2048) as usize; // Max 2048 elements
+
+        for i in 0..num_elements {
+            let offset = list_start + i * 8;
+            if offset + 8 > local_storage.len() {
+                break;
+            }
+
+            let lsa = u32::from_be_bytes([
+                local_storage[offset],
+                local_storage[offset + 1],
+                local_storage[offset + 2],
+                local_storage[offset + 3],
+            ]);
+            let size = u16::from_be_bytes([
+                local_storage[offset + 4],
+                local_storage[offset + 5],
+            ]);
+
+            if size > 0 {
+                elements.push(MfcListElement { lsa, size });
+            }
+        }
+
+        elements
+    }
+
+    /// Set tag query mask for MFC_RD_TAG_STAT operations
+    pub fn set_tag_mask(&mut self, mask: u32) {
+        self.tag_query_mask = mask;
+    }
+
+    /// Get tag query mask
+    pub fn get_tag_mask(&self) -> u32 {
+        self.tag_query_mask
+    }
+
+    /// Check if any specified tags are complete
+    pub fn check_tag_status_any(&self) -> bool {
+        (self.tag_status & self.tag_query_mask) != 0
+    }
+
+    /// Check if all specified tags are complete
+    pub fn check_tag_status_all(&self) -> bool {
+        (self.tag_status & self.tag_query_mask) == self.tag_query_mask
+    }
+
+    /// Get list stall status
+    pub fn get_list_stall(&self) -> bool {
+        self.list_stall
+    }
+
+    /// Set list stall
+    pub fn set_list_stall(&mut self, tag: u8) {
+        self.list_stall = true;
+        self.stall_notify_tag = tag;
+    }
+
+    /// Clear list stall
+    pub fn clear_list_stall(&mut self) {
+        self.list_stall = false;
+    }
+
+    /// Get stall notify tag
+    pub fn get_stall_notify_tag(&self) -> u8 {
+        self.stall_notify_tag
+    }
 }
 
 impl Default for Mfc {
@@ -368,5 +581,71 @@ mod tests {
         let small_latency = MfcCommand::Get.transfer_latency(128);
         let large_latency = MfcCommand::Get.transfer_latency(1024);
         assert!(large_latency > small_latency);
+    }
+
+    #[test]
+    fn test_dma_get_operation() {
+        let mut mfc = Mfc::new();
+        let mut local_storage = vec![0u8; 1024];
+        let main_memory = vec![0x42u8; 1024];
+
+        // Perform a small GET (should be immediate)
+        let result = mfc.execute_get(0, 0, 128, 0, &mut local_storage, &main_memory);
+        assert!(result); // Should complete immediately
+        assert_eq!(local_storage[0], 0x42); // Data transferred
+    }
+
+    #[test]
+    fn test_dma_put_operation() {
+        let mut mfc = Mfc::new();
+        let mut local_storage = vec![0x42u8; 1024];
+        let mut main_memory = vec![0u8; 1024];
+
+        // Perform a small PUT (should be immediate)
+        let result = mfc.execute_put(0, 0, 128, 0, &local_storage, &mut main_memory);
+        assert!(result); // Should complete immediately
+        assert_eq!(main_memory[0], 0x42); // Data transferred
+    }
+
+    #[test]
+    fn test_dma_list_get() {
+        let mut mfc = Mfc::new();
+        let mut local_storage = vec![0u8; 4096];
+        let main_memory = vec![0x42u8; 4096];
+
+        // Create a DMA list with 2 elements
+        // Element 1: LSA=0x100, size=0x80
+        local_storage[0..4].copy_from_slice(&0x100u32.to_be_bytes());
+        local_storage[4..6].copy_from_slice(&0x80u16.to_be_bytes());
+        // Element 2: LSA=0x200, size=0x80
+        local_storage[8..12].copy_from_slice(&0x200u32.to_be_bytes());
+        local_storage[12..14].copy_from_slice(&0x80u16.to_be_bytes());
+
+        // Execute list GET
+        let result = mfc.execute_list_get(0, 0, 16, 0, &mut local_storage, &main_memory);
+        assert!(result);
+        assert_eq!(local_storage[0x100], 0x42); // First element transferred
+        assert_eq!(local_storage[0x200], 0x42); // Second element transferred
+    }
+
+    #[test]
+    fn test_tag_management() {
+        let mut mfc = Mfc::new();
+        
+        // Set tag mask
+        mfc.set_tag_mask(0b11); // Tags 0 and 1
+        
+        // All tags initially complete
+        assert!(mfc.check_tag_status_all());
+        
+        // Mark tag 0 as pending
+        mfc.tag_status &= !1;
+        mfc.pending_tags |= 1;
+        
+        // Should not be all complete now
+        assert!(!mfc.check_tag_status_all());
+        
+        // But at least one is complete (tag 1)
+        assert!(mfc.check_tag_status_any());
     }
 }

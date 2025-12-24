@@ -156,12 +156,26 @@ pub struct SpuChannels {
     channels: [SpuChannel; NUM_CHANNELS],
     /// Event mask
     event_mask: u32,
+    /// Event status
+    event_status: u32,
     /// Tag mask for MFC
     tag_mask: u32,
     /// Decrementer value
     decrementer: u32,
+    /// Decrementer start value
+    decrementer_start: u32,
+    /// Signal notification 1
+    signal1: u32,
+    /// Signal notification 2
+    signal2: u32,
+    /// Signal notification 1 pending
+    signal1_pending: bool,
+    /// Signal notification 2 pending
+    signal2_pending: bool,
     /// Current cycle counter
     cycle_counter: u64,
+    /// Last decrementer update cycle
+    last_decr_update: u64,
 }
 
 impl SpuChannels {
@@ -180,9 +194,16 @@ impl SpuChannels {
         Self {
             channels,
             event_mask: 0,
+            event_status: 0,
             tag_mask: 0,
             decrementer: 0,
+            decrementer_start: 0,
+            signal1: 0,
+            signal2: 0,
+            signal1_pending: false,
+            signal2_pending: false,
             cycle_counter: 0,
+            last_decr_update: 0,
         }
     }
 
@@ -203,8 +224,13 @@ impl SpuChannels {
     /// Read from channel
     pub fn read(&mut self, channel: u32) -> Option<u32> {
         match channel {
-            SPU_RD_EVENT_STAT => Some(0), // Simplified
+            SPU_RD_EVENT_STAT => {
+                self.update_event_status();
+                Some(self.event_status)
+            }
             SPU_RD_DECR => Some(self.decrementer),
+            SPU_RD_SIGNAL1 => self.read_signal1(),
+            SPU_RD_SIGNAL2 => self.read_signal2(),
             MFC_RD_TAG_STAT => Some(0xFFFFFFFF), // All tags complete (simplified)
             _ if (channel as usize) < NUM_CHANNELS => {
                 let ch = &mut self.channels[channel as usize];
@@ -221,8 +247,13 @@ impl SpuChannels {
     /// Try to read from channel (non-blocking, returns error if would block)
     pub fn try_read(&mut self, channel: u32) -> Result<u32, ()> {
         match channel {
-            SPU_RD_EVENT_STAT => Ok(0),
+            SPU_RD_EVENT_STAT => {
+                self.update_event_status();
+                Ok(self.event_status)
+            }
             SPU_RD_DECR => Ok(self.decrementer),
+            SPU_RD_SIGNAL1 => self.read_signal1().ok_or(()),
+            SPU_RD_SIGNAL2 => self.read_signal2().ok_or(()),
             MFC_RD_TAG_STAT => Ok(0xFFFFFFFF),
             _ if (channel as usize) < NUM_CHANNELS => {
                 self.channels[channel as usize].pop().ok_or(())
@@ -235,15 +266,15 @@ impl SpuChannels {
     pub fn write(&mut self, channel: u32, value: u32) -> bool {
         match channel {
             SPU_WR_EVENT_MASK => {
-                self.event_mask = value;
+                self.set_event_mask(value);
                 true
             }
             SPU_WR_EVENT_ACK => {
-                // Acknowledge events (simplified)
+                self.acknowledge_events(value);
                 true
             }
             SPU_WR_DECR => {
-                self.decrementer = value;
+                self.set_decrementer(value);
                 true
             }
             MFC_WR_TAG_MASK => {
@@ -256,6 +287,7 @@ impl SpuChannels {
                 if !success {
                     ch.start_wait(self.cycle_counter);
                 }
+                self.update_event_status();
                 success
             }
             _ => false,
@@ -303,6 +335,132 @@ impl SpuChannels {
     pub fn get_tag_mask(&self) -> u32 {
         self.tag_mask
     }
+
+    /// Send signal notification 1 (from PPU to SPU)
+    pub fn send_signal1(&mut self, value: u32) {
+        self.signal1 = value;
+        self.signal1_pending = true;
+        self.update_event_status();
+    }
+
+    /// Send signal notification 2 (from PPU to SPU)
+    pub fn send_signal2(&mut self, value: u32) {
+        self.signal2 = value;
+        self.signal2_pending = true;
+        self.update_event_status();
+    }
+
+    /// Read signal notification 1
+    pub fn read_signal1(&mut self) -> Option<u32> {
+        if self.signal1_pending {
+            self.signal1_pending = false;
+            self.update_event_status();
+            Some(self.signal1)
+        } else {
+            None
+        }
+    }
+
+    /// Read signal notification 2
+    pub fn read_signal2(&mut self) -> Option<u32> {
+        if self.signal2_pending {
+            self.signal2_pending = false;
+            self.update_event_status();
+            Some(self.signal2)
+        } else {
+            None
+        }
+    }
+
+    /// Check if signal 1 is pending
+    pub fn has_signal1(&self) -> bool {
+        self.signal1_pending
+    }
+
+    /// Check if signal 2 is pending
+    pub fn has_signal2(&self) -> bool {
+        self.signal2_pending
+    }
+
+    /// Update event status based on pending events
+    fn update_event_status(&mut self) {
+        let mut status = 0u32;
+
+        // Bit 0: SPU_EVENT_TM (tag mask)
+        // Bit 1: SPU_EVENT_MFC (MFC command completed)
+        // Bit 2: SPU_EVENT_SNR1 (signal notification 1)
+        if self.signal1_pending {
+            status |= 0x04;
+        }
+        // Bit 3: SPU_EVENT_SNR2 (signal notification 2)
+        if self.signal2_pending {
+            status |= 0x08;
+        }
+        // Bit 4: SPU_EVENT_MBOX (outbound mailbox available)
+        if !self.channels[SPU_WR_OUT_MBOX as usize].is_full() {
+            status |= 0x10;
+        }
+        // Bit 5: SPU_EVENT_IBOX (inbound mailbox data available)
+        if !self.channels[SPU_RD_IN_MBOX as usize].is_empty() {
+            status |= 0x20;
+        }
+
+        self.event_status = status;
+    }
+
+    /// Get event status (masked by event mask)
+    pub fn get_event_status(&self) -> u32 {
+        self.event_status & self.event_mask
+    }
+
+    /// Set event mask
+    pub fn set_event_mask(&mut self, mask: u32) {
+        self.event_mask = mask;
+    }
+
+    /// Acknowledge events
+    pub fn acknowledge_events(&mut self, ack_mask: u32) {
+        // Clear acknowledged signal notifications
+        if ack_mask & 0x04 != 0 {
+            self.signal1_pending = false;
+        }
+        if ack_mask & 0x08 != 0 {
+            self.signal2_pending = false;
+        }
+        self.update_event_status();
+    }
+
+    /// Update decrementer (called on each cycle)
+    pub fn update_decrementer(&mut self) {
+        let cycles_elapsed = self.cycle_counter - self.last_decr_update;
+        self.last_decr_update = self.cycle_counter;
+
+        if self.decrementer > 0 {
+            if cycles_elapsed >= self.decrementer as u64 {
+                self.decrementer = 0;
+                // TODO: Generate decrementer event
+            } else {
+                self.decrementer -= cycles_elapsed as u32;
+            }
+        }
+    }
+
+    /// Set decrementer value
+    pub fn set_decrementer(&mut self, value: u32) {
+        self.decrementer = value;
+        self.decrementer_start = value;
+        self.last_decr_update = self.cycle_counter;
+    }
+
+    /// Get decrementer value
+    pub fn get_decrementer(&self) -> u32 {
+        self.decrementer
+    }
+
+    /// Check if any channel events are pending
+    pub fn has_pending_events(&self) -> bool {
+        self.get_event_status() != 0
+    }
 }
 
 impl Default for SpuChannels {
@@ -340,5 +498,90 @@ mod tests {
         // Test outbound mailbox
         assert!(channels.write(SPU_WR_OUT_MBOX, 0xDEADBEEF));
         assert_eq!(channels.get_outbound_mailbox(), Some(0xDEADBEEF));
+    }
+
+    #[test]
+    fn test_signal_notifications() {
+        let mut channels = SpuChannels::new();
+
+        // Initially no signals
+        assert!(!channels.has_signal1());
+        assert!(!channels.has_signal2());
+
+        // Send signal 1
+        channels.send_signal1(0xABCD);
+        assert!(channels.has_signal1());
+        assert_eq!(channels.read(SPU_RD_SIGNAL1), Some(0xABCD));
+        assert!(!channels.has_signal1()); // Consumed
+
+        // Send signal 2
+        channels.send_signal2(0xEF01);
+        assert!(channels.has_signal2());
+        assert_eq!(channels.read(SPU_RD_SIGNAL2), Some(0xEF01));
+        assert!(!channels.has_signal2()); // Consumed
+    }
+
+    #[test]
+    fn test_event_mask_and_status() {
+        let mut channels = SpuChannels::new();
+
+        // Set event mask to watch signal notifications
+        channels.set_event_mask(0x0C); // Bits 2-3: SNR1 and SNR2
+
+        // Send signal 1
+        channels.send_signal1(0x1234);
+        
+        // Event status should reflect signal 1 pending
+        let status = channels.get_event_status();
+        assert!(status & 0x04 != 0); // SNR1 bit set
+
+        // Acknowledge the event
+        channels.acknowledge_events(0x04);
+        
+        // Event should be cleared
+        let status = channels.get_event_status();
+        assert!(status & 0x04 == 0);
+    }
+
+    #[test]
+    fn test_decrementer() {
+        let mut channels = SpuChannels::new();
+
+        // Set decrementer to 100 cycles
+        channels.set_decrementer(100);
+        assert_eq!(channels.get_decrementer(), 100);
+
+        // Advance 50 cycles
+        channels.tick(50);
+        channels.update_decrementer();
+        assert_eq!(channels.get_decrementer(), 50);
+
+        // Advance another 60 cycles (should reach 0)
+        channels.tick(60);
+        channels.update_decrementer();
+        assert_eq!(channels.get_decrementer(), 0);
+    }
+
+    #[test]
+    fn test_event_mask_filtering() {
+        let mut channels = SpuChannels::new();
+
+        // Set mask to only watch mailbox events (bit 4-5)
+        channels.set_event_mask(0x30);
+
+        // Send a signal (bit 2) - should not appear in filtered status
+        channels.send_signal1(0x1234);
+        
+        let status = channels.get_event_status();
+        // Signal bit is masked out
+        assert!(status & 0x04 == 0);
+
+        // Put data in inbound mailbox (bit 5)
+        channels.put_inbound_mailbox(0x5678);
+        channels.update_event_status(); // Update after mailbox operation
+        
+        let status = channels.get_event_status();
+        // Mailbox bit should be visible
+        assert!(status & 0x20 != 0);
     }
 }
