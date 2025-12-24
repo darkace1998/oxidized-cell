@@ -5,6 +5,7 @@ use oc_memory::MemoryManager;
 use crate::state::RsxState;
 use crate::fifo::CommandFifo;
 use crate::methods::MethodHandler;
+use crate::backend::{GraphicsBackend, null::NullBackend};
 
 /// RSX thread state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,17 +25,30 @@ pub struct RsxThread {
     pub fifo: CommandFifo,
     /// Memory manager reference
     memory: Arc<MemoryManager>,
+    /// Graphics backend
+    backend: Box<dyn GraphicsBackend>,
 }
 
 impl RsxThread {
-    /// Create a new RSX thread
+    /// Create a new RSX thread with default (null) backend
     pub fn new(memory: Arc<MemoryManager>) -> Self {
+        Self::with_backend(memory, Box::new(NullBackend::new()))
+    }
+
+    /// Create a new RSX thread with specified backend
+    pub fn with_backend(memory: Arc<MemoryManager>, backend: Box<dyn GraphicsBackend>) -> Self {
         Self {
             state: RsxThreadState::Stopped,
             gfx_state: RsxState::new(),
             fifo: CommandFifo::new(),
             memory,
+            backend,
         }
+    }
+
+    /// Initialize the graphics backend
+    pub fn init_backend(&mut self) -> Result<(), String> {
+        self.backend.init()
     }
 
     /// Process commands from FIFO
@@ -42,6 +56,16 @@ impl RsxThread {
         while let Some(cmd) = self.fifo.pop() {
             self.execute_command(cmd.method, cmd.data);
         }
+    }
+
+    /// Begin a frame
+    pub fn begin_frame(&mut self) {
+        self.backend.begin_frame();
+    }
+
+    /// End a frame
+    pub fn end_frame(&mut self) {
+        self.backend.end_frame();
     }
 
     /// Execute a single RSX command
@@ -70,15 +94,29 @@ impl RsxThread {
     }
 
     /// Clear the surface
-    fn clear_surface(&mut self, _mask: u32) {
-        // Clear color/depth/stencil based on mask
-        tracing::trace!("Clear surface");
+    fn clear_surface(&mut self, mask: u32) {
+        tracing::trace!("Clear surface with mask 0x{:08x}", mask);
+        
+        // Extract clear color from state
+        let color_u32 = self.gfx_state.clear_color;
+        let r = ((color_u32 >> 24) & 0xFF) as f32 / 255.0;
+        let g = ((color_u32 >> 16) & 0xFF) as f32 / 255.0;
+        let b = ((color_u32 >> 8) & 0xFF) as f32 / 255.0;
+        let a = (color_u32 & 0xFF) as f32 / 255.0;
+        
+        // Call backend clear
+        self.backend.clear(
+            [r, g, b, a],
+            self.gfx_state.clear_depth,
+            self.gfx_state.clear_stencil,
+        );
     }
 
     /// Flush accumulated vertices
     fn flush_vertices(&mut self) {
         // Draw accumulated vertices
         tracing::trace!("Flush vertices");
+        // TODO: Implement vertex buffer submission to backend
     }
 
     /// Get memory manager reference
@@ -96,5 +134,13 @@ mod tests {
         let memory = MemoryManager::new().unwrap();
         let thread = RsxThread::new(memory);
         assert_eq!(thread.state, RsxThreadState::Stopped);
+    }
+
+    #[test]
+    fn test_rsx_thread_init_backend() {
+        let memory = MemoryManager::new().unwrap();
+        let mut thread = RsxThread::new(memory);
+        // Null backend should always init successfully
+        assert!(thread.init_backend().is_ok());
     }
 }

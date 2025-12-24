@@ -106,6 +106,15 @@ impl EmulatorRunner {
         })
     }
 
+    /// Initialize the RSX graphics backend
+    pub fn init_graphics(&mut self) -> Result<()> {
+        let mut rsx = self.rsx_thread.write();
+        rsx.init_backend()
+            .map_err(|e| EmulatorError::Rsx(
+                oc_core::error::RsxError::Vulkan(e)
+            ))
+    }
+
     /// Get the current state
     pub fn state(&self) -> RunnerState {
         self.state
@@ -211,11 +220,23 @@ impl EmulatorRunner {
 
         let frame_start = Instant::now();
 
+        // Begin graphics frame
+        {
+            let mut rsx = self.rsx_thread.write();
+            rsx.begin_frame();
+        }
+
         // Run threads for this frame
         self.run_threads()?;
 
         // Process RSX commands
         self.process_rsx()?;
+
+        // End graphics frame and present
+        {
+            let mut rsx = self.rsx_thread.write();
+            rsx.end_frame();
+        }
 
         // Update frame timing
         self.frame_count += 1;
