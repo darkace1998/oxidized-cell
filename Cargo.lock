@@ -2638,6 +2638,7 @@ name = "oc-integration"
 version = "0.1.0"
 dependencies = [
  "oc-core",
+ "oc-loader",
  "oc-lv2",
  "oc-memory",
  "oc-ppu",

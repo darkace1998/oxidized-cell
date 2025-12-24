@@ -8,12 +8,14 @@
 //! - LV2 kernel syscalls
 //! - Thread scheduler
 
+use crate::loader::{GameLoader, LoadedGame};
 use oc_core::{Config, EmulatorError, Result, Scheduler, ThreadId, ThreadState};
 use oc_memory::MemoryManager;
 use oc_ppu::{PpuInterpreter, PpuThread};
 use oc_spu::{SpuInterpreter, SpuThread};
 use oc_rsx::RsxThread;
 use oc_lv2::SyscallHandler;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use parking_lot::RwLock;
@@ -209,6 +211,99 @@ impl EmulatorRunner {
         self.spu_threads.write().push(thread);
 
         tracing::debug!("Created SPU thread {} with priority {}", thread_id, priority);
+        Ok(thread_id)
+    }
+
+    /// Load a game from a file path
+    ///
+    /// This will:
+    /// 1. Parse the ELF/SELF file
+    /// 2. Load segments into emulator memory
+    /// 3. Create the main PPU thread with the correct entry point
+    /// 4. Set up initial register state (stack, TOC, etc.)
+    ///
+    /// After calling this method, call `start()` to begin execution.
+    pub fn load_game<P: AsRef<Path>>(&self, path: P) -> Result<LoadedGame> {
+        tracing::info!("Loading game: {}", path.as_ref().display());
+
+        // Create game loader
+        let loader = GameLoader::new(self.memory.clone());
+
+        // Load the game
+        let game = loader.load(path)?;
+
+        // Create the main PPU thread
+        let thread_id = self.create_ppu_thread_with_entry(&game)?;
+
+        tracing::info!(
+            "Game loaded successfully, main thread {} created at entry 0x{:x}",
+            thread_id,
+            game.entry_point
+        );
+
+        Ok(game)
+    }
+
+    /// Create a PPU thread with a specific entry point and initial state
+    ///
+    /// Note: Thread ID is currently derived from the thread count, which could lead to
+    /// ID conflicts if threads are removed. A proper implementation would use a
+    /// monotonically increasing counter.
+    fn create_ppu_thread_with_entry(&self, game: &LoadedGame) -> Result<u32> {
+        // TODO: Use a dedicated thread ID counter instead of thread count
+        // to ensure unique IDs even after thread removal
+        let thread_id = {
+            let threads = self.ppu_threads.read();
+            threads.len() as u32
+        };
+
+        let mut thread = PpuThread::new(thread_id, self.memory.clone());
+
+        // Set up initial register state according to PS3 ABI
+        // R1 = Stack pointer (pointing to top of stack, grows downward)
+        thread.set_gpr(1, game.stack_addr as u64);
+        
+        // R2 = TOC (Table of Contents) pointer for PPC64 ELF ABI
+        thread.set_gpr(2, game.toc);
+        
+        // R3 = argc (0 for now, could be set to actual argument count)
+        thread.set_gpr(3, 0);
+        
+        // R4 = argv (null for now)
+        thread.set_gpr(4, 0);
+        
+        // R5 = envp (null for now)
+        thread.set_gpr(5, 0);
+
+        // Set program counter to entry point
+        thread.set_pc(game.entry_point);
+
+        // Set stack info
+        thread.stack_addr = game.stack_addr;
+        thread.stack_size = game.stack_size;
+
+        // Set thread name
+        thread.name = "main".to_string();
+
+        // Start the thread in running state
+        thread.start();
+
+        let thread_arc = Arc::new(RwLock::new(thread));
+        
+        // Add to scheduler with high priority (main thread)
+        self.scheduler.write().add_thread(ThreadId::Ppu(thread_id), 1000);
+
+        // Add to thread list
+        self.ppu_threads.write().push(thread_arc);
+
+        tracing::debug!(
+            "Created main PPU thread {}: entry=0x{:x}, stack=0x{:08x}, toc=0x{:x}",
+            thread_id,
+            game.entry_point,
+            game.stack_addr,
+            game.toc
+        );
+
         Ok(thread_id)
     }
 
