@@ -15,5 +15,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 dirs.workspace = true
 bitflags.workspace = true
+parking_lot.workspace = true
 
 [dev-dependencies]

@@ -2598,6 +2598,7 @@ dependencies = [
  "anyhow",
  "bitflags 2.10.0",
  "dirs",
+ "parking_lot",
  "serde",
  "thiserror 1.0.69",
  "toml",
@@ -2630,6 +2631,22 @@ dependencies = [
  "bitflags 2.10.0",
  "oc-core",
  "tracing",
+]
+
+[[package]]
+name = "oc-integration"
+version = "0.1.0"
+dependencies = [
+ "oc-core",
+ "oc-lv2",
+ "oc-memory",
+ "oc-ppu",
+ "oc-rsx",
+ "oc-spu",
+ "parking_lot",
+ "thiserror 1.0.69",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

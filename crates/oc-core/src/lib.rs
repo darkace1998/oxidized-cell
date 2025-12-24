@@ -7,7 +7,9 @@ pub mod config;
 pub mod emulator;
 pub mod error;
 pub mod logging;
+pub mod scheduler;
 
 pub use config::Config;
 pub use emulator::Emulator;
 pub use error::{EmulatorError, Result};
+pub use scheduler::{Scheduler, ThreadId, ThreadState, ThreadStats};

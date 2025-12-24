@@ -1,0 +1,23 @@
+[package]
+name = "oc-integration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core integration layer for oxidized-cell PS3 emulator"
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+
+# Internal dependencies
+oc-core.workspace = true
+oc-memory.workspace = true
+oc-ppu.workspace = true
+oc-spu.workspace = true
+oc-rsx.workspace = true
+oc-lv2.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

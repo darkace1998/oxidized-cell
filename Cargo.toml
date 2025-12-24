@@ -14,6 +14,7 @@ members = [
     "crates/oc-loader",
     "crates/oc-ffi",
     "crates/oc-ui",
+    "crates/oc-integration",
 ]
 
 [workspace.package]
@@ -82,6 +83,7 @@ oc-hle = { path = "crates/oc-hle" }
 oc-loader = { path = "crates/oc-loader" }
 oc-ffi = { path = "crates/oc-ffi" }
 oc-ui = { path = "crates/oc-ui" }
+oc-integration = { path = "crates/oc-integration" }
 
 [profile.release]
 lto = "thin"
