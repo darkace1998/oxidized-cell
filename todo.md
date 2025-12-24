@@ -24,7 +24,7 @@ The primary focus is on implementing HLE modules and completing the game loading
 | Input System | ✅ Complete | 80% | Medium |
 | VFS | ✅ Complete | 80% | Medium |
 | ELF/Game Loader | ✅ Complete | 90% | Medium |
-| HLE Modules | 🔨 Mostly Complete | 56% | **Critical** |
+| HLE Modules | 🔨 Mostly Complete | 58% | **Critical** |
 | User Interface | 🚧 In Progress | 15% | Medium |
 | Game Loading Pipeline | ❌ Not Started | 0% | **Critical** |
 
@@ -95,7 +95,7 @@ The HLE modules are essential for game execution. Most functions currently retur
 - [x] **cellGifDec**: GIF decoder initialization and decoding (GifDecManager with main/sub handle tracking)
 
 #### Media Decoders
-- [ ] **cellDmux**: Demuxer initialization, stream handling, AU retrieval
+- [x] **cellDmux**: Demuxer with DmuxManager, ES management, AU queue handling
 - [ ] **cellVdec**: Video decoder initialization, AU decoding, picture retrieval
 - [ ] **cellAdec**: Audio decoder initialization, AU decoding, PCM retrieval
 - [ ] **cellVpost**: Video post-processor initialization and processing
