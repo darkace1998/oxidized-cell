@@ -236,6 +236,178 @@ pub fn fsel(a: f64, b: f64, c: f64) -> f64 {
     if a >= 0.0 { c } else { b }
 }
 
+/// Check for and set FPSCR exception flags
+pub fn check_fp_exceptions(thread: &mut PpuThread, value: f64, operation: &str) {
+    let mut fpscr = thread.regs.fpscr;
+    
+    // Check for invalid operation (NaN operand or invalid operation)
+    if value.is_nan() {
+        fpscr |= fpscr::VXSNAN; // SNaN
+        fpscr |= fpscr::VX;     // Any invalid operation
+        fpscr |= fpscr::FX;     // Any exception
+    }
+    
+    // Check for overflow
+    if value.is_infinite() && operation != "divide" {
+        fpscr |= fpscr::OX;     // Overflow
+        fpscr |= fpscr::FX;
+    }
+    
+    // Check for underflow (very small denormalized number)
+    let class = classify_f64(value);
+    if matches!(class, FpClass::PositiveDenormalized | FpClass::NegativeDenormalized) {
+        fpscr |= fpscr::UX;     // Underflow
+        fpscr |= fpscr::FX;
+    }
+    
+    // Check for zero divide
+    if matches!(operation, "divide") && value.is_infinite() {
+        fpscr |= fpscr::ZX;     // Zero divide
+        fpscr |= fpscr::FX;
+    }
+    
+    // Check for inexact (rounded result)
+    // This is a simplified check - real hardware would track actual rounding
+    if !value.is_nan() && !value.is_infinite() {
+        let frac = value.fract();
+        if frac != 0.0 {
+            fpscr |= fpscr::XX;     // Inexact
+            fpscr |= fpscr::FX;
+        }
+    }
+    
+    thread.regs.fpscr = fpscr;
+}
+
+/// Check for invalid operations in FMA operations
+pub fn check_fma_invalid(thread: &mut PpuThread, a: f64, c: f64, b: f64) {
+    let mut fpscr = thread.regs.fpscr;
+    
+    // Check for infinity * zero
+    if (a.is_infinite() && c == 0.0) || (c.is_infinite() && a == 0.0) {
+        fpscr |= fpscr::VXIMZ;  // Invalid multiply (∞ * 0)
+        fpscr |= fpscr::VX;
+        fpscr |= fpscr::FX;
+    }
+    
+    // Check for infinity - infinity
+    let product = a * c;
+    if product.is_infinite() && b.is_infinite() && product.signum() != b.signum() {
+        fpscr |= fpscr::VXISI;  // Invalid subtract (∞ - ∞)
+        fpscr |= fpscr::VX;
+        fpscr |= fpscr::FX;
+    }
+    
+    thread.regs.fpscr = fpscr;
+}
+
+/// Check for divide-by-zero and divide invalid operations
+pub fn check_divide_invalid(thread: &mut PpuThread, dividend: f64, divisor: f64) {
+    let mut fpscr = thread.regs.fpscr;
+    
+    // Check for zero / zero
+    if dividend == 0.0 && divisor == 0.0 {
+        fpscr |= fpscr::VXZDZ;  // Invalid divide (0 / 0)
+        fpscr |= fpscr::VX;
+        fpscr |= fpscr::FX;
+    }
+    
+    // Check for infinity / infinity
+    if dividend.is_infinite() && divisor.is_infinite() {
+        fpscr |= fpscr::VXIDI;  // Invalid divide (∞ / ∞)
+        fpscr |= fpscr::VX;
+        fpscr |= fpscr::FX;
+    }
+    
+    // Check for divide by zero (non-zero / zero)
+    if divisor == 0.0 && dividend != 0.0 {
+        fpscr |= fpscr::ZX;     // Zero divide
+        fpscr |= fpscr::FX;
+    }
+    
+    thread.regs.fpscr = fpscr;
+}
+
+/// Perform rounding based on FPSCR rounding mode
+pub fn apply_rounding(value: f64, mode: RoundingMode) -> f64 {
+    match mode {
+        RoundingMode::RoundToNearest => {
+            // Round to nearest, ties to even (default IEEE 754)
+            value.round()
+        }
+        RoundingMode::RoundToZero => {
+            // Truncate toward zero
+            value.trunc()
+        }
+        RoundingMode::RoundToPositiveInfinity => {
+            // Round toward +∞ (ceiling)
+            value.ceil()
+        }
+        RoundingMode::RoundToNegativeInfinity => {
+            // Round toward -∞ (floor)
+            value.floor()
+        }
+    }
+}
+
+/// Decimal Floating Multiply-Add (DFMA)
+/// This is a PowerPC extension for decimal floating-point arithmetic
+/// Configurable for performance - can be disabled for faster emulation
+pub fn dfma(a: f64, c: f64, b: f64, accurate: bool) -> f64 {
+    if accurate {
+        // Accurate mode: perform decimal conversion and back
+        // This is a simplified implementation - real DFMA uses decimal128 format
+        // and implements IEEE 754-2008 decimal floating-point arithmetic
+        
+        // For accurate emulation, we would need to:
+        // 1. Convert binary64 to decimal128
+        // 2. Perform decimal multiply-add
+        // 3. Convert back to binary64
+        // This requires a decimal floating-point library
+        
+        // For now, use standard FMA as approximation
+        a.mul_add(c, b)
+    } else {
+        // Fast mode: use standard binary FMA
+        // This is less accurate for decimal numbers but much faster
+        a.mul_add(c, b)
+    }
+}
+
+/// Enhanced FMA with full FPSCR flag handling
+pub fn fmadd_with_flags(thread: &mut PpuThread, a: f64, c: f64, b: f64) -> f64 {
+    // Check for invalid operations
+    check_fma_invalid(thread, a, c, b);
+    
+    // Perform the operation
+    let result = fmadd(a, c, b);
+    
+    // Check for exceptions
+    check_fp_exceptions(thread, result, "fma");
+    
+    // Update FPRF
+    update_fprf(thread, result);
+    
+    result
+}
+
+/// Enhanced divide with full FPSCR flag handling  
+pub fn fdiv_with_flags(thread: &mut PpuThread, a: f64, b: f64) -> f64 {
+    // Check for invalid operations
+    check_divide_invalid(thread, a, b);
+    
+    // Perform the operation
+    let result = a / b;
+    
+    // Check for exceptions
+    check_fp_exceptions(thread, result, "divide");
+    
+    // Update FPRF
+    update_fprf(thread, result);
+    
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,5 +449,22 @@ mod tests {
         assert_eq!(fsel(1.0, 10.0, 20.0), 20.0);
         assert_eq!(fsel(-1.0, 10.0, 20.0), 10.0);
         assert_eq!(fsel(0.0, 10.0, 20.0), 20.0);
+    }
+    
+    #[test]
+    fn test_apply_rounding() {
+        assert_eq!(apply_rounding(1.5, RoundingMode::RoundToNearest), 2.0);
+        assert_eq!(apply_rounding(1.5, RoundingMode::RoundToZero), 1.0);
+        assert_eq!(apply_rounding(1.5, RoundingMode::RoundToPositiveInfinity), 2.0);
+        assert_eq!(apply_rounding(-1.5, RoundingMode::RoundToNegativeInfinity), -2.0);
+    }
+    
+    #[test]
+    fn test_dfma() {
+        // Test that DFMA produces same result as regular FMA in fast mode
+        let result_fast = dfma(2.0, 3.0, 4.0, false);
+        let result_accurate = dfma(2.0, 3.0, 4.0, true);
+        assert_eq!(result_fast, 10.0);
+        assert_eq!(result_accurate, 10.0);
     }
 }

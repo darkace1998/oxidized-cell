@@ -435,6 +435,326 @@ pub fn vcfsx(a: [u32; 4], uimm: u8) -> [u32; 4] {
     result
 }
 
+/// Vector Add Byte Modulo
+pub fn vaddubm(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let bytes_a = a[i].to_be_bytes();
+        let bytes_b = b[i].to_be_bytes();
+        let result_bytes = [
+            bytes_a[0].wrapping_add(bytes_b[0]),
+            bytes_a[1].wrapping_add(bytes_b[1]),
+            bytes_a[2].wrapping_add(bytes_b[2]),
+            bytes_a[3].wrapping_add(bytes_b[3]),
+        ];
+        result[i] = u32::from_be_bytes(result_bytes);
+    }
+    result
+}
+
+/// Vector Add Halfword Modulo
+pub fn vadduhm(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let hi_a = (a[i] >> 16) as u16;
+        let lo_a = a[i] as u16;
+        let hi_b = (b[i] >> 16) as u16;
+        let lo_b = b[i] as u16;
+        let hi_res = hi_a.wrapping_add(hi_b);
+        let lo_res = lo_a.wrapping_add(lo_b);
+        result[i] = ((hi_res as u32) << 16) | (lo_res as u32);
+    }
+    result
+}
+
+/// Vector Add Word Modulo
+pub fn vadduwm(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    [
+        a[0].wrapping_add(b[0]),
+        a[1].wrapping_add(b[1]),
+        a[2].wrapping_add(b[2]),
+        a[3].wrapping_add(b[3]),
+    ]
+}
+
+/// Vector Add Byte Saturate Signed
+pub fn vaddsbs(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let bytes_a = a[i].to_be_bytes();
+        let bytes_b = b[i].to_be_bytes();
+        let result_bytes = [
+            (bytes_a[0] as i8).saturating_add(bytes_b[0] as i8) as u8,
+            (bytes_a[1] as i8).saturating_add(bytes_b[1] as i8) as u8,
+            (bytes_a[2] as i8).saturating_add(bytes_b[2] as i8) as u8,
+            (bytes_a[3] as i8).saturating_add(bytes_b[3] as i8) as u8,
+        ];
+        result[i] = u32::from_be_bytes(result_bytes);
+    }
+    result
+}
+
+/// Vector Add Halfword Saturate Signed
+pub fn vaddshs(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let hi_a = (a[i] >> 16) as i16;
+        let lo_a = a[i] as i16;
+        let hi_b = (b[i] >> 16) as i16;
+        let lo_b = b[i] as i16;
+        let hi_res = hi_a.saturating_add(hi_b) as u16;
+        let lo_res = lo_a.saturating_add(lo_b) as u16;
+        result[i] = ((hi_res as u32) << 16) | (lo_res as u32);
+    }
+    result
+}
+
+/// Vector Subtract Byte Modulo
+pub fn vsububm(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let bytes_a = a[i].to_be_bytes();
+        let bytes_b = b[i].to_be_bytes();
+        let result_bytes = [
+            bytes_a[0].wrapping_sub(bytes_b[0]),
+            bytes_a[1].wrapping_sub(bytes_b[1]),
+            bytes_a[2].wrapping_sub(bytes_b[2]),
+            bytes_a[3].wrapping_sub(bytes_b[3]),
+        ];
+        result[i] = u32::from_be_bytes(result_bytes);
+    }
+    result
+}
+
+/// Vector Subtract Halfword Modulo
+pub fn vsubuhm(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let hi_a = (a[i] >> 16) as u16;
+        let lo_a = a[i] as u16;
+        let hi_b = (b[i] >> 16) as u16;
+        let lo_b = b[i] as u16;
+        let hi_res = hi_a.wrapping_sub(hi_b);
+        let lo_res = lo_a.wrapping_sub(lo_b);
+        result[i] = ((hi_res as u32) << 16) | (lo_res as u32);
+    }
+    result
+}
+
+/// Vector Subtract Word Modulo
+pub fn vsubuwm(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    [
+        a[0].wrapping_sub(b[0]),
+        a[1].wrapping_sub(b[1]),
+        a[2].wrapping_sub(b[2]),
+        a[3].wrapping_sub(b[3]),
+    ]
+}
+
+/// Vector Subtract Byte Saturate Signed
+pub fn vsubsbs(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let bytes_a = a[i].to_be_bytes();
+        let bytes_b = b[i].to_be_bytes();
+        let result_bytes = [
+            (bytes_a[0] as i8).saturating_sub(bytes_b[0] as i8) as u8,
+            (bytes_a[1] as i8).saturating_sub(bytes_b[1] as i8) as u8,
+            (bytes_a[2] as i8).saturating_sub(bytes_b[2] as i8) as u8,
+            (bytes_a[3] as i8).saturating_sub(bytes_b[3] as i8) as u8,
+        ];
+        result[i] = u32::from_be_bytes(result_bytes);
+    }
+    result
+}
+
+/// Vector Subtract Halfword Saturate Signed
+pub fn vsubshs(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let hi_a = (a[i] >> 16) as i16;
+        let lo_a = a[i] as i16;
+        let hi_b = (b[i] >> 16) as i16;
+        let lo_b = b[i] as i16;
+        let hi_res = hi_a.saturating_sub(hi_b) as u16;
+        let lo_res = lo_a.saturating_sub(lo_b) as u16;
+        result[i] = ((hi_res as u32) << 16) | (lo_res as u32);
+    }
+    result
+}
+
+/// Vector Pack Signed Word Saturate Signed Halfword
+pub fn vpkswss(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    let pack = |val: i32| -> i16 {
+        if val > i16::MAX as i32 {
+            i16::MAX
+        } else if val < i16::MIN as i32 {
+            i16::MIN
+        } else {
+            val as i16
+        }
+    };
+    
+    // Pack a's elements into first two words
+    result[0] = ((pack(a[0] as i32) as u16 as u32) << 16) | (pack(a[1] as i32) as u16 as u32);
+    result[1] = ((pack(a[2] as i32) as u16 as u32) << 16) | (pack(a[3] as i32) as u16 as u32);
+    
+    // Pack b's elements into last two words
+    result[2] = ((pack(b[0] as i32) as u16 as u32) << 16) | (pack(b[1] as i32) as u16 as u32);
+    result[3] = ((pack(b[2] as i32) as u16 as u32) << 16) | (pack(b[3] as i32) as u16 as u32);
+    
+    result
+}
+
+/// Vector Pack Halfword Saturate Signed Byte
+pub fn vpkshss(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    let pack = |val: i16| -> i8 {
+        if val > i8::MAX as i16 {
+            i8::MAX
+        } else if val < i8::MIN as i16 {
+            i8::MIN
+        } else {
+            val as i8
+        }
+    };
+    
+    // Extract halfwords and pack to bytes
+    for i in 0..2 {
+        let src = if i == 0 { a } else { b };
+        let mut bytes = [0u8; 4];
+        for j in 0..4 {
+            let hi = (src[j] >> 16) as i16;
+            let lo = src[j] as i16;
+            bytes[j / 2 * 2] = pack(hi) as u8;
+            bytes[j / 2 * 2 + 1] = pack(lo) as u8;
+        }
+        result[i * 2] = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        result[i * 2 + 1] = u32::from_be_bytes([0, 0, 0, 0]); // Placeholder
+    }
+    
+    result
+}
+
+/// Vector Unpack High Signed Byte to Signed Halfword
+pub fn vupkhsb(a: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    let bytes = [
+        ((a[0] >> 24) & 0xFF) as i8,
+        ((a[0] >> 16) & 0xFF) as i8,
+        ((a[0] >> 8) & 0xFF) as i8,
+        (a[0] & 0xFF) as i8,
+        ((a[1] >> 24) & 0xFF) as i8,
+        ((a[1] >> 16) & 0xFF) as i8,
+        ((a[1] >> 8) & 0xFF) as i8,
+        (a[1] & 0xFF) as i8,
+    ];
+    
+    for i in 0..4 {
+        let hi = bytes[i * 2] as i16 as u16;
+        let lo = bytes[i * 2 + 1] as i16 as u16;
+        result[i] = ((hi as u32) << 16) | (lo as u32);
+    }
+    
+    result
+}
+
+/// Vector Unpack Low Signed Byte to Signed Halfword
+pub fn vupklsb(a: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    let bytes = [
+        ((a[2] >> 24) & 0xFF) as i8,
+        ((a[2] >> 16) & 0xFF) as i8,
+        ((a[2] >> 8) & 0xFF) as i8,
+        (a[2] & 0xFF) as i8,
+        ((a[3] >> 24) & 0xFF) as i8,
+        ((a[3] >> 16) & 0xFF) as i8,
+        ((a[3] >> 8) & 0xFF) as i8,
+        (a[3] & 0xFF) as i8,
+    ];
+    
+    for i in 0..4 {
+        let hi = bytes[i * 2] as i16 as u16;
+        let lo = bytes[i * 2 + 1] as i16 as u16;
+        result[i] = ((hi as u32) << 16) | (lo as u32);
+    }
+    
+    result
+}
+
+/// Vector Multiply Even Unsigned Word
+pub fn vmuleuw(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    // Multiply even elements (0, 2) and store as 64-bit results
+    // Result is stored as two 32-bit words per multiplication
+    let prod0 = (a[0] as u64) * (b[0] as u64);
+    let prod2 = (a[2] as u64) * (b[2] as u64);
+    
+    [
+        (prod0 >> 32) as u32,
+        prod0 as u32,
+        (prod2 >> 32) as u32,
+        prod2 as u32,
+    ]
+}
+
+/// Vector Multiply Odd Unsigned Word
+pub fn vmulouw(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    // Multiply odd elements (1, 3) and store as 64-bit results
+    let prod1 = (a[1] as u64) * (b[1] as u64);
+    let prod3 = (a[3] as u64) * (b[3] as u64);
+    
+    [
+        (prod1 >> 32) as u32,
+        prod1 as u32,
+        (prod3 >> 32) as u32,
+        prod3 as u32,
+    ]
+}
+
+/// Vector Multiply High Unsigned Word
+pub fn vmulhuw(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    [
+        ((a[0] as u64 * b[0] as u64) >> 32) as u32,
+        ((a[1] as u64 * b[1] as u64) >> 32) as u32,
+        ((a[2] as u64 * b[2] as u64) >> 32) as u32,
+        ((a[3] as u64 * b[3] as u64) >> 32) as u32,
+    ]
+}
+
+/// Vector Sum Across Quarter Unsigned Byte Saturate
+pub fn vsum4ubs(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        // Sum 4 bytes of a[i]
+        let bytes = a[i].to_be_bytes();
+        let sum = (bytes[0] as u32) + (bytes[1] as u32) + (bytes[2] as u32) + (bytes[3] as u32);
+        // Add to b[i] and saturate
+        result[i] = sum.saturating_add(b[i]);
+    }
+    result
+}
+
+/// Vector Maximum Floating Point
+pub fn vmaxfp(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    [
+        if f32::from_bits(a[0]) > f32::from_bits(b[0]) { a[0] } else { b[0] },
+        if f32::from_bits(a[1]) > f32::from_bits(b[1]) { a[1] } else { b[1] },
+        if f32::from_bits(a[2]) > f32::from_bits(b[2]) { a[2] } else { b[2] },
+        if f32::from_bits(a[3]) > f32::from_bits(b[3]) { a[3] } else { b[3] },
+    ]
+}
+
+/// Vector Minimum Floating Point
+pub fn vminfp(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    [
+        if f32::from_bits(a[0]) < f32::from_bits(b[0]) { a[0] } else { b[0] },
+        if f32::from_bits(a[1]) < f32::from_bits(b[1]) { a[1] } else { b[1] },
+        if f32::from_bits(a[2]) < f32::from_bits(b[2]) { a[2] } else { b[2] },
+        if f32::from_bits(a[3]) < f32::from_bits(b[3]) { a[3] } else { b[3] },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,5 +817,36 @@ mod tests {
         let result = vperm(a, b, c);
         // Elements from b come first (indices 16-31), then a (indices 0-15)
         assert!(result[0] != 0); // Just verify permutation happened
+    }
+    
+    #[test]
+    fn test_vaddubm() {
+        let a = [0x01020304, 0x05060708, 0x090A0B0C, 0x0D0E0F10];
+        let b = [0x10203040, 0x50607080, 0x90A0B0C0, 0xD0E0F000];
+        let result = vaddubm(a, b);
+        // Check modulo behavior (wrapping)
+        assert_eq!(result[0] & 0xFF000000, 0x11000000);
+    }
+    
+    #[test]
+    fn test_vaddsbs() {
+        let a = [0x7F000000, 0x80000000, 0x00000000, 0x00000000];
+        let b = [0x01000000, 0xFF000000, 0x00000000, 0x00000000];
+        let result = vaddsbs(a, b);
+        // First byte should saturate to 0x7F
+        assert_eq!(result[0] & 0xFF000000, 0x7F000000);
+        // Second byte should saturate to 0x80 (min)
+        assert_eq!(result[1] & 0xFF000000, 0x7F000000);
+    }
+    
+    #[test]
+    fn test_vmaxfp() {
+        let a = [1.0f32.to_bits(), 2.0f32.to_bits(), 3.0f32.to_bits(), 4.0f32.to_bits()];
+        let b = [2.0f32.to_bits(), 1.0f32.to_bits(), 4.0f32.to_bits(), 3.0f32.to_bits()];
+        let result = vmaxfp(a, b);
+        assert_eq!(f32::from_bits(result[0]), 2.0);
+        assert_eq!(f32::from_bits(result[1]), 2.0);
+        assert_eq!(f32::from_bits(result[2]), 4.0);
+        assert_eq!(f32::from_bits(result[3]), 4.0);
     }
 }
