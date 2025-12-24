@@ -187,13 +187,29 @@ impl SaveDataManager {
 
     /// Create PARAM.SFO file
     fn create_param_sfo(&self, path: &PathBuf, game_id: &str, title: &str) -> Result<(), String> {
-        // Create a minimal PARAM.SFO
-        // In a real implementation, this would use the ParamSfo struct
-        // For now, we just create a placeholder file
-        std::fs::write(path, b"PARAM.SFO placeholder")
+        // TODO: Implement proper PARAM.SFO format generation
+        // PARAM.SFO format specification:
+        // - Header: Magic (0x00505346), Version, Key table offset, Data table offset
+        // - Index table: entries for each parameter (key offset, data type, data length, etc.)
+        // - Key table: null-terminated strings for parameter names
+        // - Data table: actual parameter values
+        // 
+        // Required parameters for save data:
+        // - CATEGORY: "SD" (save data)
+        // - TITLE: Game title
+        // - TITLE_ID: Game ID
+        // - SAVEDATA_DIRECTORY: Directory name
+        // - DETAIL: Save description (optional)
+        // 
+        // For now, we create a minimal placeholder file that marks the directory
+        // as save data. Real games would expect a properly formatted PARAM.SFO.
+        
+        let placeholder = format!("PARAM.SFO placeholder\ngame_id={}\ntitle={}\n", game_id, title);
+        std::fs::write(path, placeholder)
             .map_err(|e| format!("Failed to create PARAM.SFO: {}", e))?;
 
-        tracing::debug!("Created PARAM.SFO for {} ({})", title, game_id);
+        tracing::debug!("Created PARAM.SFO placeholder for {} ({})", title, game_id);
+        tracing::warn!("PARAM.SFO is a placeholder - implement proper format for production use");
 
         Ok(())
     }

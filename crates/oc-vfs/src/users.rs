@@ -33,10 +33,11 @@ impl UserProfile {
     /// Load profile from directory
     pub fn load(profile_path: PathBuf) -> Result<Self, String> {
         // Extract user ID from path (e.g., /dev_hdd0/home/00000001)
+        // User directories are zero-padded 8-digit numbers
         let user_id = profile_path
             .file_name()
             .and_then(|s| s.to_str())
-            .and_then(|s| u32::from_str_radix(s, 10).ok())
+            .and_then(|s| s.parse::<u32>().ok())  // parse() handles leading zeros correctly
             .ok_or("Invalid user ID in path")?;
 
         // Load username from settings file

@@ -441,7 +441,9 @@ pub mod syscalls {
             host_path
         );
 
-        std::fs::create_dir_all(host_path).map_err(|_| KernelError::PermissionDenied)
+        // Use create_dir (not create_dir_all) to match POSIX mkdir semantics
+        // Parent directories must already exist
+        std::fs::create_dir(host_path).map_err(|_| KernelError::PermissionDenied)
     }
 
     /// sys_fs_rmdir
@@ -637,13 +639,15 @@ mod tests {
         // Mount /dev_hdd0 to temp directory
         vfs.mount("/dev_hdd0", temp_dir.clone());
 
-        // Test mkdir
-        syscalls::sys_fs_mkdir(&vfs, "/dev_hdd0/test_new_dir", 0o755).unwrap();
-        assert!(temp_dir.join("test_new_dir").exists());
+        // Test mkdir - parent directory must exist
+        // Create parent first
+        std::fs::create_dir_all(temp_dir.join("parent")).unwrap();
+        syscalls::sys_fs_mkdir(&vfs, "/dev_hdd0/parent/test_new_dir", 0o755).unwrap();
+        assert!(temp_dir.join("parent/test_new_dir").exists());
 
         // Test rmdir
-        syscalls::sys_fs_rmdir(&vfs, "/dev_hdd0/test_new_dir").unwrap();
-        assert!(!temp_dir.join("test_new_dir").exists());
+        syscalls::sys_fs_rmdir(&vfs, "/dev_hdd0/parent/test_new_dir").unwrap();
+        assert!(!temp_dir.join("parent/test_new_dir").exists());
 
         // Cleanup
         let _ = std::fs::remove_dir_all(temp_dir);
