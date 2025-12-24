@@ -1,0 +1,291 @@
+# 📋 oxidized-cell Development Roadmap
+
+This document tracks the development progress and future work for the oxidized-cell PS3 emulator.
+
+---
+
+## 🎯 Current Focus
+
+The primary focus is on implementing HLE modules and completing the game loading pipeline to enable basic game execution.
+
+---
+
+## 📊 Component Status Overview
+
+| Component | Status | Completion | Priority |
+|-----------|--------|------------|----------|
+| Memory Management | ✅ Complete | 100% | - |
+| PPU Interpreter | ✅ Complete | 95% | Low |
+| SPU Interpreter | ✅ Complete | 95% | Low |
+| RSX/Vulkan Backend | 🔨 Mostly Complete | 75% | Medium |
+| JIT Compilation | ✅ Complete | 95% | Low |
+| LV2 Kernel | 🔨 Mostly Complete | 75% | High |
+| Audio System | ✅ Complete | 85% | Medium |
+| Input System | ✅ Complete | 80% | Medium |
+| VFS | ✅ Complete | 80% | Medium |
+| ELF/Game Loader | ✅ Complete | 90% | Medium |
+| HLE Modules | 🚧 In Progress | 10% | **Critical** |
+| User Interface | 🚧 In Progress | 15% | Medium |
+| Game Loading Pipeline | ❌ Not Started | 0% | **Critical** |
+
+---
+
+## 🚀 High Priority Tasks
+
+### 1. HLE Modules (Critical - 10% Complete)
+
+The HLE modules are essential for game execution. Most functions currently return stub values.
+
+#### cellGcmSys (Graphics Command Management)
+- [ ] Initialize RSX command buffer in `cell_gcm_init()`
+- [ ] Set up graphics memory allocation
+- [ ] Configure display settings
+- [ ] Implement flip mode configuration in RSX
+- [ ] Queue flip commands to RSX
+- [ ] Configure display buffer in RSX
+- [ ] Validate buffer parameters
+- [ ] Write configuration to memory in `cell_gcm_get_configuration()`
+- [ ] Validate RSX-accessible memory addresses
+- [ ] Calculate and write offsets for `cell_gcm_address_to_offset()`
+
+#### cellSysutil (System Utilities)
+- [ ] Implement global callback manager
+- [ ] Store callbacks properly in `cell_sysutil_register_callback()`
+- [ ] Remove callbacks from global manager
+- [ ] Process pending system events in `cell_sysutil_check_callback()`
+- [ ] Call registered callbacks when needed
+- [ ] Return appropriate system parameters (language, button assignment, etc.)
+- [ ] Handle system parameter strings (nickname, username, etc.)
+
+#### cellSpurs (SPU Runtime System)
+- [ ] Initialize SPURS instance properly
+- [ ] Create SPU thread group
+- [ ] Set up task queue
+- [ ] Finalize SPURS instance
+- [ ] Destroy SPU thread group on cleanup
+- [ ] Attach/detach LV2 event queues
+- [ ] Set workload priorities
+- [ ] Get SPU thread IDs
+
+#### cellPad (Controller Input)
+- [ ] Initialize with global pad manager
+- [ ] Connect to oc-input subsystem
+- [ ] Get actual pad data from oc-input
+- [ ] Return proper controller info
+- [ ] Implement capability info for DUALSHOCK 3
+
+#### cellFs (File System)
+- [ ] Bridge to oc-vfs subsystem
+- [ ] Read paths from memory
+- [ ] Open/close files through VFS
+- [ ] Read/write file operations
+- [ ] Seek operations
+- [ ] Get file status (fstat/stat)
+- [ ] Directory operations (opendir, readdir, closedir)
+- [ ] Store and manage file handle mappings
+
+#### cellAudio (Audio Output)
+- [ ] Bridge to oc-audio subsystem
+- [ ] Implement audio port management
+- [ ] Handle multi-channel audio output
+
+#### Image Decoders
+- [ ] **cellPngDec**: Create decoder instance, parse headers, decode images
+- [ ] **cellJpgDec**: JPEG decoder initialization and decoding
+- [ ] **cellGifDec**: GIF decoder initialization and decoding
+
+#### Media Decoders
+- [ ] **cellDmux**: Demuxer initialization, stream handling, AU retrieval
+- [ ] **cellVdec**: Video decoder initialization, AU decoding, picture retrieval
+- [ ] **cellAdec**: Audio decoder initialization, AU decoding, PCM retrieval
+- [ ] **cellVpost**: Video post-processor initialization and processing
+
+#### Network Modules
+- [ ] **cellNetCtl**: Network subsystem initialization, state detection
+- [ ] **cellHttp**: HTTP client, transaction handling, request/response
+- [ ] **cellSsl**: SSL initialization, certificate handling
+
+#### Other Modules
+- [ ] **cellFont**: Font library, glyph rendering
+- [ ] **cellGame**: Game boot type detection, parameter retrieval
+- [ ] **cellSaveData**: Save data loading/saving through VFS
+- [ ] **libSre**: Regex pattern compilation and matching
+
+---
+
+### 2. Game Loading Pipeline (Critical - 0% Complete)
+
+- [ ] Complete game discovery and scanning
+- [ ] Implement PARAM.SFO parsing for game metadata
+- [ ] Connect loader to HLE modules
+- [ ] Initialize all required system modules before game start
+- [ ] Set up proper memory layout for games
+- [ ] Handle PRX module dependencies
+- [ ] Implement module start/stop lifecycle
+
+---
+
+### 3. LV2 Kernel Enhancements (High - 75% Complete)
+
+#### Thread Management
+- [ ] Use dedicated thread ID counter instead of thread count
+- [ ] Ensure unique IDs even after thread removal
+
+#### SPU Management
+- [ ] Generate decrementer events in channel handling
+
+#### Synchronization Primitives
+- [ ] Complete event queue implementation
+- [ ] Finalize condition variable edge cases
+- [ ] Complete reader-writer lock implementation
+
+---
+
+## 🔧 Medium Priority Tasks
+
+### RSX/Vulkan Backend (75% Complete)
+
+- [ ] Create actual swapchain images and views
+- [ ] Create actual depth buffer
+- [ ] Record draw commands into command buffer
+- [ ] Record indexed draw commands
+- [ ] Configure vertex input state properly
+- [ ] Bind texture descriptor sets
+- [ ] Implement vertex buffer submission to backend
+
+### Shader Compilation
+
+- [ ] Implement RSX vertex program instruction decoding
+- [ ] Implement RSX fragment program instruction decoding
+- [ ] Translate individual RSX instructions to SPIR-V
+
+### VFS Enhancements (80% Complete)
+
+- [ ] Implement proper PARAM.SFO format generation
+- [ ] Implement actual PARAM.SFO parsing using ParamSfo struct
+- [ ] Parse PARAM.SFO for title and game ID in disc handling
+- [ ] Parse title ID and content ID from PKG metadata section
+- [ ] Implement PKG extraction logic
+
+### User Interface (15% Complete)
+
+- [ ] Connect UI to actual emulator runner
+- [ ] Display real RSX output instead of placeholder
+- [ ] Implement proper game launching
+- [ ] Add log viewer
+- [ ] Add memory viewer
+- [ ] Add shader debugger
+- [ ] Implement settings persistence
+- [ ] Add controller configuration UI
+
+### Audio System (85% Complete)
+
+- [ ] Finalize audio port mixing
+- [ ] Add audio resampling for different sample rates
+- [ ] Implement audio latency adjustment
+
+### Input System (80% Complete)
+
+- [ ] Complete keyboard mapping configuration
+- [ ] Add mouse input support
+- [ ] Implement vibration feedback
+
+---
+
+## 📝 Low Priority Tasks
+
+### PPU Interpreter (95% Complete)
+
+- [ ] Track actual rounding during float operations instead of checking fractional part
+- [ ] Add remaining edge case handling for VMX instructions
+
+### SPU Interpreter (95% Complete)
+
+- [ ] Generate decrementer events in channel operations
+- [ ] Complete MFC DMA edge cases
+
+### JIT Compilation (95% Complete)
+
+- [ ] Add full LLVM IR generation (currently placeholder in some paths)
+- [ ] Consider adding more optimization passes
+
+### Debugging Tools
+
+- [ ] Enhance PPU debugger with watchpoints
+- [ ] Add memory breakpoints
+- [ ] Implement call stack visualization
+- [ ] Add RSX command buffer inspection
+
+---
+
+## 🧪 Testing Tasks
+
+- [ ] Create integration tests for game loading
+- [ ] Add HLE module unit tests with actual memory interaction
+- [ ] Test with PS3 homebrew applications
+- [ ] Create regression test suite
+- [ ] Add performance benchmarks for JIT vs interpreter
+
+---
+
+## 📚 Documentation Tasks
+
+- [ ] Document HLE module implementation requirements
+- [ ] Add architecture diagrams
+- [ ] Create contribution guidelines for each subsystem
+- [ ] Document RSX command format
+- [ ] Add syscall reference documentation
+
+---
+
+## 🔮 Future Enhancements
+
+### Performance
+- [ ] Implement block linking in JIT
+- [ ] Add profiling for JIT hot paths
+- [ ] Add SPU ASMJIT backend as alternative
+- [ ] Optimize memory access patterns
+- [ ] Add GPU accelerated texture decoding
+
+### Compatibility
+- [ ] Support encrypted SELF files
+- [ ] Add disc image mounting (ISO, JB folder)
+- [ ] Support patch/update installation
+- [ ] Implement trophy system
+
+### User Experience
+- [ ] Add save state support
+- [ ] Implement screenshot/video recording
+- [ ] Add network play support
+- [ ] Create game compatibility database
+
+---
+
+## 📁 File Reference
+
+### Key Implementation Files
+
+| Component | Primary Files |
+|-----------|---------------|
+| HLE Modules | `crates/oc-hle/src/*.rs` |
+| LV2 Kernel | `crates/oc-lv2/src/*.rs` |
+| Game Loader | `crates/oc-integration/src/loader.rs` |
+| Emulator Runner | `crates/oc-integration/src/runner.rs` |
+| RSX Backend | `crates/oc-rsx/src/backend/vulkan.rs` |
+| PPU JIT | `cpp/src/ppu_jit.cpp` |
+| SPU JIT | `cpp/src/spu_jit.cpp` |
+| UI | `crates/oc-ui/src/app.rs` |
+
+---
+
+## 📌 Notes
+
+- All HLE module functions currently return stub values (CELL_OK)
+- Memory addresses passed to HLE functions need proper read/write implementation
+- The game loading pipeline needs to connect the loader to the emulator runner
+- RSX backend has infrastructure but needs actual draw command recording
+- VFS needs full connection to HLE file system functions
+
+---
+
+*Last updated: December 2024*
