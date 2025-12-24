@@ -437,6 +437,46 @@ pub struct SystemModule {
     pub state: ModuleState,
     /// Module ID
     pub id: u32,
+    /// Module dependencies (names of other modules this module requires)
+    pub dependencies: Vec<String>,
+    /// Modules that depend on this module (reverse dependencies)
+    pub dependents: Vec<String>,
+    /// Start order priority (lower = starts first)
+    pub start_priority: u32,
+    /// Stop order priority (lower = stops first)
+    pub stop_priority: u32,
+}
+
+/// Module dependency information for PRX modules
+#[derive(Debug, Clone)]
+pub struct ModuleDependency {
+    /// Module name
+    pub name: String,
+    /// Required version (0 = any version)
+    pub version: u32,
+    /// Whether this dependency is optional
+    pub optional: bool,
+}
+
+/// Module lifecycle event
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleLifecycleEvent {
+    /// Module is being loaded
+    Loading,
+    /// Module has been loaded
+    Loaded,
+    /// Module is being started
+    Starting,
+    /// Module has been started
+    Started,
+    /// Module is being stopped
+    Stopping,
+    /// Module has been stopped
+    Stopped,
+    /// Module is being unloaded
+    Unloading,
+    /// Module has been unloaded
+    Unloaded,
 }
 
 /// Game loading pipeline that coordinates all aspects of game loading
@@ -451,18 +491,89 @@ pub struct GamePipeline {
     scanner: GameScanner,
     /// Next module ID
     next_module_id: u32,
+    /// Module dependency graph (module name -> list of dependencies)
+    module_dependencies: HashMap<String, Vec<ModuleDependency>>,
+    /// Next start priority counter
+    next_start_priority: u32,
 }
 
 impl GamePipeline {
     /// Create a new game pipeline
     pub fn new(memory: Arc<MemoryManager>) -> Self {
-        Self {
+        let mut pipeline = Self {
             module_registry: ModuleRegistry::new(),
             system_modules: HashMap::new(),
             memory,
             scanner: GameScanner::new(),
             next_module_id: 1,
+            module_dependencies: HashMap::new(),
+            next_start_priority: 1,
+        };
+        
+        // Initialize known module dependencies
+        pipeline.init_module_dependencies();
+        
+        pipeline
+    }
+    
+    /// Initialize the known module dependency graph
+    fn init_module_dependencies(&mut self) {
+        // Define known module dependencies for PS3 system modules
+        // Format: module_name -> list of dependencies
+        
+        // cellGcmSys depends on cellSysutil
+        self.module_dependencies.insert("cellGcmSys".to_string(), vec![
+            ModuleDependency { name: "cellSysutil".to_string(), version: 0, optional: false },
+        ]);
+        
+        // cellSpurs depends on cellSysutil
+        self.module_dependencies.insert("cellSpurs".to_string(), vec![
+            ModuleDependency { name: "cellSysutil".to_string(), version: 0, optional: false },
+        ]);
+        
+        // cellGame depends on cellSysutil and cellFs
+        self.module_dependencies.insert("cellGame".to_string(), vec![
+            ModuleDependency { name: "cellSysutil".to_string(), version: 0, optional: false },
+            ModuleDependency { name: "cellFs".to_string(), version: 0, optional: false },
+        ]);
+        
+        // cellSaveData depends on cellFs
+        self.module_dependencies.insert("cellSaveData".to_string(), vec![
+            ModuleDependency { name: "cellFs".to_string(), version: 0, optional: false },
+        ]);
+        
+        // cellAudio has no required dependencies but optional cellSpurs
+        self.module_dependencies.insert("cellAudio".to_string(), vec![
+            ModuleDependency { name: "cellSpurs".to_string(), version: 0, optional: true },
+        ]);
+        
+        // cellPad depends on cellSysutil
+        self.module_dependencies.insert("cellPad".to_string(), vec![
+            ModuleDependency { name: "cellSysutil".to_string(), version: 0, optional: false },
+        ]);
+        
+        // Image decoders depend on cellFs
+        for decoder in &["cellPngDec", "cellJpgDec", "cellGifDec"] {
+            self.module_dependencies.insert(decoder.to_string(), vec![
+                ModuleDependency { name: "cellFs".to_string(), version: 0, optional: false },
+            ]);
         }
+        
+        // Media modules depend on cellSpurs (optional)
+        for media in &["cellDmux", "cellVdec", "cellAdec", "cellVpost"] {
+            self.module_dependencies.insert(media.to_string(), vec![
+                ModuleDependency { name: "cellSpurs".to_string(), version: 0, optional: true },
+            ]);
+        }
+        
+        // Network modules depend on cellSysutil
+        for net in &["cellNetCtl", "cellHttp", "cellSsl"] {
+            self.module_dependencies.insert(net.to_string(), vec![
+                ModuleDependency { name: "cellSysutil".to_string(), version: 0, optional: false },
+            ]);
+        }
+        
+        debug!("Initialized {} module dependency entries", self.module_dependencies.len());
     }
 
     /// Add a directory to scan for games
@@ -526,54 +637,207 @@ impl GamePipeline {
             )));
         }
 
+        // Load dependencies first
+        let dependencies = self.load_module_dependencies(name)?;
+
         // Assign module ID and create entry
         let module_id = self.next_module_id;
         self.next_module_id += 1;
+        
+        let start_priority = self.next_start_priority;
+        self.next_start_priority += 1;
 
         let module = SystemModule {
             name: name.to_string(),
             state: ModuleState::Loaded,
             id: module_id,
+            dependencies: dependencies.clone(),
+            dependents: Vec::new(),
+            start_priority,
+            stop_priority: u32::MAX - start_priority, // Reverse order for stopping
         };
 
         self.system_modules.insert(name.to_string(), module);
-        info!("Loaded system module: {} (ID: {})", name, module_id);
+        
+        // Update dependents for each dependency
+        for dep_name in &dependencies {
+            if let Some(dep_module) = self.system_modules.get_mut(dep_name) {
+                if !dep_module.dependents.contains(&name.to_string()) {
+                    dep_module.dependents.push(name.to_string());
+                }
+            }
+        }
+        
+        info!("Loaded system module: {} (ID: {}, deps: {:?})", name, module_id, dependencies);
 
         Ok(module_id)
     }
+    
+    /// Load dependencies for a module (returns list of loaded dependency names)
+    fn load_module_dependencies(&mut self, name: &str) -> Result<Vec<String>> {
+        let mut loaded_deps = Vec::new();
+        
+        // Get the dependencies for this module (if any)
+        let deps = self.module_dependencies.get(name).cloned().unwrap_or_default();
+        
+        for dep in deps {
+            // Skip if already loaded
+            if self.system_modules.contains_key(&dep.name) {
+                loaded_deps.push(dep.name.clone());
+                continue;
+            }
+            
+            // Try to load the dependency
+            match self.load_module(&dep.name) {
+                Ok(_) => {
+                    loaded_deps.push(dep.name.clone());
+                    debug!("Loaded dependency {} for module {}", dep.name, name);
+                }
+                Err(e) => {
+                    if dep.optional {
+                        debug!("Optional dependency {} for module {} not available: {}", dep.name, name, e);
+                    } else {
+                        return Err(EmulatorError::Loader(LoaderError::MissingModule(
+                            format!("Failed to load required dependency {} for {}: {}", dep.name, name, e)
+                        )));
+                    }
+                }
+            }
+        }
+        
+        Ok(loaded_deps)
+    }
+    
+    /// Get dependencies for a module
+    pub fn get_module_dependencies(&self, name: &str) -> Vec<String> {
+        self.module_dependencies
+            .get(name)
+            .map(|deps| deps.iter().map(|d| d.name.clone()).collect())
+            .unwrap_or_default()
+    }
+    
+    /// Get dependents for a module (modules that depend on this one)
+    pub fn get_module_dependents(&self, name: &str) -> Vec<String> {
+        self.system_modules
+            .get(name)
+            .map(|m| m.dependents.clone())
+            .unwrap_or_default()
+    }
+    
+    /// Check if all dependencies of a module are satisfied
+    pub fn are_dependencies_satisfied(&self, name: &str) -> bool {
+        let deps = self.module_dependencies.get(name);
+        if deps.is_none() {
+            return true;
+        }
+        
+        for dep in deps.unwrap() {
+            if !dep.optional && !self.system_modules.contains_key(&dep.name) {
+                return false;
+            }
+        }
+        
+        true
+    }
+    
+    /// Check if a module can be safely unloaded (no dependents are running)
+    pub fn can_unload_module(&self, name: &str) -> bool {
+        if let Some(module) = self.system_modules.get(name) {
+            for dependent_name in &module.dependents {
+                if let Some(dependent) = self.system_modules.get(dependent_name) {
+                    if dependent.state == ModuleState::Running {
+                        return false;
+                    }
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
 
     /// Start a loaded module
+    /// 
+    /// This will first ensure all dependencies are started, then start the module.
     pub fn start_module(&mut self, name: &str) -> Result<()> {
+        // First, start all dependencies
+        self.start_module_dependencies(name)?;
+        
         if let Some(module) = self.system_modules.get_mut(name) {
-            if module.state == ModuleState::Loaded {
-                module.state = ModuleState::Running;
-                debug!("Started module: {}", name);
-                Ok(())
-            } else {
-                Err(EmulatorError::Loader(LoaderError::InvalidElf(format!(
-                    "Module {} is not in loaded state",
-                    name
-                ))))
+            match module.state {
+                ModuleState::Loaded | ModuleState::Stopped => {
+                    module.state = ModuleState::Running;
+                    info!("Started module: {} (lifecycle: {:?} -> {:?})", 
+                          name, ModuleLifecycleEvent::Starting, ModuleLifecycleEvent::Started);
+                    Ok(())
+                }
+                ModuleState::Running => {
+                    debug!("Module {} is already running", name);
+                    Ok(())
+                }
+                ModuleState::Unloaded => {
+                    Err(EmulatorError::Loader(LoaderError::InvalidElf(format!(
+                        "Module {} is unloaded and cannot be started",
+                        name
+                    ))))
+                }
             }
         } else {
             Err(EmulatorError::Loader(LoaderError::MissingModule(
                 name.to_string(),
             )))
         }
+    }
+    
+    /// Start all dependencies for a module
+    fn start_module_dependencies(&mut self, name: &str) -> Result<()> {
+        // Get the module's dependencies
+        let deps: Vec<String> = self.system_modules
+            .get(name)
+            .map(|m| m.dependencies.clone())
+            .unwrap_or_default();
+        
+        for dep_name in deps {
+            if let Some(dep_module) = self.system_modules.get(&dep_name) {
+                if dep_module.state != ModuleState::Running {
+                    // Recursively start dependency (this will start its dependencies too)
+                    self.start_module(&dep_name)?;
+                }
+            }
+        }
+        
+        Ok(())
     }
 
     /// Stop a running module
+    /// 
+    /// This will first stop all dependent modules, then stop this module.
     pub fn stop_module(&mut self, name: &str) -> Result<()> {
+        // First, stop all dependents
+        self.stop_module_dependents(name)?;
+        
         if let Some(module) = self.system_modules.get_mut(name) {
-            if module.state == ModuleState::Running {
-                module.state = ModuleState::Stopped;
-                debug!("Stopped module: {}", name);
-                Ok(())
-            } else {
-                Err(EmulatorError::Loader(LoaderError::InvalidElf(format!(
-                    "Module {} is not running",
-                    name
-                ))))
+            match module.state {
+                ModuleState::Running => {
+                    module.state = ModuleState::Stopped;
+                    info!("Stopped module: {} (lifecycle: {:?} -> {:?})", 
+                          name, ModuleLifecycleEvent::Stopping, ModuleLifecycleEvent::Stopped);
+                    Ok(())
+                }
+                ModuleState::Stopped => {
+                    debug!("Module {} is already stopped", name);
+                    Ok(())
+                }
+                ModuleState::Loaded => {
+                    debug!("Module {} was never started", name);
+                    Ok(())
+                }
+                ModuleState::Unloaded => {
+                    Err(EmulatorError::Loader(LoaderError::InvalidElf(format!(
+                        "Module {} is unloaded",
+                        name
+                    ))))
+                }
             }
         } else {
             Err(EmulatorError::Loader(LoaderError::MissingModule(
@@ -581,11 +845,65 @@ impl GamePipeline {
             )))
         }
     }
+    
+    /// Stop all modules that depend on this module
+    fn stop_module_dependents(&mut self, name: &str) -> Result<()> {
+        // Get the module's dependents
+        let dependents: Vec<String> = self.system_modules
+            .get(name)
+            .map(|m| m.dependents.clone())
+            .unwrap_or_default();
+        
+        for dependent_name in dependents {
+            if let Some(dep_module) = self.system_modules.get(&dependent_name) {
+                if dep_module.state == ModuleState::Running {
+                    // Recursively stop dependent (this will stop its dependents too)
+                    self.stop_module(&dependent_name)?;
+                }
+            }
+        }
+        
+        Ok(())
+    }
 
     /// Unload a module
+    /// 
+    /// This will first stop the module if running, then remove it.
     pub fn unload_module(&mut self, name: &str) -> Result<()> {
+        // Stop the module first if it's running
+        if let Some(module) = self.system_modules.get(name) {
+            if module.state == ModuleState::Running {
+                self.stop_module(name)?;
+            }
+        }
+        
+        // Check if any dependents are still loaded
+        if let Some(module) = self.system_modules.get(name) {
+            for dependent_name in &module.dependents {
+                if self.system_modules.contains_key(dependent_name) {
+                    return Err(EmulatorError::Loader(LoaderError::InvalidElf(format!(
+                        "Cannot unload module {}: module {} still depends on it",
+                        name, dependent_name
+                    ))));
+                }
+            }
+        }
+        
+        // Remove from dependents lists
+        let deps: Vec<String> = self.system_modules
+            .get(name)
+            .map(|m| m.dependencies.clone())
+            .unwrap_or_default();
+            
+        for dep_name in &deps {
+            if let Some(dep_module) = self.system_modules.get_mut(dep_name) {
+                dep_module.dependents.retain(|n| n != name);
+            }
+        }
+        
         if let Some(module) = self.system_modules.remove(name) {
-            debug!("Unloaded module: {} (ID: {})", name, module.id);
+            info!("Unloaded module: {} (ID: {}, lifecycle: {:?})", 
+                  name, module.id, ModuleLifecycleEvent::Unloaded);
             Ok(())
         } else {
             Err(EmulatorError::Loader(LoaderError::MissingModule(
@@ -594,17 +912,61 @@ impl GamePipeline {
         }
     }
 
-    /// Start all loaded modules
+    /// Start all loaded modules in dependency order
     pub fn start_all_modules(&mut self) -> Result<()> {
-        let module_names: Vec<String> = self.system_modules.keys().cloned().collect();
-        for name in module_names {
-            if let Some(module) = self.system_modules.get(&name) {
-                if module.state == ModuleState::Loaded {
-                    self.start_module(&name)?;
-                }
-            }
+        // Sort modules by start priority (lower priority starts first)
+        let mut module_names: Vec<(String, u32)> = self.system_modules
+            .iter()
+            .filter(|(_, m)| m.state == ModuleState::Loaded)
+            .map(|(name, m)| (name.clone(), m.start_priority))
+            .collect();
+        module_names.sort_by_key(|(_, priority)| *priority);
+        
+        info!("Starting {} modules in dependency order", module_names.len());
+        
+        for (name, _) in module_names {
+            self.start_module(&name)?;
         }
         Ok(())
+    }
+    
+    /// Stop all running modules in reverse dependency order
+    pub fn stop_all_modules(&mut self) -> Result<()> {
+        // Sort modules by stop priority (lower priority stops first, which means higher start priority)
+        let mut module_names: Vec<(String, u32)> = self.system_modules
+            .iter()
+            .filter(|(_, m)| m.state == ModuleState::Running)
+            .map(|(name, m)| (name.clone(), m.stop_priority))
+            .collect();
+        module_names.sort_by_key(|(_, priority)| *priority);
+        
+        info!("Stopping {} modules in reverse dependency order", module_names.len());
+        
+        for (name, _) in module_names {
+            self.stop_module(&name)?;
+        }
+        Ok(())
+    }
+    
+    /// Restart a module (stop then start)
+    pub fn restart_module(&mut self, name: &str) -> Result<()> {
+        info!("Restarting module: {}", name);
+        self.stop_module(name)?;
+        self.start_module(name)?;
+        Ok(())
+    }
+    
+    /// Get the lifecycle state of a module
+    pub fn get_module_state(&self, name: &str) -> Option<ModuleState> {
+        self.system_modules.get(name).map(|m| m.state)
+    }
+    
+    /// Check if a module is running
+    pub fn is_module_running(&self, name: &str) -> bool {
+        self.system_modules
+            .get(name)
+            .map(|m| m.state == ModuleState::Running)
+            .unwrap_or(false)
     }
 
     /// Set up proper memory layout for games
@@ -794,8 +1156,29 @@ mod tests {
             name: "test".to_string(),
             state: ModuleState::Loaded,
             id: 1,
+            dependencies: Vec::new(),
+            dependents: Vec::new(),
+            start_priority: 1,
+            stop_priority: u32::MAX - 1,
         };
         assert_eq!(module.state, ModuleState::Loaded);
+    }
+    
+    #[test]
+    fn test_module_dependency() {
+        let dep = ModuleDependency {
+            name: "cellSysutil".to_string(),
+            version: 0,
+            optional: false,
+        };
+        assert_eq!(dep.name, "cellSysutil");
+        assert!(!dep.optional);
+    }
+    
+    #[test]
+    fn test_module_lifecycle_event() {
+        let event = ModuleLifecycleEvent::Started;
+        assert_eq!(event, ModuleLifecycleEvent::Started);
     }
 
     #[test]
@@ -877,5 +1260,139 @@ mod tests {
         let result = pipeline.call_hle_function("cellGcmSys", 0x21AC3697, &[]);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 0);
+    }
+    
+    #[test]
+    fn test_module_dependencies() {
+        let memory = MemoryManager::new().unwrap();
+        let mut pipeline = GamePipeline::new(memory);
+        
+        // Load cellGcmSys which depends on cellSysutil
+        pipeline.load_module("cellGcmSys").unwrap();
+        
+        // cellSysutil should have been loaded as a dependency
+        assert!(pipeline.get_system_module("cellSysutil").is_some());
+        
+        // cellGcmSys should have cellSysutil as a dependency
+        let gcm = pipeline.get_system_module("cellGcmSys").unwrap();
+        assert!(gcm.dependencies.contains(&"cellSysutil".to_string()));
+        
+        // cellSysutil should have cellGcmSys as a dependent
+        let sysutil = pipeline.get_system_module("cellSysutil").unwrap();
+        assert!(sysutil.dependents.contains(&"cellGcmSys".to_string()));
+    }
+    
+    #[test]
+    fn test_module_dependency_start_order() {
+        let memory = MemoryManager::new().unwrap();
+        let mut pipeline = GamePipeline::new(memory);
+        
+        // Load cellGcmSys which depends on cellSysutil
+        pipeline.load_module("cellGcmSys").unwrap();
+        
+        // Start cellGcmSys - should also start cellSysutil
+        pipeline.start_module("cellGcmSys").unwrap();
+        
+        // Both should be running
+        assert!(pipeline.is_module_running("cellSysutil"));
+        assert!(pipeline.is_module_running("cellGcmSys"));
+    }
+    
+    #[test]
+    fn test_module_dependency_stop_order() {
+        let memory = MemoryManager::new().unwrap();
+        let mut pipeline = GamePipeline::new(memory);
+        
+        // Load and start modules
+        pipeline.load_module("cellGcmSys").unwrap();
+        pipeline.start_all_modules().unwrap();
+        
+        // Stop cellSysutil - should also stop cellGcmSys (dependent)
+        pipeline.stop_module("cellSysutil").unwrap();
+        
+        // Both should be stopped
+        assert!(!pipeline.is_module_running("cellSysutil"));
+        assert!(!pipeline.is_module_running("cellGcmSys"));
+    }
+    
+    #[test]
+    fn test_stop_all_modules() {
+        let memory = MemoryManager::new().unwrap();
+        let mut pipeline = GamePipeline::new(memory);
+        
+        pipeline.initialize_system_modules().unwrap();
+        pipeline.start_all_modules().unwrap();
+        
+        // All modules should be running
+        assert!(pipeline.is_module_running("cellSysutil"));
+        
+        pipeline.stop_all_modules().unwrap();
+        
+        // All modules should be stopped
+        for (_, module) in pipeline.system_modules() {
+            assert!(module.state == ModuleState::Stopped || module.state == ModuleState::Loaded);
+        }
+    }
+    
+    #[test]
+    fn test_restart_module() {
+        let memory = MemoryManager::new().unwrap();
+        let mut pipeline = GamePipeline::new(memory);
+        
+        pipeline.load_module("cellSysutil").unwrap();
+        pipeline.start_module("cellSysutil").unwrap();
+        
+        assert!(pipeline.is_module_running("cellSysutil"));
+        
+        pipeline.restart_module("cellSysutil").unwrap();
+        
+        assert!(pipeline.is_module_running("cellSysutil"));
+    }
+    
+    #[test]
+    fn test_unload_module_with_dependents() {
+        let memory = MemoryManager::new().unwrap();
+        let mut pipeline = GamePipeline::new(memory);
+        
+        // Load cellGcmSys which depends on cellSysutil
+        pipeline.load_module("cellGcmSys").unwrap();
+        
+        // Try to unload cellSysutil - should fail because cellGcmSys depends on it
+        let result = pipeline.unload_module("cellSysutil");
+        assert!(result.is_err());
+        
+        // First unload cellGcmSys
+        pipeline.unload_module("cellGcmSys").unwrap();
+        
+        // Now unloading cellSysutil should work
+        pipeline.unload_module("cellSysutil").unwrap();
+    }
+    
+    #[test]
+    fn test_get_module_dependencies() {
+        let memory = MemoryManager::new().unwrap();
+        let pipeline = GamePipeline::new(memory);
+        
+        let deps = pipeline.get_module_dependencies("cellGcmSys");
+        assert!(deps.contains(&"cellSysutil".to_string()));
+        
+        let deps = pipeline.get_module_dependencies("cellGame");
+        assert!(deps.contains(&"cellSysutil".to_string()));
+        assert!(deps.contains(&"cellFs".to_string()));
+    }
+    
+    #[test]
+    fn test_are_dependencies_satisfied() {
+        let memory = MemoryManager::new().unwrap();
+        let mut pipeline = GamePipeline::new(memory);
+        
+        // Before loading any modules, cellGcmSys deps are not satisfied
+        assert!(!pipeline.are_dependencies_satisfied("cellGcmSys"));
+        
+        // Load cellSysutil
+        pipeline.load_module("cellSysutil").unwrap();
+        
+        // Now cellGcmSys deps are satisfied
+        assert!(pipeline.are_dependencies_satisfied("cellGcmSys"));
     }
 }
