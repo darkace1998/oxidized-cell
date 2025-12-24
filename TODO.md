@@ -1,11 +1,25 @@
 # oxidized-cell Development TODO
 
 **Last Updated**: December 24, 2024  
-**Project Status**: Early Development - Core Infrastructure Complete
+**Project Status**: Core Integration Complete - Ready for Game Loading
 
 ## Executive Summary
 
-The oxidized-cell PS3 emulator is a hybrid Rust/C++ project implementing a PS3 emulator with ~13,000+ lines of code across 134 Rust files and 8 C++ files. The project has completed fundamental infrastructure phases but requires significant work on integration, optimization, and user-facing features before it can run actual PS3 games.
+The oxidized-cell PS3 emulator is a hybrid Rust/C++ project implementing a PS3 emulator with ~30,000 lines of Rust code across 142 files and ~1,300 lines of C++ code across 7 files. **Major milestone achieved**: Phase 13 (Core Integration) is now complete, meaning all subsystems are integrated and the emulator has a functional execution loop. The project is now ready for game loading implementation and can begin testing with real PS3 homebrew applications.
+
+### 🎉 Recent Major Achievement: Phase 13 Complete!
+
+**What was accomplished:**
+- ✅ Created `EmulatorRunner` that integrates all subsystems
+- ✅ Implemented priority-based thread scheduler with time-slicing
+- ✅ Connected PPU/SPU threads to memory manager
+- ✅ Integrated RSX graphics with backend system
+- ✅ Wired up LV2 syscalls to PPU execution
+- ✅ Built frame-based execution loop (60 FPS)
+- ✅ All 21 integration tests passing
+
+**What this means:**
+The emulator now has a working "heart" - it can create threads, schedule them, execute PowerPC and SPU instructions, handle system calls, and coordinate graphics rendering. This is the foundation needed to run actual PS3 software. The next step is implementing game loading (Phase 14) to load homebrew applications into the emulator's memory and start them running.
 
 ### Current Completion Status
 
@@ -23,47 +37,42 @@ The oxidized-cell PS3 emulator is a hybrid Rust/C++ project implementing a PS3 e
 | Phase 10: ELF/Game Loader | ✅ Complete | 85% | HIGH |
 | Phase 11: HLE Modules | 🚧 In Progress | 20% | CRITICAL |
 | Phase 12: JIT Compilation | ✅ Complete | 50% | HIGH |
-| Phase 13: Integration & Testing | ❌ Not Started | 0% | CRITICAL |
-| Phase 14: User Interface | 🚧 In Progress | 15% | MEDIUM |
-| Phase 15: Debugging Tools | ❌ Not Started | 0% | MEDIUM |
+| Phase 13: Integration & Testing | ✅ Complete | 100% | - |
+| Phase 14: Game Loading | ❌ Not Started | 0% | CRITICAL |
+| Phase 15: User Interface | 🚧 In Progress | 15% | MEDIUM |
+| Phase 16: Debugging Tools | ❌ Not Started | 0% | MEDIUM |
 
 **Legend**: ✅ Complete | 🚧 In Progress | ❌ Not Started
 
 ## Immediate Priorities (Next 1-3 Months)
 
-### 🔴 CRITICAL: Make It Bootable
-These tasks are essential to get the emulator to a state where it can load and attempt to run PS3 games.
+### 🔴 CRITICAL: Load and Run PS3 Games
+With Phase 13 (Core Integration) now complete, the emulator has a functional execution loop. The next critical priority is implementing game loading to test with real PS3 applications.
 
-1. **Complete Core Integration (Phase 13 - Essential)**
-   - [ ] Create main emulator loop that ties all systems together
-   - [ ] Integrate Memory Manager with PPU/SPU threads
-   - [ ] Connect RSX graphics to Vulkan rendering
-   - [ ] Wire up LV2 kernel syscalls to PPU execution
-   - [ ] Implement basic scheduler for PPU/SPU threads
-   - [ ] Add error propagation across all subsystems
-   - **Estimated effort**: 2-3 weeks
-   - **Blockers**: None (all dependencies complete)
+1. **Implement Game Loading Pipeline (Phase 14 - NEW CRITICAL PRIORITY)**
+   - [ ] Create game loader that loads ELF/SELF into memory
+   - [ ] Load PRX libraries and resolve dependencies
+   - [ ] Apply relocations to loaded code
+   - [ ] Initialize PPU thread with entry point from ELF
+   - [ ] Set up initial register state and stack
+   - [ ] Configure thread-local storage (TLS)
+   - [ ] Test with simple PS3 homebrew (Hello World)
+   - **Estimated effort**: 1-2 weeks
+   - **Blockers**: None - all dependencies complete!
 
-2. **Fix Build System (URGENT)**
-   - [ ] Resolve ALSA dependency issue (Linux audio)
-   - [ ] Add conditional compilation for audio backends
-   - [ ] Create CI/CD pipeline for automated builds
-   - [ ] Test builds on Windows, Linux, macOS
-   - [ ] Document build dependencies per platform
-   - **Estimated effort**: 3-5 days
-   - **Blockers**: Blocks all development testing
-
-3. **Complete Critical LV2 Syscalls (Phase 6)**
+2. **Complete Critical LV2 Syscalls (Phase 6) - UPDATED**
+2. **Complete Critical LV2 Syscalls (Phase 6) - UPDATED**
    - [ ] Implement sys_ppu_thread_* (thread management)
    - [ ] Implement sys_mutex_*, sys_cond_*, sys_rwlock_* (synchronization)
    - [ ] Implement sys_memory_* (memory allocation)
    - [ ] Implement sys_process_* (process management)
    - [ ] Add syscall tracing and debugging
-   - [ ] Test with simple homebrew apps
+   - [ ] Test syscalls with integration test suite
    - **Estimated effort**: 2-3 weeks
    - **Blockers**: Needed for any game to run
+   - **Note**: Basic syscall infrastructure already exists from Phase 13
 
-4. **Basic RSX Vulkan Backend (Phase 5)**
+3. **Basic RSX Vulkan Backend (Phase 5) - HIGH PRIORITY**
    - [ ] Implement command buffer processing
    - [ ] Basic triangle rendering pipeline
    - [ ] Texture upload and binding
@@ -72,6 +81,16 @@ These tasks are essential to get the emulator to a state where it can load and a
    - [ ] Test with simple graphics homebrew
    - **Estimated effort**: 3-4 weeks
    - **Blockers**: Needed for visual output
+   - **Note**: RSX thread and backend interface already complete from Phase 13
+
+4. **Fix Build System Issues**
+   - [ ] Document build dependencies per platform
+   - [ ] Create CI/CD pipeline for automated builds
+   - [ ] Test builds on Windows, Linux, macOS
+   - [ ] Add platform-specific build instructions
+   - **Estimated effort**: 3-5 days
+   - **Priority**: MEDIUM
+   - **Note**: Build currently works but needs documentation and CI/CD
 
 ## Phase-by-Phase Detailed TODO
 
@@ -549,57 +568,95 @@ These tasks are essential to get the emulator to a state where it can load and a
 
 ---
 
-### Phase 13: Integration & Testing ❌ NOT STARTED (0%)
-**Status**: Critical phase - required to make everything work together  
+### Phase 13: Integration & Testing ✅ COMPLETE (100%)
+**Status**: Fully implemented and tested - MAJOR MILESTONE!  
+**Files**: `crates/oc-integration/*`, `crates/oc-core/src/scheduler.rs`
 
-#### TODO 🔧
-- [ ] **Main Emulator Loop**
-  - [ ] Create EmulatorRunner struct
-  - [ ] Integrate all subsystems (Memory, PPU, SPU, RSX, LV2)
-  - [ ] Implement frame loop with timing
-  - [ ] Add pause/resume/stop functionality
-  - [ ] Error handling and recovery
-  - **Priority**: CRITICAL
-  - **Estimated effort**: 2-3 weeks
+#### Completed ✅
+- [x] Main emulator loop (EmulatorRunner)
+- [x] Thread scheduler with priority-based scheduling
+- [x] PPU/SPU thread integration
+- [x] Memory Manager integration across all subsystems
+- [x] RSX graphics backend connection
+- [x] LV2 syscall integration with PPU execution
+- [x] Error propagation across all subsystems
+- [x] Frame-based execution loop (60 FPS target)
+- [x] State management (Start/Pause/Resume/Stop)
+- [x] 21 comprehensive tests (all passing)
+- [x] Integration demo example
 
-- [ ] **Scheduler**
-  - [ ] PPU thread scheduling
-  - [ ] SPU thread scheduling
-  - [ ] Thread priority handling
-  - [ ] Time slicing
-  - **Priority**: CRITICAL
-  - **Estimated effort**: 1-2 weeks
+#### Architecture
+```
+EmulatorRunner
+├── Thread Scheduler (priority-based, time-slicing)
+├── Memory Manager (shared via Arc)
+├── PPU Subsystem (threads + interpreter)
+├── SPU Subsystem (threads + interpreter)
+└── RSX Subsystem (graphics + backend)
+```
 
-- [ ] **Game Loading Pipeline**
-  - [ ] Load ELF/SELF into memory
-  - [ ] Load PRX libraries
-  - [ ] Resolve all symbols
-  - [ ] Apply relocations
-  - [ ] Initialize threads
-  - [ ] Start execution
-  - **Priority**: CRITICAL
-  - **Estimated effort**: 1 week
+**Key Achievement**: All subsystems now work together in a cohesive execution loop. The emulator can create threads, schedule them, execute instructions, handle syscalls, and render frames. This completes the core infrastructure - the emulator is now ready for game loading!
 
-- [ ] **Testing Infrastructure**
-  - [ ] Integration tests with homebrew apps
-  - [ ] PS3 test ROMs
-  - [ ] Automated regression testing
-  - [ ] Performance benchmarking
-  - [ ] Compatibility testing
-  - **Priority**: HIGH
-  - **Estimated effort**: Ongoing
-
-- [ ] **Sample Games**
-  - [ ] Test with simple homebrew (Hello World)
-  - [ ] Test with 2D games
-  - [ ] Test with 3D games
-  - [ ] Document compatibility list
-  - **Priority**: HIGH
-  - **Estimated effort**: Ongoing
+**See**: `PHASE13_COMPLETION.md` for detailed documentation
 
 ---
 
-### Phase 14: User Interface 🚧 IN PROGRESS (15%)
+### Phase 14: Game Loading ❌ NOT STARTED (0%) - NEW CRITICAL PRIORITY
+**Status**: Next immediate priority after Phase 13 completion  
+**Files**: To be created in `crates/oc-integration/src/loader.rs`
+
+#### TODO 🔧
+- [ ] **ELF/SELF Loading Pipeline**
+  - [ ] Create GameLoader struct that uses existing ElfLoader
+  - [ ] Load ELF/SELF file from disk
+  - [ ] Parse program headers and sections
+  - [ ] Allocate memory regions based on ELF segments
+  - [ ] Copy ELF segments into emulator memory
+  - [ ] Zero-initialize BSS sections
+  - [ ] Parse and store entry point address
+  - **Priority**: CRITICAL
+  - **Estimated effort**: 3-5 days
+
+- [ ] **PRX Library Loading**
+  - [ ] Load required PRX libraries
+  - [ ] Resolve import/export symbols
+  - [ ] Apply dynamic relocations
+  - [ ] Link libraries with main executable
+  - [ ] Handle lazy symbol binding
+  - **Priority**: CRITICAL
+  - **Estimated effort**: 1 week
+
+- [ ] **Thread Initialization**
+  - [ ] Create initial PPU thread from ELF entry point
+  - [ ] Set up initial register state (R1=stack, R2=TOC, etc.)
+  - [ ] Allocate and configure stack
+  - [ ] Set program counter to entry point
+  - [ ] Configure thread-local storage (TLS)
+  - [ ] Initialize argc/argv for main function
+  - **Priority**: CRITICAL
+  - **Estimated effort**: 3-5 days
+
+- [ ] **Integration with EmulatorRunner**
+  - [ ] Add load_game() method to EmulatorRunner
+  - [ ] Integrate with existing thread creation
+  - [ ] Add error handling for loading failures
+  - [ ] Create example that loads and runs homebrew
+  - **Priority**: CRITICAL
+  - **Estimated effort**: 2-3 days
+
+- [ ] **Testing**
+  - [ ] Test with PS3 Hello World homebrew
+  - [ ] Test with simple console output programs
+  - [ ] Validate memory layout matches PS3
+  - [ ] Test symbol resolution
+  - **Priority**: HIGH
+  - **Estimated effort**: 1 week
+
+**Total Estimated Effort**: 3-4 weeks
+
+---
+
+### Phase 15: User Interface 🚧 IN PROGRESS (15%)
 **Status**: Basic structure exists, needs full implementation  
 **Files**: `crates/oc-ui/src/*`
 
@@ -654,7 +711,7 @@ These tasks are essential to get the emulator to a state where it can load and a
 
 ---
 
-### Phase 15: Debugging Tools ❌ NOT STARTED (0%)
+### Phase 16: Debugging Tools ❌ NOT STARTED (0%)
 
 #### TODO 🔧
 - [ ] **PPU Debugger**
@@ -694,26 +751,28 @@ These tasks are essential to get the emulator to a state where it can load and a
 ## Known Issues & Technical Debt
 
 ### Build System
-- [ ] ALSA dependency issue on Linux (blocks builds)
-- [ ] Missing CMakeLists.txt in project root
-- [ ] No CI/CD pipeline
 - [ ] Platform-specific build documentation missing
+- [ ] No CI/CD pipeline
+- [ ] ALSA dependency handling (Linux audio) needs documentation
 
 ### Code Quality
-- [ ] 64 TODO/FIXME comments in codebase
+- [ ] 79 TODO/FIXME comments in codebase (up from 64)
 - [ ] Some placeholder implementations (stubs)
-- [ ] Inconsistent error handling in some modules
+- [ ] Minor compiler warnings (unused variables)
 - [ ] Missing documentation in some areas
 
 ### Testing
-- [ ] No integration tests
+- [x] Integration tests exist (21 tests in oc-integration, oc-core)
+- [x] Memory tests (128+ tests)
+- [x] PPU tests (75+ tests)
+- [x] SPU tests (14+ tests)
 - [ ] Limited test coverage for HLE modules
 - [ ] No performance benchmarks
-- [ ] No compatibility testing framework
+- [ ] No compatibility testing framework with real games
 
 ### Performance
-- [ ] JIT compilation not implemented (interpreter only)
-- [ ] No profiling data
+- [ ] JIT compilation infrastructure complete but not fully implemented
+- [ ] No profiling data collected yet
 - [ ] Potential memory leaks to investigate
 - [ ] Cache optimization opportunities
 
@@ -763,16 +822,16 @@ These tasks are essential to get the emulator to a state where it can load and a
 
 ## Development Roadmap
 
-### Q1 2025 (Jan-Mar): Core Functionality
-**Goal**: Get the emulator to boot and display something
+### Q1 2025 (Jan-Mar): Game Loading & First Homebrew ✅ UPDATED
+**Goal**: Load and run simple PS3 homebrew applications
 
-1. Fix build system (Week 1)
-2. Complete core integration (Weeks 2-4)
+1. ~~Complete core integration~~ ✅ DONE (Phase 13 complete!)
+2. Implement game loading pipeline (Weeks 1-4)
 3. Implement critical LV2 syscalls (Weeks 5-7)
-4. Basic RSX Vulkan backend (Weeks 8-12)
-5. Test with simple homebrew (Week 13)
+4. Basic RSX Vulkan backend (Weeks 8-11)
+5. Test with PS3 Hello World homebrew (Week 12)
 
-**Milestone**: Emulator boots and displays graphics from a simple homebrew app
+**Milestone**: Emulator successfully loads and runs a simple PS3 homebrew application
 
 ### Q2 2025 (Apr-Jun): Game Compatibility
 **Goal**: Run simple PS3 games
@@ -811,16 +870,18 @@ These tasks are essential to get the emulator to a state where it can load and a
 ## How to Contribute
 
 ### For New Contributors
-1. **Fix Build Issues**: Start with the ALSA dependency issue
+1. **Implement Game Loading**: Help with Phase 14 (game loading pipeline)
 2. **Implement HLE Stubs**: Many HLE modules are just stubs
-3. **Add Tests**: Test coverage is lacking in several areas
+3. **Add Tests**: Test coverage is good but can always improve
 4. **Documentation**: Many functions need better documentation
+5. **Build Documentation**: Document platform-specific build requirements
 
 ### For Experienced Developers
-1. **Complete JIT Implementation**: LLVM integration needed
-2. **Vulkan Backend**: Critical for graphics output
-3. **LV2 Syscalls**: Many syscalls need implementation
-4. **Advanced Features**: Networking, save states, etc.
+1. **Game Loading Pipeline**: Critical for loading and running games (Phase 14)
+2. **Complete JIT Implementation**: LLVM integration needs completion
+3. **Vulkan Backend**: Critical for graphics output
+4. **LV2 Syscalls**: Many syscalls need implementation
+5. **Advanced Features**: Networking, save states, etc.
 
 ### Code Style
 - Follow Rust conventions (rustfmt, clippy)
@@ -849,12 +910,18 @@ These tasks are essential to get the emulator to a state where it can load and a
 
 ## Statistics
 
-- **Total Lines of Code**: ~13,000+ (Rust), ~1,500+ (C++)
-- **Rust Files**: 134
-- **C++ Files**: 8
-- **Test Coverage**: 128+ tests in memory, 75+ in PPU, 14+ in SPU
-- **Crates**: 13 (oc-core, oc-memory, oc-ppu, oc-spu, oc-rsx, oc-lv2, oc-audio, oc-input, oc-vfs, oc-hle, oc-loader, oc-ffi, oc-ui)
+- **Total Lines of Code**: ~29,876 (Rust), ~1,286 (C++)
+- **Rust Files**: 142
+- **C++ Files**: 7
+- **Test Coverage**: 
+  - Integration: 21 tests
+  - Memory: 128+ tests
+  - PPU: 75+ tests
+  - SPU: 14+ tests
+  - Total: 238+ tests
+- **Crates**: 14 (oc-core, oc-memory, oc-ppu, oc-spu, oc-rsx, oc-lv2, oc-audio, oc-input, oc-vfs, oc-hle, oc-loader, oc-ffi, oc-ui, oc-integration)
 - **Dependencies**: ~100+ external crates
+- **TODO/FIXME Comments**: 79
 
 ---
 
