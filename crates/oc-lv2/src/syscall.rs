@@ -4,6 +4,7 @@ use crate::fs;
 use crate::memory::MemoryManager;
 use crate::objects::ObjectManager;
 use crate::process::ProcessManager;
+use crate::prx;
 use crate::spu;
 use crate::sync::{cond, event, mutex, rwlock, semaphore};
 use crate::syscall_numbers::*;
@@ -86,6 +87,28 @@ impl SyscallHandler {
                 let pid = args[0] as u32;
                 let status = process_sc::sys_process_get_status(&self.process_manager, pid)?;
                 Ok(status as i64)
+            }
+
+            SYS_PROCESS_GET_PARAMSFO => {
+                let buffer = args[0];
+                let size = process_sc::sys_process_get_paramsfo(&self.process_manager, buffer)?;
+                Ok(size as i64)
+            }
+
+            SYS_GAME_PROCESS_EXITSPAWN => {
+                // In real impl, would read path and args from memory
+                let path = "/dev_hdd0/game/NPEB00000/USRDIR/EBOOT.BIN";
+                process_sc::sys_game_process_exitspawn(
+                    &self.process_manager,
+                    path,
+                    &[],
+                    &[],
+                    0,
+                    0,
+                    1000,
+                    0,
+                )?;
+                Ok(0)
             }
 
             // Thread management
@@ -592,6 +615,101 @@ impl SyscallHandler {
                 Ok(total as i64)
             }
 
+            SYS_MMAPPER_ALLOCATE_MEMORY => {
+                let size = args[0] as usize;
+                let page_size = args[1] as usize;
+                let flags = args[2];
+                
+                let page_size = if page_size == 0 {
+                    crate::memory::PAGE_SIZE
+                } else {
+                    page_size
+                };
+                
+                let addr = memory_sc::sys_mmapper_allocate_memory(
+                    &self.memory_manager,
+                    size,
+                    page_size,
+                    flags,
+                )?;
+                Ok(addr as i64)
+            }
+
+            SYS_MMAPPER_MAP_MEMORY => {
+                let addr = args[0];
+                let size = args[1] as usize;
+                let flags = args[2];
+                memory_sc::sys_mmapper_map_memory(&self.memory_manager, addr, size, flags)?;
+                Ok(0)
+            }
+
+            // PRX modules
+            SYS_PRX_LOAD_MODULE => {
+                // In real impl, would read path from memory at args[0]
+                let path = "/dev_flash/sys/internal/liblv2.sprx";
+                let flags = args[1];
+                let options = args[2];
+                let module_id = prx::syscalls::sys_prx_load_module(
+                    &self.object_manager,
+                    path,
+                    flags,
+                    options,
+                )?;
+                Ok(module_id as i64)
+            }
+
+            SYS_PRX_START_MODULE => {
+                let module_id = args[0] as u32;
+                let module_args = args[1];
+                let argp = args[2];
+                prx::syscalls::sys_prx_start_module(
+                    &self.object_manager,
+                    module_id,
+                    module_args,
+                    argp,
+                )?;
+                Ok(0)
+            }
+
+            SYS_PRX_STOP_MODULE => {
+                let module_id = args[0] as u32;
+                let module_args = args[1];
+                let argp = args[2];
+                prx::syscalls::sys_prx_stop_module(
+                    &self.object_manager,
+                    module_id,
+                    module_args,
+                    argp,
+                )?;
+                Ok(0)
+            }
+
+            SYS_PRX_UNLOAD_MODULE => {
+                let module_id = args[0] as u32;
+                let flags = args[1];
+                prx::syscalls::sys_prx_unload_module(&self.object_manager, module_id, flags)?;
+                Ok(0)
+            }
+
+            SYS_PRX_GET_MODULE_LIST => {
+                let flags = args[0];
+                let max_count = args[1] as usize;
+                let modules = prx::syscalls::sys_prx_get_module_list(
+                    &self.object_manager,
+                    flags,
+                    max_count,
+                )?;
+                // In real implementation, would write module list to memory
+                Ok(modules.len() as i64)
+            }
+
+            SYS_PRX_GET_MODULE_INFO => {
+                let module_id = args[0] as u32;
+                let _info = prx::syscalls::sys_prx_get_module_info(&self.object_manager, module_id)?;
+                // In real implementation, would write info to memory at args[1]
+                Ok(0)
+            }
+
             // TTY
             SYS_TTY_WRITE => {
                 let _ch = args[0] as u32;
@@ -746,6 +864,67 @@ mod tests {
         // Check time advanced
         let time2 = handler.handle(SYS_TIME_GET_SYSTEM_TIME, &args).unwrap();
         assert!(time2 >= time1);
+    }
+
+    #[test]
+    fn test_prx_syscalls() {
+        let handler = SyscallHandler::new();
+        let mut args = [0u64; 8];
+
+        // Load module
+        args[0] = 0; // path pointer (placeholder)
+        args[1] = 0; // flags
+        args[2] = 0; // options
+        let module_id = handler.handle(SYS_PRX_LOAD_MODULE, &args).unwrap();
+        assert!(module_id > 0);
+
+        // Start module
+        let mut start_args = [0u64; 8];
+        start_args[0] = module_id as u64;
+        handler.handle(SYS_PRX_START_MODULE, &start_args).unwrap();
+
+        // Stop module
+        handler.handle(SYS_PRX_STOP_MODULE, &start_args).unwrap();
+
+        // Unload module
+        let mut unload_args = [0u64; 8];
+        unload_args[0] = module_id as u64;
+        handler.handle(SYS_PRX_UNLOAD_MODULE, &unload_args).unwrap();
+    }
+
+    #[test]
+    fn test_mmapper_syscalls() {
+        let handler = SyscallHandler::new();
+
+        // Allocate memory with mmapper
+        let mut args = [0u64; 8];
+        args[0] = 0x10000; // size
+        args[1] = 0; // page_size (use default)
+        args[2] = 0; // flags
+        let addr = handler.handle(SYS_MMAPPER_ALLOCATE_MEMORY, &args).unwrap();
+        assert!(addr > 0);
+
+        // Map memory
+        let mut map_args = [0u64; 8];
+        map_args[0] = addr as u64;
+        map_args[1] = 0x10000; // size
+        map_args[2] = 0; // flags
+        handler.handle(SYS_MMAPPER_MAP_MEMORY, &map_args).unwrap();
+
+        // Free memory
+        let mut free_args = [0u64; 8];
+        free_args[0] = addr as u64;
+        handler.handle(SYS_MEMORY_FREE, &free_args).unwrap();
+    }
+
+    #[test]
+    fn test_process_paramsfo() {
+        let handler = SyscallHandler::new();
+        let mut args = [0u64; 8];
+        args[0] = 0; // buffer pointer (placeholder)
+        
+        let size = handler.handle(SYS_PROCESS_GET_PARAMSFO, &args).unwrap();
+        assert!(size > 0);
     }
 }
 
