@@ -620,18 +620,36 @@ pub fn vpkshss(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
         }
     };
     
-    // Extract halfwords and pack to bytes
-    for i in 0..2 {
-        let src = if i == 0 { a } else { b };
-        let mut bytes = [0u8; 4];
-        for j in 0..4 {
-            let hi = (src[j] >> 16) as i16;
-            let lo = src[j] as i16;
-            bytes[j / 2 * 2] = pack(hi) as u8;
-            bytes[j / 2 * 2 + 1] = pack(lo) as u8;
-        }
-        result[i * 2] = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        result[i * 2 + 1] = u32::from_be_bytes([0, 0, 0, 0]); // Placeholder
+    // Pack 8 halfwords from a and b into 16 bytes
+    let mut all_bytes = [0u8; 16];
+    let mut byte_idx = 0;
+    
+    // Pack from vector a (4 words = 8 halfwords)
+    for i in 0..4 {
+        let hi = (a[i] >> 16) as i16;
+        let lo = a[i] as i16;
+        all_bytes[byte_idx] = pack(hi) as u8;
+        all_bytes[byte_idx + 1] = pack(lo) as u8;
+        byte_idx += 2;
+    }
+    
+    // Pack from vector b (4 words = 8 halfwords)
+    for i in 0..4 {
+        let hi = (b[i] >> 16) as i16;
+        let lo = b[i] as i16;
+        all_bytes[byte_idx] = pack(hi) as u8;
+        all_bytes[byte_idx + 1] = pack(lo) as u8;
+        byte_idx += 2;
+    }
+    
+    // Convert bytes back to words
+    for i in 0..4 {
+        result[i] = u32::from_be_bytes([
+            all_bytes[i * 4],
+            all_bytes[i * 4 + 1],
+            all_bytes[i * 4 + 2],
+            all_bytes[i * 4 + 3],
+        ]);
     }
     
     result
@@ -833,10 +851,10 @@ mod tests {
         let a = [0x7F000000, 0x80000000, 0x00000000, 0x00000000];
         let b = [0x01000000, 0xFF000000, 0x00000000, 0x00000000];
         let result = vaddsbs(a, b);
-        // First byte should saturate to 0x7F
+        // First byte should saturate to 0x7F (i8::MAX)
         assert_eq!(result[0] & 0xFF000000, 0x7F000000);
-        // Second byte should saturate to 0x80 (min)
-        assert_eq!(result[1] & 0xFF000000, 0x7F000000);
+        // Second byte: 0x80 + 0xFF = i8::MIN + (-1) should saturate to i8::MIN (0x80)
+        assert_eq!(result[1] & 0xFF000000, 0x80000000);
     }
     
     #[test]

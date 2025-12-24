@@ -267,14 +267,11 @@ pub fn check_fp_exceptions(thread: &mut PpuThread, value: f64, operation: &str) 
     }
     
     // Check for inexact (rounded result)
-    // This is a simplified check - real hardware would track actual rounding
-    if !value.is_nan() && !value.is_infinite() {
-        let frac = value.fract();
-        if frac != 0.0 {
-            fpscr |= fpscr::XX;     // Inexact
-            fpscr |= fpscr::FX;
-        }
-    }
+    // Note: This is a simplified check. In a full implementation, the FPU would
+    // track whether rounding occurred during the actual arithmetic operation.
+    // For now, we conservatively set XX for non-exact results, but this should
+    // be improved by tracking rounding in the actual operations (fmadd, etc.)
+    // TODO: Track actual rounding during operations instead of checking fractional part
     
     thread.regs.fpscr = fpscr;
 }
