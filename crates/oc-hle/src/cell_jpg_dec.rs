@@ -2,10 +2,157 @@
 //!
 //! This module provides HLE implementations for the PS3's JPEG decoding library.
 
+use std::collections::HashMap;
 use tracing::trace;
 
 /// JPEG decoder handle
 pub type JpgDecHandle = u32;
+
+// Error codes
+pub const CELL_JPGDEC_ERROR_FATAL: i32 = 0x80611301u32 as i32;
+pub const CELL_JPGDEC_ERROR_ARG: i32 = 0x80611302u32 as i32;
+pub const CELL_JPGDEC_ERROR_SEQ: i32 = 0x80611303u32 as i32;
+pub const CELL_JPGDEC_ERROR_BUSY: i32 = 0x80611304u32 as i32;
+pub const CELL_JPGDEC_ERROR_EMPTY: i32 = 0x80611305u32 as i32;
+pub const CELL_JPGDEC_ERROR_OPEN_FILE: i32 = 0x80611306u32 as i32;
+
+/// JPEG decoder entry for main handle
+#[derive(Debug)]
+struct JpgDecEntry {
+    /// Main handle ID
+    id: u32,
+    /// Maximum main handles allowed
+    max_main_handle: u32,
+    /// Sub handles managed by this main handle
+    sub_handles: HashMap<u32, JpgSubDecEntry>,
+    /// Next sub handle ID
+    next_sub_id: u32,
+}
+
+/// JPEG decoder sub entry
+#[derive(Debug, Clone)]
+struct JpgSubDecEntry {
+    /// Sub handle ID
+    id: u32,
+    /// Image width
+    width: u32,
+    /// Image height
+    height: u32,
+    /// Number of components (1=Grayscale, 3=RGB, 4=CMYK)
+    num_components: u32,
+    /// Color space
+    color_space: u32,
+    /// Down scale factor
+    down_scale: u32,
+}
+
+/// JPEG decoder manager
+#[derive(Debug)]
+pub struct JpgDecManager {
+    /// Main handles
+    main_handles: HashMap<u32,JpgDecEntry>,
+    /// Next main handle ID
+    next_main_id: u32,
+}
+
+impl JpgDecManager {
+    /// Create a new JPEG decoder manager
+    pub fn new() -> Self {
+        Self {
+            main_handles: HashMap::new(),
+            next_main_id: 1,
+        }
+    }
+
+    /// Create a main JPEG decoder handle
+    pub fn create(&mut self, max_main_handle: u32) -> Result<u32, i32> {
+        let id = self.next_main_id;
+        self.next_main_id += 1;
+
+        let entry = JpgDecEntry {
+            id,
+            max_main_handle,
+            sub_handles: HashMap::new(),
+            next_sub_id: 1,
+        };
+
+        self.main_handles.insert(id, entry);
+        Ok(id)
+    }
+
+    /// Destroy a main JPEG decoder handle
+    pub fn destroy(&mut self, main_handle: u32) -> Result<(), i32> {
+        if !self.main_handles.contains_key(&main_handle) {
+            return Err(CELL_JPGDEC_ERROR_ARG);
+        }
+
+        self.main_handles.remove(&main_handle);
+        Ok(())
+    }
+
+    /// Open a sub handle for JPEG decoding
+    pub fn open(&mut self, main_handle: u32, width: u32, height: u32, num_components: u32) -> Result<u32, i32> {
+        let entry = self.main_handles.get_mut(&main_handle)
+            .ok_or(CELL_JPGDEC_ERROR_ARG)?;
+
+        let sub_id = entry.next_sub_id;
+        entry.next_sub_id += 1;
+
+        let sub_entry = JpgSubDecEntry {
+            id: sub_id,
+            width,
+            height,
+            num_components,
+            color_space: 0, // RGB
+            down_scale: 1,
+        };
+
+        entry.sub_handles.insert(sub_id, sub_entry);
+        Ok(sub_id)
+    }
+
+    /// Close a sub handle
+    pub fn close(&mut self, main_handle: u32, sub_handle: u32) -> Result<(), i32> {
+        let entry = self.main_handles.get_mut(&main_handle)
+            .ok_or(CELL_JPGDEC_ERROR_ARG)?;
+
+        if !entry.sub_handles.contains_key(&sub_handle) {
+            return Err(CELL_JPGDEC_ERROR_ARG);
+        }
+
+        entry.sub_handles.remove(&sub_handle);
+        Ok(())
+    }
+
+    /// Read header information
+    pub fn read_header(&self, main_handle: u32, sub_handle: u32) -> Result<JpgSubDecEntry, i32> {
+        let entry = self.main_handles.get(&main_handle)
+            .ok_or(CELL_JPGDEC_ERROR_ARG)?;
+
+        let sub_entry = entry.sub_handles.get(&sub_handle)
+            .ok_or(CELL_JPGDEC_ERROR_ARG)?;
+
+        Ok(sub_entry.clone())
+    }
+
+    /// Decode JPEG data
+    pub fn decode_data(&self, main_handle: u32, sub_handle: u32) -> Result<JpgSubDecEntry, i32> {
+        let entry = self.main_handles.get(&main_handle)
+            .ok_or(CELL_JPGDEC_ERROR_ARG)?;
+
+        let sub_entry = entry.sub_handles.get(&sub_handle)
+            .ok_or(CELL_JPGDEC_ERROR_ARG)?;
+
+        // TODO: Integrate with actual JPEG decoder
+        Ok(sub_entry.clone())
+    }
+}
+
+impl Default for JpgDecManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// JPEG decoder main handle
 #[repr(C)]
@@ -89,18 +236,27 @@ pub fn cell_jpg_dec_create(
 ) -> i32 {
     trace!("cellJpgDecCreate called");
     
-    // TODO: Implement actual JPEG decoder initialization
-    // For now, return success with dummy values
+    if main_handle.is_null() || thread_in_param.is_null() {
+        return CELL_JPGDEC_ERROR_ARG;
+    }
+
     unsafe {
-        if !main_handle.is_null() {
-            (*main_handle).main_handle = 1;
-        }
-        if !thread_out_param.is_null() {
-            (*thread_out_param).version = 0x00010000;
+        let max_main_handle = (*thread_in_param).max_main_handle;
+        
+        // TODO: Use global JpgDecManager instance
+        // For now, create a temporary manager to validate the implementation
+        let mut manager = JpgDecManager::new();
+        match manager.create(max_main_handle) {
+            Ok(id) => {
+                (*main_handle).main_handle = id;
+                if !thread_out_param.is_null() {
+                    (*thread_out_param).version = 0x00010000;
+                }
+                0 // CELL_OK
+            }
+            Err(e) => e,
         }
     }
-    
-    0 // CELL_OK
 }
 
 /// cellJpgDecOpen - Open JPEG stream
@@ -112,22 +268,36 @@ pub fn cell_jpg_dec_open(
 ) -> i32 {
     trace!("cellJpgDecOpen called with main_handle: {}", main_handle);
     
-    // TODO: Implement actual JPEG stream opening
-    // For now, return success with dummy dimensions
+    if sub_handle.is_null() || src.is_null() {
+        return CELL_JPGDEC_ERROR_ARG;
+    }
+
+    // TODO: Use global JpgDecManager instance and parse actual JPEG headers
+    // For now, use dummy dimensions
+    let mut manager = JpgDecManager::new();
+    manager.main_handles.insert(main_handle, JpgDecEntry {
+        id: main_handle,
+        max_main_handle: 1,
+        sub_handles: HashMap::new(),
+        next_sub_id: 1,
+    });
+    
     unsafe {
-        if !sub_handle.is_null() {
-            (*sub_handle).sub_handle = 1;
-        }
-        if !out_param.is_null() {
-            (*out_param).width = 1920;
-            (*out_param).height = 1080;
-            (*out_param).num_components = 3; // RGB
-            (*out_param).color_space = 0; // RGB
-            (*out_param).down_scale = 1;
+        match manager.open(main_handle, 1920, 1080, 3) {
+            Ok(id) => {
+                (*sub_handle).sub_handle = id;
+                if !out_param.is_null() {
+                    (*out_param).width = 1920;
+                    (*out_param).height = 1080;
+                    (*out_param).num_components = 3; // RGB
+                    (*out_param).color_space = 0; // RGB
+                    (*out_param).down_scale = 1;
+                }
+                0 // CELL_OK
+            }
+            Err(e) => e,
         }
     }
-    
-    0 // CELL_OK
 }
 
 /// cellJpgDecReadHeader - Read JPEG header
@@ -200,6 +370,153 @@ pub fn cell_jpg_dec_destroy(main_handle: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_manager_create() {
+        let mut manager = JpgDecManager::new();
+        let result = manager.create(2);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 1);
+    }
+
+    #[test]
+    fn test_manager_create_multiple() {
+        let mut manager = JpgDecManager::new();
+        let id1 = manager.create(2).unwrap();
+        let id2 = manager.create(2).unwrap();
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
+    }
+
+    #[test]
+    fn test_manager_destroy() {
+        let mut manager = JpgDecManager::new();
+        let id = manager.create(2).unwrap();
+        assert!(manager.destroy(id).is_ok());
+    }
+
+    #[test]
+    fn test_manager_destroy_invalid() {
+        let mut manager = JpgDecManager::new();
+        let result = manager.destroy(999);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), CELL_JPGDEC_ERROR_ARG);
+    }
+
+    #[test]
+    fn test_manager_open() {
+        let mut manager = JpgDecManager::new();
+        let main_id = manager.create(2).unwrap();
+        let result = manager.open(main_id, 1920, 1080, 3);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 1);
+    }
+
+    #[test]
+    fn test_manager_open_invalid_main() {
+        let mut manager = JpgDecManager::new();
+        let result = manager.open(999, 1920, 1080, 3);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), CELL_JPGDEC_ERROR_ARG);
+    }
+
+    #[test]
+    fn test_manager_close() {
+        let mut manager = JpgDecManager::new();
+        let main_id = manager.create(2).unwrap();
+        let sub_id = manager.open(main_id, 1920, 1080, 3).unwrap();
+        assert!(manager.close(main_id, sub_id).is_ok());
+    }
+
+    #[test]
+    fn test_manager_close_invalid() {
+        let mut manager = JpgDecManager::new();
+        let main_id = manager.create(2).unwrap();
+        let result = manager.close(main_id, 999);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), CELL_JPGDEC_ERROR_ARG);
+    }
+
+    #[test]
+    fn test_manager_read_header() {
+        let mut manager = JpgDecManager::new();
+        let main_id = manager.create(2).unwrap();
+        let sub_id = manager.open(main_id, 1920, 1080, 3).unwrap();
+        let result = manager.read_header(main_id, sub_id);
+        assert!(result.is_ok());
+        let info = result.unwrap();
+        assert_eq!(info.width, 1920);
+        assert_eq!(info.height, 1080);
+        assert_eq!(info.num_components, 3);
+    }
+
+    #[test]
+    fn test_manager_decode_data() {
+        let mut manager = JpgDecManager::new();
+        let main_id = manager.create(2).unwrap();
+        let sub_id = manager.open(main_id, 1920, 1080, 3).unwrap();
+        let result = manager.decode_data(main_id, sub_id);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_manager_lifecycle() {
+        let mut manager = JpgDecManager::new();
+        
+        // Create main handle
+        let main_id = manager.create(2).unwrap();
+        
+        // Open sub handle
+        let sub_id = manager.open(main_id, 1920, 1080, 3).unwrap();
+        
+        // Read header
+        let info = manager.read_header(main_id, sub_id).unwrap();
+        assert_eq!(info.width, 1920);
+        
+        // Decode
+        assert!(manager.decode_data(main_id, sub_id).is_ok());
+        
+        // Close sub handle
+        assert!(manager.close(main_id, sub_id).is_ok());
+        
+        // Destroy main handle
+        assert!(manager.destroy(main_id).is_ok());
+    }
+
+    #[test]
+    fn test_manager_multiple_sub_handles() {
+        let mut manager = JpgDecManager::new();
+        let main_id = manager.create(2).unwrap();
+        
+        let sub_id1 = manager.open(main_id, 1920, 1080, 3).unwrap();
+        let sub_id2 = manager.open(main_id, 1280, 720, 3).unwrap();
+        
+        assert_eq!(sub_id1, 1);
+        assert_eq!(sub_id2, 2);
+        
+        assert!(manager.close(main_id, sub_id1).is_ok());
+        assert!(manager.close(main_id, sub_id2).is_ok());
+    }
+
+    #[test]
+    fn test_manager_grayscale_image() {
+        let mut manager = JpgDecManager::new();
+        let main_id = manager.create(2).unwrap();
+        let sub_id = manager.open(main_id, 640, 480, 1).unwrap(); // Grayscale
+        
+        let info = manager.read_header(main_id, sub_id).unwrap();
+        assert_eq!(info.num_components, 1);
+    }
+
+    #[test]
+    fn test_manager_cmyk_image() {
+        let mut manager = JpgDecManager::new();
+        let main_id = manager.create(2).unwrap();
+        let sub_id = manager.open(main_id, 800, 600, 4).unwrap(); // CMYK
+        
+        let info = manager.read_header(main_id, sub_id).unwrap();
+        assert_eq!(info.num_components, 4);
+    }
 
     #[test]
     fn test_jpg_dec_create() {
