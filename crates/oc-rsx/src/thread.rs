@@ -7,6 +7,11 @@ use crate::fifo::CommandFifo;
 use crate::methods::MethodHandler;
 use crate::backend::{GraphicsBackend, null::NullBackend};
 
+// Draw command data extraction constants
+const DRAW_FIRST_MASK: u32 = 0xFFFFFF;
+const DRAW_COUNT_SHIFT: u32 = 24;
+const DRAW_COUNT_MASK: u32 = 0xFF;
+
 /// RSX thread state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RsxThreadState {
@@ -124,10 +129,6 @@ impl RsxThread {
 
     /// Draw arrays command
     fn draw_arrays(&mut self, data: u32) {
-        const DRAW_FIRST_MASK: u32 = 0xFFFFFF;
-        const DRAW_COUNT_SHIFT: u32 = 24;
-        const DRAW_COUNT_MASK: u32 = 0xFF;
-        
         let first = data & DRAW_FIRST_MASK;
         let count = (data >> DRAW_COUNT_SHIFT) & DRAW_COUNT_MASK;
         
@@ -139,10 +140,6 @@ impl RsxThread {
 
     /// Draw indexed command
     fn draw_indexed(&mut self, data: u32) {
-        const DRAW_FIRST_MASK: u32 = 0xFFFFFF;
-        const DRAW_COUNT_SHIFT: u32 = 24;
-        const DRAW_COUNT_MASK: u32 = 0xFF;
-        
         let first = data & DRAW_FIRST_MASK;
         let count = (data >> DRAW_COUNT_SHIFT) & DRAW_COUNT_MASK;
         
