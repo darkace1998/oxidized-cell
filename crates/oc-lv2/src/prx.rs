@@ -27,6 +27,23 @@ struct PrxModuleInner {
     entry_point: u64,
     size: usize,
     info: PrxInfo,
+    exports: Vec<PrxSymbol>,
+    imports: Vec<PrxSymbol>,
+}
+
+/// PRX symbol information
+#[derive(Debug, Clone)]
+pub struct PrxSymbol {
+    pub name: String,
+    pub address: u64,
+    pub size: usize,
+    pub symbol_type: PrxSymbolType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrxSymbolType {
+    Function,
+    Data,
 }
 
 /// PRX module information structure
@@ -58,6 +75,8 @@ impl PrxModule {
                 entry_point,
                 size,
                 info: PrxInfo::default(),
+                exports: Vec::new(),
+                imports: Vec::new(),
             }),
         }
     }
@@ -96,6 +115,40 @@ impl PrxModule {
 
     pub fn info(&self) -> PrxInfo {
         self.inner.lock().info.clone()
+    }
+
+    /// Add an exported symbol to the module
+    pub fn add_export(&self, symbol: PrxSymbol) {
+        self.inner.lock().exports.push(symbol);
+    }
+
+    /// Add an imported symbol to the module
+    pub fn add_import(&self, symbol: PrxSymbol) {
+        self.inner.lock().imports.push(symbol);
+    }
+
+    /// Get exported symbols
+    pub fn exports(&self) -> Vec<PrxSymbol> {
+        self.inner.lock().exports.clone()
+    }
+
+    /// Get imported symbols
+    pub fn imports(&self) -> Vec<PrxSymbol> {
+        self.inner.lock().imports.clone()
+    }
+
+    /// Resolve a symbol by name
+    pub fn resolve_symbol(&self, name: &str) -> Option<PrxSymbol> {
+        self.inner.lock()
+            .exports
+            .iter()
+            .find(|s| s.name == name)
+            .cloned()
+    }
+
+    /// Get entry point address
+    pub fn entry_point(&self) -> u64 {
+        self.inner.lock().entry_point
     }
 }
 
@@ -213,6 +266,67 @@ pub mod syscalls {
         let module: Arc<PrxModule> = manager.get(module_id)?;
         Ok(module.info())
     }
+
+    /// sys_prx_register_module - Register module with exports
+    pub fn sys_prx_register_module(
+        manager: &ObjectManager,
+        module_id: ObjectId,
+        exports: Vec<PrxSymbol>,
+    ) -> Result<(), KernelError> {
+        let module: Arc<PrxModule> = manager.get(module_id)?;
+        for export in exports {
+            module.add_export(export);
+        }
+        tracing::info!("Registered exports for module '{}'", module.name());
+        Ok(())
+    }
+
+    /// sys_prx_resolve_symbol - Resolve a symbol across all loaded modules
+    pub fn sys_prx_resolve_symbol(
+        manager: &ObjectManager,
+        symbol_name: &str,
+    ) -> Result<u64, KernelError> {
+        let objects = manager.list();
+        
+        // Search through all PRX modules
+        for obj in objects.iter() {
+            if obj.object_type() == ObjectType::PrxModule {
+                let module: Arc<PrxModule> = manager.get(obj.id())?;
+                if let Some(symbol) = module.resolve_symbol(symbol_name) {
+                    tracing::debug!("Resolved symbol '{}' to address 0x{:x}", symbol_name, symbol.address);
+                    return Ok(symbol.address);
+                }
+            }
+        }
+        
+        Err(KernelError::PermissionDenied)
+    }
+
+    /// sys_prx_link_module - Link a module by resolving its imports
+    pub fn sys_prx_link_module(
+        manager: &ObjectManager,
+        module_id: ObjectId,
+    ) -> Result<(), KernelError> {
+        let module: Arc<PrxModule> = manager.get(module_id)?;
+        let imports = module.imports();
+        
+        let mut resolved_count = 0;
+        for import in imports.iter() {
+            match sys_prx_resolve_symbol(manager, &import.name) {
+                Ok(address) => {
+                    tracing::debug!("Resolved import '{}' to 0x{:x}", import.name, address);
+                    resolved_count += 1;
+                }
+                Err(_) => {
+                    tracing::warn!("Failed to resolve import '{}'", import.name);
+                }
+            }
+        }
+        
+        tracing::info!("Linked module '{}': resolved {}/{} imports", 
+                      module.name(), resolved_count, imports.len());
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -307,6 +421,79 @@ mod tests {
         // Stop first, then unload should work
         syscalls::sys_prx_stop_module(&manager, module_id, 0, 0).unwrap();
         syscalls::sys_prx_unload_module(&manager, module_id, 0).unwrap();
+    }
+
+    #[test]
+    fn test_prx_symbol_resolution() {
+        let manager = ObjectManager::new();
+
+        // Load module
+        let module_id = syscalls::sys_prx_load_module(&manager, "/module.sprx", 0, 0).unwrap();
+
+        // Add some exports
+        let exports = vec![
+            PrxSymbol {
+                name: "test_function".to_string(),
+                address: 0x10000,
+                size: 64,
+                symbol_type: PrxSymbolType::Function,
+            },
+            PrxSymbol {
+                name: "test_data".to_string(),
+                address: 0x20000,
+                size: 128,
+                symbol_type: PrxSymbolType::Data,
+            },
+        ];
+
+        syscalls::sys_prx_register_module(&manager, module_id, exports).unwrap();
+
+        // Resolve symbols
+        let func_addr = syscalls::sys_prx_resolve_symbol(&manager, "test_function").unwrap();
+        assert_eq!(func_addr, 0x10000);
+
+        let data_addr = syscalls::sys_prx_resolve_symbol(&manager, "test_data").unwrap();
+        assert_eq!(data_addr, 0x20000);
+
+        // Try to resolve non-existent symbol
+        let result = syscalls::sys_prx_resolve_symbol(&manager, "nonexistent");
+        assert!(result.is_err());
+
+        syscalls::sys_prx_unload_module(&manager, module_id, 0).unwrap();
+    }
+
+    #[test]
+    fn test_prx_linking() {
+        let manager = ObjectManager::new();
+
+        // Load library module with exports
+        let lib_id = syscalls::sys_prx_load_module(&manager, "/lib.sprx", 0, 0).unwrap();
+        let lib_exports = vec![
+            PrxSymbol {
+                name: "lib_function".to_string(),
+                address: 0x30000,
+                size: 32,
+                symbol_type: PrxSymbolType::Function,
+            },
+        ];
+        syscalls::sys_prx_register_module(&manager, lib_id, lib_exports).unwrap();
+
+        // Load app module with imports
+        let app_id = syscalls::sys_prx_load_module(&manager, "/app.sprx", 0, 0).unwrap();
+        let app: Arc<PrxModule> = manager.get(app_id).unwrap();
+        app.add_import(PrxSymbol {
+            name: "lib_function".to_string(),
+            address: 0,
+            size: 0,
+            symbol_type: PrxSymbolType::Function,
+        });
+
+        // Link the app module
+        syscalls::sys_prx_link_module(&manager, app_id).unwrap();
+
+        // Cleanup
+        syscalls::sys_prx_unload_module(&manager, app_id, 0).unwrap();
+        syscalls::sys_prx_unload_module(&manager, lib_id, 0).unwrap();
     }
 }
 

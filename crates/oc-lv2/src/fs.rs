@@ -186,6 +186,28 @@ impl FileDescriptor {
             0o100644 // Regular file
         };
 
+        // Try to get system times if available
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            stat.atime = metadata.atime() as u64;
+            stat.mtime = metadata.mtime() as u64;
+            stat.ctime = metadata.ctime() as u64;
+        }
+
+        #[cfg(not(unix))]
+        {
+            // Use modified time for all timestamps on non-Unix systems
+            if let Ok(modified) = metadata.modified() {
+                if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
+                    let secs = duration.as_secs();
+                    stat.atime = secs;
+                    stat.mtime = secs;
+                    stat.ctime = secs;
+                }
+            }
+        }
+
         Ok(stat)
     }
 
@@ -383,6 +405,28 @@ pub mod syscalls {
         } else {
             0o100644 // Regular file
         };
+
+        // Add platform-specific timestamp support
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            stat.atime = metadata.atime() as u64;
+            stat.mtime = metadata.mtime() as u64;
+            stat.ctime = metadata.ctime() as u64;
+        }
+
+        #[cfg(not(unix))]
+        {
+            // Use modified time for all timestamps on non-Unix systems
+            if let Ok(modified) = metadata.modified() {
+                if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
+                    let secs = duration.as_secs();
+                    stat.atime = secs;
+                    stat.mtime = secs;
+                    stat.ctime = secs;
+                }
+            }
+        }
 
         Ok(stat)
     }

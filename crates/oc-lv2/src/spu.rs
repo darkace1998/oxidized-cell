@@ -146,6 +146,15 @@ pub struct SpuThread {
 struct SpuThreadState {
     image: Option<SpuImage>,
     status: SpuThreadStatus,
+    local_storage: Vec<u8>,
+    signals: SpuSignals,
+}
+
+/// SPU signal management
+#[derive(Debug, Clone, Copy)]
+struct SpuSignals {
+    signal1: u32,
+    signal2: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,6 +173,11 @@ impl SpuThread {
             inner: Mutex::new(SpuThreadState {
                 image: None,
                 status: SpuThreadStatus::NotInitialized,
+                local_storage: vec![0u8; SPU_LS_SIZE as usize],
+                signals: SpuSignals {
+                    signal1: 0,
+                    signal2: 0,
+                },
             }),
             attributes,
         }
@@ -179,6 +193,55 @@ impl SpuThread {
 
     pub fn get_group_id(&self) -> ObjectId {
         self.group_id
+    }
+
+    /// Write signal to SPU thread
+    pub fn write_signal(&self, signal_reg: u32, value: u32) -> Result<(), KernelError> {
+        let mut state = self.inner.lock();
+        match signal_reg {
+            1 => state.signals.signal1 = value,
+            2 => state.signals.signal2 = value,
+            _ => return Err(KernelError::InvalidId(self.id)),
+        }
+        tracing::debug!("SPU thread {} signal{} = 0x{:x}", self.id, signal_reg, value);
+        Ok(())
+    }
+
+    /// Read signal from SPU thread
+    pub fn read_signal(&self, signal_reg: u32) -> Result<u32, KernelError> {
+        let state = self.inner.lock();
+        match signal_reg {
+            1 => Ok(state.signals.signal1),
+            2 => Ok(state.signals.signal2),
+            _ => Err(KernelError::InvalidId(self.id)),
+        }
+    }
+
+    /// Write to local storage
+    pub fn write_ls(&self, addr: u32, data: &[u8]) -> Result<(), KernelError> {
+        let mut state = self.inner.lock();
+        let addr = addr as usize;
+        
+        if addr + data.len() > state.local_storage.len() {
+            return Err(KernelError::PermissionDenied);
+        }
+        
+        state.local_storage[addr..addr + data.len()].copy_from_slice(data);
+        tracing::debug!("SPU thread {} wrote {} bytes to LS at 0x{:x}", self.id, data.len(), addr);
+        Ok(())
+    }
+
+    /// Read from local storage
+    pub fn read_ls(&self, addr: u32, size: u32) -> Result<Vec<u8>, KernelError> {
+        let state = self.inner.lock();
+        let addr = addr as usize;
+        let size = size as usize;
+        
+        if addr + size > state.local_storage.len() {
+            return Err(KernelError::PermissionDenied);
+        }
+        
+        Ok(state.local_storage[addr..addr + size].to_vec())
     }
 }
 
@@ -286,10 +349,8 @@ pub mod syscalls {
         addr: u32,
         data: &[u8],
     ) -> Result<(), KernelError> {
-        let _thread: Arc<SpuThread> = manager.get(thread_id)?;
-        // In a real implementation, would write to SPU local storage
-        tracing::debug!("SPU thread {} write LS at 0x{:x}, {} bytes", thread_id, addr, data.len());
-        Ok(())
+        let thread: Arc<SpuThread> = manager.get(thread_id)?;
+        thread.write_ls(addr, data)
     }
 
     /// sys_spu_thread_read_ls
@@ -299,10 +360,29 @@ pub mod syscalls {
         addr: u32,
         size: u32,
     ) -> Result<Vec<u8>, KernelError> {
-        let _thread: Arc<SpuThread> = manager.get(thread_id)?;
-        // In a real implementation, would read from SPU local storage
-        tracing::debug!("SPU thread {} read LS at 0x{:x}, {} bytes", thread_id, addr, size);
-        Ok(vec![0u8; size as usize])
+        let thread: Arc<SpuThread> = manager.get(thread_id)?;
+        thread.read_ls(addr, size)
+    }
+
+    /// sys_spu_thread_write_signal
+    pub fn sys_spu_thread_write_signal(
+        manager: &ObjectManager,
+        thread_id: ObjectId,
+        signal_reg: u32,
+        value: u32,
+    ) -> Result<(), KernelError> {
+        let thread: Arc<SpuThread> = manager.get(thread_id)?;
+        thread.write_signal(signal_reg, value)
+    }
+
+    /// sys_spu_thread_read_signal
+    pub fn sys_spu_thread_read_signal(
+        manager: &ObjectManager,
+        thread_id: ObjectId,
+        signal_reg: u32,
+    ) -> Result<u32, KernelError> {
+        let thread: Arc<SpuThread> = manager.get(thread_id)?;
+        thread.read_signal(signal_reg)
     }
 }
 
@@ -382,6 +462,41 @@ mod tests {
         // Read from LS
         let read_data = syscalls::sys_spu_thread_read_ls(&manager, thread_id, 0x100, 4).unwrap();
         assert_eq!(read_data.len(), 4);
+        assert_eq!(read_data, data);
+
+        syscalls::sys_spu_thread_group_destroy(&manager, group_id).unwrap();
+    }
+
+    #[test]
+    fn test_spu_signals() {
+        let manager = ObjectManager::new();
+        let group_id = syscalls::sys_spu_thread_group_create(
+            &manager,
+            SpuThreadGroupAttributes::default(),
+            1,
+            100,
+        )
+        .unwrap();
+
+        let thread_id = syscalls::sys_spu_thread_initialize(
+            &manager,
+            group_id,
+            0,
+            SpuThreadAttributes::default(),
+        )
+        .unwrap();
+
+        syscalls::sys_spu_image_open(&manager, thread_id, 0x1000).unwrap();
+
+        // Write and read signal1
+        syscalls::sys_spu_thread_write_signal(&manager, thread_id, 1, 0x12345678).unwrap();
+        let signal1 = syscalls::sys_spu_thread_read_signal(&manager, thread_id, 1).unwrap();
+        assert_eq!(signal1, 0x12345678);
+
+        // Write and read signal2
+        syscalls::sys_spu_thread_write_signal(&manager, thread_id, 2, 0xABCDEF00).unwrap();
+        let signal2 = syscalls::sys_spu_thread_read_signal(&manager, thread_id, 2).unwrap();
+        assert_eq!(signal2, 0xABCDEF00);
 
         syscalls::sys_spu_thread_group_destroy(&manager, group_id).unwrap();
     }
