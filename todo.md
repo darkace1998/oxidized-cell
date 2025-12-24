@@ -24,7 +24,7 @@ The primary focus is on implementing HLE modules and completing the game loading
 | Input System | ✅ Complete | 80% | Medium |
 | VFS | ✅ Complete | 80% | Medium |
 | ELF/Game Loader | ✅ Complete | 90% | Medium |
-| HLE Modules | 🚧 In Progress | 10% | **Critical** |
+| HLE Modules | 🚧 In Progress | 15% | **Critical** |
 | User Interface | 🚧 In Progress | 15% | Medium |
 | Game Loading Pipeline | ❌ Not Started | 0% | **Critical** |
 
@@ -85,9 +85,9 @@ The HLE modules are essential for game execution. Most functions currently retur
 - [ ] Store and manage file handle mappings
 
 #### cellAudio (Audio Output)
-- [ ] Bridge to oc-audio subsystem
-- [ ] Implement audio port management
-- [ ] Handle multi-channel audio output
+- [x] Bridge to oc-audio subsystem (TODO markers added)
+- [x] Implement audio port management (complete with open/close/start/stop)
+- [x] Handle multi-channel audio output (supports 2ch and 8ch)
 
 #### Image Decoders
 - [ ] **cellPngDec**: Create decoder instance, parse headers, decode images
@@ -280,7 +280,8 @@ The HLE modules are essential for game execution. Most functions currently retur
 
 ## 📌 Notes
 
-- All HLE module functions currently return stub values (CELL_OK)
+- Most HLE module functions currently return stub values (CELL_OK), with proper structures in place
+- cellAudio module now has full API implementation with AudioManager
 - Memory addresses passed to HLE functions need proper read/write implementation
 - The game loading pipeline needs to connect the loader to the emulator runner
 - RSX backend has infrastructure but needs actual draw command recording
