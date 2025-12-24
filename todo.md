@@ -17,7 +17,7 @@ The primary focus is on implementing HLE modules and completing the game loading
 | Memory Management | ✅ Complete | 100% | - |
 | PPU Interpreter | ✅ Complete | 95% | Low |
 | SPU Interpreter | ✅ Complete | 95% | Low |
-| RSX/Vulkan Backend | 🔨 Mostly Complete | 75% | Medium |
+| RSX/Vulkan Backend | 🔨 Mostly Complete | 85% | Medium |
 | JIT Compilation | ✅ Complete | 95% | Low |
 | LV2 Kernel | 🔨 Mostly Complete | 75% | High |
 | Audio System | ✅ Complete | 85% | Medium |
@@ -143,13 +143,13 @@ The HLE modules are essential for game execution. Most functions currently retur
 
 ## 🔧 Medium Priority Tasks
 
-### RSX/Vulkan Backend (75% Complete)
+### RSX/Vulkan Backend (85% Complete)
 
-- [ ] Create actual swapchain images and views
-- [ ] Create actual depth buffer
-- [ ] Record draw commands into command buffer
-- [ ] Record indexed draw commands
-- [ ] Configure vertex input state properly
+- [x] Create actual swapchain images and views
+- [x] Create actual depth buffer
+- [x] Record draw commands into command buffer
+- [x] Record indexed draw commands
+- [x] Configure vertex input state properly
 - [ ] Bind texture descriptor sets
 - [ ] Implement vertex buffer submission to backend
 
