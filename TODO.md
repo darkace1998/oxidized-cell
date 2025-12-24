@@ -1,25 +1,34 @@
 # oxidized-cell Development TODO
 
 **Last Updated**: December 24, 2024  
-**Project Status**: Core Integration Complete - Ready for Game Loading
+**Project Status**: Game Loading Infrastructure In Progress
 
 ## Executive Summary
 
-The oxidized-cell PS3 emulator is a hybrid Rust/C++ project implementing a PS3 emulator with ~30,000 lines of Rust code across 142 files and ~1,300 lines of C++ code across 7 files. **Major milestone achieved**: Phase 13 (Core Integration) is now complete, meaning all subsystems are integrated and the emulator has a functional execution loop. The project is now ready for game loading implementation and can begin testing with real PS3 homebrew applications.
+The oxidized-cell PS3 emulator is a hybrid Rust/C++ project implementing a PS3 emulator with ~30,000 lines of Rust code across 142+ files and ~1,300 lines of C++ code across 7 files. **Major milestone achieved**: Phase 13 (Core Integration) is complete, and Phase 14 (Game Loading) is now in progress with core ELF/SELF loading and thread initialization implemented. The emulator can now load PS3 executables into memory and set up initial thread state.
 
-### 🎉 Recent Major Achievement: Phase 13 Complete!
+### 🎉 Recent Achievement: Game Loading Pipeline Started!
 
-**What was accomplished:**
-- ✅ Created `EmulatorRunner` that integrates all subsystems
-- ✅ Implemented priority-based thread scheduler with time-slicing
-- ✅ Connected PPU/SPU threads to memory manager
-- ✅ Integrated RSX graphics with backend system
-- ✅ Wired up LV2 syscalls to PPU execution
-- ✅ Built frame-based execution loop (60 FPS)
-- ✅ All 21 integration tests passing
+**What was accomplished (Phase 14 - Game Loading):**
+- ✅ Created `GameLoader` struct in `crates/oc-integration/src/loader.rs`
+- ✅ Implemented ELF/SELF file loading from disk
+- ✅ Added automatic SELF detection and extraction
+- ✅ Load ELF segments into emulator memory
+- ✅ Parse entry point and TOC (Table of Contents) addresses
+- ✅ Zero-initialize BSS sections
+- ✅ Created main PPU thread with correct entry point
+- ✅ Set up initial register state (R1=stack, R2=TOC, R3-R5=argc/argv/envp)
+- ✅ Added `load_game()` method to `EmulatorRunner`
+- ✅ All 7 integration tests passing (including new loader tests)
 
 **What this means:**
-The emulator now has a working "heart" - it can create threads, schedule them, execute PowerPC and SPU instructions, handle system calls, and coordinate graphics rendering. This is the foundation needed to run actual PS3 software. The next step is implementing game loading (Phase 14) to load homebrew applications into the emulator's memory and start them running.
+The emulator can now load PS3 ELF executables from disk, copy them into memory, and create a PPU thread ready to execute from the entry point. This completes the core infrastructure needed to run PS3 homebrew applications. The next steps are loading PRX libraries and testing with actual PS3 homebrew.
+
+**Previous Achievement (Phase 13 - Core Integration):**
+- ✅ `EmulatorRunner` integrating all subsystems
+- ✅ Priority-based thread scheduler with time-slicing
+- ✅ Frame-based execution loop (60 FPS)
+- ✅ LV2 syscall integration
 
 ### Current Completion Status
 
@@ -38,7 +47,7 @@ The emulator now has a working "heart" - it can create threads, schedule them, e
 | Phase 11: HLE Modules | 🚧 In Progress | 20% | CRITICAL |
 | Phase 12: JIT Compilation | ✅ Complete | 50% | HIGH |
 | Phase 13: Integration & Testing | ✅ Complete | 100% | - |
-| Phase 14: Game Loading | ❌ Not Started | 0% | CRITICAL |
+| Phase 14: Game Loading | 🚧 In Progress | 40% | CRITICAL |
 | Phase 15: User Interface | 🚧 In Progress | 15% | MEDIUM |
 | Phase 16: Debugging Tools | ❌ Not Started | 0% | MEDIUM |
 
@@ -47,18 +56,18 @@ The emulator now has a working "heart" - it can create threads, schedule them, e
 ## Immediate Priorities (Next 1-3 Months)
 
 ### 🔴 CRITICAL: Load and Run PS3 Games
-With Phase 13 (Core Integration) now complete, the emulator has a functional execution loop. The next critical priority is implementing game loading to test with real PS3 applications.
+With Phase 13 (Core Integration) now complete, the emulator has a functional execution loop. The game loading infrastructure (Phase 14) is now partially complete, enabling ELF/SELF loading and thread initialization.
 
-1. **Implement Game Loading Pipeline (Phase 14 - NEW CRITICAL PRIORITY)**
-   - [ ] Create game loader that loads ELF/SELF into memory
+1. **Complete Game Loading Pipeline (Phase 14 - IN PROGRESS)**
+   - [x] Create game loader that loads ELF/SELF into memory
+   - [x] Initialize PPU thread with entry point from ELF
+   - [x] Set up initial register state and stack
    - [ ] Load PRX libraries and resolve dependencies
    - [ ] Apply relocations to loaded code
-   - [ ] Initialize PPU thread with entry point from ELF
-   - [ ] Set up initial register state and stack
    - [ ] Configure thread-local storage (TLS)
    - [ ] Test with simple PS3 homebrew (Hello World)
-   - **Estimated effort**: 1-2 weeks
-   - **Blockers**: None - all dependencies complete!
+   - **Estimated effort**: 1-2 weeks remaining
+   - **Blockers**: None - core loading complete!
 
 2. **Complete Critical LV2 Syscalls (Phase 6) - UPDATED**
 2. **Complete Critical LV2 Syscalls (Phase 6) - UPDATED**
@@ -601,22 +610,34 @@ EmulatorRunner
 
 ---
 
-### Phase 14: Game Loading ❌ NOT STARTED (0%) - NEW CRITICAL PRIORITY
-**Status**: Next immediate priority after Phase 13 completion  
-**Files**: To be created in `crates/oc-integration/src/loader.rs`
+### Phase 14: Game Loading 🚧 IN PROGRESS (40%)
+**Status**: Core game loading pipeline implemented  
+**Files**: `crates/oc-integration/src/loader.rs`
+
+#### Completed ✅
+- [x] **ELF/SELF Loading Pipeline**
+  - [x] Create GameLoader struct that uses existing ElfLoader
+  - [x] Load ELF/SELF file from disk
+  - [x] Parse program headers and sections
+  - [x] Allocate memory regions based on ELF segments
+  - [x] Copy ELF segments into emulator memory
+  - [x] Zero-initialize BSS sections
+  - [x] Parse and store entry point address
+  - [x] SELF file detection and extraction support
+
+- [x] **Thread Initialization**
+  - [x] Create initial PPU thread from ELF entry point
+  - [x] Set up initial register state (R1=stack, R2=TOC, etc.)
+  - [x] Allocate and configure stack
+  - [x] Set program counter to entry point
+  - [x] Initialize argc/argv for main function (basic)
+
+- [x] **Integration with EmulatorRunner**
+  - [x] Add load_game() method to EmulatorRunner
+  - [x] Integrate with existing thread creation
+  - [x] Add error handling for loading failures
 
 #### TODO 🔧
-- [ ] **ELF/SELF Loading Pipeline**
-  - [ ] Create GameLoader struct that uses existing ElfLoader
-  - [ ] Load ELF/SELF file from disk
-  - [ ] Parse program headers and sections
-  - [ ] Allocate memory regions based on ELF segments
-  - [ ] Copy ELF segments into emulator memory
-  - [ ] Zero-initialize BSS sections
-  - [ ] Parse and store entry point address
-  - **Priority**: CRITICAL
-  - **Estimated effort**: 3-5 days
-
 - [ ] **PRX Library Loading**
   - [ ] Load required PRX libraries
   - [ ] Resolve import/export symbols
@@ -626,22 +647,10 @@ EmulatorRunner
   - **Priority**: CRITICAL
   - **Estimated effort**: 1 week
 
-- [ ] **Thread Initialization**
-  - [ ] Create initial PPU thread from ELF entry point
-  - [ ] Set up initial register state (R1=stack, R2=TOC, etc.)
-  - [ ] Allocate and configure stack
-  - [ ] Set program counter to entry point
+- [ ] **Advanced Thread Initialization**
   - [ ] Configure thread-local storage (TLS)
-  - [ ] Initialize argc/argv for main function
-  - **Priority**: CRITICAL
-  - **Estimated effort**: 3-5 days
-
-- [ ] **Integration with EmulatorRunner**
-  - [ ] Add load_game() method to EmulatorRunner
-  - [ ] Integrate with existing thread creation
-  - [ ] Add error handling for loading failures
-  - [ ] Create example that loads and runs homebrew
-  - **Priority**: CRITICAL
+  - [ ] Full argc/argv initialization with command line arguments
+  - **Priority**: MEDIUM
   - **Estimated effort**: 2-3 days
 
 - [ ] **Testing**
@@ -649,10 +658,11 @@ EmulatorRunner
   - [ ] Test with simple console output programs
   - [ ] Validate memory layout matches PS3
   - [ ] Test symbol resolution
+  - [ ] Create example that loads and runs homebrew
   - **Priority**: HIGH
   - **Estimated effort**: 1 week
 
-**Total Estimated Effort**: 3-4 weeks
+**Remaining Estimated Effort**: 2-3 weeks
 
 ---
 
