@@ -7,6 +7,11 @@ use crate::fifo::CommandFifo;
 use crate::methods::MethodHandler;
 use crate::backend::{GraphicsBackend, null::NullBackend};
 
+// Draw command data extraction constants
+const DRAW_FIRST_MASK: u32 = 0xFFFFFF;
+const DRAW_COUNT_SHIFT: u32 = 24;
+const DRAW_COUNT_MASK: u32 = 0xFF;
+
 /// RSX thread state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RsxThreadState {
@@ -86,6 +91,16 @@ impl RsxThread {
                     self.flush_vertices();
                 }
             }
+            // NV4097_DRAW_ARRAYS
+            0x1810 => {
+                self.draw_arrays(data);
+                return;
+            }
+            // NV4097_DRAW_INDEX_ARRAY
+            0x1814 => {
+                self.draw_indexed(data);
+                return;
+            }
             _ => {}
         }
         
@@ -110,6 +125,44 @@ impl RsxThread {
             self.gfx_state.clear_depth,
             self.gfx_state.clear_stencil,
         );
+    }
+
+    /// Draw arrays command
+    fn draw_arrays(&mut self, data: u32) {
+        let first = data & DRAW_FIRST_MASK;
+        let count = (data >> DRAW_COUNT_SHIFT) & DRAW_COUNT_MASK;
+        
+        tracing::trace!("Draw arrays: first={}, count={}", first, count);
+        
+        let primitive = self.convert_primitive_type();
+        self.backend.draw_arrays(primitive, first, count);
+    }
+
+    /// Draw indexed command
+    fn draw_indexed(&mut self, data: u32) {
+        let first = data & DRAW_FIRST_MASK;
+        let count = (data >> DRAW_COUNT_SHIFT) & DRAW_COUNT_MASK;
+        
+        tracing::trace!("Draw indexed: first={}, count={}", first, count);
+        
+        let primitive = self.convert_primitive_type();
+        self.backend.draw_indexed(primitive, first, count);
+    }
+
+    /// Convert RSX primitive type to backend format
+    fn convert_primitive_type(&self) -> crate::backend::PrimitiveType {
+        use crate::backend::PrimitiveType;
+        match self.gfx_state.primitive_type {
+            1 => PrimitiveType::Points,
+            2 => PrimitiveType::Lines,
+            3 => PrimitiveType::LineLoop,
+            4 => PrimitiveType::LineStrip,
+            5 => PrimitiveType::Triangles,
+            6 => PrimitiveType::TriangleStrip,
+            7 => PrimitiveType::TriangleFan,
+            8 => PrimitiveType::Quads,
+            _ => PrimitiveType::Triangles, // Default
+        }
     }
 
     /// Flush accumulated vertices

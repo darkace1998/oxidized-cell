@@ -2,7 +2,8 @@
 //!
 //! This module contains the Vulkan implementation for RSX rendering.
 
-use super::GraphicsBackend;
+use super::{GraphicsBackend, PrimitiveType};
+use crate::vertex::VertexAttribute;
 use ash::vk;
 use std::ffi::CString;
 
@@ -22,12 +23,32 @@ pub struct VulkanBackend {
     graphics_queue_family: u32,
     /// Command pool for graphics commands
     command_pool: Option<vk::CommandPool>,
+    /// Command buffers for each frame in flight
+    command_buffers: Vec<vk::CommandBuffer>,
     /// Current command buffer
     current_cmd_buffer: Option<vk::CommandBuffer>,
     /// Current render pass
     render_pass: Option<vk::RenderPass>,
     /// Current framebuffer
     framebuffer: Option<vk::Framebuffer>,
+    /// Render target images
+    render_images: Vec<vk::Image>,
+    /// Render target image views
+    render_image_views: Vec<vk::ImageView>,
+    /// Depth image
+    depth_image: Option<vk::Image>,
+    /// Depth image view
+    depth_image_view: Option<vk::ImageView>,
+    /// Synchronization: Image available semaphores
+    image_available_semaphores: Vec<vk::Semaphore>,
+    /// Synchronization: Render finished semaphores
+    render_finished_semaphores: Vec<vk::Semaphore>,
+    /// Synchronization: In-flight fences
+    in_flight_fences: Vec<vk::Fence>,
+    /// Current frame index
+    current_frame: usize,
+    /// Maximum frames in flight
+    max_frames_in_flight: usize,
     /// Whether backend is initialized
     initialized: bool,
 }
@@ -35,6 +56,11 @@ pub struct VulkanBackend {
 impl VulkanBackend {
     /// Create a new Vulkan backend
     pub fn new() -> Self {
+        Self::with_frames_in_flight(2)
+    }
+
+    /// Create a new Vulkan backend with specified frames in flight
+    pub fn with_frames_in_flight(max_frames: usize) -> Self {
         Self {
             entry: None,
             instance: None,
@@ -43,9 +69,19 @@ impl VulkanBackend {
             graphics_queue: None,
             graphics_queue_family: 0,
             command_pool: None,
+            command_buffers: Vec::new(),
             current_cmd_buffer: None,
             render_pass: None,
             framebuffer: None,
+            render_images: Vec::new(),
+            render_image_views: Vec::new(),
+            depth_image: None,
+            depth_image_view: None,
+            image_available_semaphores: Vec::new(),
+            render_finished_semaphores: Vec::new(),
+            in_flight_fences: Vec::new(),
+            current_frame: 0,
+            max_frames_in_flight: max_frames,
             initialized: false,
         }
     }
@@ -202,6 +238,67 @@ impl VulkanBackend {
                 .map_err(|e| format!("Failed to create render pass: {:?}", e))
         }
     }
+
+    /// Create synchronization primitives for frame synchronization
+    fn create_sync_objects(
+        device: &ash::Device,
+        count: usize,
+    ) -> Result<(Vec<vk::Semaphore>, Vec<vk::Semaphore>, Vec<vk::Fence>), String> {
+        let semaphore_info = vk::SemaphoreCreateInfo::default();
+        let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
+
+        unsafe {
+            let mut image_available = Vec::with_capacity(count);
+            let mut render_finished = Vec::with_capacity(count);
+            let mut fences = Vec::with_capacity(count);
+
+            for _ in 0..count {
+                image_available.push(
+                    device
+                        .create_semaphore(&semaphore_info, None)
+                        .map_err(|e| format!("Failed to create semaphore: {:?}", e))?,
+                );
+                render_finished.push(
+                    device
+                        .create_semaphore(&semaphore_info, None)
+                        .map_err(|e| format!("Failed to create semaphore: {:?}", e))?,
+                );
+                fences.push(
+                    device
+                        .create_fence(&fence_info, None)
+                        .map_err(|e| format!("Failed to create fence: {:?}", e))?,
+                );
+            }
+
+            Ok((image_available, render_finished, fences))
+        }
+    }
+
+    /// Create render target images and views
+    fn create_render_targets(
+        _device: &ash::Device,
+        _width: u32,
+        _height: u32,
+    ) -> Result<(Vec<vk::Image>, Vec<vk::ImageView>), String> {
+        // For now, create a single render target
+        // In a real implementation, this would be tied to a swapchain
+        let images = Vec::new();
+        let views = Vec::new();
+
+        // TODO: Create actual images and views when swapchain is implemented
+        Ok((images, views))
+    }
+
+    /// Create depth buffer
+    fn create_depth_buffer(
+        _device: &ash::Device,
+        _width: u32,
+        _height: u32,
+    ) -> Result<(vk::Image, vk::ImageView), String> {
+        // TODO: Create actual depth buffer
+        // For now, return placeholder nulls
+        Ok((vk::Image::null(), vk::ImageView::null()))
+    }
 }
 
 impl Default for VulkanBackend {
@@ -237,11 +334,30 @@ impl GraphicsBackend for VulkanBackend {
         // Create command pool
         let command_pool = Self::create_command_pool(&device, graphics_queue_family)?;
 
-        // Allocate command buffer
-        let cmd_buffer = Self::allocate_command_buffer(&device, command_pool)?;
+        // Allocate command buffers for each frame in flight
+        let alloc_info = vk::CommandBufferAllocateInfo::default()
+            .command_pool(command_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(self.max_frames_in_flight as u32);
+
+        let command_buffers = unsafe {
+            device
+                .allocate_command_buffers(&alloc_info)
+                .map_err(|e| format!("Failed to allocate command buffers: {:?}", e))?
+        };
 
         // Create render pass
         let render_pass = Self::create_render_pass(&device)?;
+
+        // Create synchronization objects
+        let (image_available, render_finished, fences) =
+            Self::create_sync_objects(&device, self.max_frames_in_flight)?;
+
+        // Create render targets (placeholder for now)
+        let (render_images, render_image_views) = Self::create_render_targets(&device, 1280, 720)?;
+
+        // Create depth buffer (placeholder for now)
+        let (depth_image, depth_image_view) = Self::create_depth_buffer(&device, 1280, 720)?;
 
         self.entry = Some(entry);
         self.instance = Some(instance);
@@ -250,8 +366,16 @@ impl GraphicsBackend for VulkanBackend {
         self.graphics_queue = Some(graphics_queue);
         self.graphics_queue_family = graphics_queue_family;
         self.command_pool = Some(command_pool);
-        self.current_cmd_buffer = Some(cmd_buffer);
+        self.command_buffers = command_buffers.clone();
+        self.current_cmd_buffer = Some(command_buffers[0]);
         self.render_pass = Some(render_pass);
+        self.image_available_semaphores = image_available;
+        self.render_finished_semaphores = render_finished;
+        self.in_flight_fences = fences;
+        self.render_images = render_images;
+        self.render_image_views = render_image_views;
+        self.depth_image = Some(depth_image);
+        self.depth_image_view = Some(depth_image_view);
         self.initialized = true;
 
         tracing::info!("Vulkan backend initialized successfully");
@@ -268,6 +392,29 @@ impl GraphicsBackend for VulkanBackend {
         unsafe {
             if let Some(device) = &self.device {
                 device.device_wait_idle().ok();
+
+                // Destroy synchronization objects
+                for semaphore in self.image_available_semaphores.drain(..) {
+                    device.destroy_semaphore(semaphore, None);
+                }
+                for semaphore in self.render_finished_semaphores.drain(..) {
+                    device.destroy_semaphore(semaphore, None);
+                }
+                for fence in self.in_flight_fences.drain(..) {
+                    device.destroy_fence(fence, None);
+                }
+
+                // Destroy render target views
+                for view in self.render_image_views.drain(..) {
+                    device.destroy_image_view(view, None);
+                }
+
+                // Destroy depth resources
+                if let Some(view) = self.depth_image_view.take() {
+                    if view != vk::ImageView::null() {
+                        device.destroy_image_view(view, None);
+                    }
+                }
 
                 if let Some(render_pass) = self.render_pass.take() {
                     device.destroy_render_pass(render_pass, None);
@@ -294,6 +441,9 @@ impl GraphicsBackend for VulkanBackend {
         self.physical_device = None;
         self.graphics_queue = None;
         self.current_cmd_buffer = None;
+        self.command_buffers.clear();
+        self.render_images.clear();
+        self.depth_image = None;
         self.initialized = false;
 
         tracing::info!("Vulkan backend shut down");
@@ -304,7 +454,25 @@ impl GraphicsBackend for VulkanBackend {
             return;
         }
 
-        if let (Some(device), Some(cmd_buffer)) = (&self.device, self.current_cmd_buffer) {
+        if let Some(device) = &self.device {
+            // Wait for the current frame's fence
+            let fence = self.in_flight_fences[self.current_frame];
+            unsafe {
+                if let Err(e) = device.wait_for_fences(&[fence], true, u64::MAX) {
+                    tracing::error!("Failed to wait for fence: {:?}", e);
+                    return;
+                }
+                if let Err(e) = device.reset_fences(&[fence]) {
+                    tracing::error!("Failed to reset fence: {:?}", e);
+                    return;
+                }
+            }
+
+            // Get current command buffer
+            let cmd_buffer = self.command_buffers[self.current_frame];
+            self.current_cmd_buffer = Some(cmd_buffer);
+
+            // Begin recording
             let begin_info = vk::CommandBufferBeginInfo::default()
                 .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
@@ -330,17 +498,26 @@ impl GraphicsBackend for VulkanBackend {
                     return;
                 }
 
-                let cmd_buffers = [cmd_buffer];
-                let submit_info = vk::SubmitInfo::default().command_buffers(&cmd_buffers);
+                // Set up synchronization
+                let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
+                let signal_semaphores = [self.render_finished_semaphores[self.current_frame]];
+                let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
 
-                if let Err(e) = device.queue_submit(queue, &[submit_info], vk::Fence::null()) {
+                let cmd_buffers = [cmd_buffer];
+                let submit_info = vk::SubmitInfo::default()
+                    .wait_semaphores(&wait_semaphores)
+                    .wait_dst_stage_mask(&wait_stages)
+                    .command_buffers(&cmd_buffers)
+                    .signal_semaphores(&signal_semaphores);
+
+                let fence = self.in_flight_fences[self.current_frame];
+                if let Err(e) = device.queue_submit(queue, &[submit_info], fence) {
                     tracing::error!("Failed to submit command buffer: {:?}", e);
                     return;
                 }
 
-                if let Err(e) = device.queue_wait_idle(queue) {
-                    tracing::error!("Failed to wait for queue idle: {:?}", e);
-                }
+                // Advance to next frame
+                self.current_frame = (self.current_frame + 1) % self.max_frames_in_flight;
             }
         }
     }
@@ -360,6 +537,112 @@ impl GraphicsBackend for VulkanBackend {
         // Clear operations would be recorded into the command buffer
         // In a real implementation, this would set up clear values for the render pass
     }
+
+    fn draw_arrays(&mut self, primitive: PrimitiveType, first: u32, count: u32) {
+        if !self.initialized {
+            return;
+        }
+
+        tracing::trace!(
+            "Draw arrays: primitive={:?}, first={}, count={}",
+            primitive,
+            first,
+            count
+        );
+
+        // TODO: Record draw command into command buffer
+        // This would involve binding vertex buffers, setting primitive topology,
+        // and issuing vkCmdDraw
+    }
+
+    fn draw_indexed(&mut self, primitive: PrimitiveType, first: u32, count: u32) {
+        if !self.initialized {
+            return;
+        }
+
+        tracing::trace!(
+            "Draw indexed: primitive={:?}, first={}, count={}",
+            primitive,
+            first,
+            count
+        );
+
+        // TODO: Record indexed draw command into command buffer
+        // This would involve binding index buffer and issuing vkCmdDrawIndexed
+    }
+
+    fn set_vertex_attributes(&mut self, attributes: &[VertexAttribute]) {
+        if !self.initialized {
+            return;
+        }
+
+        tracing::trace!("Set vertex attributes: count={}", attributes.len());
+
+        // TODO: Configure vertex input state
+        // This would update the pipeline's vertex input state
+    }
+
+    fn bind_texture(&mut self, slot: u32, offset: u32) {
+        if !self.initialized {
+            return;
+        }
+
+        tracing::trace!("Bind texture: slot={}, offset=0x{:08x}", slot, offset);
+
+        // TODO: Bind texture descriptor set
+        // This would update descriptor sets with the texture at the given offset
+    }
+
+    fn set_viewport(&mut self, x: f32, y: f32, width: f32, height: f32, min_depth: f32, max_depth: f32) {
+        if !self.initialized {
+            return;
+        }
+
+        tracing::trace!(
+            "Set viewport: x={}, y={}, width={}, height={}, depth=[{}, {}]",
+            x, y, width, height, min_depth, max_depth
+        );
+
+        if let (Some(device), Some(cmd_buffer)) = (&self.device, self.current_cmd_buffer) {
+            let viewport = vk::Viewport {
+                x,
+                y,
+                width,
+                height,
+                min_depth,
+                max_depth,
+            };
+
+            unsafe {
+                device.cmd_set_viewport(cmd_buffer, 0, &[viewport]);
+            }
+        }
+    }
+
+    fn set_scissor(&mut self, x: u32, y: u32, width: u32, height: u32) {
+        if !self.initialized {
+            return;
+        }
+
+        tracing::trace!(
+            "Set scissor: x={}, y={}, width={}, height={}",
+            x, y, width, height
+        );
+
+        if let (Some(device), Some(cmd_buffer)) = (&self.device, self.current_cmd_buffer) {
+            let scissor = vk::Rect2D {
+                offset: vk::Offset2D {
+                    x: x as i32,
+                    y: y as i32,
+                },
+                extent: vk::Extent2D { width, height },
+            };
+
+            unsafe {
+                device.cmd_set_scissor(cmd_buffer, 0, &[scissor]);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -370,6 +653,14 @@ mod tests {
     fn test_vulkan_backend_creation() {
         let backend = VulkanBackend::new();
         assert!(!backend.initialized);
+        assert_eq!(backend.max_frames_in_flight, 2);
+    }
+
+    #[test]
+    fn test_vulkan_backend_with_frames() {
+        let backend = VulkanBackend::with_frames_in_flight(3);
+        assert!(!backend.initialized);
+        assert_eq!(backend.max_frames_in_flight, 3);
     }
 
     #[test]
@@ -380,6 +671,10 @@ mod tests {
         match backend.init() {
             Ok(_) => {
                 assert!(backend.initialized);
+                assert_eq!(backend.command_buffers.len(), 2);
+                assert_eq!(backend.image_available_semaphores.len(), 2);
+                assert_eq!(backend.render_finished_semaphores.len(), 2);
+                assert_eq!(backend.in_flight_fences.len(), 2);
                 backend.shutdown();
                 assert!(!backend.initialized);
             }
@@ -388,5 +683,17 @@ mod tests {
                 tracing::warn!("Vulkan init failed (expected in CI): {}", e);
             }
         }
+    }
+
+    #[test]
+    fn test_draw_commands_without_init() {
+        use crate::backend::PrimitiveType;
+        let mut backend = VulkanBackend::new();
+        
+        // These should not crash even if backend is not initialized
+        backend.draw_arrays(PrimitiveType::Triangles, 0, 3);
+        backend.draw_indexed(PrimitiveType::Triangles, 0, 3);
+        backend.set_viewport(0.0, 0.0, 800.0, 600.0, 0.0, 1.0);
+        backend.set_scissor(0, 0, 800, 600);
     }
 }

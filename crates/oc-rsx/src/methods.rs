@@ -217,6 +217,18 @@ impl MethodHandler {
             NV4097_SET_SHADER_PROGRAM => {
                 state.fragment_program_addr = data;
             }
+            NV4097_SET_VERTEX_ATTRIB_INPUT_MASK => {
+                state.vertex_attrib_input_mask = data;
+            }
+            NV4097_SET_VERTEX_ATTRIB_OUTPUT_MASK => {
+                state.vertex_attrib_output_mask = data;
+            }
+
+            // Draw commands - These need special handling
+            NV4097_DRAW_ARRAYS | NV4097_DRAW_INDEX_ARRAY | NV4097_INLINE_ARRAY => {
+                // These are handled by the RSX thread, not just state updates
+                tracing::trace!("Draw command: method=0x{:04X}, data=0x{:08X}", method, data);
+            }
 
             // Draw commands
             NV4097_SET_BEGIN_END => {
@@ -226,8 +238,53 @@ impl MethodHandler {
             }
 
             _ => {
-                // Unknown or unimplemented method
-                tracing::trace!("Unimplemented NV4097 method: 0x{:04X}", method);
+                // Check for vertex attribute array ranges
+                if method >= NV4097_SET_VERTEX_DATA_ARRAY_FORMAT 
+                    && method < NV4097_SET_VERTEX_DATA_ARRAY_FORMAT + 16 {
+                    let index = (method - NV4097_SET_VERTEX_DATA_ARRAY_FORMAT) as usize;
+                    if index < state.vertex_attrib_format.len() {
+                        state.vertex_attrib_format[index] = data;
+                    }
+                } else if method >= NV4097_SET_VERTEX_DATA_ARRAY_OFFSET 
+                    && method < NV4097_SET_VERTEX_DATA_ARRAY_OFFSET + 16 {
+                    let index = (method - NV4097_SET_VERTEX_DATA_ARRAY_OFFSET) as usize;
+                    if index < state.vertex_attrib_offset.len() {
+                        state.vertex_attrib_offset[index] = data;
+                    }
+                }
+                // Check for texture ranges (texture methods are spaced 0x20 apart)
+                else if method >= NV4097_SET_TEXTURE_OFFSET 
+                    && method < NV4097_SET_TEXTURE_OFFSET + (16 * 0x20) 
+                    && (method - NV4097_SET_TEXTURE_OFFSET) % 0x20 == 0 {
+                    let index = ((method - NV4097_SET_TEXTURE_OFFSET) / 0x20) as usize;
+                    if index < state.texture_offset.len() {
+                        state.texture_offset[index] = data;
+                    }
+                } else if method >= NV4097_SET_TEXTURE_FORMAT 
+                    && method < NV4097_SET_TEXTURE_FORMAT + (16 * 0x20) 
+                    && (method - NV4097_SET_TEXTURE_FORMAT) % 0x20 == 0 {
+                    let index = ((method - NV4097_SET_TEXTURE_FORMAT) / 0x20) as usize;
+                    if index < state.texture_format.len() {
+                        state.texture_format[index] = data;
+                    }
+                } else if method >= NV4097_SET_TEXTURE_CONTROL0 
+                    && method < NV4097_SET_TEXTURE_CONTROL0 + (16 * 0x20) 
+                    && (method - NV4097_SET_TEXTURE_CONTROL0) % 0x20 == 0 {
+                    let index = ((method - NV4097_SET_TEXTURE_CONTROL0) / 0x20) as usize;
+                    if index < state.texture_control.len() {
+                        state.texture_control[index] = data;
+                    }
+                } else if method >= NV4097_SET_TEXTURE_FILTER 
+                    && method < NV4097_SET_TEXTURE_FILTER + (16 * 0x20) 
+                    && (method - NV4097_SET_TEXTURE_FILTER) % 0x20 == 0 {
+                    let index = ((method - NV4097_SET_TEXTURE_FILTER) / 0x20) as usize;
+                    if index < state.texture_filter.len() {
+                        state.texture_filter[index] = data;
+                    }
+                } else {
+                    // Unknown or unimplemented method
+                    tracing::trace!("Unimplemented NV4097 method: 0x{:04X}", method);
+                }
             }
         }
     }
@@ -278,5 +335,59 @@ mod tests {
         assert!(state.cull_face_enable);
         MethodHandler::execute(NV4097_SET_CULL_FACE, 0x0405, &mut state);
         assert_eq!(state.cull_face_mode, 0x0405);
+    }
+
+    #[test]
+    fn test_vertex_attrib_format() {
+        let mut state = RsxState::new();
+        // Test first vertex attribute format
+        MethodHandler::execute(NV4097_SET_VERTEX_DATA_ARRAY_FORMAT, 0x12345678, &mut state);
+        assert_eq!(state.vertex_attrib_format[0], 0x12345678);
+        
+        // Test second vertex attribute format
+        MethodHandler::execute(NV4097_SET_VERTEX_DATA_ARRAY_FORMAT + 1, 0xABCDEF00, &mut state);
+        assert_eq!(state.vertex_attrib_format[1], 0xABCDEF00);
+    }
+
+    #[test]
+    fn test_vertex_attrib_offset() {
+        let mut state = RsxState::new();
+        // Test first vertex attribute offset
+        MethodHandler::execute(NV4097_SET_VERTEX_DATA_ARRAY_OFFSET, 0x1000, &mut state);
+        assert_eq!(state.vertex_attrib_offset[0], 0x1000);
+        
+        // Test second vertex attribute offset
+        MethodHandler::execute(NV4097_SET_VERTEX_DATA_ARRAY_OFFSET + 1, 0x2000, &mut state);
+        assert_eq!(state.vertex_attrib_offset[1], 0x2000);
+    }
+
+    #[test]
+    fn test_texture_offset() {
+        let mut state = RsxState::new();
+        // Test first texture offset (texture methods are spaced 0x20 apart)
+        MethodHandler::execute(NV4097_SET_TEXTURE_OFFSET, 0x10000, &mut state);
+        assert_eq!(state.texture_offset[0], 0x10000);
+        
+        // Test second texture offset
+        MethodHandler::execute(NV4097_SET_TEXTURE_OFFSET + 0x20, 0x20000, &mut state);
+        assert_eq!(state.texture_offset[1], 0x20000);
+    }
+
+    #[test]
+    fn test_texture_format() {
+        let mut state = RsxState::new();
+        // Test first texture format
+        MethodHandler::execute(NV4097_SET_TEXTURE_FORMAT, 0x8A, &mut state);
+        assert_eq!(state.texture_format[0], 0x8A);
+    }
+
+    #[test]
+    fn test_vertex_attrib_masks() {
+        let mut state = RsxState::new();
+        MethodHandler::execute(NV4097_SET_VERTEX_ATTRIB_INPUT_MASK, 0xFFFF, &mut state);
+        assert_eq!(state.vertex_attrib_input_mask, 0xFFFF);
+        
+        MethodHandler::execute(NV4097_SET_VERTEX_ATTRIB_OUTPUT_MASK, 0x00FF, &mut state);
+        assert_eq!(state.vertex_attrib_output_mask, 0x00FF);
     }
 }

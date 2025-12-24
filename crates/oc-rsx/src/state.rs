@@ -57,6 +57,18 @@ pub struct RsxState {
     // Shader state
     pub vertex_program_addr: u32,
     pub fragment_program_addr: u32,
+    pub vertex_attrib_input_mask: u32,
+    pub vertex_attrib_output_mask: u32,
+
+    // Vertex attribute state (16 attributes max)
+    pub vertex_attrib_format: [u32; 16],
+    pub vertex_attrib_offset: [u32; 16],
+
+    // Texture state (16 texture units)
+    pub texture_offset: [u32; 16],
+    pub texture_format: [u32; 16],
+    pub texture_control: [u32; 16],
+    pub texture_filter: [u32; 16],
 }
 
 impl RsxState {
