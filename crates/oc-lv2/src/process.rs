@@ -157,6 +157,40 @@ pub mod syscalls {
             Err(KernelError::InvalidId(pid))
         }
     }
+
+    /// sys_process_get_paramsfo
+    /// Returns PARAM.SFO data for the current process
+    pub fn sys_process_get_paramsfo(
+        _manager: &ProcessManager,
+        _buffer: u64,
+    ) -> Result<usize, KernelError> {
+        // In real implementation, would read PARAM.SFO from /dev_bdvd/PS3_GAME/PARAM.SFO
+        // and write it to the buffer
+        // For now, return a placeholder size
+        tracing::debug!("sys_process_get_paramsfo called");
+        Ok(1024) // Placeholder size
+    }
+
+    /// sys_game_process_exitspawn
+    /// Exits the current process and spawns a new game process
+    pub fn sys_game_process_exitspawn(
+        manager: &ProcessManager,
+        _path: &str,
+        _argv: &[&str],
+        _envp: &[&str],
+        _data: u64,
+        _data_size: u64,
+        _priority: u32,
+        _flags: u64,
+    ) -> Result<(), KernelError> {
+        // In real implementation, would:
+        // 1. Stop current process
+        // 2. Load new game from path
+        // 3. Transfer control to new process
+        tracing::info!("sys_game_process_exitspawn called - terminating current process");
+        manager.exit(0)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -185,6 +219,36 @@ mod tests {
         assert_eq!(manager.get_state(), ProcessState::Running);
 
         syscalls::sys_process_exit(&manager, 0).unwrap();
+        assert_eq!(manager.get_state(), ProcessState::Terminated);
+    }
+
+    #[test]
+    fn test_process_get_paramsfo() {
+        let manager = ProcessManager::new();
+        
+        // Should return a placeholder size
+        let size = syscalls::sys_process_get_paramsfo(&manager, 0).unwrap();
+        assert!(size > 0);
+    }
+
+    #[test]
+    fn test_game_process_exitspawn() {
+        let manager = ProcessManager::new();
+        
+        assert_eq!(manager.get_state(), ProcessState::Running);
+        
+        syscalls::sys_game_process_exitspawn(
+            &manager,
+            "/dev_hdd0/game/TEST00000/USRDIR/EBOOT.BIN",
+            &[],
+            &[],
+            0,
+            0,
+            1000,
+            0,
+        )
+        .unwrap();
+        
         assert_eq!(manager.get_state(), ProcessState::Terminated);
     }
 }

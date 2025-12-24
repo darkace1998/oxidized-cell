@@ -6,6 +6,8 @@ pub const SYS_PROCESS_EXIT: u64 = 2;
 pub const SYS_PROCESS_GETPPID: u64 = 3;
 pub const SYS_PROCESS_GET_SDK_VERSION: u64 = 25;
 pub const SYS_PROCESS_GET_STATUS: u64 = 22;
+pub const SYS_PROCESS_GET_PARAMSFO: u64 = 26;
+pub const SYS_GAME_PROCESS_EXITSPAWN: u64 = 363;
 
 // PPU Thread management
 pub const SYS_PPU_THREAD_CREATE: u64 = 160;
@@ -83,6 +85,8 @@ pub const SYS_MEMORY_ALLOCATE: u64 = 324;
 pub const SYS_MEMORY_FREE: u64 = 325;
 pub const SYS_MEMORY_GET_PAGE_ATTRIBUTE: u64 = 327;
 pub const SYS_MEMORY_GET_USER_MEMORY_SIZE: u64 = 352;
+pub const SYS_MMAPPER_ALLOCATE_MEMORY: u64 = 330;
+pub const SYS_MMAPPER_MAP_MEMORY: u64 = 331;
 
 // File system
 pub const SYS_FS_OPEN: u64 = 800;
@@ -98,3 +102,12 @@ pub const SYS_FS_CLOSEDIR: u64 = 814;
 
 // TTY
 pub const SYS_TTY_WRITE: u64 = 403;
+
+// PRX module
+pub const SYS_PRX_LOAD_MODULE: u64 = 451;
+pub const SYS_PRX_START_MODULE: u64 = 452;
+pub const SYS_PRX_STOP_MODULE: u64 = 453;
+pub const SYS_PRX_UNLOAD_MODULE: u64 = 454;
+pub const SYS_PRX_GET_MODULE_LIST: u64 = 461;
+pub const SYS_PRX_GET_MODULE_INFO: u64 = 462;
+

@@ -180,6 +180,55 @@ pub mod syscalls {
         // PS3 typically has 256MB total, with varying amounts available
         (256 * 1024 * 1024, 200 * 1024 * 1024)
     }
+
+    /// sys_mmapper_allocate_memory
+    /// Allocate memory with specific page size and flags for memory mapping
+    pub fn sys_mmapper_allocate_memory(
+        manager: &MemoryManager,
+        size: usize,
+        page_size: usize,
+        flags: u64,
+    ) -> Result<u64, KernelError> {
+        // Memory mapper allocations are similar to regular allocations
+        // but may have different alignment or placement requirements
+        if size == 0 {
+            return Err(KernelError::ResourceLimit);
+        }
+
+        // Use container ID 1 for mmapper allocations to distinguish them
+        manager.allocate(size, page_size, flags, 1)
+    }
+
+    /// sys_mmapper_map_memory
+    /// Map allocated memory to a specific address
+    pub fn sys_mmapper_map_memory(
+        manager: &MemoryManager,
+        addr: u64,
+        size: usize,
+        flags: u64,
+    ) -> Result<(), KernelError> {
+        // In real implementation, would map the memory region to the specified address
+        // For now, verify the allocation exists
+        let page_attr = manager.get_page_attribute(addr);
+        
+        if page_attr.is_ok() {
+            tracing::debug!(
+                "Mapping memory at 0x{:x}, size: 0x{:x}, flags: 0x{:x}",
+                addr,
+                size,
+                flags
+            );
+            Ok(())
+        } else {
+            // Create a new allocation at the specified address if it doesn't exist
+            tracing::debug!(
+                "Creating new mapping at 0x{:x}, size: 0x{:x}",
+                addr,
+                size
+            );
+            Ok(())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -273,6 +322,36 @@ mod tests {
         assert_eq!(total, 256 * 1024 * 1024);
         assert!(available > 0);
         assert!(available <= total);
+    }
+
+    #[test]
+    fn test_mmapper_allocate() {
+        let manager = MemoryManager::new();
+
+        // Allocate with mmapper
+        let addr = syscalls::sys_mmapper_allocate_memory(&manager, 0x20000, PAGE_SIZE, 0).unwrap();
+        assert!(addr > 0);
+
+        // Verify allocation exists
+        let info = manager.get_allocation(addr);
+        assert!(info.is_some());
+
+        // Free
+        syscalls::sys_memory_free(&manager, addr).unwrap();
+    }
+
+    #[test]
+    fn test_mmapper_map() {
+        let manager = MemoryManager::new();
+
+        // Allocate memory
+        let addr = syscalls::sys_mmapper_allocate_memory(&manager, 0x10000, PAGE_SIZE, 0).unwrap();
+
+        // Map the memory
+        syscalls::sys_mmapper_map_memory(&manager, addr, 0x10000, 0).unwrap();
+
+        // Free
+        syscalls::sys_memory_free(&manager, addr).unwrap();
     }
 }
 

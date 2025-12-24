@@ -22,6 +22,7 @@ pub enum ObjectType {
     SpuThread,
     File,
     Directory,
+    PrxModule,
 }
 
 /// Trait for kernel objects
@@ -97,6 +98,11 @@ impl ObjectManager {
             .values()
             .filter(|obj| obj.object_type() == obj_type)
             .count()
+    }
+
+    /// List all registered objects
+    pub fn list(&self) -> Vec<Arc<dyn KernelObject>> {
+        self.objects.read().values().cloned().collect()
     }
 }
 
