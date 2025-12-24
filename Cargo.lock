@@ -2646,6 +2646,7 @@ dependencies = [
  "parking_lot",
  "thiserror 1.0.69",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

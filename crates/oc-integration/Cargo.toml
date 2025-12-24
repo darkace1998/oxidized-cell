@@ -20,3 +20,4 @@ oc-rsx.workspace = true
 oc-lv2.workspace = true
 
 [dev-dependencies]
+tracing-subscriber.workspace = true
