@@ -653,6 +653,14 @@ mod tests {
     fn test_vulkan_backend_creation() {
         let backend = VulkanBackend::new();
         assert!(!backend.initialized);
+        assert_eq!(backend.max_frames_in_flight, 2);
+    }
+
+    #[test]
+    fn test_vulkan_backend_with_frames() {
+        let backend = VulkanBackend::with_frames_in_flight(3);
+        assert!(!backend.initialized);
+        assert_eq!(backend.max_frames_in_flight, 3);
     }
 
     #[test]
@@ -663,6 +671,10 @@ mod tests {
         match backend.init() {
             Ok(_) => {
                 assert!(backend.initialized);
+                assert_eq!(backend.command_buffers.len(), 2);
+                assert_eq!(backend.image_available_semaphores.len(), 2);
+                assert_eq!(backend.render_finished_semaphores.len(), 2);
+                assert_eq!(backend.in_flight_fences.len(), 2);
                 backend.shutdown();
                 assert!(!backend.initialized);
             }
@@ -671,5 +683,17 @@ mod tests {
                 tracing::warn!("Vulkan init failed (expected in CI): {}", e);
             }
         }
+    }
+
+    #[test]
+    fn test_draw_commands_without_init() {
+        use crate::backend::PrimitiveType;
+        let mut backend = VulkanBackend::new();
+        
+        // These should not crash even if backend is not initialized
+        backend.draw_arrays(PrimitiveType::Triangles, 0, 3);
+        backend.draw_indexed(PrimitiveType::Triangles, 0, 3);
+        backend.set_viewport(0.0, 0.0, 800.0, 600.0, 0.0, 1.0);
+        backend.set_scissor(0, 0, 800, 600);
     }
 }

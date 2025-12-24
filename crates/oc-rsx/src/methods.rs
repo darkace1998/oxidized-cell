@@ -332,4 +332,58 @@ mod tests {
         MethodHandler::execute(NV4097_SET_CULL_FACE, 0x0405, &mut state);
         assert_eq!(state.cull_face_mode, 0x0405);
     }
+
+    #[test]
+    fn test_vertex_attrib_format() {
+        let mut state = RsxState::new();
+        // Test first vertex attribute format
+        MethodHandler::execute(NV4097_SET_VERTEX_DATA_ARRAY_FORMAT, 0x12345678, &mut state);
+        assert_eq!(state.vertex_attrib_format[0], 0x12345678);
+        
+        // Test second vertex attribute format
+        MethodHandler::execute(NV4097_SET_VERTEX_DATA_ARRAY_FORMAT + 1, 0xABCDEF00, &mut state);
+        assert_eq!(state.vertex_attrib_format[1], 0xABCDEF00);
+    }
+
+    #[test]
+    fn test_vertex_attrib_offset() {
+        let mut state = RsxState::new();
+        // Test first vertex attribute offset
+        MethodHandler::execute(NV4097_SET_VERTEX_DATA_ARRAY_OFFSET, 0x1000, &mut state);
+        assert_eq!(state.vertex_attrib_offset[0], 0x1000);
+        
+        // Test second vertex attribute offset
+        MethodHandler::execute(NV4097_SET_VERTEX_DATA_ARRAY_OFFSET + 1, 0x2000, &mut state);
+        assert_eq!(state.vertex_attrib_offset[1], 0x2000);
+    }
+
+    #[test]
+    fn test_texture_offset() {
+        let mut state = RsxState::new();
+        // Test first texture offset (texture methods are spaced 0x20 apart)
+        MethodHandler::execute(NV4097_SET_TEXTURE_OFFSET, 0x10000, &mut state);
+        assert_eq!(state.texture_offset[0], 0x10000);
+        
+        // Test second texture offset
+        MethodHandler::execute(NV4097_SET_TEXTURE_OFFSET + 0x20, 0x20000, &mut state);
+        assert_eq!(state.texture_offset[1], 0x20000);
+    }
+
+    #[test]
+    fn test_texture_format() {
+        let mut state = RsxState::new();
+        // Test first texture format
+        MethodHandler::execute(NV4097_SET_TEXTURE_FORMAT, 0x8A, &mut state);
+        assert_eq!(state.texture_format[0], 0x8A);
+    }
+
+    #[test]
+    fn test_vertex_attrib_masks() {
+        let mut state = RsxState::new();
+        MethodHandler::execute(NV4097_SET_VERTEX_ATTRIB_INPUT_MASK, 0xFFFF, &mut state);
+        assert_eq!(state.vertex_attrib_input_mask, 0xFFFF);
+        
+        MethodHandler::execute(NV4097_SET_VERTEX_ATTRIB_OUTPUT_MASK, 0x00FF, &mut state);
+        assert_eq!(state.vertex_attrib_output_mask, 0x00FF);
+    }
 }

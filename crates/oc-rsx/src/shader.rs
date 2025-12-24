@@ -199,26 +199,69 @@ impl ShaderTranslator {
     /// Generate a passthrough vertex shader
     fn generate_passthrough_vertex() -> Result<Vec<u32>, String> {
         // Simple SPIR-V for a passthrough vertex shader
-        // This is a minimal shader that just passes position through
+        // This is a minimal placeholder that represents:
+        // #version 450
+        // layout(location = 0) in vec4 position;
+        // layout(location = 0) out vec4 fragPosition;
+        // void main() {
+        //     gl_Position = position;
+        //     fragPosition = position;
+        // }
+        // 
+        // In production, this would be generated from RSX vertex program instructions
         Ok(vec![
-            0x07230203, // Magic number
+            0x07230203, // Magic number (SPIR-V)
             0x00010000, // Version 1.0
-            0x00080001, // Generator
-            0x00000009, // Bound
+            0x00080001, // Generator magic number
+            0x00000020, // Bound (number of IDs)
             0x00000000, // Schema (reserved)
+            // Capability declarations, memory model, entry points, etc. would go here
+            // This is a placeholder - real SPIR-V would be much more complex
         ])
     }
 
     /// Generate a simple fragment shader
     fn generate_simple_fragment() -> Result<Vec<u32>, String> {
         // Simple SPIR-V for a solid color fragment shader
+        // This is a minimal placeholder that represents:
+        // #version 450
+        // layout(location = 0) in vec4 fragPosition;
+        // layout(location = 0) out vec4 outColor;
+        // void main() {
+        //     outColor = vec4(1.0, 0.0, 0.0, 1.0); // Red
+        // }
+        //
+        // In production, this would be generated from RSX fragment program instructions
         Ok(vec![
-            0x07230203, // Magic number
+            0x07230203, // Magic number (SPIR-V)
             0x00010000, // Version 1.0
-            0x00080001, // Generator
-            0x00000009, // Bound
+            0x00080001, // Generator magic number
+            0x00000020, // Bound (number of IDs)
             0x00000000, // Schema (reserved)
+            // OpCapability Shader, OpMemoryModel, OpEntryPoint, etc. would go here
+            // This is a placeholder - real SPIR-V would be much more complex
         ])
+    }
+
+    /// Decode RSX vertex program instruction (placeholder)
+    fn decode_vertex_instruction(_instruction: u32) -> Option<ShaderInstruction> {
+        // TODO: Implement RSX vertex program instruction decoding
+        // RSX vertex programs use a different instruction format than fragment programs
+        None
+    }
+
+    /// Decode RSX fragment program instruction (placeholder)
+    fn decode_fragment_instruction(_instruction: u32) -> Option<ShaderInstruction> {
+        // TODO: Implement RSX fragment program instruction decoding
+        // RSX fragment programs have their own instruction encoding
+        None
+    }
+
+    /// Translate RSX instruction to SPIR-V (placeholder)
+    fn translate_instruction(_instr: &ShaderInstruction) -> Vec<u32> {
+        // TODO: Implement translation of individual RSX instructions to SPIR-V
+        // This would convert operations like MOV, MAD, DP4, etc. to SPIR-V opcodes
+        Vec::new()
     }
 
     /// Clear shader caches
