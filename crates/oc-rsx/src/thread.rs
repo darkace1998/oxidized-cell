@@ -124,38 +124,38 @@ impl RsxThread {
 
     /// Draw arrays command
     fn draw_arrays(&mut self, data: u32) {
-        let first = data & 0xFFFFFF;
-        let count = (data >> 24) & 0xFF;
+        const DRAW_FIRST_MASK: u32 = 0xFFFFFF;
+        const DRAW_COUNT_SHIFT: u32 = 24;
+        const DRAW_COUNT_MASK: u32 = 0xFF;
+        
+        let first = data & DRAW_FIRST_MASK;
+        let count = (data >> DRAW_COUNT_SHIFT) & DRAW_COUNT_MASK;
         
         tracing::trace!("Draw arrays: first={}, count={}", first, count);
         
-        // Convert primitive type
-        use crate::backend::PrimitiveType;
-        let primitive = match self.gfx_state.primitive_type {
-            1 => PrimitiveType::Points,
-            2 => PrimitiveType::Lines,
-            3 => PrimitiveType::LineLoop,
-            4 => PrimitiveType::LineStrip,
-            5 => PrimitiveType::Triangles,
-            6 => PrimitiveType::TriangleStrip,
-            7 => PrimitiveType::TriangleFan,
-            8 => PrimitiveType::Quads,
-            _ => PrimitiveType::Triangles, // Default
-        };
-        
+        let primitive = self.convert_primitive_type();
         self.backend.draw_arrays(primitive, first, count);
     }
 
     /// Draw indexed command
     fn draw_indexed(&mut self, data: u32) {
-        let first = data & 0xFFFFFF;
-        let count = (data >> 24) & 0xFF;
+        const DRAW_FIRST_MASK: u32 = 0xFFFFFF;
+        const DRAW_COUNT_SHIFT: u32 = 24;
+        const DRAW_COUNT_MASK: u32 = 0xFF;
+        
+        let first = data & DRAW_FIRST_MASK;
+        let count = (data >> DRAW_COUNT_SHIFT) & DRAW_COUNT_MASK;
         
         tracing::trace!("Draw indexed: first={}, count={}", first, count);
         
-        // Convert primitive type
+        let primitive = self.convert_primitive_type();
+        self.backend.draw_indexed(primitive, first, count);
+    }
+
+    /// Convert RSX primitive type to backend format
+    fn convert_primitive_type(&self) -> crate::backend::PrimitiveType {
         use crate::backend::PrimitiveType;
-        let primitive = match self.gfx_state.primitive_type {
+        match self.gfx_state.primitive_type {
             1 => PrimitiveType::Points,
             2 => PrimitiveType::Lines,
             3 => PrimitiveType::LineLoop,
@@ -165,9 +165,7 @@ impl RsxThread {
             7 => PrimitiveType::TriangleFan,
             8 => PrimitiveType::Quads,
             _ => PrimitiveType::Triangles, // Default
-        };
-        
-        self.backend.draw_indexed(primitive, first, count);
+        }
     }
 
     /// Flush accumulated vertices

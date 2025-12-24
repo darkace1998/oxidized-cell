@@ -242,39 +242,43 @@ impl MethodHandler {
                 if method >= NV4097_SET_VERTEX_DATA_ARRAY_FORMAT 
                     && method < NV4097_SET_VERTEX_DATA_ARRAY_FORMAT + 16 {
                     let index = (method - NV4097_SET_VERTEX_DATA_ARRAY_FORMAT) as usize;
-                    state.vertex_attrib_format[index] = data;
+                    if index < state.vertex_attrib_format.len() {
+                        state.vertex_attrib_format[index] = data;
+                    }
                 } else if method >= NV4097_SET_VERTEX_DATA_ARRAY_OFFSET 
                     && method < NV4097_SET_VERTEX_DATA_ARRAY_OFFSET + 16 {
                     let index = (method - NV4097_SET_VERTEX_DATA_ARRAY_OFFSET) as usize;
-                    state.vertex_attrib_offset[index] = data;
+                    if index < state.vertex_attrib_offset.len() {
+                        state.vertex_attrib_offset[index] = data;
+                    }
                 }
                 // Check for texture ranges (texture methods are spaced 0x20 apart)
                 else if method >= NV4097_SET_TEXTURE_OFFSET 
                     && method < NV4097_SET_TEXTURE_OFFSET + (16 * 0x20) 
                     && (method - NV4097_SET_TEXTURE_OFFSET) % 0x20 == 0 {
                     let index = ((method - NV4097_SET_TEXTURE_OFFSET) / 0x20) as usize;
-                    if index < 16 {
+                    if index < state.texture_offset.len() {
                         state.texture_offset[index] = data;
                     }
                 } else if method >= NV4097_SET_TEXTURE_FORMAT 
                     && method < NV4097_SET_TEXTURE_FORMAT + (16 * 0x20) 
                     && (method - NV4097_SET_TEXTURE_FORMAT) % 0x20 == 0 {
                     let index = ((method - NV4097_SET_TEXTURE_FORMAT) / 0x20) as usize;
-                    if index < 16 {
+                    if index < state.texture_format.len() {
                         state.texture_format[index] = data;
                     }
                 } else if method >= NV4097_SET_TEXTURE_CONTROL0 
                     && method < NV4097_SET_TEXTURE_CONTROL0 + (16 * 0x20) 
                     && (method - NV4097_SET_TEXTURE_CONTROL0) % 0x20 == 0 {
                     let index = ((method - NV4097_SET_TEXTURE_CONTROL0) / 0x20) as usize;
-                    if index < 16 {
+                    if index < state.texture_control.len() {
                         state.texture_control[index] = data;
                     }
                 } else if method >= NV4097_SET_TEXTURE_FILTER 
                     && method < NV4097_SET_TEXTURE_FILTER + (16 * 0x20) 
                     && (method - NV4097_SET_TEXTURE_FILTER) % 0x20 == 0 {
                     let index = ((method - NV4097_SET_TEXTURE_FILTER) / 0x20) as usize;
-                    if index < 16 {
+                    if index < state.texture_filter.len() {
                         state.texture_filter[index] = data;
                     }
                 } else {
