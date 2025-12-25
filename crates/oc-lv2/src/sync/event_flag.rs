@@ -57,8 +57,7 @@ pub struct EventFlag {
     id: ObjectId,
     state: ParkingMutex<EventFlagState>,
     condvar: Condvar,
-    /// Stored for future use and introspection
-    #[allow(dead_code)]
+    /// Stored for introspection
     attributes: EventFlagAttributes,
 }
 
@@ -227,6 +226,11 @@ impl EventFlag {
     pub fn cancel_wait(&self, thread_id: u64) {
         let mut state = self.state.lock();
         state.waiting_threads.retain(|w| w.thread_id != thread_id);
+    }
+
+    /// Get attributes
+    pub fn get_attributes(&self) -> EventFlagAttributes {
+        self.attributes
     }
 }
 

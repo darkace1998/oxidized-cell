@@ -157,19 +157,7 @@ impl Timer {
     /// Get remaining time in microseconds
     pub fn get_remaining(&self) -> u64 {
         let state = self.state.lock();
-        
-        if state.state != TimerState::Running {
-            return 0;
-        }
-        
-        if let Some(start_time) = state.start_time {
-            let elapsed = start_time.elapsed();
-            if elapsed < state.duration {
-                return (state.duration - elapsed).as_micros() as u64;
-            }
-        }
-        
-        0
+        self.get_remaining_internal(&state)
     }
 
     /// Get timer information

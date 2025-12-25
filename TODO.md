@@ -13,7 +13,7 @@ This document outlines the complete development roadmap for oxidized-cell, a Pla
 | SPU Interpreter | ✅ Complete | 95% | Low |
 | RSX/Vulkan Backend | ✅ Complete | 95% | Medium |
 | JIT Compilation | ✅ Complete | 100% | Low |
-| LV2 Kernel | 🔨 Mostly Complete | 75% | Medium |
+| LV2 Kernel | ✅ Complete | 95% | Low |
 | Audio System | ✅ Complete | 85% | Medium |
 | Input System | ✅ Complete | 80% | Medium |
 | VFS | ✅ Complete | 80% | Medium |
@@ -201,29 +201,29 @@ The game loading pipeline connects all components to enable game execution.
 
 ## 🔨 Medium Priority Tasks
 
-### 3. LV2 Kernel Enhancements (75% → 100%)
+### 3. LV2 Kernel Enhancements (95% Complete)
 
 #### Thread Management
-- [ ] Implement thread priorities properly
-- [ ] Add thread affinity support
+- [x] Implement thread priorities properly
+- [x] Add thread affinity support
 - [ ] Improve context switching
-- [ ] Support thread-local storage
+- [x] Support thread-local storage
 
 #### Synchronization Primitives
-- [ ] Improve mutex implementation
-- [ ] Add event flag support
-- [ ] Implement reader-writer locks properly
-- [ ] Add barrier support
+- [x] Improve mutex implementation
+- [x] Add event flag support
+- [x] Implement reader-writer locks properly
+- [x] Add barrier support
 
 #### Memory Syscalls
-- [ ] Implement mmap/munmap properly
-- [ ] Add memory attribute handling
+- [x] Implement mmap/munmap properly
+- [x] Add memory attribute handling
 - [ ] Support large pages
 
 #### Time Management
-- [ ] Improve timer accuracy
-- [ ] Add high-resolution timers
-- [ ] Implement usleep properly
+- [x] Improve timer accuracy
+- [x] Add high-resolution timers
+- [x] Implement usleep properly
 
 ### 4. User Interface Improvements (15% → 75%)
 
@@ -402,6 +402,11 @@ The game loading pipeline connects all components to enable game execution.
 - [x] Process management ✅
 - [x] Thread management ✅
 - [x] Synchronization primitives ✅
+- [x] Event flags ✅
+- [x] Barriers ✅
+- [x] High-resolution timers ✅
+- [x] Thread affinity ✅
+- [x] Thread-local storage ✅
 - [ ] Complete all syscalls
 
 ### oc-audio

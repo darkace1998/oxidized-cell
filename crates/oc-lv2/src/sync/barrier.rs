@@ -45,8 +45,7 @@ pub struct Barrier {
     condvar: Condvar,
     /// Number of threads required for barrier
     count: u32,
-    /// Stored for future use
-    #[allow(dead_code)]
+    /// Stored for introspection
     attributes: BarrierAttributes,
 }
 
@@ -130,6 +129,11 @@ impl Barrier {
     /// Get the generation counter
     pub fn get_generation(&self) -> u64 {
         self.state.lock().generation
+    }
+
+    /// Get attributes
+    pub fn get_attributes(&self) -> BarrierAttributes {
+        self.attributes
     }
 }
 
