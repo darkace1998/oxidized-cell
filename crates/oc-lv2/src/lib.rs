@@ -14,6 +14,7 @@ pub mod syscall;
 pub mod syscall_numbers;
 pub mod thread;
 pub mod time;
+pub mod timer;
 
 pub use objects::ObjectManager;
 pub use process::ProcessManager;

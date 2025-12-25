@@ -59,6 +59,12 @@ struct ThreadInner {
     stack_size: usize,
     entry_point: u64,
     attributes: ThreadAttributes,
+    /// CPU affinity mask (bit N = can run on CPU N)
+    affinity_mask: u64,
+    /// Thread-local storage pointer
+    tls_pointer: u64,
+    /// Thread-local storage data
+    tls_data: HashMap<u32, u64>,
 }
 
 impl Thread {
@@ -77,6 +83,9 @@ impl Thread {
                 stack_size: attributes.stack_size,
                 entry_point,
                 attributes,
+                affinity_mask: 0xFF, // All CPUs by default (8 cores max)
+                tls_pointer: 0,
+                tls_data: HashMap::new(),
             }),
         }
     }
@@ -103,6 +112,46 @@ impl Thread {
         }
         self.inner.lock().priority = priority;
         Ok(())
+    }
+
+    /// Get thread affinity mask
+    pub fn get_affinity(&self) -> u64 {
+        self.inner.lock().affinity_mask
+    }
+
+    /// Set thread affinity mask
+    pub fn set_affinity(&self, mask: u64) -> Result<(), KernelError> {
+        if mask == 0 {
+            return Err(KernelError::ResourceLimit);
+        }
+        self.inner.lock().affinity_mask = mask;
+        tracing::debug!("Thread {} affinity set to 0x{:x}", self.id, mask);
+        Ok(())
+    }
+
+    /// Get TLS pointer
+    pub fn get_tls_pointer(&self) -> u64 {
+        self.inner.lock().tls_pointer
+    }
+
+    /// Set TLS pointer
+    pub fn set_tls_pointer(&self, pointer: u64) {
+        self.inner.lock().tls_pointer = pointer;
+    }
+
+    /// Get TLS value by key
+    pub fn get_tls_value(&self, key: u32) -> Option<u64> {
+        self.inner.lock().tls_data.get(&key).copied()
+    }
+
+    /// Set TLS value by key
+    pub fn set_tls_value(&self, key: u32, value: u64) {
+        self.inner.lock().tls_data.insert(key, value);
+    }
+
+    /// Delete TLS value by key
+    pub fn delete_tls_value(&self, key: u32) -> bool {
+        self.inner.lock().tls_data.remove(&key).is_some()
     }
 
     pub fn join(&self) -> Result<(), KernelError> {
@@ -340,6 +389,69 @@ pub mod syscalls {
         tracing::info!("Thread {} exited with code {}", thread_id, exit_code);
         Ok(())
     }
+
+    /// sys_ppu_thread_get_affinity_mask
+    pub fn sys_ppu_thread_get_affinity_mask(
+        manager: &ThreadManager,
+        thread_id: ThreadId,
+    ) -> Result<u64, KernelError> {
+        let thread = manager.get(thread_id)?;
+        Ok(thread.get_affinity())
+    }
+
+    /// sys_ppu_thread_set_affinity_mask
+    pub fn sys_ppu_thread_set_affinity_mask(
+        manager: &ThreadManager,
+        thread_id: ThreadId,
+        affinity_mask: u64,
+    ) -> Result<(), KernelError> {
+        let thread = manager.get(thread_id)?;
+        thread.set_affinity(affinity_mask)
+    }
+
+    /// sys_ppu_thread_get_tls
+    pub fn sys_ppu_thread_get_tls(
+        manager: &ThreadManager,
+        thread_id: ThreadId,
+    ) -> Result<u64, KernelError> {
+        let thread = manager.get(thread_id)?;
+        Ok(thread.get_tls_pointer())
+    }
+
+    /// sys_ppu_thread_set_tls
+    pub fn sys_ppu_thread_set_tls(
+        manager: &ThreadManager,
+        thread_id: ThreadId,
+        tls_pointer: u64,
+    ) -> Result<(), KernelError> {
+        let thread = manager.get(thread_id)?;
+        thread.set_tls_pointer(tls_pointer);
+        Ok(())
+    }
+
+    /// sys_ppu_thread_get_tls_value
+    pub fn sys_ppu_thread_get_tls_value(
+        manager: &ThreadManager,
+        thread_id: ThreadId,
+        key: u32,
+    ) -> Result<u64, KernelError> {
+        let thread = manager.get(thread_id)?;
+        thread
+            .get_tls_value(key)
+            .ok_or(KernelError::InvalidId(key))
+    }
+
+    /// sys_ppu_thread_set_tls_value
+    pub fn sys_ppu_thread_set_tls_value(
+        manager: &ThreadManager,
+        thread_id: ThreadId,
+        key: u32,
+        value: u64,
+    ) -> Result<(), KernelError> {
+        let thread = manager.get(thread_id)?;
+        thread.set_tls_value(key, value);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -440,6 +552,90 @@ mod tests {
         // Schedule - should pick highest priority (t2 with priority 100, lowest number)
         let scheduled = manager.schedule();
         assert_eq!(scheduled, Some(t2));
+    }
+
+    #[test]
+    fn test_thread_affinity() {
+        let manager = ThreadManager::new();
+
+        let thread_id = syscalls::sys_ppu_thread_create(
+            &manager,
+            0x1000,
+            0,
+            1000,
+            0x4000,
+            0,
+            "TestThread",
+        )
+        .unwrap();
+
+        // Default affinity should be 0xFF (all CPUs)
+        let affinity = syscalls::sys_ppu_thread_get_affinity_mask(&manager, thread_id).unwrap();
+        assert_eq!(affinity, 0xFF);
+
+        // Set affinity to CPU 0 and 1 only
+        syscalls::sys_ppu_thread_set_affinity_mask(&manager, thread_id, 0x03).unwrap();
+        let affinity = syscalls::sys_ppu_thread_get_affinity_mask(&manager, thread_id).unwrap();
+        assert_eq!(affinity, 0x03);
+
+        // Zero affinity should fail
+        let result = syscalls::sys_ppu_thread_set_affinity_mask(&manager, thread_id, 0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_thread_tls() {
+        let manager = ThreadManager::new();
+
+        let thread_id = syscalls::sys_ppu_thread_create(
+            &manager,
+            0x1000,
+            0,
+            1000,
+            0x4000,
+            0,
+            "TestThread",
+        )
+        .unwrap();
+
+        // Default TLS pointer should be 0
+        let tls = syscalls::sys_ppu_thread_get_tls(&manager, thread_id).unwrap();
+        assert_eq!(tls, 0);
+
+        // Set TLS pointer
+        syscalls::sys_ppu_thread_set_tls(&manager, thread_id, 0x12345678).unwrap();
+        let tls = syscalls::sys_ppu_thread_get_tls(&manager, thread_id).unwrap();
+        assert_eq!(tls, 0x12345678);
+    }
+
+    #[test]
+    fn test_thread_tls_values() {
+        let manager = ThreadManager::new();
+
+        let thread_id = syscalls::sys_ppu_thread_create(
+            &manager,
+            0x1000,
+            0,
+            1000,
+            0x4000,
+            0,
+            "TestThread",
+        )
+        .unwrap();
+
+        // Getting non-existent key should fail
+        let result = syscalls::sys_ppu_thread_get_tls_value(&manager, thread_id, 1);
+        assert!(result.is_err());
+
+        // Set TLS values
+        syscalls::sys_ppu_thread_set_tls_value(&manager, thread_id, 1, 0xAAAA).unwrap();
+        syscalls::sys_ppu_thread_set_tls_value(&manager, thread_id, 2, 0xBBBB).unwrap();
+
+        // Get TLS values
+        let val1 = syscalls::sys_ppu_thread_get_tls_value(&manager, thread_id, 1).unwrap();
+        let val2 = syscalls::sys_ppu_thread_get_tls_value(&manager, thread_id, 2).unwrap();
+        assert_eq!(val1, 0xAAAA);
+        assert_eq!(val2, 0xBBBB);
     }
 }
 

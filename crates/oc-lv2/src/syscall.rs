@@ -6,9 +6,10 @@ use crate::objects::ObjectManager;
 use crate::process::ProcessManager;
 use crate::prx;
 use crate::spu;
-use crate::sync::{cond, event, mutex, rwlock, semaphore};
+use crate::sync::{barrier, cond, event, event_flag, mutex, rwlock, semaphore};
 use crate::syscall_numbers::*;
 use crate::thread::ThreadManager;
+use crate::timer;
 use oc_core::error::KernelError;
 use oc_vfs::VirtualFileSystem;
 use std::sync::Arc;
@@ -195,6 +196,32 @@ impl SyscallHandler {
                 let thread_id = args[0];
                 let priority = args[1] as u32;
                 thread_sc::sys_ppu_thread_set_priority(&self.thread_manager, thread_id, priority)?;
+                Ok(0)
+            }
+
+            SYS_PPU_THREAD_GET_AFFINITY_MASK => {
+                let thread_id = args[0];
+                let mask = thread_sc::sys_ppu_thread_get_affinity_mask(&self.thread_manager, thread_id)?;
+                Ok(mask as i64)
+            }
+
+            SYS_PPU_THREAD_SET_AFFINITY_MASK => {
+                let thread_id = args[0];
+                let mask = args[1];
+                thread_sc::sys_ppu_thread_set_affinity_mask(&self.thread_manager, thread_id, mask)?;
+                Ok(0)
+            }
+
+            SYS_PPU_THREAD_GET_TLS => {
+                let thread_id = args[0];
+                let tls_pointer = thread_sc::sys_ppu_thread_get_tls(&self.thread_manager, thread_id)?;
+                Ok(tls_pointer as i64)
+            }
+
+            SYS_PPU_THREAD_SET_TLS => {
+                let thread_id = args[0];
+                let tls_pointer = args[1];
+                thread_sc::sys_ppu_thread_set_tls(&self.thread_manager, thread_id, tls_pointer)?;
                 Ok(0)
             }
 
@@ -643,7 +670,7 @@ impl SyscallHandler {
             }
 
             // Time
-            SYS_TIME_GET_SYSTEM_TIME | SYS_TIME_GET_CURRENT_TIME => {
+            SYS_TIME_GET_SYSTEM_TIME => {
                 let time = time_sc::sys_time_get_current_time();
                 Ok(time as i64)
             }
@@ -793,6 +820,176 @@ impl SyscallHandler {
                 let module_id = args[0] as u32;
                 let _info = prx::syscalls::sys_prx_get_module_info(&self.object_manager, module_id)?;
                 // In real implementation, would write info to memory at args[1]
+                Ok(0)
+            }
+
+            // Event flags
+            SYS_EVENT_FLAG_CREATE => {
+                let mut attrs = event_flag::EventFlagAttributes::default();
+                attrs.initial_pattern = args[0];
+                let id = event_flag::syscalls::sys_event_flag_create(&self.object_manager, attrs)?;
+                Ok(id as i64)
+            }
+
+            SYS_EVENT_FLAG_DESTROY => {
+                let event_flag_id = args[0] as u32;
+                event_flag::syscalls::sys_event_flag_destroy(&self.object_manager, event_flag_id)?;
+                Ok(0)
+            }
+
+            SYS_EVENT_FLAG_WAIT => {
+                let event_flag_id = args[0] as u32;
+                let bit_pattern = args[1];
+                let mode = args[2] as u32;
+                let timeout_usec = args[3];
+                let thread_id = thread_sc::sys_ppu_thread_get_id(&self.thread_manager);
+                let pattern = event_flag::syscalls::sys_event_flag_wait(
+                    &self.object_manager,
+                    event_flag_id,
+                    thread_id,
+                    bit_pattern,
+                    mode,
+                    timeout_usec,
+                )?;
+                Ok(pattern as i64)
+            }
+
+            SYS_EVENT_FLAG_TRYWAIT => {
+                let event_flag_id = args[0] as u32;
+                let bit_pattern = args[1];
+                let mode = args[2] as u32;
+                let pattern = event_flag::syscalls::sys_event_flag_trywait(
+                    &self.object_manager,
+                    event_flag_id,
+                    bit_pattern,
+                    mode,
+                )?;
+                Ok(pattern as i64)
+            }
+
+            SYS_EVENT_FLAG_SET => {
+                let event_flag_id = args[0] as u32;
+                let bit_pattern = args[1];
+                event_flag::syscalls::sys_event_flag_set(&self.object_manager, event_flag_id, bit_pattern)?;
+                Ok(0)
+            }
+
+            SYS_EVENT_FLAG_CLEAR => {
+                let event_flag_id = args[0] as u32;
+                let bit_pattern = args[1];
+                event_flag::syscalls::sys_event_flag_clear(&self.object_manager, event_flag_id, bit_pattern)?;
+                Ok(0)
+            }
+
+            SYS_EVENT_FLAG_GET => {
+                let event_flag_id = args[0] as u32;
+                let pattern = event_flag::syscalls::sys_event_flag_get(&self.object_manager, event_flag_id)?;
+                Ok(pattern as i64)
+            }
+
+            SYS_EVENT_FLAG_CANCEL => {
+                let event_flag_id = args[0] as u32;
+                let thread_id = args[1];
+                event_flag::syscalls::sys_event_flag_cancel(&self.object_manager, event_flag_id, thread_id)?;
+                Ok(0)
+            }
+
+            // Barrier
+            SYS_BARRIER_CREATE => {
+                let count = args[0] as u32;
+                let id = barrier::syscalls::sys_barrier_create(
+                    &self.object_manager,
+                    count,
+                    barrier::BarrierAttributes::default(),
+                )?;
+                Ok(id as i64)
+            }
+
+            SYS_BARRIER_DESTROY => {
+                let barrier_id = args[0] as u32;
+                barrier::syscalls::sys_barrier_destroy(&self.object_manager, barrier_id)?;
+                Ok(0)
+            }
+
+            SYS_BARRIER_WAIT => {
+                let barrier_id = args[0] as u32;
+                let timeout_usec = args[1];
+                let result = barrier::syscalls::sys_barrier_wait(
+                    &self.object_manager,
+                    barrier_id,
+                    timeout_usec,
+                )?;
+                match result {
+                    barrier::BarrierWaitResult::Serial => Ok(1),
+                    barrier::BarrierWaitResult::Participant => Ok(0),
+                    barrier::BarrierWaitResult::TimedOut => Err(KernelError::WouldBlock),
+                }
+            }
+
+            // Timer
+            SYS_TIMER_CREATE => {
+                let id = timer::syscalls::sys_timer_create(
+                    &self.object_manager,
+                    timer::TimerAttributes::default(),
+                )?;
+                Ok(id as i64)
+            }
+
+            SYS_TIMER_DESTROY => {
+                let timer_id = args[0] as u32;
+                timer::syscalls::sys_timer_destroy(&self.object_manager, timer_id)?;
+                Ok(0)
+            }
+
+            SYS_TIMER_GET_INFORMATION => {
+                let timer_id = args[0] as u32;
+                let _info = timer::syscalls::sys_timer_get_information(&self.object_manager, timer_id)?;
+                // In real implementation, would write info to memory at args[1]
+                Ok(0)
+            }
+
+            SYS_TIMER_START => {
+                let timer_id = args[0] as u32;
+                let base_time = args[1];
+                let period = args[2];
+                timer::syscalls::sys_timer_start(&self.object_manager, timer_id, base_time, period)?;
+                Ok(0)
+            }
+
+            SYS_TIMER_STOP => {
+                let timer_id = args[0] as u32;
+                timer::syscalls::sys_timer_stop(&self.object_manager, timer_id)?;
+                Ok(0)
+            }
+
+            SYS_TIMER_CONNECT_EVENT_QUEUE => {
+                let timer_id = args[0] as u32;
+                let event_queue_id = args[1] as u32;
+                let event_source = args[2];
+                timer::syscalls::sys_timer_connect_event_queue(
+                    &self.object_manager,
+                    timer_id,
+                    event_queue_id,
+                    event_source,
+                )?;
+                Ok(0)
+            }
+
+            SYS_TIMER_DISCONNECT_EVENT_QUEUE => {
+                let timer_id = args[0] as u32;
+                timer::syscalls::sys_timer_disconnect_event_queue(&self.object_manager, timer_id)?;
+                Ok(0)
+            }
+
+            SYS_TIMER_USLEEP => {
+                let duration_usec = args[0];
+                timer::syscalls::sys_timer_usleep(duration_usec)?;
+                Ok(0)
+            }
+
+            SYS_TIMER_SLEEP => {
+                let duration_sec = args[0] as u32;
+                timer::syscalls::sys_timer_sleep(duration_sec)?;
                 Ok(0)
             }
 
@@ -1011,6 +1208,155 @@ mod tests {
         
         let size = handler.handle(SYS_PROCESS_GET_PARAMSFO, &args).unwrap();
         assert!(size > 0);
+    }
+
+    #[test]
+    fn test_event_flag_syscalls() {
+        let handler = SyscallHandler::new();
+
+        // Create event flag with initial pattern 0
+        let mut args = [0u64; 8];
+        args[0] = 0; // initial pattern
+        let event_flag_id = handler.handle(SYS_EVENT_FLAG_CREATE, &args).unwrap();
+        assert!(event_flag_id > 0);
+
+        // Set some bits
+        let mut set_args = [0u64; 8];
+        set_args[0] = event_flag_id as u64;
+        set_args[1] = 0x0F; // bit pattern
+        handler.handle(SYS_EVENT_FLAG_SET, &set_args).unwrap();
+
+        // Get pattern
+        let mut get_args = [0u64; 8];
+        get_args[0] = event_flag_id as u64;
+        let pattern = handler.handle(SYS_EVENT_FLAG_GET, &get_args).unwrap();
+        assert_eq!(pattern, 0x0F);
+
+        // Trywait should succeed
+        let mut wait_args = [0u64; 8];
+        wait_args[0] = event_flag_id as u64;
+        wait_args[1] = 0x01; // bit pattern
+        wait_args[2] = 0x0002; // OR mode
+        let result = handler.handle(SYS_EVENT_FLAG_TRYWAIT, &wait_args).unwrap();
+        assert_eq!(result, 0x0F);
+
+        // Destroy
+        let mut destroy_args = [0u64; 8];
+        destroy_args[0] = event_flag_id as u64;
+        handler.handle(SYS_EVENT_FLAG_DESTROY, &destroy_args).unwrap();
+    }
+
+    #[test]
+    fn test_barrier_syscalls() {
+        let handler = SyscallHandler::new();
+
+        // Create barrier with count 1
+        let mut args = [0u64; 8];
+        args[0] = 1; // count
+        let barrier_id = handler.handle(SYS_BARRIER_CREATE, &args).unwrap();
+        assert!(barrier_id > 0);
+
+        // Wait should immediately succeed (single thread barrier)
+        let mut wait_args = [0u64; 8];
+        wait_args[0] = barrier_id as u64;
+        wait_args[1] = 0; // no timeout
+        let result = handler.handle(SYS_BARRIER_WAIT, &wait_args).unwrap();
+        assert_eq!(result, 1); // Serial thread
+
+        // Destroy
+        let mut destroy_args = [0u64; 8];
+        destroy_args[0] = barrier_id as u64;
+        handler.handle(SYS_BARRIER_DESTROY, &destroy_args).unwrap();
+    }
+
+    #[test]
+    fn test_timer_syscalls() {
+        let handler = SyscallHandler::new();
+
+        // Create timer
+        let args = [0u64; 8];
+        let timer_id = handler.handle(SYS_TIMER_CREATE, &args).unwrap();
+        assert!(timer_id > 0);
+
+        // Start timer
+        let mut start_args = [0u64; 8];
+        start_args[0] = timer_id as u64;
+        start_args[1] = 1_000_000; // 1 second
+        start_args[2] = 0; // no period
+        handler.handle(SYS_TIMER_START, &start_args).unwrap();
+
+        // Get information
+        let mut info_args = [0u64; 8];
+        info_args[0] = timer_id as u64;
+        handler.handle(SYS_TIMER_GET_INFORMATION, &info_args).unwrap();
+
+        // Stop timer
+        let mut stop_args = [0u64; 8];
+        stop_args[0] = timer_id as u64;
+        handler.handle(SYS_TIMER_STOP, &stop_args).unwrap();
+
+        // Destroy
+        let mut destroy_args = [0u64; 8];
+        destroy_args[0] = timer_id as u64;
+        handler.handle(SYS_TIMER_DESTROY, &destroy_args).unwrap();
+    }
+
+    #[test]
+    fn test_thread_affinity_syscalls() {
+        let handler = SyscallHandler::new();
+
+        // Create a thread
+        let mut args = [0u64; 8];
+        args[0] = 0x1000; // entry point
+        args[1] = 0; // arg
+        args[2] = 1000; // priority
+        args[3] = 0x4000; // stack size
+        args[4] = 0; // flags
+        let thread_id = handler.handle(SYS_PPU_THREAD_CREATE, &args).unwrap();
+        assert!(thread_id > 0);
+
+        // Get affinity
+        let mut aff_args = [0u64; 8];
+        aff_args[0] = thread_id as u64;
+        let affinity = handler.handle(SYS_PPU_THREAD_GET_AFFINITY_MASK, &aff_args).unwrap();
+        assert_eq!(affinity, 0xFF);
+
+        // Set affinity
+        aff_args[1] = 0x03;
+        handler.handle(SYS_PPU_THREAD_SET_AFFINITY_MASK, &aff_args).unwrap();
+
+        // Verify
+        let new_affinity = handler.handle(SYS_PPU_THREAD_GET_AFFINITY_MASK, &aff_args).unwrap();
+        assert_eq!(new_affinity, 0x03);
+    }
+
+    #[test]
+    fn test_thread_tls_syscalls() {
+        let handler = SyscallHandler::new();
+
+        // Create a thread
+        let mut args = [0u64; 8];
+        args[0] = 0x1000; // entry point
+        args[1] = 0; // arg
+        args[2] = 1000; // priority
+        args[3] = 0x4000; // stack size
+        args[4] = 0; // flags
+        let thread_id = handler.handle(SYS_PPU_THREAD_CREATE, &args).unwrap();
+        assert!(thread_id > 0);
+
+        // Get TLS (should be 0 initially)
+        let mut tls_args = [0u64; 8];
+        tls_args[0] = thread_id as u64;
+        let tls = handler.handle(SYS_PPU_THREAD_GET_TLS, &tls_args).unwrap();
+        assert_eq!(tls, 0);
+
+        // Set TLS
+        tls_args[1] = 0xDEADBEEF;
+        handler.handle(SYS_PPU_THREAD_SET_TLS, &tls_args).unwrap();
+
+        // Verify
+        let new_tls = handler.handle(SYS_PPU_THREAD_GET_TLS, &tls_args).unwrap();
+        assert_eq!(new_tls, 0xDEADBEEF);
     }
 }
 
