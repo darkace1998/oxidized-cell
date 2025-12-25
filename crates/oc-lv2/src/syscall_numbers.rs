@@ -19,6 +19,10 @@ pub const SYS_PPU_THREAD_GET_ID: u64 = 44;
 pub const SYS_PPU_THREAD_EXIT: u64 = 41;
 pub const SYS_PPU_THREAD_GET_PRIORITY: u64 = 49;
 pub const SYS_PPU_THREAD_SET_PRIORITY: u64 = 50;
+pub const SYS_PPU_THREAD_GET_AFFINITY_MASK: u64 = 52;
+pub const SYS_PPU_THREAD_SET_AFFINITY_MASK: u64 = 54;
+pub const SYS_PPU_THREAD_GET_TLS: u64 = 55;
+pub const SYS_PPU_THREAD_SET_TLS: u64 = 56;
 
 // Mutex
 pub const SYS_MUTEX_CREATE: u64 = 100;
@@ -56,7 +60,6 @@ pub const SYS_SEMAPHORE_GET_VALUE: u64 = 122;
 // Time
 pub const SYS_TIME_GET_SYSTEM_TIME: u64 = 145;
 pub const SYS_TIME_GET_TIMEBASE_FREQUENCY: u64 = 147;
-pub const SYS_TIME_GET_CURRENT_TIME: u64 = 145; // Alias for SYS_TIME_GET_SYSTEM_TIME
 pub const SYS_TIME_USLEEP: u64 = 146;
 
 // Event queue
@@ -116,4 +119,30 @@ pub const SYS_PRX_STOP_MODULE: u64 = 453;
 pub const SYS_PRX_UNLOAD_MODULE: u64 = 454;
 pub const SYS_PRX_GET_MODULE_LIST: u64 = 461;
 pub const SYS_PRX_GET_MODULE_INFO: u64 = 462;
+
+// Event flags
+pub const SYS_EVENT_FLAG_CREATE: u64 = 185;
+pub const SYS_EVENT_FLAG_DESTROY: u64 = 186;
+pub const SYS_EVENT_FLAG_WAIT: u64 = 187;
+pub const SYS_EVENT_FLAG_TRYWAIT: u64 = 188;
+pub const SYS_EVENT_FLAG_SET: u64 = 189;
+pub const SYS_EVENT_FLAG_CLEAR: u64 = 190;
+pub const SYS_EVENT_FLAG_GET: u64 = 191;
+pub const SYS_EVENT_FLAG_CANCEL: u64 = 192;
+
+// Barrier
+pub const SYS_BARRIER_CREATE: u64 = 193;
+pub const SYS_BARRIER_DESTROY: u64 = 194;
+pub const SYS_BARRIER_WAIT: u64 = 195;
+
+// Timer
+pub const SYS_TIMER_CREATE: u64 = 200;
+pub const SYS_TIMER_DESTROY: u64 = 201;
+pub const SYS_TIMER_GET_INFORMATION: u64 = 202;
+pub const SYS_TIMER_START: u64 = 203;
+pub const SYS_TIMER_STOP: u64 = 204;
+pub const SYS_TIMER_CONNECT_EVENT_QUEUE: u64 = 205;
+pub const SYS_TIMER_DISCONNECT_EVENT_QUEUE: u64 = 206;
+pub const SYS_TIMER_USLEEP: u64 = 257;
+pub const SYS_TIMER_SLEEP: u64 = 256;
 
