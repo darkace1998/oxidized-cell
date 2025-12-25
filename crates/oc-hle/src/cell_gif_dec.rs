@@ -239,6 +239,13 @@ pub fn cell_gif_dec_open(
         return CELL_GIFDEC_ERROR_ARG;
     }
 
+    // Placeholder dimensions until actual GIF parsing is implemented
+    // TODO: Parse actual GIF header to get real dimensions
+    const PLACEHOLDER_GIF_WIDTH: u32 = 256;
+    const PLACEHOLDER_GIF_HEIGHT: u32 = 256;
+    const PLACEHOLDER_NUM_COMPONENTS: u32 = 4; // RGBA
+    const PLACEHOLDER_COLOR_SPACE: u32 = 0; // RGB
+
     unsafe {
         let src_addr = (*src).stream_ptr;
         let src_size = (*src).stream_size;
@@ -247,10 +254,10 @@ pub fn cell_gif_dec_open(
             Ok(handle) => {
                 (*sub_handle).sub_handle = handle;
                 if !out_param.is_null() {
-                    (*out_param).width = 256;
-                    (*out_param).height = 256;
-                    (*out_param).num_components = 4; // RGBA
-                    (*out_param).color_space = 0; // RGB
+                    (*out_param).width = PLACEHOLDER_GIF_WIDTH;
+                    (*out_param).height = PLACEHOLDER_GIF_HEIGHT;
+                    (*out_param).num_components = PLACEHOLDER_NUM_COMPONENTS;
+                    (*out_param).color_space = PLACEHOLDER_COLOR_SPACE;
                 }
                 0 // CELL_OK
             }
@@ -271,11 +278,12 @@ pub fn cell_gif_dec_read_header(
         return CELL_GIFDEC_ERROR_ARG;
     }
 
-    // Default dimensions for now - actual implementation would parse GIF header
-    const DEFAULT_WIDTH: u32 = 256;
-    const DEFAULT_HEIGHT: u32 = 256;
+    // Placeholder dimensions until actual GIF parsing is implemented
+    // TODO: Parse actual GIF header to get real dimensions
+    const PLACEHOLDER_GIF_WIDTH: u32 = 256;
+    const PLACEHOLDER_GIF_HEIGHT: u32 = 256;
     
-    match crate::context::get_hle_context_mut().gif_dec.read_header(main_handle, sub_handle, DEFAULT_WIDTH, DEFAULT_HEIGHT) {
+    match crate::context::get_hle_context_mut().gif_dec.read_header(main_handle, sub_handle, PLACEHOLDER_GIF_WIDTH, PLACEHOLDER_GIF_HEIGHT) {
         Ok(_) => {
             match crate::context::get_hle_context().gif_dec.get_info(main_handle, sub_handle) {
                 Ok(result_info) => {

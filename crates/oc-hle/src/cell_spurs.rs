@@ -383,6 +383,9 @@ pub fn cell_spurs_detach_lv2_event_queue(_spurs_addr: u32, port: u32) -> i32 {
     crate::context::get_hle_context_mut().spurs.detach_lv2_event_queue(port)
 }
 
+/// Default priority level for SPU workloads (1 = normal priority)
+const DEFAULT_SPU_PRIORITY: u8 = 1;
+
 /// cellSpursSetPriorities - Set workload priorities
 ///
 /// # Arguments
@@ -401,7 +404,8 @@ pub fn cell_spurs_set_priorities(_spurs_addr: u32, wid: u32, _priorities_addr: u
     }
 
     // Use default priorities when memory read is not yet implemented
-    let default_priorities = [1u8; CELL_SPURS_MAX_SPU];
+    // TODO: Read priorities from memory at _priorities_addr
+    let default_priorities = [DEFAULT_SPU_PRIORITY; CELL_SPURS_MAX_SPU];
     crate::context::get_hle_context_mut().spurs.set_priorities(wid, &default_priorities)
 }
 
