@@ -138,8 +138,10 @@ pub fn cell_sre_compile(
         if len == 0 {
             return SRE_ERROR_INVALID_PATTERN;
         }
-        std::str::from_utf8(std::slice::from_raw_parts(pattern, len))
-            .unwrap_or("")
+        match std::str::from_utf8(std::slice::from_raw_parts(pattern, len)) {
+            Ok(s) => s,
+            Err(_) => return SRE_ERROR_INVALID_PATTERN,
+        }
     };
     
     if pattern_str.is_empty() {
