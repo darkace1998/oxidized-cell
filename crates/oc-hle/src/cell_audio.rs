@@ -245,10 +245,15 @@ pub fn cell_audio_quit() -> i32 {
 pub fn cell_audio_port_open(_param_addr: u32, _port_num_addr: u32) -> i32 {
     debug!("cellAudioPortOpen()");
 
-    // TODO: Read parameters from memory
-    // Default parameters: 2 channels, 8 blocks
+    // Default audio port parameters when memory read is not yet implemented
+    const DEFAULT_CHANNELS: u32 = 2;      // Stereo
+    const DEFAULT_BLOCK_COUNT: u32 = CELL_AUDIO_BLOCK_8;
+    const DEFAULT_ATTR: u32 = 0;          // No special attributes
+    const DEFAULT_LEVEL: f32 = 1.0;       // Full volume
+    
+    // TODO: Read actual parameters from memory at _param_addr
     let mut ctx = crate::context::get_hle_context_mut();
-    match ctx.audio.port_open(2, CELL_AUDIO_BLOCK_8, 0, 1.0) {
+    match ctx.audio.port_open(DEFAULT_CHANNELS, DEFAULT_BLOCK_COUNT, DEFAULT_ATTR, DEFAULT_LEVEL) {
         Ok(_port_num) => {
             // TODO: Write port number to memory at _port_num_addr
             0 // CELL_OK

@@ -108,13 +108,33 @@ impl Default for HleContext {
 }
 
 /// Get read access to the global HLE context
+/// 
+/// # Panics
+/// 
+/// Panics if the lock is poisoned (another thread panicked while holding the lock)
+/// or if a deadlock is detected. This is a critical system failure that indicates
+/// a bug in the HLE implementation.
 pub fn get_hle_context() -> std::sync::RwLockReadGuard<'static, HleContext> {
-    HLE_CONTEXT.read().expect("Failed to acquire HLE context read lock")
+    HLE_CONTEXT.read().expect(
+        "CRITICAL: Failed to acquire HLE context read lock. \
+         This indicates either a poisoned lock (thread panic while holding lock) \
+         or a potential deadlock in HLE module code."
+    )
 }
 
 /// Get write access to the global HLE context
+/// 
+/// # Panics
+/// 
+/// Panics if the lock is poisoned (another thread panicked while holding the lock)
+/// or if a deadlock is detected. This is a critical system failure that indicates
+/// a bug in the HLE implementation.
 pub fn get_hle_context_mut() -> std::sync::RwLockWriteGuard<'static, HleContext> {
-    HLE_CONTEXT.write().expect("Failed to acquire HLE context write lock")
+    HLE_CONTEXT.write().expect(
+        "CRITICAL: Failed to acquire HLE context write lock. \
+         This indicates either a poisoned lock (thread panic while holding lock) \
+         or a potential deadlock in HLE module code."
+    )
 }
 
 /// Reset the global HLE context to its initial state
