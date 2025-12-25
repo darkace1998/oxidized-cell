@@ -13,6 +13,7 @@ pub const CELL_MOUSE_ERROR_INVALID_PARAMETER: i32 = 0x80121304u32 as i32;
 pub const CELL_MOUSE_ERROR_SYS_SETTING_FAILED: i32 = 0x80121305u32 as i32;
 
 /// Maximum number of mice
+/// Note: PS3 hardware supports a maximum of 2 USB mice simultaneously
 pub const CELL_MOUSE_MAX_MICE: usize = 2;
 
 /// Maximum number of mouse data entries

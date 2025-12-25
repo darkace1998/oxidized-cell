@@ -414,8 +414,10 @@ pub fn cell_font_ft_open_font_memory(
 pub fn cell_font_ft_open_font_file(_path_addr: u32, face_index: u32, _face_addr: u32) -> i32 {
     debug!("cellFontFtOpenFontFile(index={})", face_index);
 
-    // TODO: Read path from memory
-    match crate::context::get_hle_context_mut().font_ft.open_font_file("/path/to/font.ttf", face_index) {
+    // Note: Actual path reading from memory at _path_addr will be implemented
+    // when memory read interface is available
+    const PLACEHOLDER_PATH: &str = "font.ttf";
+    match crate::context::get_hle_context_mut().font_ft.open_font_file(PLACEHOLDER_PATH, face_index) {
         Ok(_face) => {
             // TODO: Write face handle to memory at _face_addr
             0 // CELL_OK

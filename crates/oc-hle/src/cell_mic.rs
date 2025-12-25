@@ -512,13 +512,15 @@ pub fn cell_mic_stop(device_id: u32) -> i32 {
 pub fn cell_mic_read(device_id: u32, _buffer_addr: u32, _buffer_size: u32, _read_size_addr: u32) -> i32 {
     trace!("cellMicRead(device_id={})", device_id);
 
-    // Stub: We don't actually read data without memory access
+    // Read data
     // Check if operation would be valid
-    match crate::context::get_hle_context().mic.get_device_info(device_id) {
+    let ctx = crate::context::get_hle_context();
+    match ctx.mic.get_device_info(device_id) {
         Ok(info) => {
             if info.state != CellMicDeviceState::Capturing as u32 {
                 return CELL_MIC_ERROR_DEVICE_BUSY;
             }
+            // TODO: Read actual captured data to buffer
             0 // CELL_OK
         }
         Err(e) => e,

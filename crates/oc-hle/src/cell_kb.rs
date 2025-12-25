@@ -415,14 +415,14 @@ pub fn cell_kb_read(port: u32, _data_addr: u32) -> i32 {
 ///
 /// # Arguments
 /// * `port` - Keyboard port number
-/// * `read_mode` - Read mode
+/// * `read_mode` - Read mode (0 = character, 1 = raw key)
 ///
 /// # Returns
 /// * 0 on success
 pub fn cell_kb_set_read_mode(port: u32, read_mode: u32) -> i32 {
     trace!("cellKbSetReadMode(port={}, mode={})", port, read_mode);
 
-    let mode = if read_mode == 1 {
+    let mode = if read_mode == CellKbReadMode::RawKey as u32 {
         CellKbReadMode::RawKey
     } else {
         CellKbReadMode::InputCharacter

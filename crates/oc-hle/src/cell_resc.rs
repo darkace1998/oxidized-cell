@@ -232,11 +232,14 @@ impl RescManager {
         }
 
         // Validate mode is one of supported modes
-        if mode != CELL_RESC_720x480 
-            && mode != CELL_RESC_720x576 
-            && mode != CELL_RESC_1280x720 
-            && mode != CELL_RESC_1920x1080 
-        {
+        const VALID_MODES: [u32; 4] = [
+            CELL_RESC_720x480,
+            CELL_RESC_720x576,
+            CELL_RESC_1280x720,
+            CELL_RESC_1920x1080,
+        ];
+        
+        if !VALID_MODES.contains(&mode) {
             return CELL_RESC_ERROR_BAD_ARGUMENT;
         }
 
