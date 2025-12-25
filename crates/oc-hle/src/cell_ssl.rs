@@ -469,9 +469,10 @@ pub fn cell_ssl_cert_get_issuer_name(
 pub fn cell_ssl_cert_unload(cert_id: SslCertId) -> i32 {
     trace!("cellSslCertUnload called with cert_id: {}", cert_id);
 
-    // TODO: Use global manager instance
-
-    0 // CELL_OK
+    match crate::context::get_hle_context_mut().ssl.unload_certificate(cert_id) {
+        Ok(_) => 0, // CELL_OK
+        Err(e) => e,
+    }
 }
 
 #[cfg(test)]

@@ -290,10 +290,7 @@ impl Default for PadManager {
 pub fn cell_pad_init(max_connect: u32) -> i32 {
     debug!("cellPadInit(max_connect={})", max_connect);
 
-    // TODO: Initialize with global pad manager
-    // For now, just return success
-
-    0 // CELL_OK
+    crate::context::get_hle_context_mut().pad.init(max_connect)
 }
 
 /// cellPadEnd - Shutdown pad system
@@ -303,9 +300,7 @@ pub fn cell_pad_init(max_connect: u32) -> i32 {
 pub fn cell_pad_end() -> i32 {
     debug!("cellPadEnd()");
 
-    // TODO: Shutdown global pad manager
-
-    0 // CELL_OK
+    crate::context::get_hle_context_mut().pad.end()
 }
 
 /// cellPadGetInfo - Get pad info
@@ -318,7 +313,8 @@ pub fn cell_pad_end() -> i32 {
 pub fn cell_pad_get_info(_info_addr: u32) -> i32 {
     trace!("cellPadGetInfo()");
 
-    // TODO: Get info from global pad manager and write to memory
+    let _info = crate::context::get_hle_context().pad.get_info();
+    // TODO: Write info to memory at _info_addr
 
     0 // CELL_OK
 }
@@ -333,7 +329,8 @@ pub fn cell_pad_get_info(_info_addr: u32) -> i32 {
 pub fn cell_pad_get_info2(_info_addr: u32) -> i32 {
     trace!("cellPadGetInfo2()");
 
-    // Same as cellPadGetInfo for now
+    let _info = crate::context::get_hle_context().pad.get_info();
+    // TODO: Write info to memory at _info_addr
 
     0 // CELL_OK
 }
@@ -349,9 +346,13 @@ pub fn cell_pad_get_info2(_info_addr: u32) -> i32 {
 pub fn cell_pad_get_data(port: u32, _data_addr: u32) -> i32 {
     trace!("cellPadGetData(port={})", port);
 
-    // TODO: Get data from global pad manager and write to memory
-
-    0 // CELL_OK
+    match crate::context::get_hle_context().pad.get_data(port) {
+        Ok(_data) => {
+            // TODO: Write data to memory at _data_addr
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
 }
 
 /// cellPadGetCapabilityInfo - Get controller capabilities
@@ -365,9 +366,13 @@ pub fn cell_pad_get_data(port: u32, _data_addr: u32) -> i32 {
 pub fn cell_pad_get_capability_info(port: u32, _info_addr: u32) -> i32 {
     trace!("cellPadGetCapabilityInfo(port={})", port);
 
-    // TODO: Return capability info for standard DUALSHOCK 3
-
-    0 // CELL_OK
+    match crate::context::get_hle_context().pad.get_capability_info(port) {
+        Ok(_info) => {
+            // TODO: Write capability info to memory at _info_addr
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
 }
 
 #[cfg(test)]

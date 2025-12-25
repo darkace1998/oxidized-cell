@@ -24,6 +24,8 @@ use crate::cell_http::HttpManager;
 use crate::cell_ssl::SslManager;
 use crate::cell_font::FontManager;
 use crate::libsre::RegexManager;
+use crate::cell_gcm_sys::GcmManager;
+use crate::cell_spurs::SpursManager;
 
 /// Global HLE context instance
 pub static HLE_CONTEXT: Lazy<Arc<RwLock<HleContext>>> = Lazy::new(|| {
@@ -68,6 +70,10 @@ pub struct HleContext {
     pub font: FontManager,
     /// Regular expression manager
     pub regex: RegexManager,
+    /// GCM (Graphics) manager
+    pub gcm: GcmManager,
+    /// SPURS manager
+    pub spurs: SpursManager,
 }
 
 impl HleContext {
@@ -92,6 +98,8 @@ impl HleContext {
             ssl: SslManager::new(),
             font: FontManager::new(),
             regex: RegexManager::new(),
+            gcm: GcmManager::new(),
+            spurs: SpursManager::new(),
         }
     }
 

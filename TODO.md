@@ -18,7 +18,7 @@ This document outlines the complete development roadmap for oxidized-cell, a Pla
 | Input System | ✅ Complete | 80% | Medium |
 | VFS | ✅ Complete | 80% | Medium |
 | ELF/Game Loader | ✅ Complete | 90% | Low |
-| HLE Modules | 🚧 In Progress | 40% | **HIGH** |
+| HLE Modules | 🚧 In Progress | 60% | **HIGH** |
 | User Interface | 🚧 In Progress | 15% | Medium |
 | Game Loading Pipeline | ❌ Not Started | 0% | **HIGH** |
 | Debugging Tools | 🔨 Mostly Complete | 70% | Low |
@@ -29,7 +29,7 @@ This document outlines the complete development roadmap for oxidized-cell, a Pla
 
 ### 1. HLE Module Implementation (Critical for Game Execution)
 
-The HLE (High-Level Emulation) modules are essential for running PS3 games. Currently at ~40% completion.
+The HLE (High-Level Emulation) modules are essential for running PS3 games. Currently at ~60% completion.
 
 #### HLE Infrastructure
 - [x] **Global HLE Context** - Centralized manager instances
@@ -37,14 +37,21 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [x] Implement thread-safe access via RwLock
   - [x] Provide get_hle_context() and get_hle_context_mut() accessors
   - [x] Add reset_hle_context() for testing/cleanup
+  - [x] Add GcmManager to global context
+  - [x] Add SpursManager to global context
 
 #### Graphics Modules
-- [ ] **cellGcmSys** - RSX Graphics Command Management (Skeleton exists)
+- [x] **cellGcmSys** - RSX Graphics Command Management (Connected to global context)
+  - [x] Implement init through global manager
+  - [x] Implement set_flip_mode through global manager
+  - [x] Implement set_flip through global manager
+  - [x] Implement set_display_buffer through global manager
+  - [x] Implement get_configuration through global manager
+  - [x] Implement address_to_offset through global manager
   - [ ] Integrate with actual RSX backend
   - [ ] Implement command buffer submission
   - [ ] Add texture management functions
   - [ ] Implement render target configuration
-  - [ ] Add synchronization primitives (flip, finish, wait)
 
 - [ ] **cellResc** - Resolution Scaler
   - [ ] Implement resolution conversion
@@ -73,7 +80,11 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [ ] Handle save data encryption
 
 #### SPU/Threading Modules
-- [ ] **cellSpurs** - SPU Runtime System (Skeleton exists)
+- [x] **cellSpurs** - SPU Runtime System (Connected to global context)
+  - [x] Implement initialize/finalize through global manager
+  - [x] Implement attach/detach event queue through global manager
+  - [x] Implement set_priorities through global manager
+  - [x] Implement get_spu_thread_id through global manager
   - [ ] Implement task queue management
   - [ ] Add workload scheduling
   - [ ] Support job chains
@@ -86,9 +97,12 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [ ] Support job priorities
 
 #### Input Modules
-- [ ] **cellPad** - Controller Input (Skeleton exists)
+- [x] **cellPad** - Controller Input (Connected to global context)
+  - [x] Implement init/end through global manager
+  - [x] Implement get_info/get_info2 through global manager
+  - [x] Implement get_data through global manager
+  - [x] Implement get_capability_info through global manager
   - [ ] Connect to oc-input backend
-  - [ ] Implement pad data structures
   - [ ] Add rumble/vibration support
   - [ ] Support multiple controllers
 
@@ -113,9 +127,11 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [ ] Add device enumeration
 
 #### File System Modules
-- [ ] **cellFs** - File System (Skeleton exists)
+- [x] **cellFs** - File System (Connected to global context)
+  - [x] Implement close through global manager
+  - [x] Implement closedir through global manager
   - [ ] Connect to oc-vfs backend
-  - [ ] Implement file operations
+  - [ ] Implement file read/write operations
   - [ ] Add directory operations
   - [ ] Support asynchronous I/O
 
@@ -143,7 +159,9 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [ ] Implement container parsing backend
   - [ ] Add stream separation
 
-- [ ] **cellVpost** - Video Post-Processing (Skeleton exists)
+- [x] **cellVpost** - Video Post-Processing (Connected to global context)
+  - [x] Implement open/close through global manager
+  - [x] Implement exec through global manager
   - [ ] Implement color conversion
   - [ ] Add scaling support
 
@@ -156,8 +174,11 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [ ] Implement JPEG decoding
   - [ ] Add progressive JPEG support
 
-- [ ] **cellGifDec** - GIF Decoder (Skeleton exists)
-  - [ ] Implement GIF decoding
+- [x] **cellGifDec** - GIF Decoder (Connected to global context)
+  - [x] Implement create/destroy through global manager
+  - [x] Implement open/close through global manager
+  - [x] Implement read_header through global manager
+  - [ ] Implement GIF decoding backend
   - [ ] Support animations
 
 #### Network Modules
@@ -178,16 +199,28 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
 - [x] **cellSsl** - SSL/TLS (Connected to global context)
   - [x] Implement init/end through global manager
   - [x] Implement certificate loader through global manager
+  - [x] Implement certificate unload through global manager
   - [ ] Implement TLS connections
   - [ ] Add certificate handling
 
 #### Font Modules
-- [ ] **cellFont** - Font Library (Skeleton exists)
-  - [ ] Implement font rendering
+- [x] **cellFont** - Font Library (Connected to global context)
+  - [x] Implement init/end through global manager
+  - [x] Implement close_font through global manager
+  - [x] Implement create/destroy_renderer through global manager
+  - [ ] Implement font rendering backend
   - [ ] Support various font formats
 
 - [ ] **cellFontFT** - FreeType Font Library
   - [ ] Integrate with FreeType
+
+#### Regular Expression Modules
+- [x] **libsre** - Regular Expressions (Connected to global context)
+  - [x] Implement free through global manager
+  - [ ] Implement compile through global manager (needs memory read)
+  - [ ] Implement match through global manager (needs memory read/write)
+  - [ ] Implement search through global manager (needs memory read/write)
+  - [ ] Implement replace through global manager (needs memory read/write)
 
 ---
 
@@ -453,10 +486,19 @@ The game loading pipeline connects all components to enable game execution.
 - [ ] Add more disc formats
 
 ### oc-hle
-- [ ] Complete cellGcmSys
-- [ ] Complete cellSpurs
-- [ ] Complete cellSysutil
-- [ ] Implement all priority modules
+- [x] Global HLE Context ✅
+- [x] cellGcmSys connected to global context ✅
+- [x] cellSpurs connected to global context ✅
+- [x] cellSysutil connected to global context ✅
+- [x] cellPad connected to global context ✅
+- [x] cellFs connected to global context ✅
+- [x] cellFont connected to global context ✅
+- [x] cellVpost connected to global context ✅
+- [x] cellGifDec connected to global context ✅
+- [x] cellSsl cert unload connected to global context ✅
+- [x] libsre (regex) connected to global context ✅
+- [ ] Implement memory read/write for all modules
+- [ ] Connect to actual backends (oc-vfs, oc-audio, oc-rsx, oc-input)
 
 ### oc-loader
 - [x] ELF parsing ✅
@@ -519,11 +561,12 @@ The game loading pipeline connects all components to enable game execution.
 
 ## 🏁 Immediate Next Steps
 
-1. **Implement cellGcmSys fully** - Connect graphics HLE to RSX backend
-2. **Implement cellSpurs** - Required by most games for SPU task management
-3. **Complete game loading pipeline** - Enable EBOOT.BIN execution
-4. **Add PRX loading** - Most games require system PRX modules
-5. **Test with homebrew** - Validate implementation with simple apps
+1. **Implement memory read/write interface** - Enable HLE functions to access game memory
+2. **Connect cellGcmSys to RSX backend** - Graphics HLE to actual rendering
+3. **Connect cellFs to oc-vfs backend** - File system integration
+4. **Connect cellPad to oc-input backend** - Controller input integration
+5. **Complete game loading pipeline** - Enable EBOOT.BIN execution
+6. **Test with homebrew** - Validate implementation with simple apps
 
 ---
 
@@ -546,3 +589,4 @@ See the [Contributing section in README.md](README.md#contributing) for guidelin
 ---
 
 *Last updated: December 2024*
+*HLE module update: Connected GcmManager, SpursManager, PadManager, FsManager, FontManager, VpostManager, GifDecManager, SslManager, and RegexManager to global HLE context.*

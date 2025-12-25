@@ -407,9 +407,7 @@ pub fn cell_fs_open(path_addr: u32, flags: u32, _fd_addr: u32, mode: u32) -> i32
 pub fn cell_fs_close(fd: i32) -> i32 {
     debug!("cellFsClose(fd={})", fd);
 
-    // TODO: Close file through global fs manager
-
-    0 // CELL_OK
+    crate::context::get_hle_context_mut().fs.close(fd)
 }
 
 /// cellFsRead - Read from file
@@ -552,9 +550,7 @@ pub fn cell_fs_readdir(fd: i32, _dir_addr: u32, _nread_addr: u32) -> i32 {
 pub fn cell_fs_closedir(fd: i32) -> i32 {
     debug!("cellFsClosedir(fd={})", fd);
 
-    // TODO: Close directory through global fs manager
-
-    0 // CELL_OK
+    crate::context::get_hle_context_mut().fs.closedir(fd)
 }
 
 #[cfg(test)]

@@ -254,12 +254,10 @@ pub fn cell_vpost_open(
     }
 
     unsafe {
-        // TODO: Use global manager instance
-        let mut manager = VpostManager::new();
         let config = &*cfg;
         let mem_size = if resource.is_null() { 0x100000 } else { (*resource).mem_size };
 
-        match manager.open(config.in_pic_format, config.out_pic_format, mem_size) {
+        match crate::context::get_hle_context_mut().vpost.open(config.in_pic_format, config.out_pic_format, mem_size) {
             Ok(h) => {
                 *handle = h;
                 0 // CELL_OK
@@ -273,10 +271,7 @@ pub fn cell_vpost_open(
 pub fn cell_vpost_close(handle: VpostHandle) -> i32 {
     trace!("cellVpostClose called with handle: {}", handle);
 
-    // TODO: Use global manager instance
-    let mut manager = VpostManager::new();
-
-    match manager.close(handle) {
+    match crate::context::get_hle_context_mut().vpost.close(handle) {
         Ok(_) => 0, // CELL_OK
         Err(e) => e,
     }
@@ -297,15 +292,13 @@ pub fn cell_vpost_exec(
     }
 
     unsafe {
-        // TODO: Use global manager instance
-        let mut manager = VpostManager::new();
         let ctrl = &*ctrl_param;
 
         if ctrl.pic_info.is_null() {
             return CELL_VPOST_ERROR_ARG;
         }
 
-        match manager.exec(handle, &*ctrl.pic_info) {
+        match crate::context::get_hle_context_mut().vpost.exec(handle, &*ctrl.pic_info) {
             Ok(_) => 0, // CELL_OK
             Err(e) => e,
         }

@@ -256,13 +256,12 @@ pub fn cell_gcm_init(context_addr: u32, context_size: u32, _config_addr: u32) ->
         context_addr, context_size
     );
 
-    // TODO: Initialize with global GCM manager
-    // For now, just validate parameters and return success
+    // Validate parameters
     if context_size < 1024 {
         return 0x80410002u32 as i32; // CELL_GCM_ERROR_INVALID_VALUE
     }
 
-    0 // CELL_OK
+    crate::context::get_hle_context_mut().gcm.init(context_addr, context_size)
 }
 
 /// cellGcmSetFlipMode - Set display flip mode
@@ -280,9 +279,7 @@ pub fn cell_gcm_set_flip_mode(mode: u32) -> i32 {
     };
     trace!("cellGcmSetFlipMode(mode={:?})", flip_mode);
 
-    // TODO: Set flip mode through global GCM manager
-
-    0 // CELL_OK
+    crate::context::get_hle_context_mut().gcm.set_flip_mode(flip_mode)
 }
 
 /// cellGcmSetFlip - Flip display buffer
@@ -299,9 +296,7 @@ pub fn cell_gcm_set_flip(buffer_id: u32) -> i32 {
         return 0x80410002u32 as i32; // CELL_GCM_ERROR_INVALID_VALUE
     }
 
-    // TODO: Queue flip command through global GCM manager
-
-    0 // CELL_OK
+    crate::context::get_hle_context_mut().gcm.set_flip(buffer_id)
 }
 
 /// cellGcmSetDisplayBuffer - Configure display buffer
@@ -336,9 +331,7 @@ pub fn cell_gcm_set_display_buffer(
         return 0x80410002u32 as i32; // CELL_GCM_ERROR_INVALID_VALUE
     }
 
-    // TODO: Configure display buffer through global GCM manager
-
-    0 // CELL_OK
+    crate::context::get_hle_context_mut().gcm.set_display_buffer(buffer_id, offset, pitch, width, height)
 }
 
 /// cellGcmGetConfiguration - Get current GCM configuration
@@ -351,8 +344,8 @@ pub fn cell_gcm_set_display_buffer(
 pub fn cell_gcm_get_configuration(_config_addr: u32) -> i32 {
     trace!("cellGcmGetConfiguration()");
 
-    // TODO: Write configuration to memory from global GCM manager
-    // For now, return default configuration info
+    let _config = crate::context::get_hle_context().gcm.get_configuration();
+    // TODO: Write configuration to memory at _config_addr
 
     0 // CELL_OK
 }
@@ -369,10 +362,13 @@ pub fn cell_gcm_get_configuration(_config_addr: u32) -> i32 {
 pub fn cell_gcm_address_to_offset(address: u32, _offset_addr: u32) -> i32 {
     trace!("cellGcmAddressToOffset(address=0x{:08X})", address);
 
-    // TODO: Validate address and calculate offset through global GCM manager
-    // For now, assume identity mapping
-
-    0 // CELL_OK
+    match crate::context::get_hle_context().gcm.address_to_offset(address) {
+        Ok(_offset) => {
+            // TODO: Write offset to memory at _offset_addr
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
 }
 
 /// cellGcmGetTiledPitchSize - Calculate pitch size for tiled memory
@@ -444,8 +440,14 @@ mod tests {
 
     #[test]
     fn test_gcm_init() {
+        // Reset context first to ensure clean state
+        crate::context::reset_hle_context();
+        
         let result = cell_gcm_init(0x10000000, 1024 * 1024, 0);
         assert_eq!(result, 0);
+        
+        // Reset context to test invalid size
+        crate::context::reset_hle_context();
         
         // Test invalid context size
         let result = cell_gcm_init(0x10000000, 512, 0);
@@ -461,12 +463,20 @@ mod tests {
 
     #[test]
     fn test_set_flip_mode() {
+        // Reset context and initialize GCM
+        crate::context::reset_hle_context();
+        crate::context::get_hle_context_mut().gcm.init(0x10000000, 1024 * 1024);
+        
         let result = cell_gcm_set_flip_mode(1);
         assert_eq!(result, 0);
     }
 
     #[test]
     fn test_display_buffer_validation() {
+        // Reset context and initialize GCM
+        crate::context::reset_hle_context();
+        crate::context::get_hle_context_mut().gcm.init(0x10000000, 1024 * 1024);
+        
         // Valid call
         assert_eq!(cell_gcm_set_display_buffer(0, 0x1000, 1920 * 4, 1920, 1080), 0);
         

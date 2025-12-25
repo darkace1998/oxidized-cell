@@ -311,10 +311,9 @@ impl Default for FontManager {
 pub fn cell_font_init(_config_addr: u32) -> i32 {
     debug!("cellFontInit()");
 
-    // TODO: Read config from memory
-    // TODO: Initialize through global font manager
-
-    0 // CELL_OK
+    // Use default config when memory read is not yet implemented
+    let config = CellFontConfig::default();
+    crate::context::get_hle_context_mut().font.init(config)
 }
 
 /// cellFontEnd - Shutdown font library
@@ -324,9 +323,7 @@ pub fn cell_font_init(_config_addr: u32) -> i32 {
 pub fn cell_font_end() -> i32 {
     debug!("cellFontEnd()");
 
-    // TODO: Shutdown through global font manager
-
-    0 // CELL_OK
+    crate::context::get_hle_context_mut().font.end()
 }
 
 /// cellFontOpenFontMemory - Open font from memory
@@ -407,9 +404,7 @@ pub fn cell_font_open_font_file(
 pub fn cell_font_close_font(font: u32) -> i32 {
     trace!("cellFontCloseFont(font={})", font);
 
-    // TODO: Close font through global manager
-
-    0 // CELL_OK
+    crate::context::get_hle_context_mut().font.close_font(font)
 }
 
 /// cellFontCreateRenderer - Create font renderer
@@ -428,12 +423,15 @@ pub fn cell_font_create_renderer(
 ) -> i32 {
     debug!("cellFontCreateRenderer()");
 
-    // TODO: Read config from memory
-    // TODO: Create font renderer through global manager
-    // TODO: Allocate rendering surface
-    // TODO: Write renderer handle to memory
-
-    0 // CELL_OK
+    // Use default config when memory read is not yet implemented
+    let config = CellFontRendererConfig::default();
+    match crate::context::get_hle_context_mut().font.create_renderer(config) {
+        Ok(_renderer_id) => {
+            // TODO: Write renderer handle to memory at _renderer_addr
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
 }
 
 /// cellFontDestroyRenderer - Destroy font renderer
@@ -446,9 +444,7 @@ pub fn cell_font_create_renderer(
 pub fn cell_font_destroy_renderer(renderer: u32) -> i32 {
     debug!("cellFontDestroyRenderer(renderer={})", renderer);
 
-    // TODO: Destroy font renderer through global manager
-
-    0 // CELL_OK
+    crate::context::get_hle_context_mut().font.destroy_renderer(renderer)
 }
 
 /// cellFontRenderCharGlyphImage - Render character glyph

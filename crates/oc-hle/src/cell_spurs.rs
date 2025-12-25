@@ -329,9 +329,7 @@ pub fn cell_spurs_initialize(
         return 0x80410802u32 as i32; // CELL_SPURS_ERROR_INVALID_ARGUMENT
     }
 
-    // TODO: Initialize with global SPURS manager
-
-    0 // CELL_OK
+    crate::context::get_hle_context_mut().spurs.initialize(n_spus, spu_priority, ppu_priority, exit_if_no_work)
 }
 
 /// cellSpursFinalize - Finalize SPURS instance
@@ -344,9 +342,7 @@ pub fn cell_spurs_initialize(
 pub fn cell_spurs_finalize(_spurs_addr: u32) -> i32 {
     debug!("cellSpursFinalize()");
 
-    // TODO: Finalize through global SPURS manager
-
-    0 // CELL_OK
+    crate::context::get_hle_context_mut().spurs.finalize()
 }
 
 /// cellSpursAttachLv2EventQueue - Attach LV2 event queue to SPURS
@@ -370,9 +366,7 @@ pub fn cell_spurs_attach_lv2_event_queue(
         queue, port, is_dynamic
     );
 
-    // TODO: Attach through global SPURS manager
-
-    0 // CELL_OK
+    crate::context::get_hle_context_mut().spurs.attach_lv2_event_queue(queue, port, is_dynamic)
 }
 
 /// cellSpursDetachLv2EventQueue - Detach LV2 event queue from SPURS
@@ -386,9 +380,7 @@ pub fn cell_spurs_attach_lv2_event_queue(
 pub fn cell_spurs_detach_lv2_event_queue(_spurs_addr: u32, port: u32) -> i32 {
     debug!("cellSpursDetachLv2EventQueue(port={})", port);
 
-    // TODO: Detach through global SPURS manager
-
-    0 // CELL_OK
+    crate::context::get_hle_context_mut().spurs.detach_lv2_event_queue(port)
 }
 
 /// cellSpursSetPriorities - Set workload priorities
@@ -408,9 +400,9 @@ pub fn cell_spurs_set_priorities(_spurs_addr: u32, wid: u32, _priorities_addr: u
         return 0x80410802u32 as i32; // CELL_SPURS_ERROR_INVALID_ARGUMENT
     }
 
-    // TODO: Set priorities through global SPURS manager
-
-    0 // CELL_OK
+    // Use default priorities when memory read is not yet implemented
+    let default_priorities = [1u8; CELL_SPURS_MAX_SPU];
+    crate::context::get_hle_context_mut().spurs.set_priorities(wid, &default_priorities)
 }
 
 /// cellSpursGetSpuThreadId - Get SPU thread ID
@@ -434,9 +426,13 @@ pub fn cell_spurs_get_spu_thread_id(
         return 0x80410802u32 as i32; // CELL_SPURS_ERROR_INVALID_ARGUMENT
     }
 
-    // TODO: Get thread ID through global SPURS manager
-
-    0 // CELL_OK
+    match crate::context::get_hle_context().spurs.get_spu_thread_id(thread) {
+        Ok(_thread_id) => {
+            // TODO: Write thread ID to memory at _thread_id_addr
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
 }
 
 #[cfg(test)]

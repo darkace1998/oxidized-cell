@@ -212,18 +212,18 @@ pub fn cell_gif_dec_create(
 
     let max_handles = unsafe { (*thread_in_param).max_main_handle };
     
-    // TODO: Get global GifDecManager instance
-    // For now, create a new one and store the handle
-    // This should integrate with a global manager
-    
-    unsafe {
-        (*main_handle).main_handle = 1; // Placeholder handle
-        if !thread_out_param.is_null() {
-            (*thread_out_param).version = 0x00010000;
+    match crate::context::get_hle_context_mut().gif_dec.create(max_handles) {
+        Ok(handle) => {
+            unsafe {
+                (*main_handle).main_handle = handle;
+                if !thread_out_param.is_null() {
+                    (*thread_out_param).version = 0x00010000;
+                }
+            }
+            0 // CELL_OK
         }
+        Err(e) => e,
     }
-    
-    0 // CELL_OK
 }
 
 /// cellGifDecOpen - Open GIF stream
@@ -239,20 +239,24 @@ pub fn cell_gif_dec_open(
         return CELL_GIFDEC_ERROR_ARG;
     }
 
-    // TODO: Get global GifDecManager and call open
-    // For now, return placeholder values
-    
     unsafe {
-        (*sub_handle).sub_handle = 1;
-        if !out_param.is_null() {
-            (*out_param).width = 256;
-            (*out_param).height = 256;
-            (*out_param).num_components = 4; // RGBA
-            (*out_param).color_space = 0; // RGB
+        let src_addr = (*src).stream_ptr;
+        let src_size = (*src).stream_size;
+        
+        match crate::context::get_hle_context_mut().gif_dec.open(main_handle, src_addr, src_size) {
+            Ok(handle) => {
+                (*sub_handle).sub_handle = handle;
+                if !out_param.is_null() {
+                    (*out_param).width = 256;
+                    (*out_param).height = 256;
+                    (*out_param).num_components = 4; // RGBA
+                    (*out_param).color_space = 0; // RGB
+                }
+                0 // CELL_OK
+            }
+            Err(e) => e,
         }
     }
-    
-    0 // CELL_OK
 }
 
 /// cellGifDecReadHeader - Read GIF header
@@ -267,17 +271,27 @@ pub fn cell_gif_dec_read_header(
         return CELL_GIFDEC_ERROR_ARG;
     }
 
-    // TODO: Get global GifDecManager and call read_header
-    // For now, return placeholder info
+    // Default dimensions for now - actual implementation would parse GIF header
+    const DEFAULT_WIDTH: u32 = 256;
+    const DEFAULT_HEIGHT: u32 = 256;
     
-    unsafe {
-        (*info).width = 256;
-        (*info).height = 256;
-        (*info).num_components = 4;
-        (*info).color_space = 0;
+    match crate::context::get_hle_context_mut().gif_dec.read_header(main_handle, sub_handle, DEFAULT_WIDTH, DEFAULT_HEIGHT) {
+        Ok(_) => {
+            match crate::context::get_hle_context().gif_dec.get_info(main_handle, sub_handle) {
+                Ok(result_info) => {
+                    unsafe {
+                        (*info).width = result_info.width;
+                        (*info).height = result_info.height;
+                        (*info).num_components = result_info.num_components;
+                        (*info).color_space = result_info.color_space;
+                    }
+                    0 // CELL_OK
+                }
+                Err(e) => e,
+            }
+        }
+        Err(e) => e,
     }
-    
-    0 // CELL_OK
 }
 
 /// cellGifDecDecodeData - Decode GIF data
@@ -304,18 +318,20 @@ pub fn cell_gif_dec_decode_data(
 pub fn cell_gif_dec_close(main_handle: u32, sub_handle: u32) -> i32 {
     trace!("cellGifDecClose called");
     
-    // TODO: Get global GifDecManager and call close
-    
-    0 // CELL_OK
+    match crate::context::get_hle_context_mut().gif_dec.close(main_handle, sub_handle) {
+        Ok(_) => 0, // CELL_OK
+        Err(e) => e,
+    }
 }
 
 /// cellGifDecDestroy - Destroy GIF decoder
 pub fn cell_gif_dec_destroy(main_handle: u32) -> i32 {
     trace!("cellGifDecDestroy called with main_handle: {}", main_handle);
     
-    // TODO: Get global GifDecManager and call destroy
-    
-    0 // CELL_OK
+    match crate::context::get_hle_context_mut().gif_dec.destroy(main_handle) {
+        Ok(_) => 0, // CELL_OK
+        Err(e) => e,
+    }
 }
 
 #[cfg(test)]
