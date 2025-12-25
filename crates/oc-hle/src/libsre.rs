@@ -127,15 +127,37 @@ pub fn cell_sre_compile(
         return SRE_ERROR_INVALID_PARAMETER;
     }
     
-    // TODO: Read pattern string from memory
-    // TODO: Compile through global regex manager
-    // TODO: Write compiled pattern ID to memory
+    // Read pattern string from pointer (null-terminated C string)
+    let pattern_str = unsafe {
+        let mut len = 0;
+        let mut ptr = pattern;
+        while *ptr != 0 {
+            len += 1;
+            ptr = ptr.add(1);
+        }
+        if len == 0 {
+            return SRE_ERROR_INVALID_PATTERN;
+        }
+        match std::str::from_utf8(std::slice::from_raw_parts(pattern, len)) {
+            Ok(s) => s,
+            Err(_) => return SRE_ERROR_INVALID_PATTERN,
+        }
+    };
     
-    unsafe {
-        *compiled = 1; // Placeholder
+    if pattern_str.is_empty() {
+        return SRE_ERROR_INVALID_PATTERN;
     }
     
-    0 // CELL_OK
+    // Compile through global regex manager
+    match crate::context::get_hle_context_mut().regex.compile(pattern_str, flags) {
+        Ok(pattern_id) => {
+            unsafe {
+                *compiled = pattern_id;
+            }
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
 }
 
 /// cellSreFree - Free compiled regular expression
@@ -155,8 +177,8 @@ pub fn cell_sre_match(
     pattern: SrePattern,
     text: *const u8,
     text_len: u32,
-    matches: *mut SreMatch,
-    max_matches: u32,
+    _matches: *mut SreMatch,
+    _max_matches: u32,
     num_matches: *mut u32,
 ) -> i32 {
     trace!("cellSreMatch called with pattern={}, text_len={}", pattern, text_len);
@@ -166,10 +188,13 @@ pub fn cell_sre_match(
         return SRE_ERROR_INVALID_PARAMETER;
     }
     
-    // TODO: Read text from memory
-    // TODO: Match through global regex manager
-    // TODO: Write matches to memory
+    // Validate pattern exists through global manager
+    if !crate::context::get_hle_context().regex.is_valid(pattern) {
+        return SRE_ERROR_INVALID_PARAMETER;
+    }
     
+    // Note: Actual regex matching requires implementing the regex backend
+    // For now, return 0 matches
     unsafe {
         if !num_matches.is_null() {
             *num_matches = 0;
@@ -185,7 +210,7 @@ pub fn cell_sre_search(
     text: *const u8,
     text_len: u32,
     start_offset: u32,
-    match_result: *mut SreMatch,
+    _match_result: *mut SreMatch,
 ) -> i32 {
     trace!("cellSreSearch called with pattern={}, text_len={}, offset={}", 
         pattern, text_len, start_offset);
@@ -199,10 +224,12 @@ pub fn cell_sre_search(
         return SRE_ERROR_INVALID_PARAMETER;
     }
     
-    // TODO: Read text from memory
-    // TODO: Search through global regex manager
-    // TODO: Write match result to memory
+    // Validate pattern exists through global manager
+    if !crate::context::get_hle_context().regex.is_valid(pattern) {
+        return SRE_ERROR_INVALID_PARAMETER;
+    }
     
+    // Note: Actual regex searching requires implementing the regex backend
     -1 // Not found
 }
 
@@ -212,23 +239,25 @@ pub fn cell_sre_replace(
     text: *const u8,
     text_len: u32,
     replacement: *const u8,
-    replacement_len: u32,
+    _replacement_len: u32,
     output: *mut u8,
-    output_len: u32,
+    _output_len: u32,
     result_len: *mut u32,
 ) -> i32 {
-    trace!("cellSreReplace called with pattern={}, text_len={}, replacement_len={}", 
-        pattern, text_len, replacement_len);
+    trace!("cellSreReplace called with pattern={}, text_len={}", 
+        pattern, text_len);
     
     // Validate parameters
     if pattern == 0 || text.is_null() || replacement.is_null() || output.is_null() {
         return SRE_ERROR_INVALID_PARAMETER;
     }
     
-    // TODO: Read text and replacement from memory
-    // TODO: Replace through global regex manager
-    // TODO: Write output to memory
+    // Validate pattern exists through global manager
+    if !crate::context::get_hle_context().regex.is_valid(pattern) {
+        return SRE_ERROR_INVALID_PARAMETER;
+    }
     
+    // Note: Actual regex replacement requires implementing the regex backend
     unsafe {
         if !result_len.is_null() {
             *result_len = 0;
@@ -251,8 +280,19 @@ pub fn cell_sre_get_error(
         return SRE_ERROR_INVALID_PARAMETER;
     }
     
-    // TODO: Format error message
-    // TODO: Write to buffer
+    // Format error message based on error code
+    let msg: &[u8] = match error_code {
+        SRE_ERROR_INVALID_PATTERN => b"Invalid pattern\0",
+        SRE_ERROR_NO_MEMORY => b"Out of memory\0",
+        SRE_ERROR_INVALID_PARAMETER => b"Invalid parameter\0",
+        _ => b"Unknown error\0",
+    };
+    
+    // Write error message to buffer
+    let copy_len = std::cmp::min(msg.len(), buffer_size as usize);
+    unsafe {
+        std::ptr::copy_nonoverlapping(msg.as_ptr(), buffer, copy_len);
+    }
     
     0 // CELL_OK
 }

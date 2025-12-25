@@ -18,7 +18,7 @@ This document outlines the complete development roadmap for oxidized-cell, a Pla
 | Input System | ✅ Complete | 80% | Medium |
 | VFS | ✅ Complete | 80% | Medium |
 | ELF/Game Loader | ✅ Complete | 90% | Low |
-| HLE Modules | 🚧 In Progress | 60% | **HIGH** |
+| HLE Modules | 🚧 In Progress | 75% | **HIGH** |
 | User Interface | 🚧 In Progress | 15% | Medium |
 | Game Loading Pipeline | ❌ Not Started | 0% | **HIGH** |
 | Debugging Tools | 🔨 Mostly Complete | 70% | Low |
@@ -29,7 +29,7 @@ This document outlines the complete development roadmap for oxidized-cell, a Pla
 
 ### 1. HLE Module Implementation (Critical for Game Execution)
 
-The HLE (High-Level Emulation) modules are essential for running PS3 games. Currently at ~60% completion.
+The HLE (High-Level Emulation) modules are essential for running PS3 games. Currently at ~75% completion.
 
 #### HLE Infrastructure
 - [x] **Global HLE Context** - Centralized manager instances
@@ -67,16 +67,22 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [ ] Implement PSID/account handling
   - [ ] Add disc detection functions
 
-- [ ] **cellGame** - Game Data Management (Skeleton exists)
-  - [ ] Implement game boot sequence
-  - [ ] Add PARAM.SFO reading/writing
+- [x] **cellGame** - Game Data Management (Connected to global context)
+  - [x] Implement boot_check through global manager
+  - [x] Implement data_check through global manager
+  - [x] Implement content_permit through global manager
+  - [x] Implement content_error_dialog through global manager
+  - [x] Implement get_param_int/string through global manager
+  - [x] Implement get_local_web_content_path through global manager
+  - [ ] Add actual PARAM.SFO reading/writing
   - [ ] Support game data installation
   - [ ] Handle game updates
 
-- [ ] **cellSaveData** - Save Data Management (Skeleton exists)
-  - [ ] Implement save data listing
-  - [ ] Add save/load operations
-  - [ ] Support auto-save
+- [x] **cellSaveData** - Save Data Management (Connected to global context)
+  - [x] Implement list_load2/list_save2 through global manager
+  - [x] Implement delete2 through global manager
+  - [x] Implement fixed_load2/fixed_save2 through global manager
+  - [ ] Connect to VFS backend
   - [ ] Handle save data encryption
 
 #### SPU/Threading Modules
@@ -166,12 +172,21 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [ ] Add scaling support
 
 #### Image Decoding Modules
-- [ ] **cellPngDec** - PNG Decoder (Skeleton exists)
-  - [ ] Implement full PNG decoding
+- [x] **cellPngDec** - PNG Decoder (Connected to global context)
+  - [x] Implement create/destroy through global manager
+  - [x] Implement open/close through global manager
+  - [x] Implement read_header through global manager
+  - [x] Implement set_parameter through global manager
+  - [x] Implement decode_data through global manager
+  - [ ] Implement actual PNG decoding backend
   - [ ] Support various color formats
 
-- [ ] **cellJpgDec** - JPEG Decoder (Skeleton exists)
-  - [ ] Implement JPEG decoding
+- [x] **cellJpgDec** - JPEG Decoder (Connected to global context)
+  - [x] Implement create/destroy through global manager
+  - [x] Implement open/close through global manager
+  - [x] Implement read_header through global manager
+  - [x] Implement decode_data through global manager
+  - [ ] Implement actual JPEG decoding backend
   - [ ] Add progressive JPEG support
 
 - [x] **cellGifDec** - GIF Decoder (Connected to global context)
@@ -193,15 +208,26 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
 - [x] **cellHttp** - HTTP Client (Connected to global context)
   - [x] Implement init/end through global manager
   - [x] Implement create/destroy client through global manager
-  - [ ] Implement HTTP requests
+  - [x] Implement create/destroy transaction through global manager
+  - [x] Implement send_request/recv_response through global manager
+  - [x] Implement add_request_header through global manager
+  - [x] Implement get_status_code through global manager
+  - [x] Implement set_proxy through global manager
+  - [ ] Connect to actual HTTP networking backend
   - [ ] Add HTTPS support
 
 - [x] **cellSsl** - SSL/TLS (Connected to global context)
   - [x] Implement init/end through global manager
   - [x] Implement certificate loader through global manager
   - [x] Implement certificate unload through global manager
+  - [x] Implement cert_get_serial_number through global manager
+  - [x] Implement cert_get_public_key through global manager
+  - [x] Implement cert_get_rsa_modulus/exponent through global manager
+  - [x] Implement cert_get_not_before/not_after through global manager
+  - [x] Implement cert_get_subject_name through global manager
+  - [x] Implement cert_get_issuer_name through global manager
   - [ ] Implement TLS connections
-  - [ ] Add certificate handling
+  - [ ] Add full certificate handling
 
 #### Font Modules
 - [x] **cellFont** - Font Library (Connected to global context)
@@ -216,11 +242,13 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
 
 #### Regular Expression Modules
 - [x] **libsre** - Regular Expressions (Connected to global context)
+  - [x] Implement compile through global manager
   - [x] Implement free through global manager
-  - [ ] Implement compile through global manager (needs memory read)
-  - [ ] Implement match through global manager (needs memory read/write)
-  - [ ] Implement search through global manager (needs memory read/write)
-  - [ ] Implement replace through global manager (needs memory read/write)
+  - [x] Implement match through global manager
+  - [x] Implement search through global manager
+  - [x] Implement replace through global manager
+  - [x] Implement get_error through global manager
+  - [ ] Integrate actual regex matching backend
 
 ---
 

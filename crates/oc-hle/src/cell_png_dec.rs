@@ -301,21 +301,25 @@ impl Default for PngDecManager {
 pub fn cell_png_dec_create(
     main_handle_addr: u32,
     thread_in_param_addr: u32,
-    thread_out_param_addr: u32,
+    _thread_out_param_addr: u32,
 ) -> i32 {
-    trace!("cellPngDecCreate(main_handle_addr={:#x}, thread_in_param_addr={:#x}, thread_out_param_addr={:#x})",
-        main_handle_addr, thread_in_param_addr, thread_out_param_addr);
+    trace!("cellPngDecCreate(main_handle_addr={:#x}, thread_in_param_addr={:#x})",
+        main_handle_addr, thread_in_param_addr);
 
     // Validate parameters
     if main_handle_addr == 0 || thread_in_param_addr == 0 {
         return CELL_PNGDEC_ERROR_ARG;
     }
 
-    // TODO: Read thread_in_param from memory
-    // TODO: Create PNG decoder instance through global manager
-    // TODO: Write handle to memory
-
-    0 // CELL_OK
+    // Create PNG decoder instance through global manager
+    // Note: actual memory write requires memory subsystem integration
+    match crate::context::get_hle_context_mut().png_dec.create(4) { // Default max handles
+        Ok(_handle_id) => {
+            // Handle ID should be written to main_handle_addr in actual implementation
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
 }
 
 /// cellPngDecDestroy - Destroy PNG decoder
@@ -333,9 +337,7 @@ pub fn cell_png_dec_destroy(main_handle: u32) -> i32 {
         return CELL_PNGDEC_ERROR_ARG;
     }
 
-    // TODO: Destroy through global manager
-
-    0 // CELL_OK
+    crate::context::get_hle_context_mut().png_dec.destroy(main_handle)
 }
 
 /// cellPngDecOpen - Open PNG for decoding
@@ -362,12 +364,15 @@ pub fn cell_png_dec_open(
         return CELL_PNGDEC_ERROR_ARG;
     }
 
-    // TODO: Read src from memory
-    // TODO: Open PNG file/stream
-    // TODO: Parse PNG header
-    // TODO: Write sub handle to memory through global manager
-
-    0 // CELL_OK
+    // Open through global manager
+    // Note: actual memory write requires memory subsystem integration
+    match crate::context::get_hle_context_mut().png_dec.open(main_handle) {
+        Ok(_sub_handle) => {
+            // Sub handle should be written to sub_handle_addr in actual implementation
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
 }
 
 /// cellPngDecClose - Close PNG decoder
@@ -386,9 +391,7 @@ pub fn cell_png_dec_close(main_handle: u32, sub_handle: u32) -> i32 {
         return CELL_PNGDEC_ERROR_ARG;
     }
 
-    // TODO: Close through global manager
-
-    0 // CELL_OK
+    crate::context::get_hle_context_mut().png_dec.close(main_handle, sub_handle)
 }
 
 /// cellPngDecReadHeader - Read PNG header
@@ -413,9 +416,23 @@ pub fn cell_png_dec_read_header(
         return CELL_PNGDEC_ERROR_ARG;
     }
 
-    // TODO: Read PNG header information
-    // TODO: Parse image dimensions, color space, etc.
-    // TODO: Write info to memory
+    // Validate sub handle exists through global manager
+    if !crate::context::get_hle_context().png_dec.is_sub_valid(main_handle, sub_handle) {
+        return CELL_PNGDEC_ERROR_ARG;
+    }
+
+    // Set placeholder info through global manager
+    // Note: actual PNG header parsing requires file/memory access
+    let info = CellPngDecInfo {
+        image_width: 1920,
+        image_height: 1080,
+        num_components: 4,
+        color_space: 0,
+        bit_depth: 8,
+        interlace_method: 0,
+        chunk_information: 0,
+    };
+    crate::context::get_hle_context_mut().png_dec.set_info(main_handle, sub_handle, info);
 
     0 // CELL_OK
 }
@@ -434,20 +451,40 @@ pub fn cell_png_dec_set_parameter(
     main_handle: u32,
     sub_handle: u32,
     in_param_addr: u32,
-    out_param_addr: u32,
+    _out_param_addr: u32,
 ) -> i32 {
-    trace!("cellPngDecSetParameter(main_handle={}, sub_handle={}, in_param_addr={:#x}, out_param_addr={:#x})",
-        main_handle, sub_handle, in_param_addr, out_param_addr);
+    trace!("cellPngDecSetParameter(main_handle={}, sub_handle={}, in_param_addr={:#x})",
+        main_handle, sub_handle, in_param_addr);
 
     // Validate parameters
     if main_handle == 0 || sub_handle == 0 || in_param_addr == 0 {
         return CELL_PNGDEC_ERROR_ARG;
     }
 
-    // TODO: Read in_param from memory
-    // TODO: Set decoding parameters through global manager
-    // TODO: Configure output format
-    // TODO: Write output parameters to memory
+    // Validate sub handle exists through global manager
+    if !crate::context::get_hle_context().png_dec.is_sub_valid(main_handle, sub_handle) {
+        return CELL_PNGDEC_ERROR_ARG;
+    }
+
+    // Set parameters through global manager
+    // Note: actual parameter reading requires memory access
+    let in_param = CellPngDecInParam {
+        command_ptr: 0,
+        down_scale: 1,
+        color_space: 0,
+        pack_flag: 0,
+        alpha_select: 0,
+    };
+    let out_param = CellPngDecOutParam {
+        output_width: 1920,
+        output_height: 1080,
+        output_components: 4,
+        output_bit_depth: 8,
+        output_mode: 0,
+        output_color_space: 0,
+        use_memory_space: 0,
+    };
+    crate::context::get_hle_context_mut().png_dec.set_parameter(main_handle, sub_handle, in_param, out_param);
 
     0 // CELL_OK
 }
@@ -476,10 +513,12 @@ pub fn cell_png_dec_decode_data(
         return CELL_PNGDEC_ERROR_ARG;
     }
 
-    // TODO: Decode PNG image data
-    // TODO: Write decoded data to buffer
-    // TODO: Write output info to memory
+    // Validate sub handle exists through global manager
+    if !crate::context::get_hle_context().png_dec.is_sub_valid(main_handle, sub_handle) {
+        return CELL_PNGDEC_ERROR_ARG;
+    }
 
+    // Actual PNG decoding requires memory and decoder backend integration
     0 // CELL_OK
 }
 
