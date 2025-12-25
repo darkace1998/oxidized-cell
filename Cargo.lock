@@ -1707,6 +1707,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpu-allocator"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c151a2a5ef800297b4e79efa4f4bec035c5f51d5ae587287c9b952bdf734cacd"
+dependencies = [
+ "ash",
+ "log",
+ "presser",
+ "thiserror 1.0.69",
+ "windows 0.58.0",
+]
+
+[[package]]
 name = "gpu-descriptor"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2719,6 +2732,7 @@ name = "oc-integration"
 version = "0.1.0"
 dependencies = [
  "oc-core",
+ "oc-hle",
  "oc-loader",
  "oc-lv2",
  "oc-memory",
@@ -2784,6 +2798,7 @@ dependencies = [
  "ash",
  "bitflags 2.10.0",
  "bytemuck",
+ "gpu-allocator 0.27.0",
  "oc-core",
  "oc-memory",
  "tracing",
@@ -4318,7 +4333,7 @@ dependencies = [
  "glow 0.13.1",
  "glutin_wgl_sys",
  "gpu-alloc",
- "gpu-allocator",
+ "gpu-allocator 0.26.0",
  "gpu-descriptor",
  "hassle-rs",
  "js-sys",

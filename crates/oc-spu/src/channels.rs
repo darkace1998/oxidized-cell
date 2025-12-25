@@ -172,6 +172,8 @@ pub struct SpuChannels {
     signal1_pending: bool,
     /// Signal notification 2 pending
     signal2_pending: bool,
+    /// Decrementer event pending (triggered when decrementer reaches 0)
+    decrementer_event_pending: bool,
     /// Current cycle counter
     cycle_counter: u64,
     /// Last decrementer update cycle
@@ -202,6 +204,7 @@ impl SpuChannels {
             signal2: 0,
             signal1_pending: false,
             signal2_pending: false,
+            decrementer_event_pending: false,
             cycle_counter: 0,
             last_decr_update: 0,
         }
@@ -386,8 +389,12 @@ impl SpuChannels {
     fn update_event_status(&mut self) {
         let mut status = 0u32;
 
-        // Bit 0: SPU_EVENT_TM (tag mask)
-        // Bit 1: SPU_EVENT_MFC (MFC command completed)
+        // Bit 0: SPU_EVENT_DECR (decrementer event - timer reached zero)
+        // Note: SPU_EVENT_TM (tag mask) was previously planned for bit 0 but not implemented
+        if self.decrementer_event_pending {
+            status |= 0x01;
+        }
+        // Bit 1: SPU_EVENT_MFC (MFC command completed) - not yet implemented
         // Bit 2: SPU_EVENT_SNR1 (signal notification 1)
         if self.signal1_pending {
             status |= 0x04;
@@ -420,6 +427,10 @@ impl SpuChannels {
 
     /// Acknowledge events
     pub fn acknowledge_events(&mut self, ack_mask: u32) {
+        // Clear acknowledged decrementer event
+        if ack_mask & 0x01 != 0 {
+            self.decrementer_event_pending = false;
+        }
         // Clear acknowledged signal notifications
         if ack_mask & 0x04 != 0 {
             self.signal1_pending = false;
@@ -438,7 +449,9 @@ impl SpuChannels {
         if self.decrementer > 0 {
             if cycles_elapsed >= self.decrementer as u64 {
                 self.decrementer = 0;
-                // TODO: Generate decrementer event
+                // Generate decrementer event when counter reaches zero
+                self.decrementer_event_pending = true;
+                self.update_event_status();
             } else {
                 self.decrementer -= cycles_elapsed as u32;
             }
@@ -450,11 +463,25 @@ impl SpuChannels {
         self.decrementer = value;
         self.decrementer_start = value;
         self.last_decr_update = self.cycle_counter;
+        // Clear pending decrementer event when decrementer is reset
+        self.decrementer_event_pending = false;
+        self.update_event_status();
     }
 
     /// Get decrementer value
     pub fn get_decrementer(&self) -> u32 {
         self.decrementer
+    }
+
+    /// Check if decrementer event is pending
+    pub fn has_decrementer_event(&self) -> bool {
+        self.decrementer_event_pending
+    }
+
+    /// Clear decrementer event
+    pub fn clear_decrementer_event(&mut self) {
+        self.decrementer_event_pending = false;
+        self.update_event_status();
     }
 
     /// Check if any channel events are pending
@@ -583,5 +610,61 @@ mod tests {
         let status = channels.get_event_status();
         // Mailbox bit should be visible
         assert!(status & 0x20 != 0);
+    }
+
+    #[test]
+    fn test_decrementer_event() {
+        let mut channels = SpuChannels::new();
+
+        // Set event mask to watch decrementer events (bit 0)
+        channels.set_event_mask(0x01);
+
+        // Initially no decrementer event
+        assert!(!channels.has_decrementer_event());
+        assert_eq!(channels.get_event_status(), 0);
+
+        // Set decrementer to 50 cycles
+        channels.set_decrementer(50);
+        assert_eq!(channels.get_decrementer(), 50);
+        assert!(!channels.has_decrementer_event());
+
+        // Advance 30 cycles - decrementer should be 20, no event yet
+        channels.tick(30);
+        channels.update_decrementer();
+        assert_eq!(channels.get_decrementer(), 20);
+        assert!(!channels.has_decrementer_event());
+
+        // Advance another 30 cycles - decrementer should reach 0 and generate event
+        channels.tick(30);
+        channels.update_decrementer();
+        assert_eq!(channels.get_decrementer(), 0);
+        assert!(channels.has_decrementer_event());
+
+        // Event status should reflect the decrementer event
+        let status = channels.get_event_status();
+        assert!(status & 0x01 != 0);
+
+        // Acknowledge the decrementer event
+        channels.acknowledge_events(0x01);
+        assert!(!channels.has_decrementer_event());
+        assert_eq!(channels.get_event_status() & 0x01, 0);
+    }
+
+    #[test]
+    fn test_decrementer_reset_clears_event() {
+        let mut channels = SpuChannels::new();
+
+        channels.set_event_mask(0x01);
+
+        // Generate a decrementer event
+        channels.set_decrementer(10);
+        channels.tick(20);
+        channels.update_decrementer();
+        assert!(channels.has_decrementer_event());
+
+        // Reset decrementer - should clear the pending event
+        channels.set_decrementer(100);
+        assert!(!channels.has_decrementer_event());
+        assert_eq!(channels.get_decrementer(), 100);
     }
 }

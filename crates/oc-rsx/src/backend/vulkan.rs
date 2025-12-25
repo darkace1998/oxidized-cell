@@ -3,9 +3,12 @@
 //! This module contains the Vulkan implementation for RSX rendering.
 
 use super::{GraphicsBackend, PrimitiveType};
-use crate::vertex::VertexAttribute;
+use crate::vertex::{VertexAttribute, VertexAttributeType};
 use ash::vk;
+use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator, AllocatorCreateDesc};
+use gpu_allocator::MemoryLocation;
 use std::ffi::CString;
+use std::sync::{Arc, Mutex};
 
 /// Vulkan graphics backend
 pub struct VulkanBackend {
@@ -35,10 +38,16 @@ pub struct VulkanBackend {
     render_images: Vec<vk::Image>,
     /// Render target image views
     render_image_views: Vec<vk::ImageView>,
+    /// Render target image memory allocations
+    render_image_allocations: Vec<Allocation>,
     /// Depth image
     depth_image: Option<vk::Image>,
     /// Depth image view
     depth_image_view: Option<vk::ImageView>,
+    /// Depth image memory allocation
+    depth_image_allocation: Option<Allocation>,
+    /// GPU memory allocator
+    allocator: Option<Arc<Mutex<Allocator>>>,
     /// Synchronization: Image available semaphores
     image_available_semaphores: Vec<vk::Semaphore>,
     /// Synchronization: Render finished semaphores
@@ -51,6 +60,22 @@ pub struct VulkanBackend {
     max_frames_in_flight: usize,
     /// Whether backend is initialized
     initialized: bool,
+    /// Render width
+    width: u32,
+    /// Render height
+    height: u32,
+    /// Current pipeline layout
+    pipeline_layout: Option<vk::PipelineLayout>,
+    /// Current graphics pipeline
+    pipeline: Option<vk::Pipeline>,
+    /// Descriptor set layout
+    descriptor_set_layout: Option<vk::DescriptorSetLayout>,
+    /// Vertex input bindings
+    vertex_bindings: Vec<vk::VertexInputBindingDescription>,
+    /// Vertex input attributes
+    vertex_attributes: Vec<vk::VertexInputAttributeDescription>,
+    /// Whether we're in a render pass
+    in_render_pass: bool,
 }
 
 impl VulkanBackend {
@@ -75,14 +100,25 @@ impl VulkanBackend {
             framebuffer: None,
             render_images: Vec::new(),
             render_image_views: Vec::new(),
+            render_image_allocations: Vec::new(),
             depth_image: None,
             depth_image_view: None,
+            depth_image_allocation: None,
+            allocator: None,
             image_available_semaphores: Vec::new(),
             render_finished_semaphores: Vec::new(),
             in_flight_fences: Vec::new(),
             current_frame: 0,
             max_frames_in_flight: max_frames,
             initialized: false,
+            width: 1280,
+            height: 720,
+            pipeline_layout: None,
+            pipeline: None,
+            descriptor_set_layout: None,
+            vertex_bindings: Vec::new(),
+            vertex_attributes: Vec::new(),
+            in_render_pass: false,
         }
     }
 
@@ -276,28 +312,209 @@ impl VulkanBackend {
 
     /// Create render target images and views
     fn create_render_targets(
-        _device: &ash::Device,
-        _width: u32,
-        _height: u32,
-    ) -> Result<(Vec<vk::Image>, Vec<vk::ImageView>), String> {
-        // For now, create a single render target
-        // In a real implementation, this would be tied to a swapchain
-        let images = Vec::new();
-        let views = Vec::new();
+        device: &ash::Device,
+        allocator: &Arc<Mutex<Allocator>>,
+        width: u32,
+        height: u32,
+        count: usize,
+    ) -> Result<(Vec<vk::Image>, Vec<vk::ImageView>, Vec<Allocation>), String> {
+        let mut images = Vec::with_capacity(count);
+        let mut views = Vec::with_capacity(count);
+        let mut allocations = Vec::with_capacity(count);
 
-        // TODO: Create actual images and views when swapchain is implemented
-        Ok((images, views))
+        for i in 0..count {
+            // Create image for render target
+            let image_info = vk::ImageCreateInfo::default()
+                .image_type(vk::ImageType::TYPE_2D)
+                .format(vk::Format::B8G8R8A8_UNORM)
+                .extent(vk::Extent3D {
+                    width,
+                    height,
+                    depth: 1,
+                })
+                .mip_levels(1)
+                .array_layers(1)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .tiling(vk::ImageTiling::OPTIMAL)
+                .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE)
+                .initial_layout(vk::ImageLayout::UNDEFINED);
+
+            let image = unsafe {
+                device
+                    .create_image(&image_info, None)
+                    .map_err(|e| format!("Failed to create render image {}: {:?}", i, e))?
+            };
+
+            // Get memory requirements and allocate
+            let requirements = unsafe { device.get_image_memory_requirements(image) };
+
+            let allocation = allocator
+                .lock()
+                .unwrap()
+                .allocate(&AllocationCreateDesc {
+                    name: &format!("render_target_{}", i),
+                    requirements,
+                    location: MemoryLocation::GpuOnly,
+                    linear: false,
+                    allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+                })
+                .map_err(|e| format!("Failed to allocate memory for render image {}: {:?}", i, e))?;
+
+            unsafe {
+                device
+                    .bind_image_memory(image, allocation.memory(), allocation.offset())
+                    .map_err(|e| format!("Failed to bind render image memory {}: {:?}", i, e))?;
+            }
+
+            // Create image view
+            let view_info = vk::ImageViewCreateInfo::default()
+                .image(image)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(vk::Format::B8G8R8A8_UNORM)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                });
+
+            let view = unsafe {
+                device
+                    .create_image_view(&view_info, None)
+                    .map_err(|e| format!("Failed to create render image view {}: {:?}", i, e))?
+            };
+
+            images.push(image);
+            views.push(view);
+            allocations.push(allocation);
+        }
+
+        Ok((images, views, allocations))
     }
 
     /// Create depth buffer
     fn create_depth_buffer(
-        _device: &ash::Device,
-        _width: u32,
-        _height: u32,
-    ) -> Result<(vk::Image, vk::ImageView), String> {
-        // TODO: Create actual depth buffer
-        // For now, return placeholder nulls
-        Ok((vk::Image::null(), vk::ImageView::null()))
+        device: &ash::Device,
+        allocator: &Arc<Mutex<Allocator>>,
+        width: u32,
+        height: u32,
+    ) -> Result<(vk::Image, vk::ImageView, Allocation), String> {
+        // Create depth image
+        let image_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(vk::Format::D24_UNORM_S8_UINT)
+            .extent(vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .initial_layout(vk::ImageLayout::UNDEFINED);
+
+        let image = unsafe {
+            device
+                .create_image(&image_info, None)
+                .map_err(|e| format!("Failed to create depth image: {:?}", e))?
+        };
+
+        // Get memory requirements and allocate
+        let requirements = unsafe { device.get_image_memory_requirements(image) };
+
+        let allocation = allocator
+            .lock()
+            .unwrap()
+            .allocate(&AllocationCreateDesc {
+                name: "depth_buffer",
+                requirements,
+                location: MemoryLocation::GpuOnly,
+                linear: false,
+                allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+            })
+            .map_err(|e| format!("Failed to allocate memory for depth buffer: {:?}", e))?;
+
+        unsafe {
+            device
+                .bind_image_memory(image, allocation.memory(), allocation.offset())
+                .map_err(|e| format!("Failed to bind depth image memory: {:?}", e))?;
+        }
+
+        // Create image view
+        let view_info = vk::ImageViewCreateInfo::default()
+            .image(image)
+            .view_type(vk::ImageViewType::TYPE_2D)
+            .format(vk::Format::D24_UNORM_S8_UINT)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            });
+
+        let view = unsafe {
+            device
+                .create_image_view(&view_info, None)
+                .map_err(|e| format!("Failed to create depth image view: {:?}", e))?
+        };
+
+        Ok((image, view, allocation))
+    }
+
+    /// Convert RSX vertex attribute type to Vulkan format
+    fn vertex_type_to_vk_format(type_: VertexAttributeType, size: u8, normalized: bool) -> vk::Format {
+        match (type_, size, normalized) {
+            (VertexAttributeType::FLOAT, 1, _) => vk::Format::R32_SFLOAT,
+            (VertexAttributeType::FLOAT, 2, _) => vk::Format::R32G32_SFLOAT,
+            (VertexAttributeType::FLOAT, 3, _) => vk::Format::R32G32B32_SFLOAT,
+            (VertexAttributeType::FLOAT, 4, _) => vk::Format::R32G32B32A32_SFLOAT,
+            (VertexAttributeType::SHORT, 1, true) => vk::Format::R16_SNORM,
+            (VertexAttributeType::SHORT, 1, false) => vk::Format::R16_SINT,
+            (VertexAttributeType::SHORT, 2, true) => vk::Format::R16G16_SNORM,
+            (VertexAttributeType::SHORT, 2, false) => vk::Format::R16G16_SINT,
+            (VertexAttributeType::SHORT, 3, true) => vk::Format::R16G16B16_SNORM,
+            (VertexAttributeType::SHORT, 3, false) => vk::Format::R16G16B16_SINT,
+            (VertexAttributeType::SHORT, 4, true) => vk::Format::R16G16B16A16_SNORM,
+            (VertexAttributeType::SHORT, 4, false) => vk::Format::R16G16B16A16_SINT,
+            (VertexAttributeType::BYTE, 1, true) => vk::Format::R8_SNORM,
+            (VertexAttributeType::BYTE, 1, false) => vk::Format::R8_SINT,
+            (VertexAttributeType::BYTE, 2, true) => vk::Format::R8G8_SNORM,
+            (VertexAttributeType::BYTE, 2, false) => vk::Format::R8G8_SINT,
+            (VertexAttributeType::BYTE, 3, true) => vk::Format::R8G8B8_SNORM,
+            (VertexAttributeType::BYTE, 3, false) => vk::Format::R8G8B8_SINT,
+            (VertexAttributeType::BYTE, 4, true) => vk::Format::R8G8B8A8_SNORM,
+            (VertexAttributeType::BYTE, 4, false) => vk::Format::R8G8B8A8_SINT,
+            (VertexAttributeType::HALF_FLOAT, 1, _) => vk::Format::R16_SFLOAT,
+            (VertexAttributeType::HALF_FLOAT, 2, _) => vk::Format::R16G16_SFLOAT,
+            (VertexAttributeType::HALF_FLOAT, 3, _) => vk::Format::R16G16B16_SFLOAT,
+            (VertexAttributeType::HALF_FLOAT, 4, _) => vk::Format::R16G16B16A16_SFLOAT,
+            // COMPRESSED: Compressed vertex data (CMP) - typically 10/10/10/2 format
+            (VertexAttributeType::COMPRESSED, _, true) => vk::Format::A2B10G10R10_SNORM_PACK32,
+            (VertexAttributeType::COMPRESSED, _, false) => vk::Format::A2B10G10R10_UINT_PACK32,
+            _ => vk::Format::R32G32B32A32_SFLOAT, // Default fallback
+        }
+    }
+
+    /// Convert RSX primitive type to Vulkan topology
+    fn primitive_to_vk_topology(primitive: PrimitiveType) -> vk::PrimitiveTopology {
+        match primitive {
+            PrimitiveType::Points => vk::PrimitiveTopology::POINT_LIST,
+            PrimitiveType::Lines => vk::PrimitiveTopology::LINE_LIST,
+            PrimitiveType::LineLoop => vk::PrimitiveTopology::LINE_STRIP, // Approximate
+            PrimitiveType::LineStrip => vk::PrimitiveTopology::LINE_STRIP,
+            PrimitiveType::Triangles => vk::PrimitiveTopology::TRIANGLE_LIST,
+            PrimitiveType::TriangleStrip => vk::PrimitiveTopology::TRIANGLE_STRIP,
+            PrimitiveType::TriangleFan => vk::PrimitiveTopology::TRIANGLE_FAN,
+            PrimitiveType::Quads => vk::PrimitiveTopology::TRIANGLE_LIST, // Will need index conversion
+            PrimitiveType::QuadStrip => vk::PrimitiveTopology::TRIANGLE_STRIP,
+            PrimitiveType::Polygon => vk::PrimitiveTopology::TRIANGLE_FAN, // Approximate
+        }
     }
 }
 
@@ -331,6 +548,18 @@ impl GraphicsBackend for VulkanBackend {
         let (device, graphics_queue) =
             Self::create_device(&instance, physical_device, graphics_queue_family)?;
 
+        // Create GPU memory allocator
+        let allocator = Allocator::new(&AllocatorCreateDesc {
+            instance: instance.clone(),
+            device: device.clone(),
+            physical_device,
+            debug_settings: Default::default(),
+            buffer_device_address: false,
+            allocation_sizes: Default::default(),
+        })
+        .map_err(|e| format!("Failed to create GPU allocator: {:?}", e))?;
+        let allocator = Arc::new(Mutex::new(allocator));
+
         // Create command pool
         let command_pool = Self::create_command_pool(&device, graphics_queue_family)?;
 
@@ -353,11 +582,32 @@ impl GraphicsBackend for VulkanBackend {
         let (image_available, render_finished, fences) =
             Self::create_sync_objects(&device, self.max_frames_in_flight)?;
 
-        // Create render targets (placeholder for now)
-        let (render_images, render_image_views) = Self::create_render_targets(&device, 1280, 720)?;
+        // Create render targets with actual images and views
+        let (render_images, render_image_views, render_image_allocations) =
+            Self::create_render_targets(&device, &allocator, self.width, self.height, self.max_frames_in_flight)?;
 
-        // Create depth buffer (placeholder for now)
-        let (depth_image, depth_image_view) = Self::create_depth_buffer(&device, 1280, 720)?;
+        // Create depth buffer with actual image and view
+        let (depth_image, depth_image_view, depth_allocation) =
+            Self::create_depth_buffer(&device, &allocator, self.width, self.height)?;
+
+        // Create framebuffer using the first render target
+        let framebuffer = if !render_image_views.is_empty() {
+            let attachments = [render_image_views[0], depth_image_view];
+            let framebuffer_info = vk::FramebufferCreateInfo::default()
+                .render_pass(render_pass)
+                .attachments(&attachments)
+                .width(self.width)
+                .height(self.height)
+                .layers(1);
+
+            Some(unsafe {
+                device
+                    .create_framebuffer(&framebuffer_info, None)
+                    .map_err(|e| format!("Failed to create framebuffer: {:?}", e))?
+            })
+        } else {
+            None
+        };
 
         self.entry = Some(entry);
         self.instance = Some(instance);
@@ -369,13 +619,17 @@ impl GraphicsBackend for VulkanBackend {
         self.command_buffers = command_buffers.clone();
         self.current_cmd_buffer = Some(command_buffers[0]);
         self.render_pass = Some(render_pass);
+        self.framebuffer = framebuffer;
         self.image_available_semaphores = image_available;
         self.render_finished_semaphores = render_finished;
         self.in_flight_fences = fences;
         self.render_images = render_images;
         self.render_image_views = render_image_views;
+        self.render_image_allocations = render_image_allocations;
         self.depth_image = Some(depth_image);
         self.depth_image_view = Some(depth_image_view);
+        self.depth_image_allocation = Some(depth_allocation);
+        self.allocator = Some(allocator);
         self.initialized = true;
 
         tracing::info!("Vulkan backend initialized successfully");
@@ -404,9 +658,20 @@ impl GraphicsBackend for VulkanBackend {
                     device.destroy_fence(fence, None);
                 }
 
-                // Destroy render target views
+                // Destroy render target views and images
                 for view in self.render_image_views.drain(..) {
                     device.destroy_image_view(view, None);
+                }
+                for image in self.render_images.drain(..) {
+                    device.destroy_image(image, None);
+                }
+
+                // Free render target memory allocations
+                if let Some(allocator) = &self.allocator {
+                    let mut alloc = allocator.lock().unwrap();
+                    for allocation in self.render_image_allocations.drain(..) {
+                        alloc.free(allocation).ok();
+                    }
                 }
 
                 // Destroy depth resources
@@ -414,6 +679,30 @@ impl GraphicsBackend for VulkanBackend {
                     if view != vk::ImageView::null() {
                         device.destroy_image_view(view, None);
                     }
+                }
+
+                if let Some(image) = self.depth_image.take() {
+                    if image != vk::Image::null() {
+                        device.destroy_image(image, None);
+                    }
+                }
+
+                // Free depth image memory allocation
+                if let Some(allocator) = &self.allocator {
+                    if let Some(allocation) = self.depth_image_allocation.take() {
+                        allocator.lock().unwrap().free(allocation).ok();
+                    }
+                }
+
+                // Destroy pipeline resources
+                if let Some(pipeline) = self.pipeline.take() {
+                    device.destroy_pipeline(pipeline, None);
+                }
+                if let Some(layout) = self.pipeline_layout.take() {
+                    device.destroy_pipeline_layout(layout, None);
+                }
+                if let Some(layout) = self.descriptor_set_layout.take() {
+                    device.destroy_descriptor_set_layout(layout, None);
                 }
 
                 if let Some(render_pass) = self.render_pass.take() {
@@ -444,7 +733,9 @@ impl GraphicsBackend for VulkanBackend {
         self.command_buffers.clear();
         self.render_images.clear();
         self.depth_image = None;
+        self.allocator = None;
         self.initialized = false;
+        self.in_render_pass = false;
 
         tracing::info!("Vulkan backend shut down");
     }
@@ -492,6 +783,14 @@ impl GraphicsBackend for VulkanBackend {
         if let (Some(device), Some(cmd_buffer), Some(queue)) =
             (&self.device, self.current_cmd_buffer, self.graphics_queue)
         {
+            // End render pass if we're still in one
+            if self.in_render_pass {
+                unsafe {
+                    device.cmd_end_render_pass(cmd_buffer);
+                }
+                self.in_render_pass = false;
+            }
+
             unsafe {
                 if let Err(e) = device.end_command_buffer(cmd_buffer) {
                     tracing::error!("Failed to end command buffer: {:?}", e);
@@ -534,8 +833,39 @@ impl GraphicsBackend for VulkanBackend {
             stencil
         );
 
-        // Clear operations would be recorded into the command buffer
-        // In a real implementation, this would set up clear values for the render pass
+        // Begin render pass with clear values if we have a framebuffer
+        if let (Some(device), Some(cmd_buffer), Some(render_pass), Some(framebuffer)) =
+            (&self.device, self.current_cmd_buffer, self.render_pass, self.framebuffer)
+        {
+            let clear_values = [
+                vk::ClearValue {
+                    color: vk::ClearColorValue { float32: color },
+                },
+                vk::ClearValue {
+                    depth_stencil: vk::ClearDepthStencilValue {
+                        depth,
+                        stencil: stencil as u32,
+                    },
+                },
+            ];
+
+            let render_pass_info = vk::RenderPassBeginInfo::default()
+                .render_pass(render_pass)
+                .framebuffer(framebuffer)
+                .render_area(vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent: vk::Extent2D {
+                        width: self.width,
+                        height: self.height,
+                    },
+                })
+                .clear_values(&clear_values);
+
+            unsafe {
+                device.cmd_begin_render_pass(cmd_buffer, &render_pass_info, vk::SubpassContents::INLINE);
+            }
+            self.in_render_pass = true;
+        }
     }
 
     fn draw_arrays(&mut self, primitive: PrimitiveType, first: u32, count: u32) {
@@ -550,9 +880,28 @@ impl GraphicsBackend for VulkanBackend {
             count
         );
 
-        // TODO: Record draw command into command buffer
-        // This would involve binding vertex buffers, setting primitive topology,
-        // and issuing vkCmdDraw
+        // Record draw command into command buffer
+        if let (Some(device), Some(cmd_buffer)) = (&self.device, self.current_cmd_buffer) {
+            // Check if we're in a valid state to draw
+            if !self.in_render_pass {
+                tracing::warn!("draw_arrays called outside of render pass");
+                return;
+            }
+
+            let _topology = Self::primitive_to_vk_topology(primitive);
+
+            unsafe {
+                // Record the draw command
+                // first_vertex = first, vertex_count = count, first_instance = 0, instance_count = 1
+                device.cmd_draw(cmd_buffer, count, 1, first, 0);
+            }
+
+            tracing::trace!(
+                "Recorded draw command: {} vertices starting at {}",
+                count,
+                first
+            );
+        }
     }
 
     fn draw_indexed(&mut self, primitive: PrimitiveType, first: u32, count: u32) {
@@ -567,8 +916,29 @@ impl GraphicsBackend for VulkanBackend {
             count
         );
 
-        // TODO: Record indexed draw command into command buffer
-        // This would involve binding index buffer and issuing vkCmdDrawIndexed
+        // Record indexed draw command into command buffer
+        if let (Some(device), Some(cmd_buffer)) = (&self.device, self.current_cmd_buffer) {
+            // Check if we're in a valid state to draw
+            if !self.in_render_pass {
+                tracing::warn!("draw_indexed called outside of render pass");
+                return;
+            }
+
+            let _topology = Self::primitive_to_vk_topology(primitive);
+
+            unsafe {
+                // Record the indexed draw command
+                // index_count = count, instance_count = 1, first_index = first,
+                // vertex_offset = 0, first_instance = 0
+                device.cmd_draw_indexed(cmd_buffer, count, 1, first, 0, 0);
+            }
+
+            tracing::trace!(
+                "Recorded indexed draw command: {} indices starting at {}",
+                count,
+                first
+            );
+        }
     }
 
     fn set_vertex_attributes(&mut self, attributes: &[VertexAttribute]) {
@@ -578,8 +948,36 @@ impl GraphicsBackend for VulkanBackend {
 
         tracing::trace!("Set vertex attributes: count={}", attributes.len());
 
-        // TODO: Configure vertex input state
-        // This would update the pipeline's vertex input state
+        // Configure vertex input state by converting RSX attributes to Vulkan format
+        self.vertex_bindings.clear();
+        self.vertex_attributes.clear();
+
+        for attr in attributes {
+            // Create binding description for each unique binding
+            let binding_exists = self.vertex_bindings.iter().any(|b| b.binding == attr.index as u32);
+            if !binding_exists {
+                self.vertex_bindings.push(vk::VertexInputBindingDescription {
+                    binding: attr.index as u32,
+                    stride: attr.stride as u32,
+                    input_rate: vk::VertexInputRate::VERTEX,
+                });
+            }
+
+            // Create attribute description
+            let format = Self::vertex_type_to_vk_format(attr.type_, attr.size, attr.normalized);
+            self.vertex_attributes.push(vk::VertexInputAttributeDescription {
+                location: attr.index as u32,
+                binding: attr.index as u32,
+                format,
+                offset: attr.offset,
+            });
+        }
+
+        tracing::trace!(
+            "Configured {} bindings and {} attributes",
+            self.vertex_bindings.len(),
+            self.vertex_attributes.len()
+        );
     }
 
     fn bind_texture(&mut self, slot: u32, offset: u32) {

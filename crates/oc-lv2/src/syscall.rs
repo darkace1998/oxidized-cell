@@ -287,32 +287,69 @@ impl SyscallHandler {
 
             SYS_RWLOCK_RLOCK => {
                 let rwlock_id = args[0] as u32;
-                rwlock::syscalls::sys_rwlock_rlock(&self.object_manager, rwlock_id)?;
+                let thread_id = thread_sc::sys_ppu_thread_get_id(&self.thread_manager);
+                rwlock::syscalls::sys_rwlock_rlock(&self.object_manager, rwlock_id, thread_id)?;
                 Ok(0)
             }
 
             SYS_RWLOCK_TRYRLOCK => {
                 let rwlock_id = args[0] as u32;
-                rwlock::syscalls::sys_rwlock_try_rlock(&self.object_manager, rwlock_id)?;
+                let thread_id = thread_sc::sys_ppu_thread_get_id(&self.thread_manager);
+                rwlock::syscalls::sys_rwlock_try_rlock(&self.object_manager, rwlock_id, thread_id)?;
                 Ok(0)
             }
 
             SYS_RWLOCK_WLOCK => {
                 let rwlock_id = args[0] as u32;
-                rwlock::syscalls::sys_rwlock_wlock(&self.object_manager, rwlock_id)?;
+                let thread_id = thread_sc::sys_ppu_thread_get_id(&self.thread_manager);
+                rwlock::syscalls::sys_rwlock_wlock(&self.object_manager, rwlock_id, thread_id)?;
                 Ok(0)
             }
 
             SYS_RWLOCK_TRYWLOCK => {
                 let rwlock_id = args[0] as u32;
-                rwlock::syscalls::sys_rwlock_try_wlock(&self.object_manager, rwlock_id)?;
+                let thread_id = thread_sc::sys_ppu_thread_get_id(&self.thread_manager);
+                rwlock::syscalls::sys_rwlock_try_wlock(&self.object_manager, rwlock_id, thread_id)?;
                 Ok(0)
             }
 
             SYS_RWLOCK_UNLOCK => {
                 let rwlock_id = args[0] as u32;
-                rwlock::syscalls::sys_rwlock_unlock(&self.object_manager, rwlock_id)?;
+                let thread_id = thread_sc::sys_ppu_thread_get_id(&self.thread_manager);
+                rwlock::syscalls::sys_rwlock_unlock(&self.object_manager, rwlock_id, thread_id)?;
                 Ok(0)
+            }
+
+            SYS_RWLOCK_RLOCK_TIMEOUT => {
+                let rwlock_id = args[0] as u32;
+                let timeout_usec = args[1];
+                let thread_id = thread_sc::sys_ppu_thread_get_id(&self.thread_manager);
+                let result = rwlock::syscalls::sys_rwlock_rlock_timeout(
+                    &self.object_manager,
+                    rwlock_id,
+                    thread_id,
+                    timeout_usec,
+                )?;
+                match result {
+                    rwlock::RwLockWaitResult::Acquired => Ok(0),
+                    rwlock::RwLockWaitResult::TimedOut => Err(KernelError::WouldBlock),
+                }
+            }
+
+            SYS_RWLOCK_WLOCK_TIMEOUT => {
+                let rwlock_id = args[0] as u32;
+                let timeout_usec = args[1];
+                let thread_id = thread_sc::sys_ppu_thread_get_id(&self.thread_manager);
+                let result = rwlock::syscalls::sys_rwlock_wlock_timeout(
+                    &self.object_manager,
+                    rwlock_id,
+                    thread_id,
+                    timeout_usec,
+                )?;
+                match result {
+                    rwlock::RwLockWaitResult::Acquired => Ok(0),
+                    rwlock::RwLockWaitResult::TimedOut => Err(KernelError::WouldBlock),
+                }
             }
 
             // Semaphore

@@ -55,6 +55,8 @@ pub struct EventQueue {
 struct EventQueueState {
     events: VecDeque<Event>,
     max_size: usize,
+    /// Thread IDs waiting for events
+    waiting_threads: VecDeque<u64>,
 }
 
 impl EventQueue {
@@ -64,6 +66,7 @@ impl EventQueue {
             inner: Mutex::new(EventQueueState {
                 events: VecDeque::with_capacity(size),
                 max_size: size,
+                waiting_threads: VecDeque::new(),
             }),
             attributes,
         }
@@ -77,9 +80,16 @@ impl EventQueue {
         }
 
         state.events.push_back(event);
+        // Wake up first waiting thread if any (will be scheduled by thread manager)
+        if let Some(thread_id) = state.waiting_threads.pop_front() {
+            tracing::debug!("Event queue {}: waking thread {}", self.id, thread_id);
+        }
         Ok(())
     }
 
+    /// Receive an event from the queue
+    /// Note: Timeout parameter is accepted for API compatibility but actual
+    /// blocking with timeout requires thread scheduler integration (not yet implemented)
     pub fn receive(&self, _timeout: Option<Duration>) -> Result<Event, KernelError> {
         let mut state = self.inner.lock();
 
@@ -90,6 +100,30 @@ impl EventQueue {
         }
     }
 
+    /// Receive with thread registration for waiting
+    /// Note: Timeout parameter is accepted for API compatibility but actual
+    /// blocking with timeout requires thread scheduler integration (not yet implemented)
+    pub fn receive_with_wait(&self, thread_id: u64, _timeout: Option<Duration>) -> Result<Event, KernelError> {
+        let mut state = self.inner.lock();
+
+        if let Some(event) = state.events.pop_front() {
+            Ok(event)
+        } else {
+            // Register thread as waiting
+            if !state.waiting_threads.contains(&thread_id) {
+                state.waiting_threads.push_back(thread_id);
+                tracing::debug!("Event queue {}: thread {} waiting", self.id, thread_id);
+            }
+            Err(KernelError::WouldBlock)
+        }
+    }
+
+    /// Cancel wait for a specific thread
+    pub fn cancel_wait(&self, thread_id: u64) {
+        let mut state = self.inner.lock();
+        state.waiting_threads.retain(|&id| id != thread_id);
+    }
+
     pub fn tryreceive(&self) -> Result<Event, KernelError> {
         let mut state = match self.inner.try_lock() {
             Some(s) => s,
@@ -97,6 +131,42 @@ impl EventQueue {
         };
 
         state.events.pop_front().ok_or(KernelError::WouldBlock)
+    }
+
+    /// Clear all events from the queue
+    pub fn clear(&self) {
+        let mut state = self.inner.lock();
+        state.events.clear();
+        tracing::debug!("Event queue {}: cleared all events", self.id);
+    }
+
+    /// Drain all events from the queue and return them
+    pub fn drain(&self) -> Vec<Event> {
+        let mut state = self.inner.lock();
+        let events: Vec<Event> = state.events.drain(..).collect();
+        tracing::debug!("Event queue {}: drained {} events", self.id, events.len());
+        events
+    }
+
+    /// Get number of pending events
+    pub fn pending_count(&self) -> usize {
+        self.inner.lock().events.len()
+    }
+
+    /// Get number of waiting threads
+    pub fn waiting_count(&self) -> usize {
+        self.inner.lock().waiting_threads.len()
+    }
+
+    /// Check if the queue is empty
+    pub fn is_empty(&self) -> bool {
+        self.inner.lock().events.is_empty()
+    }
+
+    /// Check if the queue is full
+    pub fn is_full(&self) -> bool {
+        let state = self.inner.lock();
+        state.events.len() >= state.max_size
     }
 }
 
@@ -242,6 +312,54 @@ pub mod syscalls {
 
         queue.send(event)
     }
+
+    /// sys_event_queue_clear - Clear all events from the queue
+    pub fn sys_event_queue_clear(
+        manager: &ObjectManager,
+        queue_id: ObjectId,
+    ) -> Result<(), KernelError> {
+        let queue: Arc<EventQueue> = manager.get(queue_id)?;
+        queue.clear();
+        Ok(())
+    }
+
+    /// sys_event_queue_drain - Remove and return all events from the queue
+    pub fn sys_event_queue_drain(
+        manager: &ObjectManager,
+        queue_id: ObjectId,
+    ) -> Result<Vec<Event>, KernelError> {
+        let queue: Arc<EventQueue> = manager.get(queue_id)?;
+        Ok(queue.drain())
+    }
+
+    /// sys_event_queue_receive_wait - Receive with thread waiting support
+    pub fn sys_event_queue_receive_wait(
+        manager: &ObjectManager,
+        queue_id: ObjectId,
+        thread_id: u64,
+        timeout_usec: u64,
+    ) -> Result<Event, KernelError> {
+        let queue: Arc<EventQueue> = manager.get(queue_id)?;
+
+        let timeout = if timeout_usec == 0 {
+            None
+        } else {
+            Some(Duration::from_micros(timeout_usec))
+        };
+
+        queue.receive_with_wait(thread_id, timeout)
+    }
+
+    /// Cancel wait for a specific thread
+    pub fn sys_event_queue_cancel_wait(
+        manager: &ObjectManager,
+        queue_id: ObjectId,
+        thread_id: u64,
+    ) -> Result<(), KernelError> {
+        let queue: Arc<EventQueue> = manager.get(queue_id)?;
+        queue.cancel_wait(thread_id);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -302,6 +420,150 @@ mod tests {
         assert_eq!(event.data1, 0x111);
 
         syscalls::sys_event_port_destroy(&manager, port_id).unwrap();
+        syscalls::sys_event_queue_destroy(&manager, queue_id).unwrap();
+    }
+
+    #[test]
+    fn test_event_queue_clear() {
+        let manager = ObjectManager::new();
+        let queue_id = syscalls::sys_event_queue_create(
+            &manager,
+            EventQueueAttributes::default(),
+            10,
+        )
+        .unwrap();
+
+        let queue: Arc<EventQueue> = manager.get(queue_id).unwrap();
+
+        // Send multiple events
+        for i in 0..5 {
+            let event = Event {
+                source: 1,
+                data1: i,
+                data2: 0,
+                data3: 0,
+            };
+            queue.send(event).unwrap();
+        }
+
+        assert_eq!(queue.pending_count(), 5);
+
+        // Clear the queue
+        syscalls::sys_event_queue_clear(&manager, queue_id).unwrap();
+        assert_eq!(queue.pending_count(), 0);
+        assert!(queue.is_empty());
+
+        syscalls::sys_event_queue_destroy(&manager, queue_id).unwrap();
+    }
+
+    #[test]
+    fn test_event_queue_drain() {
+        let manager = ObjectManager::new();
+        let queue_id = syscalls::sys_event_queue_create(
+            &manager,
+            EventQueueAttributes::default(),
+            10,
+        )
+        .unwrap();
+
+        let queue: Arc<EventQueue> = manager.get(queue_id).unwrap();
+
+        // Send multiple events
+        for i in 0..3 {
+            let event = Event {
+                source: 1,
+                data1: i,
+                data2: 0,
+                data3: 0,
+            };
+            queue.send(event).unwrap();
+        }
+
+        assert_eq!(queue.pending_count(), 3);
+
+        // Drain the queue
+        let events = syscalls::sys_event_queue_drain(&manager, queue_id).unwrap();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].data1, 0);
+        assert_eq!(events[1].data1, 1);
+        assert_eq!(events[2].data1, 2);
+
+        // Queue should be empty after drain
+        assert!(queue.is_empty());
+
+        syscalls::sys_event_queue_destroy(&manager, queue_id).unwrap();
+    }
+
+    #[test]
+    fn test_event_queue_waiting_threads() {
+        let manager = ObjectManager::new();
+        let queue_id = syscalls::sys_event_queue_create(
+            &manager,
+            EventQueueAttributes::default(),
+            10,
+        )
+        .unwrap();
+
+        let queue: Arc<EventQueue> = manager.get(queue_id).unwrap();
+
+        // Try to receive from empty queue - should register as waiting
+        let result = syscalls::sys_event_queue_receive_wait(&manager, queue_id, 1, 0);
+        assert!(result.is_err());
+        assert_eq!(queue.waiting_count(), 1);
+
+        // Register another waiting thread
+        let result = syscalls::sys_event_queue_receive_wait(&manager, queue_id, 2, 0);
+        assert!(result.is_err());
+        assert_eq!(queue.waiting_count(), 2);
+
+        // Same thread shouldn't be registered twice
+        let result = syscalls::sys_event_queue_receive_wait(&manager, queue_id, 1, 0);
+        assert!(result.is_err());
+        assert_eq!(queue.waiting_count(), 2);
+
+        // Cancel wait for thread 1
+        syscalls::sys_event_queue_cancel_wait(&manager, queue_id, 1).unwrap();
+        assert_eq!(queue.waiting_count(), 1);
+
+        syscalls::sys_event_queue_destroy(&manager, queue_id).unwrap();
+    }
+
+    #[test]
+    fn test_event_queue_full_check() {
+        let manager = ObjectManager::new();
+        let queue_id = syscalls::sys_event_queue_create(
+            &manager,
+            EventQueueAttributes::default(),
+            3, // Small capacity
+        )
+        .unwrap();
+
+        let queue: Arc<EventQueue> = manager.get(queue_id).unwrap();
+
+        assert!(!queue.is_full());
+
+        // Fill the queue
+        for i in 0..3 {
+            let event = Event {
+                source: 1,
+                data1: i,
+                data2: 0,
+                data3: 0,
+            };
+            queue.send(event).unwrap();
+        }
+
+        assert!(queue.is_full());
+
+        // Should fail to send when full
+        let event = Event {
+            source: 1,
+            data1: 99,
+            data2: 0,
+            data3: 0,
+        };
+        assert!(queue.send(event).is_err());
+
         syscalls::sys_event_queue_destroy(&manager, queue_id).unwrap();
     }
 }

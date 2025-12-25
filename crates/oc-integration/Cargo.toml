@@ -19,6 +19,7 @@ oc-spu.workspace = true
 oc-rsx.workspace = true
 oc-lv2.workspace = true
 oc-loader.workspace = true
+oc-hle.workspace = true
 
 [dev-dependencies]
 tracing-subscriber.workspace = true

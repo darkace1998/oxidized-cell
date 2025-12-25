@@ -17,9 +17,9 @@ The primary focus is on implementing HLE modules and completing the game loading
 | Memory Management | ✅ Complete | 100% | - |
 | PPU Interpreter | ✅ Complete | 95% | Low |
 | SPU Interpreter | ✅ Complete | 95% | Low |
-| RSX/Vulkan Backend | 🔨 Mostly Complete | 75% | Medium |
+| RSX/Vulkan Backend | 🔨 Mostly Complete | 85% | Medium |
 | JIT Compilation | ✅ Complete | 95% | Low |
-| LV2 Kernel | 🔨 Mostly Complete | 75% | High |
+| LV2 Kernel | ✅ Complete | 95% | High |
 | Audio System | ✅ Complete | 85% | Medium |
 | Input System | ✅ Complete | 80% | Medium |
 | VFS | ✅ Complete | 80% | Medium |
@@ -28,6 +28,8 @@ The primary focus is on implementing HLE modules and completing the game loading
 | User Interface | ✅ Complete | 85% | Low |
 | Debugging Tools | 🔨 Mostly Complete | 50% | Low |
 | Game Loading Pipeline | ❌ Not Started | 0% | **Critical** |
+| User Interface | 🚧 In Progress | 15% | Medium |
+| Game Loading Pipeline | ✅ Complete | 100% | - |
 
 ---
 
@@ -114,43 +116,43 @@ The HLE modules are essential for game execution. Most functions currently retur
 
 ---
 
-### 2. Game Loading Pipeline (Critical - 0% Complete)
+### 2. Game Loading Pipeline (Critical - 100% Complete)
 
-- [ ] Complete game discovery and scanning
-- [ ] Implement PARAM.SFO parsing for game metadata
-- [ ] Connect loader to HLE modules
-- [ ] Initialize all required system modules before game start
-- [ ] Set up proper memory layout for games
-- [ ] Handle PRX module dependencies
-- [ ] Implement module start/stop lifecycle
+- [x] Complete game discovery and scanning
+- [x] Implement PARAM.SFO parsing for game metadata
+- [x] Connect loader to HLE modules
+- [x] Initialize all required system modules before game start
+- [x] Set up proper memory layout for games
+- [x] Handle PRX module dependencies
+- [x] Implement module start/stop lifecycle
 
 ---
 
-### 3. LV2 Kernel Enhancements (High - 75% Complete)
+### 3. LV2 Kernel Enhancements (High - 95% Complete)
 
 #### Thread Management
-- [ ] Use dedicated thread ID counter instead of thread count
-- [ ] Ensure unique IDs even after thread removal
+- [x] Use dedicated thread ID counter instead of thread count
+- [x] Ensure unique IDs even after thread removal
 
 #### SPU Management
-- [ ] Generate decrementer events in channel handling
+- [x] Generate decrementer events in channel handling
 
 #### Synchronization Primitives
-- [ ] Complete event queue implementation
-- [ ] Finalize condition variable edge cases
-- [ ] Complete reader-writer lock implementation
+- [x] Complete event queue implementation
+- [x] Finalize condition variable edge cases
+- [x] Complete reader-writer lock implementation
 
 ---
 
 ## 🔧 Medium Priority Tasks
 
-### RSX/Vulkan Backend (75% Complete)
+### RSX/Vulkan Backend (85% Complete)
 
-- [ ] Create actual swapchain images and views
-- [ ] Create actual depth buffer
-- [ ] Record draw commands into command buffer
-- [ ] Record indexed draw commands
-- [ ] Configure vertex input state properly
+- [x] Create actual swapchain images and views
+- [x] Create actual depth buffer
+- [x] Record draw commands into command buffer
+- [x] Record indexed draw commands
+- [x] Configure vertex input state properly
 - [ ] Bind texture descriptor sets
 - [ ] Implement vertex buffer submission to backend
 

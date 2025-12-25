@@ -145,6 +145,9 @@ pub enum LoaderError {
 
     #[error("Missing PRX: {0}")]
     MissingPrx(String),
+
+    #[error("Missing module: {0}")]
+    MissingModule(String),
 }
 
 /// Kind of memory access

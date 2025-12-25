@@ -120,7 +120,10 @@ impl Thread {
 
 /// Thread manager for scheduling
 pub struct ThreadManager {
+    /// Dedicated thread ID counter that always increases (never reuses IDs)
     next_id: AtomicU64,
+    /// Stack address counter for unique stack allocation (never reuses addresses)
+    next_stack_index: AtomicU64,
     threads: Mutex<HashMap<ThreadId, Arc<Thread>>>,
     current_thread: Mutex<Option<ThreadId>>,
 }
@@ -129,14 +132,20 @@ impl ThreadManager {
     pub fn new() -> Self {
         Self {
             next_id: AtomicU64::new(1), // Start from 1 (0 is invalid)
+            next_stack_index: AtomicU64::new(0), // Stack index counter
             threads: Mutex::new(HashMap::new()),
             current_thread: Mutex::new(Some(1)), // Main thread is ID 1
         }
     }
 
-    /// Get next thread ID
+    /// Get next thread ID (monotonically increasing, never reuses IDs)
     pub fn next_id(&self) -> ThreadId {
         self.next_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Get next stack index (monotonically increasing for unique stack addresses)
+    fn next_stack_index(&self) -> u64 {
+        self.next_stack_index.fetch_add(1, Ordering::Relaxed)
     }
 
     /// Create a new thread
@@ -253,8 +262,9 @@ pub mod syscalls {
         };
         attributes.name = name.to_string();
 
-        // Allocate stack (simplified - would use memory manager)
-        let stack_addr = STACK_BASE + (manager.count() as u64 * STACK_OFFSET);
+        // Allocate stack using dedicated counter (ensures unique addresses even after thread removal)
+        let stack_index = manager.next_stack_index();
+        let stack_addr = STACK_BASE + (stack_index * STACK_OFFSET);
 
         manager.create(entry_point, stack_addr, attributes)
     }

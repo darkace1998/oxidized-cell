@@ -42,6 +42,8 @@ pub const SYS_RWLOCK_TRYRLOCK: u64 = 113;
 pub const SYS_RWLOCK_WLOCK: u64 = 114;
 pub const SYS_RWLOCK_TRYWLOCK: u64 = 115;
 pub const SYS_RWLOCK_UNLOCK: u64 = 116;
+pub const SYS_RWLOCK_RLOCK_TIMEOUT: u64 = 123;
+pub const SYS_RWLOCK_WLOCK_TIMEOUT: u64 = 124;
 
 // Semaphore
 pub const SYS_SEMAPHORE_CREATE: u64 = 117;

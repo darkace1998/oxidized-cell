@@ -3,9 +3,10 @@
 use crate::objects::{KernelObject, ObjectId, ObjectManager, ObjectType};
 use crate::sync::mutex::Mutex;
 use oc_core::error::KernelError;
-use parking_lot::Condvar;
+use parking_lot::{Condvar, Mutex as ParkingMutex};
+use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Condition variable attributes
 #[derive(Debug, Clone, Copy)]
@@ -19,11 +20,35 @@ impl Default for CondAttributes {
     }
 }
 
+/// Wait result for condition variables
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CondWaitResult {
+    /// Signaled normally
+    Signaled,
+    /// Timed out waiting
+    TimedOut,
+}
+
 /// LV2 Condition Variable implementation
 pub struct Cond {
     id: ObjectId,
     condvar: Condvar,
+    /// Track waiting threads and signal count for spurious wakeup detection
+    state: ParkingMutex<CondState>,
+    /// Attributes for future use (protocol flags, etc.)
+    /// Kept for API completeness and potential future enhancements
+    #[allow(dead_code)]
     attributes: CondAttributes,
+}
+
+#[derive(Debug, Default)]
+struct CondState {
+    /// Set of threads currently waiting on this condition variable
+    waiting_threads: HashSet<u64>,
+    /// Signal counter (incremented on each signal)
+    signal_count: u64,
+    /// Broadcast counter (incremented on each signal_all)
+    broadcast_count: u64,
 }
 
 impl Cond {
@@ -31,40 +56,133 @@ impl Cond {
         Self {
             id,
             condvar: Condvar::new(),
+            state: ParkingMutex::new(CondState::default()),
+            // Attributes are stored for potential future use (e.g., protocol flags)
             attributes,
         }
     }
 
+    /// Check if a signal was received since the initial counters
+    fn was_signaled(&self, initial_signal: u64, initial_broadcast: u64) -> bool {
+        let state = self.state.lock();
+        state.signal_count > initial_signal || state.broadcast_count > initial_broadcast
+    }
+
+    /// Wait on condition variable with optional timeout
+    /// Returns the wait result indicating if signaled or timed out
+    /// Handles spurious wakeups internally by checking signal counters
     pub fn wait(
         &self,
         mutex: &Arc<Mutex>,
         thread_id: u64,
         timeout: Option<Duration>,
-    ) -> Result<(), KernelError> {
-        // Unlock the mutex and wait
+    ) -> Result<CondWaitResult, KernelError> {
+        // Record state before waiting to detect spurious wakeups
+        let (initial_signal, initial_broadcast) = {
+            let mut state = self.state.lock();
+            state.waiting_threads.insert(thread_id);
+            (state.signal_count, state.broadcast_count)
+        };
+
+        // Unlock the mutex before waiting
         mutex.unlock(thread_id)?;
 
-        // Wait on the condition variable
-        let result = if let Some(_duration) = timeout {
-            // Note: parking_lot Condvar doesn't have a direct wait_timeout
-            // This is simplified for now
-            Ok(())
+        // Wait on the condition variable with timeout handling
+        let result = if let Some(duration) = timeout {
+            let start = Instant::now();
+            
+            // Loop to handle spurious wakeups with timeout
+            loop {
+                // Calculate remaining time
+                let elapsed = start.elapsed();
+                if elapsed >= duration {
+                    break CondWaitResult::TimedOut;
+                }
+                let remaining = duration - elapsed;
+
+                // Wait with timeout on our internal state
+                let mut guard = self.state.lock();
+                let wait_result = self.condvar.wait_for(&mut guard, remaining);
+                drop(guard);
+
+                // Check if we were actually signaled
+                if self.was_signaled(initial_signal, initial_broadcast) {
+                    break CondWaitResult::Signaled;
+                }
+
+                // Check if we timed out
+                if wait_result.timed_out() {
+                    break CondWaitResult::TimedOut;
+                }
+
+                // Otherwise it was a spurious wakeup, continue waiting
+            }
         } else {
-            Ok(())
+            // No timeout - wait indefinitely but still check for spurious wakeups
+            loop {
+                let mut guard = self.state.lock();
+                self.condvar.wait(&mut guard);
+                drop(guard);
+
+                // Check if we were actually signaled
+                if self.was_signaled(initial_signal, initial_broadcast) {
+                    break CondWaitResult::Signaled;
+                }
+                // Otherwise it was a spurious wakeup, continue waiting
+            }
         };
+
+        // Remove thread from waiting set
+        {
+            let mut state = self.state.lock();
+            state.waiting_threads.remove(&thread_id);
+        }
 
         // Re-lock the mutex before returning
         mutex.lock(thread_id)?;
 
-        result
+        Ok(result)
     }
 
+    /// Simple wait (returns WouldBlock on timeout, Ok on signal)
+    pub fn wait_simple(
+        &self,
+        mutex: &Arc<Mutex>,
+        thread_id: u64,
+        timeout: Option<Duration>,
+    ) -> Result<(), KernelError> {
+        match self.wait(mutex, thread_id, timeout)? {
+            CondWaitResult::Signaled => Ok(()),
+            CondWaitResult::TimedOut => Err(KernelError::WouldBlock),
+        }
+    }
+
+    /// Signal one waiting thread
     pub fn signal(&self) {
+        {
+            let mut state = self.state.lock();
+            state.signal_count += 1;
+        }
         self.condvar.notify_one();
     }
 
+    /// Signal all waiting threads
     pub fn signal_all(&self) {
+        {
+            let mut state = self.state.lock();
+            state.broadcast_count += 1;
+        }
         self.condvar.notify_all();
+    }
+
+    /// Get number of waiting threads
+    pub fn waiting_count(&self) -> usize {
+        self.state.lock().waiting_threads.len()
+    }
+
+    /// Check if any threads are waiting
+    pub fn has_waiters(&self) -> bool {
+        !self.state.lock().waiting_threads.is_empty()
     }
 }
 
@@ -113,6 +231,26 @@ pub mod syscalls {
         thread_id: u64,
         timeout_usec: u64,
     ) -> Result<(), KernelError> {
+        let cond: Arc<Cond> = manager.get(cond_id)?;
+        let mutex: Arc<Mutex> = manager.get(mutex_id)?;
+
+        let timeout = if timeout_usec == 0 {
+            None
+        } else {
+            Some(Duration::from_micros(timeout_usec))
+        };
+
+        cond.wait_simple(&mutex, thread_id, timeout)
+    }
+
+    /// sys_cond_wait_ex - Wait with detailed result
+    pub fn sys_cond_wait_ex(
+        manager: &ObjectManager,
+        cond_id: ObjectId,
+        mutex_id: ObjectId,
+        thread_id: u64,
+        timeout_usec: u64,
+    ) -> Result<CondWaitResult, KernelError> {
         let cond: Arc<Cond> = manager.get(cond_id)?;
         let mutex: Arc<Mutex> = manager.get(mutex_id)?;
 
