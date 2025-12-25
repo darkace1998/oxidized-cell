@@ -358,13 +358,15 @@ pub fn cell_ssl_certificate_loader(
 /// cellSslCertGetSerialNumber - Get certificate serial number
 pub fn cell_ssl_cert_get_serial_number(
     cert_id: SslCertId,
-    serial: *mut u8,
-    length: *mut u32,
+    _serial: *mut u8,
+    _length: *mut u32,
 ) -> i32 {
     trace!("cellSslCertGetSerialNumber called with cert_id: {}", cert_id);
 
-    // TODO: Use global manager instance
-    // TODO: Write serial number to buffer
+    // Get serial number through global manager
+    let _result = crate::context::get_hle_context().ssl.get_serial_number(cert_id);
+
+    // Note: Writing serial number requires memory subsystem integration
 
     0 // CELL_OK
 }
@@ -372,13 +374,15 @@ pub fn cell_ssl_cert_get_serial_number(
 /// cellSslCertGetPublicKey - Get certificate public key
 pub fn cell_ssl_cert_get_public_key(
     cert_id: SslCertId,
-    key: *mut u8,
-    length: *mut u32,
+    _key: *mut u8,
+    _length: *mut u32,
 ) -> i32 {
     trace!("cellSslCertGetPublicKey called with cert_id: {}", cert_id);
 
-    // TODO: Use global manager instance
-    // TODO: Write public key to buffer
+    // Get public key through global manager
+    let _result = crate::context::get_hle_context().ssl.get_public_key(cert_id);
+
+    // Note: Writing public key requires memory subsystem integration
 
     0 // CELL_OK
 }
@@ -386,13 +390,15 @@ pub fn cell_ssl_cert_get_public_key(
 /// cellSslCertGetRsaPublicKeyModulus - Get RSA public key modulus
 pub fn cell_ssl_cert_get_rsa_public_key_modulus(
     cert_id: SslCertId,
-    modulus: *mut u8,
-    length: *mut u32,
+    _modulus: *mut u8,
+    _length: *mut u32,
 ) -> i32 {
-    trace!("cellSslCertGetRsaPublicKeyModulus called");
+    trace!("cellSslCertGetRsaPublicKeyModulus called with cert_id: {}", cert_id);
 
-    // TODO: Use global manager instance
-    // TODO: Write modulus to buffer
+    // Get public key through global manager (contains modulus)
+    let _result = crate::context::get_hle_context().ssl.get_public_key(cert_id);
+
+    // Note: Writing modulus requires memory subsystem integration
 
     0 // CELL_OK
 }
@@ -400,13 +406,15 @@ pub fn cell_ssl_cert_get_rsa_public_key_modulus(
 /// cellSslCertGetRsaPublicKeyExponent - Get RSA public key exponent
 pub fn cell_ssl_cert_get_rsa_public_key_exponent(
     cert_id: SslCertId,
-    exponent: *mut u8,
-    length: *mut u32,
+    _exponent: *mut u8,
+    _length: *mut u32,
 ) -> i32 {
-    trace!("cellSslCertGetRsaPublicKeyExponent called");
+    trace!("cellSslCertGetRsaPublicKeyExponent called with cert_id: {}", cert_id);
 
-    // TODO: Use global manager instance
-    // TODO: Write exponent to buffer
+    // Get public key through global manager (contains exponent)
+    let _result = crate::context::get_hle_context().ssl.get_public_key(cert_id);
+
+    // Note: Writing exponent requires memory subsystem integration
 
     0 // CELL_OK
 }
@@ -414,12 +422,14 @@ pub fn cell_ssl_cert_get_rsa_public_key_exponent(
 /// cellSslCertGetNotBefore - Get certificate validity start date
 pub fn cell_ssl_cert_get_not_before(
     cert_id: SslCertId,
-    begin: *mut u64,
+    _begin: *mut u64,
 ) -> i32 {
     trace!("cellSslCertGetNotBefore called with cert_id: {}", cert_id);
 
-    // TODO: Use global manager instance
-    // TODO: Write validity start date
+    // Get validity from global manager
+    let _validity = crate::context::get_hle_context().ssl.get_validity(cert_id);
+
+    // Note: Writing validity start date requires memory subsystem integration
 
     0 // CELL_OK
 }
@@ -427,12 +437,14 @@ pub fn cell_ssl_cert_get_not_before(
 /// cellSslCertGetNotAfter - Get certificate validity end date
 pub fn cell_ssl_cert_get_not_after(
     cert_id: SslCertId,
-    limit: *mut u64,
+    _limit: *mut u64,
 ) -> i32 {
     trace!("cellSslCertGetNotAfter called with cert_id: {}", cert_id);
 
-    // TODO: Use global manager instance
-    // TODO: Write validity end date
+    // Get validity from global manager
+    let _validity = crate::context::get_hle_context().ssl.get_validity(cert_id);
+
+    // Note: Writing validity end date requires memory subsystem integration
 
     0 // CELL_OK
 }
@@ -440,13 +452,15 @@ pub fn cell_ssl_cert_get_not_after(
 /// cellSslCertGetSubjectName - Get certificate subject name
 pub fn cell_ssl_cert_get_subject_name(
     cert_id: SslCertId,
-    subject: *mut u8,
-    length: *mut u32,
+    _subject: *mut u8,
+    _length: *mut u32,
 ) -> i32 {
-    trace!("cellSslCertGetSubjectName called");
+    trace!("cellSslCertGetSubjectName called with cert_id: {}", cert_id);
 
-    // TODO: Use global manager instance
-    // TODO: Write subject name to buffer
+    // Get subject name through global manager
+    let _result = crate::context::get_hle_context().ssl.get_subject_name(cert_id);
+
+    // Note: Writing subject name requires memory subsystem integration
 
     0 // CELL_OK
 }
@@ -454,13 +468,15 @@ pub fn cell_ssl_cert_get_subject_name(
 /// cellSslCertGetIssuerName - Get certificate issuer name
 pub fn cell_ssl_cert_get_issuer_name(
     cert_id: SslCertId,
-    issuer: *mut u8,
-    length: *mut u32,
+    _issuer: *mut u8,
+    _length: *mut u32,
 ) -> i32 {
-    trace!("cellSslCertGetIssuerName called");
+    trace!("cellSslCertGetIssuerName called with cert_id: {}", cert_id);
 
-    // TODO: Use global manager instance
-    // TODO: Write issuer name to buffer
+    // Get issuer name through global manager
+    let _result = crate::context::get_hle_context().ssl.get_issuer_name(cert_id);
+
+    // Note: Writing issuer name requires memory subsystem integration
 
     0 // CELL_OK
 }

@@ -243,10 +243,7 @@ pub fn cell_jpg_dec_create(
     unsafe {
         let max_main_handle = (*thread_in_param).max_main_handle;
         
-        // TODO: Use global JpgDecManager instance
-        // For now, create a temporary manager to validate the implementation
-        let mut manager = JpgDecManager::new();
-        match manager.create(max_main_handle) {
+        match crate::context::get_hle_context_mut().jpg_dec.create(max_main_handle) {
             Ok(id) => {
                 (*main_handle).main_handle = id;
                 if !thread_out_param.is_null() {
@@ -272,31 +269,26 @@ pub fn cell_jpg_dec_open(
         return CELL_JPGDEC_ERROR_ARG;
     }
 
-    // TODO: Use global JpgDecManager instance and parse actual JPEG headers
-    // For now, use dummy dimensions
-    let mut manager = JpgDecManager::new();
-    manager.main_handles.insert(main_handle, JpgDecEntry {
-        id: main_handle,
-        max_main_handle: 1,
-        sub_handles: HashMap::new(),
-        next_sub_id: 1,
-    });
-    
-    unsafe {
-        match manager.open(main_handle, 1920, 1080, 3) {
-            Ok(id) => {
+    // Placeholder dimensions until actual JPEG parsing is implemented
+    const PLACEHOLDER_WIDTH: u32 = 1920;
+    const PLACEHOLDER_HEIGHT: u32 = 1080;
+    const PLACEHOLDER_NUM_COMPONENTS: u32 = 3; // RGB
+
+    match crate::context::get_hle_context_mut().jpg_dec.open(main_handle, PLACEHOLDER_WIDTH, PLACEHOLDER_HEIGHT, PLACEHOLDER_NUM_COMPONENTS) {
+        Ok(id) => {
+            unsafe {
                 (*sub_handle).sub_handle = id;
                 if !out_param.is_null() {
-                    (*out_param).width = 1920;
-                    (*out_param).height = 1080;
-                    (*out_param).num_components = 3; // RGB
+                    (*out_param).width = PLACEHOLDER_WIDTH;
+                    (*out_param).height = PLACEHOLDER_HEIGHT;
+                    (*out_param).num_components = PLACEHOLDER_NUM_COMPONENTS;
                     (*out_param).color_space = 0; // RGB
                     (*out_param).down_scale = 1;
                 }
-                0 // CELL_OK
             }
-            Err(e) => e,
+            0 // CELL_OK
         }
+        Err(e) => e,
     }
 }
 
@@ -308,63 +300,72 @@ pub fn cell_jpg_dec_read_header(
 ) -> i32 {
     trace!("cellJpgDecReadHeader called");
     
-    // TODO: Implement actual JPEG header reading
-    // For now, return success with dummy info
-    unsafe {
-        if !info.is_null() {
-            (*info).width = 1920;
-            (*info).height = 1080;
-            (*info).num_components = 3;
-            (*info).color_space = 0;
-            (*info).down_scale = 1;
-        }
+    if info.is_null() {
+        return CELL_JPGDEC_ERROR_ARG;
     }
-    
-    0 // CELL_OK
+
+    match crate::context::get_hle_context().jpg_dec.read_header(main_handle, sub_handle) {
+        Ok(header_info) => {
+            unsafe {
+                (*info).width = header_info.width;
+                (*info).height = header_info.height;
+                (*info).num_components = header_info.num_components;
+                (*info).color_space = header_info.color_space;
+                (*info).down_scale = header_info.down_scale;
+            }
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
 }
 
 /// cellJpgDecDecodeData - Decode JPEG data
 pub fn cell_jpg_dec_decode_data(
     main_handle: u32,
     sub_handle: u32,
-    data: *mut u8,
-    data_ctrl_param: *const CellJpgDecDataCtrlParam,
+    _data: *mut u8,
+    _data_ctrl_param: *const CellJpgDecDataCtrlParam,
     data_out_info: *mut CellJpgDecDataOutInfo,
 ) -> i32 {
     trace!("cellJpgDecDecodeData called");
     
-    // TODO: Implement actual JPEG decoding
-    // For now, return success
-    unsafe {
-        if !data_out_info.is_null() {
-            (*data_out_info).width = 1920;
-            (*data_out_info).height = 1080;
-            (*data_out_info).num_components = 3;
-            (*data_out_info).output_mode = 0;
-            (*data_out_info).down_scale = 1;
-            (*data_out_info).use_memory_space = 0;
+    // Decode through global manager (actual decoding backend not yet implemented)
+    match crate::context::get_hle_context().jpg_dec.decode_data(main_handle, sub_handle) {
+        Ok(decode_info) => {
+            unsafe {
+                if !data_out_info.is_null() {
+                    (*data_out_info).width = decode_info.width;
+                    (*data_out_info).height = decode_info.height;
+                    (*data_out_info).num_components = decode_info.num_components;
+                    (*data_out_info).output_mode = 0;
+                    (*data_out_info).down_scale = decode_info.down_scale;
+                    (*data_out_info).use_memory_space = 0;
+                }
+            }
+            0 // CELL_OK
         }
+        Err(e) => e,
     }
-    
-    0 // CELL_OK
 }
 
 /// cellJpgDecClose - Close JPEG stream
 pub fn cell_jpg_dec_close(main_handle: u32, sub_handle: u32) -> i32 {
     trace!("cellJpgDecClose called");
     
-    // TODO: Implement actual JPEG stream closing
-    
-    0 // CELL_OK
+    match crate::context::get_hle_context_mut().jpg_dec.close(main_handle, sub_handle) {
+        Ok(_) => 0, // CELL_OK
+        Err(e) => e,
+    }
 }
 
 /// cellJpgDecDestroy - Destroy JPEG decoder
 pub fn cell_jpg_dec_destroy(main_handle: u32) -> i32 {
     trace!("cellJpgDecDestroy called with main_handle: {}", main_handle);
     
-    // TODO: Implement actual JPEG decoder cleanup
-    
-    0 // CELL_OK
+    match crate::context::get_hle_context_mut().jpg_dec.destroy(main_handle) {
+        Ok(_) => 0, // CELL_OK
+        Err(e) => e,
+    }
 }
 
 #[cfg(test)]

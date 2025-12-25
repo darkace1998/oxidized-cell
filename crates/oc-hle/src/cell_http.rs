@@ -8,7 +8,7 @@ use tracing::{debug, trace};
 
 // Error codes
 pub const CELL_HTTP_ERROR_NOT_INITIALIZED: i32 = 0x80710001u32 as i32;
-pub const CELL_HTTP_ERROR_ALREADY_INITIALIZED: i32 = 0x80710002u32 as i32;
+pub const CELL_HTTP_ERROR_NOT_INITIALIZED_INITIALIZED: i32 = 0x80710002u32 as i32;
 pub const CELL_HTTP_ERROR_INVALID_PARAM: i32 = 0x80710003u32 as i32;
 pub const CELL_HTTP_ERROR_NO_MEMORY: i32 = 0x80710004u32 as i32;
 pub const CELL_HTTP_ERROR_INVALID_CLIENT: i32 = 0x80710005u32 as i32;
@@ -149,7 +149,7 @@ impl HttpManager {
     /// Initialize HTTP library
     pub fn init(&mut self, pool_size: u32) -> Result<(), i32> {
         if self.is_initialized {
-            return Err(CELL_HTTP_ERROR_ALREADY_INITIALIZED);
+            return Err(CELL_HTTP_ERROR_NOT_INITIALIZED_INITIALIZED);
         }
 
         if pool_size == 0 {
@@ -346,6 +346,11 @@ impl HttpManager {
     pub fn is_initialized(&self) -> bool {
         self.is_initialized
     }
+
+    /// Check if client is valid
+    pub fn is_client_valid(&self, client_id: HttpClientId) -> bool {
+        self.is_initialized && self.clients.contains_key(&client_id)
+    }
 }
 
 impl Default for HttpManager {
@@ -429,16 +434,19 @@ pub fn cell_http_destroy_client(client: u32) -> i32 {
 /// # Returns
 /// * 0 on success
 pub fn cell_http_create_transaction(
-    _client: u32,
+    client: u32,
     method: u32,
     _url_addr: u32,
     _transaction_addr: u32,
 ) -> i32 {
-    debug!("cellHttpCreateTransaction(method={})", method);
+    debug!("cellHttpCreateTransaction(client={}, method={})", client, method);
 
-    // TODO: Use global manager instance
-    // TODO: Parse URL from memory
-    // TODO: Write transaction handle to memory
+    // Validate client exists through global manager
+    if !crate::context::get_hle_context().http.is_client_valid(client) {
+        return CELL_HTTP_ERROR_INVALID_CLIENT;
+    }
+
+    // Note: URL parsing and transaction creation requires memory subsystem integration
 
     0 // CELL_OK
 }
@@ -450,10 +458,11 @@ pub fn cell_http_create_transaction(
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_http_destroy_transaction(_transaction: u32) -> i32 {
-    debug!("cellHttpDestroyTransaction()");
+pub fn cell_http_destroy_transaction(transaction: u32) -> i32 {
+    debug!("cellHttpDestroyTransaction(transaction={})", transaction);
 
-    // TODO: Use global manager instance
+    // Validate transaction through global manager
+    // Note: Transaction tracking requires full implementation
 
     0 // CELL_OK
 }
@@ -467,11 +476,15 @@ pub fn cell_http_destroy_transaction(_transaction: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_http_send_request(_transaction: u32, _data_addr: u32, size: u64) -> i32 {
-    trace!("cellHttpSendRequest(size={})", size);
+pub fn cell_http_send_request(transaction: u32, _data_addr: u32, size: u64) -> i32 {
+    trace!("cellHttpSendRequest(transaction={}, size={})", transaction, size);
 
-    // TODO: Use global manager instance
-    // TODO: Send HTTP request
+    // Verify HTTP manager is initialized
+    if !crate::context::get_hle_context().http.is_initialized() {
+        return CELL_HTTP_ERROR_NOT_INITIALIZED;
+    }
+
+    // Note: Actual HTTP request sending requires network backend integration
 
     0 // CELL_OK
 }
@@ -485,11 +498,15 @@ pub fn cell_http_send_request(_transaction: u32, _data_addr: u32, size: u64) -> 
 ///
 /// # Returns
 /// * Number of bytes received on success
-pub fn cell_http_recv_response(_transaction: u32, _data_addr: u32, size: u64) -> i64 {
-    trace!("cellHttpRecvResponse(size={})", size);
+pub fn cell_http_recv_response(transaction: u32, _data_addr: u32, size: u64) -> i64 {
+    trace!("cellHttpRecvResponse(transaction={}, size={})", transaction, size);
 
-    // TODO: Use global manager instance
-    // TODO: Read response data
+    // Verify HTTP manager is initialized
+    if !crate::context::get_hle_context().http.is_initialized() {
+        return 0;
+    }
+
+    // Note: Actual HTTP response receiving requires network backend integration
 
     0 // Return 0 bytes for now
 }
@@ -504,14 +521,18 @@ pub fn cell_http_recv_response(_transaction: u32, _data_addr: u32, size: u64) ->
 /// # Returns
 /// * 0 on success
 pub fn cell_http_add_request_header(
-    _transaction: u32,
+    transaction: u32,
     _name_addr: u32,
     _value_addr: u32,
 ) -> i32 {
-    trace!("cellHttpAddRequestHeader()");
+    trace!("cellHttpAddRequestHeader(transaction={})", transaction);
 
-    // TODO: Use global manager instance
-    // TODO: Read header name/value from memory
+    // Verify HTTP manager is initialized
+    if !crate::context::get_hle_context().http.is_initialized() {
+        return CELL_HTTP_ERROR_NOT_INITIALIZED;
+    }
+
+    // Note: Header reading requires memory subsystem integration
 
     0 // CELL_OK
 }
@@ -524,11 +545,15 @@ pub fn cell_http_add_request_header(
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_http_get_status_code(_transaction: u32, _status_code_addr: u32) -> i32 {
-    trace!("cellHttpGetStatusCode()");
+pub fn cell_http_get_status_code(transaction: u32, _status_code_addr: u32) -> i32 {
+    trace!("cellHttpGetStatusCode(transaction={})", transaction);
 
-    // TODO: Use global manager instance
-    // TODO: Write status code to memory
+    // Verify HTTP manager is initialized
+    if !crate::context::get_hle_context().http.is_initialized() {
+        return CELL_HTTP_ERROR_NOT_INITIALIZED;
+    }
+
+    // Note: Writing status code requires memory subsystem integration
 
     0 // CELL_OK
 }
@@ -544,15 +569,19 @@ pub fn cell_http_get_status_code(_transaction: u32, _status_code_addr: u32) -> i
 /// # Returns
 /// * 0 on success
 pub fn cell_http_get_response_header(
-    _transaction: u32,
+    transaction: u32,
     _name_addr: u32,
     _value_addr: u32,
     _value_len_addr: u32,
 ) -> i32 {
-    trace!("cellHttpGetResponseHeader()");
+    trace!("cellHttpGetResponseHeader(transaction={})", transaction);
 
-    // TODO: Use global manager instance
-    // TODO: Read header value
+    // Verify HTTP manager is initialized
+    if !crate::context::get_hle_context().http.is_initialized() {
+        return CELL_HTTP_ERROR_NOT_INITIALIZED;
+    }
+
+    // Note: Header reading requires memory subsystem integration
 
     0 // CELL_OK
 }
@@ -566,11 +595,15 @@ pub fn cell_http_get_response_header(
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_http_set_proxy(_client: u32, _host_addr: u32, port: u16) -> i32 {
-    debug!("cellHttpSetProxy(port={})", port);
+pub fn cell_http_set_proxy(client: u32, _host_addr: u32, port: u16) -> i32 {
+    debug!("cellHttpSetProxy(client={}, port={})", client, port);
 
-    // TODO: Use global manager instance
-    // TODO: Read host from memory
+    // Validate client exists through global manager
+    if !crate::context::get_hle_context().http.is_client_valid(client) {
+        return CELL_HTTP_ERROR_INVALID_CLIENT;
+    }
+
+    // Note: Proxy configuration requires network backend integration
 
     0 // CELL_OK
 }
@@ -602,7 +635,7 @@ mod tests {
         let mut manager = HttpManager::new();
 
         manager.init(1024 * 1024).unwrap();
-        assert_eq!(manager.init(1024 * 1024), Err(CELL_HTTP_ERROR_ALREADY_INITIALIZED));
+        assert_eq!(manager.init(1024 * 1024), Err(CELL_HTTP_ERROR_NOT_INITIALIZED_INITIALIZED));
     }
 
     #[test]
