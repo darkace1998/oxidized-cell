@@ -303,11 +303,11 @@ The game loading pipeline connects all components to enable game execution.
   - [x] Configure TLS areas
   - [x] Initialize kernel objects
 
-- [ ] **Main Thread Creation**
-  - [ ] Create initial PPU thread
-  - [ ] Set up register state
-  - [ ] Initialize thread local storage
-  - [ ] Start execution
+- [x] **Main Thread Creation**
+  - [x] Create initial PPU thread
+  - [x] Set up register state
+  - [x] Initialize thread local storage
+  - [x] Start execution
 
 ---
 
@@ -318,7 +318,7 @@ The game loading pipeline connects all components to enable game execution.
 #### Thread Management
 - [x] Implement thread priorities properly
 - [x] Add thread affinity support
-- [ ] Improve context switching
+- [x] Improve context switching
 - [x] Support thread-local storage
 
 #### Synchronization Primitives
@@ -330,7 +330,7 @@ The game loading pipeline connects all components to enable game execution.
 #### Memory Syscalls
 - [x] Implement mmap/munmap properly
 - [x] Add memory attribute handling
-- [ ] Support large pages
+- [x] Support large pages
 
 #### Time Management
 - [x] Improve timer accuracy
@@ -340,10 +340,10 @@ The game loading pipeline connects all components to enable game execution.
 ### 4. User Interface Improvements (15% → 75%)
 
 #### Main Window
-- [ ] Implement game grid view with icons
-- [ ] Add game search/filter
-- [ ] Support game categories
-- [ ] Add recent games list
+- [x] Implement game grid view with icons
+- [x] Add game search/filter
+- [x] Support game categories
+- [x] Add recent games list
 
 #### Emulation View
 - [ ] Connect RSX output to display
@@ -730,3 +730,15 @@ See the [Contributing section in README.md](README.md#contributing) for guidelin
 *8. Memory Layout - Set up stack for main thread with guard patterns and red zone (288 bytes)*
 *9. Memory Layout - Configure TLS areas with per-thread allocation and R13 pointer setup*
 *10. Memory Layout - Initialize kernel objects (mutexes, semaphores, event queues, condition variables, rwlocks)*
+
+*Game Loading Pipeline update (December 26, 2024 #2): Implemented next 10 Game Loading Pipeline todos:*
+*1. Main Thread Creation - Create initial PPU thread with MainThreadInfo and MainThreadState structures*
+*2. Main Thread Creation - Set up register state according to PS3 ABI (R1: SP, R2: TOC, R13: TLS, R3-R5: argc/argv/envp)*
+*3. Main Thread Creation - Initialize thread local storage with TLS magic signature and thread ID*
+*4. Main Thread Creation - Start execution with proper state validation and ready-to-run marking*
+*5. LV2 Kernel Enhancements - Improve context switching with context_switch() and force_context_switch() methods*
+*6. LV2 Kernel Enhancements - Support large pages with PageSize enum (Standard 4KB, Large 1MB, Huge 16MB) and extended PageFlags*
+*7. User Interface - Implement game grid view with icon texture loading from PNG data and fallback placeholders*
+*8. User Interface - Add game search/filter with real-time filtering by title and game ID*
+*9. User Interface - Support game categories (Action, Adventure, RPG, Sports, Racing, Shooter, Strategy, Simulation, Puzzle, Fighting, Other)*
+*10. User Interface - Add recent games list with up to 10 most recently played games shown in carousel view*
