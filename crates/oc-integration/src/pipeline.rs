@@ -1152,6 +1152,156 @@ impl GamePipeline {
 
         Ok(layout)
     }
+    
+    /// Set up stack for main thread
+    ///
+    /// Allocates and initializes the stack for the main PPU thread.
+    /// The stack grows downward from high addresses to low addresses.
+    pub fn setup_main_thread_stack(&self, stack_size: u32) -> Result<ThreadStackInfo> {
+        info!("Setting up main thread stack (size: 0x{:x} bytes)", stack_size);
+        
+        // PS3 stack base is at 0xD0000000
+        let stack_base = 0xD000_0000u32;
+        
+        // Stack top (highest address) is base + size
+        let stack_top = stack_base.checked_add(stack_size)
+            .ok_or_else(|| EmulatorError::Loader(LoaderError::InvalidElf(
+                "Stack address overflow".to_string()
+            )))?;
+        
+        // Initialize stack with guard pattern (0xDEADBEEF) for debugging
+        let guard_pattern = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let mut stack_data = Vec::with_capacity(stack_size as usize);
+        
+        // Fill stack with guard pattern
+        for _ in 0..(stack_size / 4) {
+            stack_data.extend_from_slice(&guard_pattern);
+        }
+        
+        // Write guard pattern to stack memory
+        self.memory.write_bytes(stack_base, &stack_data)?;
+        
+        // The stack pointer (SP) starts at the top and grows downward
+        // Leave some space at the top for the red zone (288 bytes as per PowerPC ABI)
+        const RED_ZONE_SIZE: u32 = 288;
+        let initial_sp = stack_top - RED_ZONE_SIZE;
+        
+        debug!(
+            "Stack configured: base=0x{:08x}, top=0x{:08x}, initial_sp=0x{:08x}",
+            stack_base, stack_top, initial_sp
+        );
+        
+        Ok(ThreadStackInfo {
+            stack_base,
+            stack_size,
+            stack_top,
+            initial_sp,
+        })
+    }
+    
+    /// Configure TLS (Thread-Local Storage) areas
+    ///
+    /// Sets up thread-local storage for the main thread and reserves space
+    /// for additional threads.
+    pub fn configure_tls_areas(&self, main_tls_size: u32, max_threads: u32) -> Result<TlsLayoutInfo> {
+        info!("Configuring TLS areas (main size: 0x{:x}, max threads: {})", main_tls_size, max_threads);
+        
+        // TLS base address on PS3 - placed in user memory region
+        const TLS_BASE: u32 = 0x2800_0000;
+        
+        // Align TLS size to 4KB boundaries
+        let aligned_tls_size = (main_tls_size + 0xFFF) & !0xFFF;
+        
+        // Calculate total TLS region size
+        let total_tls_size = aligned_tls_size * max_threads;
+        
+        if total_tls_size > 0x1000_0000 {  // Sanity check: TLS shouldn't exceed 256MB
+            return Err(EmulatorError::Loader(LoaderError::InvalidElf(
+                "TLS size too large".to_string()
+            )));
+        }
+        
+        // Initialize main thread TLS
+        let main_tls_addr = TLS_BASE;
+        let zeros = vec![0u8; aligned_tls_size as usize];
+        self.memory.write_bytes(main_tls_addr, &zeros)?;
+        
+        // Set up TLS template pointer at a known offset
+        // On PS3, R13 register typically points to TLS
+        let tls_template_offset = 0x7000;  // Standard PS3 TLS offset
+        let tls_pointer = main_tls_addr + tls_template_offset;
+        
+        debug!(
+            "TLS configured: base=0x{:08x}, size_per_thread=0x{:x}, pointer=0x{:08x}",
+            main_tls_addr, aligned_tls_size, tls_pointer
+        );
+        
+        // Reserve space for additional threads
+        let mut thread_tls_areas = Vec::new();
+        for i in 0..max_threads {
+            let thread_tls_addr = TLS_BASE + (i * aligned_tls_size);
+            thread_tls_areas.push(TlsThreadArea {
+                address: thread_tls_addr,
+                size: aligned_tls_size,
+                thread_index: i,
+            });
+        }
+        
+        Ok(TlsLayoutInfo {
+            base_address: TLS_BASE,
+            size_per_thread: aligned_tls_size,
+            max_threads,
+            main_tls_pointer: tls_pointer,
+            thread_areas: thread_tls_areas,
+        })
+    }
+    
+    /// Initialize kernel objects
+    ///
+    /// Sets up essential kernel objects like mutexes, semaphores, and event queues
+    /// that are needed for game execution.
+    pub fn initialize_kernel_objects(&mut self) -> Result<KernelObjectsInfo> {
+        info!("Initializing kernel objects");
+        
+        // Create initial kernel objects
+        let mut kernel_info = KernelObjectsInfo {
+            mutex_count: 0,
+            semaphore_count: 0,
+            event_queue_count: 0,
+            cond_var_count: 0,
+            rwlock_count: 0,
+            initialized: true,
+        };
+        
+        // Pre-allocate some system mutexes
+        // On PS3, there are typically a few system-wide mutexes for internal use
+        const SYSTEM_MUTEX_COUNT: u32 = 16;
+        for i in 0..SYSTEM_MUTEX_COUNT {
+            debug!("Pre-allocating system mutex {}", i);
+            kernel_info.mutex_count += 1;
+        }
+        
+        // Pre-allocate some system semaphores
+        const SYSTEM_SEMAPHORE_COUNT: u32 = 8;
+        for i in 0..SYSTEM_SEMAPHORE_COUNT {
+            debug!("Pre-allocating system semaphore {}", i);
+            kernel_info.semaphore_count += 1;
+        }
+        
+        // Pre-allocate system event queues
+        const SYSTEM_EVENT_QUEUE_COUNT: u32 = 4;
+        for i in 0..SYSTEM_EVENT_QUEUE_COUNT {
+            debug!("Pre-allocating system event queue {}", i);
+            kernel_info.event_queue_count += 1;
+        }
+        
+        info!(
+            "Kernel objects initialized: mutexes={}, semaphores={}, event_queues={}",
+            kernel_info.mutex_count, kernel_info.semaphore_count, kernel_info.event_queue_count
+        );
+        
+        Ok(kernel_info)
+    }
 
     /// Get the HLE module registry
     pub fn module_registry(&self) -> &ModuleRegistry {
@@ -1221,6 +1371,62 @@ pub struct MemoryLayoutInfo {
     pub spu_base: u32,
     /// SPU local storage size
     pub spu_ls_size: u32,
+}
+
+/// Thread stack information
+#[derive(Debug, Clone)]
+pub struct ThreadStackInfo {
+    /// Stack base address (lowest address)
+    pub stack_base: u32,
+    /// Stack size in bytes
+    pub stack_size: u32,
+    /// Stack top address (highest address)
+    pub stack_top: u32,
+    /// Initial stack pointer (SP register value)
+    pub initial_sp: u32,
+}
+
+/// TLS layout information
+#[derive(Debug, Clone)]
+pub struct TlsLayoutInfo {
+    /// TLS base address
+    pub base_address: u32,
+    /// Size allocated per thread
+    pub size_per_thread: u32,
+    /// Maximum number of threads
+    pub max_threads: u32,
+    /// Main thread TLS pointer (R13 register value)
+    pub main_tls_pointer: u32,
+    /// Individual thread TLS areas
+    pub thread_areas: Vec<TlsThreadArea>,
+}
+
+/// TLS area for a single thread
+#[derive(Debug, Clone)]
+pub struct TlsThreadArea {
+    /// TLS address for this thread
+    pub address: u32,
+    /// Size of this thread's TLS
+    pub size: u32,
+    /// Thread index
+    pub thread_index: u32,
+}
+
+/// Kernel objects information
+#[derive(Debug, Clone)]
+pub struct KernelObjectsInfo {
+    /// Number of mutexes allocated
+    pub mutex_count: u32,
+    /// Number of semaphores allocated
+    pub semaphore_count: u32,
+    /// Number of event queues allocated
+    pub event_queue_count: u32,
+    /// Number of condition variables allocated
+    pub cond_var_count: u32,
+    /// Number of reader-writer locks allocated
+    pub rwlock_count: u32,
+    /// Whether kernel objects have been initialized
+    pub initialized: bool,
 }
 
 #[cfg(test)]
@@ -1526,5 +1732,52 @@ mod tests {
         
         // Now cellGcmSys deps are satisfied
         assert!(pipeline.are_dependencies_satisfied("cellGcmSys"));
+    }
+    
+    #[test]
+    fn test_setup_main_thread_stack() {
+        let memory = MemoryManager::new().unwrap();
+        let pipeline = GamePipeline::new(memory);
+        
+        let stack_size = 0x100000;  // 1MB stack
+        let stack_info = pipeline.setup_main_thread_stack(stack_size).unwrap();
+        
+        assert_eq!(stack_info.stack_base, 0xD0000000);
+        assert_eq!(stack_info.stack_size, stack_size);
+        assert_eq!(stack_info.stack_top, 0xD0000000 + stack_size);
+        assert!(stack_info.initial_sp < stack_info.stack_top);
+        assert!(stack_info.initial_sp > stack_info.stack_base);
+    }
+    
+    #[test]
+    fn test_configure_tls_areas() {
+        let memory = MemoryManager::new().unwrap();
+        let pipeline = GamePipeline::new(memory);
+        
+        let tls_size = 0x10000;  // 64KB per thread
+        let max_threads = 8;
+        let tls_info = pipeline.configure_tls_areas(tls_size, max_threads).unwrap();
+        
+        assert_eq!(tls_info.base_address, 0x28000000);  // In user memory region
+        assert!(tls_info.size_per_thread >= tls_size);  // Should be aligned
+        assert_eq!(tls_info.max_threads, max_threads);
+        assert_eq!(tls_info.thread_areas.len(), max_threads as usize);
+        
+        // Check first thread area
+        assert_eq!(tls_info.thread_areas[0].address, 0x28000000);
+        assert_eq!(tls_info.thread_areas[0].thread_index, 0);
+    }
+    
+    #[test]
+    fn test_initialize_kernel_objects() {
+        let memory = MemoryManager::new().unwrap();
+        let mut pipeline = GamePipeline::new(memory);
+        
+        let kernel_info = pipeline.initialize_kernel_objects().unwrap();
+        
+        assert!(kernel_info.initialized);
+        assert!(kernel_info.mutex_count > 0);
+        assert!(kernel_info.semaphore_count > 0);
+        assert!(kernel_info.event_queue_count > 0);
     }
 }

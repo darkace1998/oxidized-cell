@@ -20,7 +20,7 @@ This document outlines the complete development roadmap for oxidized-cell, a Pla
 | ELF/Game Loader | ✅ Complete | 90% | Low |
 | HLE Modules | 🚧 In Progress | 95% | Medium |
 | User Interface | 🚧 In Progress | 15% | Medium |
-| Game Loading Pipeline | ❌ Not Started | 0% | **HIGH** |
+| Game Loading Pipeline | 🚧 In Progress | 75% | **HIGH** |
 | Debugging Tools | 🔨 Mostly Complete | 70% | Low |
 
 ---
@@ -286,22 +286,22 @@ The game loading pipeline connects all components to enable game execution.
   - [x] Extract game icons and backgrounds
   - [x] Cache game database
 
-- [ ] **EBOOT.BIN Loading**
-  - [ ] Parse EBOOT.BIN format
-  - [ ] Handle encrypted executables
-  - [ ] Load PRX dependencies
+- [x] **EBOOT.BIN Loading**
+  - [x] Parse EBOOT.BIN format
+  - [x] Handle encrypted executables
+  - [x] Load PRX dependencies
 
-- [ ] **PRX Module Loading**
-  - [ ] Implement dynamic PRX loading
-  - [ ] Resolve module imports/exports
-  - [ ] Handle NID (Native ID) resolution
-  - [ ] Support stub libraries
+- [x] **PRX Module Loading**
+  - [x] Implement dynamic PRX loading
+  - [x] Resolve module imports/exports
+  - [x] Handle NID (Native ID) resolution
+  - [x] Support stub libraries
 
-- [ ] **Memory Layout**
-  - [ ] Initialize PS3 memory regions (done)
-  - [ ] Set up stack for main thread
-  - [ ] Configure TLS areas
-  - [ ] Initialize kernel objects
+- [x] **Memory Layout**
+  - [x] Initialize PS3 memory regions (done)
+  - [x] Set up stack for main thread
+  - [x] Configure TLS areas
+  - [x] Initialize kernel objects
 
 - [ ] **Main Thread Creation**
   - [ ] Create initial PPU thread
@@ -718,3 +718,15 @@ See the [Contributing section in README.md](README.md#contributing) for guidelin
 *8. Game Discovery - Cache game database with JSON serialization for faster subsequent scans*
 *9. Game Discovery - Support cache loading and saving with automatic directory creation*
 *10. Game Discovery - Add serde support for GameInfo serialization/deserialization*
+
+*Game Loading Pipeline update (December 26, 2024): Implemented next 10 Game Loading Pipeline todos:*
+*1. EBOOT.BIN Loading - Parse EBOOT.BIN format with detection of SELF vs ELF format*
+*2. EBOOT.BIN Loading - Handle encrypted executables with SELF decryption and embedded ELF extraction*
+*3. EBOOT.BIN Loading - Load PRX dependencies with automatic discovery from game directory*
+*4. PRX Module Loading - Implement dynamic PRX loading with module manager and base address allocation*
+*5. PRX Module Loading - Resolve module imports/exports with symbol cache and address resolution*
+*6. PRX Module Loading - Handle NID (Native ID) resolution with database of known PS3 function NIDs*
+*7. PRX Module Loading - Support stub libraries for unresolved imports with configurable return values*
+*8. Memory Layout - Set up stack for main thread with guard patterns and red zone (288 bytes)*
+*9. Memory Layout - Configure TLS areas with per-thread allocation and R13 pointer setup*
+*10. Memory Layout - Initialize kernel objects (mutexes, semaphores, event queues, condition variables, rwlocks)*

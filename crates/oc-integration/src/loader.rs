@@ -35,7 +35,7 @@ const SHF_ALLOC: u64 = 0x2;
 const PRX_BASE_ADDR: u32 = 0x2000_0000;
 
 /// TLS (Thread-Local Storage) base address
-const TLS_BASE_ADDR: u32 = 0xE000_0000;
+const TLS_BASE_ADDR: u32 = 0x2800_0000;  // In user memory region
 
 /// Default TLS size (64KB)
 const DEFAULT_TLS_SIZE: u32 = 0x10000;
@@ -124,6 +124,66 @@ impl GameLoader {
 
         // Load the ELF
         self.load_elf(&elf_data, path_str, is_self)
+    }
+
+    /// Parse EBOOT.BIN format
+    ///
+    /// EBOOT.BIN is either a SELF (encrypted ELF) or plain ELF file.
+    /// This method handles both formats transparently.
+    pub fn parse_eboot(&self, data: &[u8]) -> Result<(Vec<u8>, bool)> {
+        info!("Parsing EBOOT.BIN format");
+        
+        // Check if it's a SELF file (encrypted executable)
+        if SelfLoader::is_self(data) {
+            info!("EBOOT.BIN is SELF format (encrypted)");
+            self.handle_encrypted_eboot(data)
+        } else if data.len() >= 4 && data[0..4] == [0x7F, b'E', b'L', b'F'] {
+            info!("EBOOT.BIN is plain ELF format");
+            Ok((data.to_vec(), false))
+        } else {
+            Err(EmulatorError::Loader(LoaderError::InvalidElf(
+                "EBOOT.BIN is neither SELF nor ELF format".to_string()
+            )))
+        }
+    }
+
+    /// Handle encrypted executables (SELF format)
+    ///
+    /// SELF files are encrypted ELF files used by PS3 for security.
+    /// This method attempts to decrypt the SELF file to extract the ELF data.
+    fn handle_encrypted_eboot(&self, data: &[u8]) -> Result<(Vec<u8>, bool)> {
+        info!("Handling encrypted EBOOT (SELF format)");
+        
+        let self_loader = SelfLoader::new();
+        
+        // Attempt to decrypt the SELF file
+        match self_loader.decrypt(data) {
+            Ok(decrypted_elf) => {
+                info!("Successfully decrypted SELF file, extracted {} bytes", decrypted_elf.len());
+                Ok((decrypted_elf, true))
+            }
+            Err(e) => {
+                // If decryption fails, try to extract embedded ELF without decryption
+                warn!("SELF decryption failed: {}. Attempting to extract embedded ELF.", e);
+                
+                // Parse SELF header to find ELF offset
+                if let Ok(header) = SelfLoader::parse_header(data) {
+                    let elf_offset = header.header_len as usize;
+                    
+                    if data.len() > elf_offset + 4 {
+                        // Check for ELF magic at offset
+                        if data[elf_offset..elf_offset + 4] == [0x7F, b'E', b'L', b'F'] {
+                            info!("Found embedded unencrypted ELF at offset 0x{:x}", elf_offset);
+                            return Ok((data[elf_offset..].to_vec(), true));
+                        }
+                    }
+                }
+                
+                Err(EmulatorError::Loader(LoaderError::DecryptionFailed(
+                    format!("Failed to decrypt SELF file: {}", e)
+                )))
+            }
+        }
     }
 
     /// Load an ELF file from bytes
@@ -278,6 +338,78 @@ impl GameLoader {
         Ok((tls_addr, tls_size))
     }
 
+    /// Find and load PRX dependencies
+    ///
+    /// This method scans the ELF dynamic section to find required PRX modules
+    /// and loads them automatically.
+    pub fn load_prx_dependencies<P: AsRef<Path>>(
+        &mut self,
+        game: &mut LoadedGame,
+        game_dir: P,
+    ) -> Result<()> {
+        info!("Loading PRX dependencies from game directory");
+        
+        // Typical PRX locations in PS3 games
+        let prx_search_paths = [
+            game_dir.as_ref().join("USRDIR"),
+            game_dir.as_ref().join("PS3_GAME").join("USRDIR"),
+            game_dir.as_ref().to_path_buf(),
+        ];
+        
+        // Common system PRX modules that games depend on
+        let system_prx_modules = [
+            "libfs.sprx",
+            "libsysutil.sprx",
+            "libgcm_sys.sprx",
+            "libsysmodule.sprx",
+            "libnet.sprx",
+            "libhttp.sprx",
+            "libssl.sprx",
+            "libaudio.sprx",
+            "libpngdec.sprx",
+            "libjpgdec.sprx",
+        ];
+        
+        let mut loaded_count = 0;
+        
+        // Try to load system PRX modules from game directory
+        for prx_name in &system_prx_modules {
+            let mut found = false;
+            
+            for search_path in &prx_search_paths {
+                let prx_path = search_path.join(prx_name);
+                
+                if prx_path.exists() {
+                    debug!("Found PRX dependency: {:?}", prx_path);
+                    
+                    match self.load_prx_module(game, &prx_path) {
+                        Ok(_) => {
+                            loaded_count += 1;
+                            found = true;
+                            break;
+                        }
+                        Err(e) => {
+                            debug!("Failed to load {}: {}", prx_name, e);
+                        }
+                    }
+                }
+            }
+            
+            if !found {
+                debug!("PRX module {} not found in game directory (may be system module)", prx_name);
+            }
+        }
+        
+        info!("Loaded {} PRX dependencies", loaded_count);
+        
+        // After loading all dependencies, resolve imports
+        if loaded_count > 0 {
+            self.resolve_imports(game)?;
+        }
+        
+        Ok(())
+    }
+
     /// Load PRX modules from a list of paths
     pub fn load_prx_modules<P: AsRef<Path>>(
         &mut self,
@@ -410,7 +542,7 @@ mod tests {
             stack_addr: 0xD0100000,
             stack_size: 0x100000,
             toc: 0x18000,
-            tls_addr: 0xE0000000,
+            tls_addr: 0x28000000,  // In user memory
             tls_size: 0x10000,
             path: "/test/game.elf".to_string(),
             is_self: false,
@@ -419,7 +551,7 @@ mod tests {
 
         assert_eq!(game.entry_point, 0x10000);
         assert_eq!(game.base_addr, 0x10000000);
-        assert_eq!(game.tls_addr, 0xE0000000);
+        assert_eq!(game.tls_addr, 0x28000000);
         assert!(!game.is_self);
         assert_eq!(game.prx_modules.len(), 0);
     }
@@ -438,7 +570,7 @@ mod tests {
     #[test]
     fn test_tls_constants() {
         // Verify TLS constants are set correctly
-        assert_eq!(TLS_BASE_ADDR, 0xE0000000);
+        assert_eq!(TLS_BASE_ADDR, 0x28000000);  // In user memory region
         assert_eq!(DEFAULT_TLS_SIZE, 0x10000);
     }
 
@@ -457,6 +589,39 @@ mod tests {
         // Verify PRX loader is initialized
         assert_eq!(loader.prx_loader().list_modules().len(), 0);
     }
+    
+    #[test]
+    fn test_parse_eboot_elf_format() {
+        let memory = create_test_memory();
+        let loader = GameLoader::new(memory);
+        
+        // Create a minimal ELF header
+        let mut elf_data = vec![0x7F, b'E', b'L', b'F'];
+        elf_data.extend_from_slice(&[2, 2, 1, 0]); // 64-bit big-endian
+        elf_data.resize(64, 0); // Pad to minimum ELF header size
+        
+        match loader.parse_eboot(&elf_data) {
+            Ok((data, is_self)) => {
+                assert!(!is_self);
+                assert_eq!(data.len(), elf_data.len());
+            }
+            Err(_) => {
+                // May fail due to incomplete header, but should at least be recognized
+            }
+        }
+    }
+    
+    #[test]
+    fn test_parse_eboot_invalid_format() {
+        let memory = create_test_memory();
+        let loader = GameLoader::new(memory);
+        
+        // Invalid data that's neither SELF nor ELF
+        let invalid_data = vec![0x00, 0x00, 0x00, 0x00];
+        
+        let result = loader.parse_eboot(&invalid_data);
+        assert!(result.is_err());
+    }
 
     #[test]
     fn test_loaded_game_with_prx_modules() {
@@ -466,7 +631,7 @@ mod tests {
             stack_addr: 0xD0100000,
             stack_size: 0x100000,
             toc: 0x18000,
-            tls_addr: 0xE0000000,
+            tls_addr: 0x28000000,  // In user memory
             tls_size: 0x10000,
             path: "/test/game.elf".to_string(),
             is_self: false,

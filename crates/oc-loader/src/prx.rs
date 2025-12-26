@@ -35,6 +35,7 @@ pub struct PrxImport {
     pub module: String,
     pub import_type: ImportType,
     pub stub_addr: u32,
+    pub resolved_addr: Option<u64>,
 }
 
 /// Export type
@@ -64,19 +65,118 @@ pub struct ModuleInfo {
     pub imports_end: u32,
 }
 
+/// Stub library for unresolved imports
+#[derive(Debug, Clone)]
+pub struct StubLibrary {
+    pub name: String,
+    pub version: u32,
+    pub stubs: HashMap<u32, StubFunction>,
+}
+
+/// Stub function information
+#[derive(Debug, Clone)]
+pub struct StubFunction {
+    pub nid: u32,
+    pub name: String,
+    pub stub_addr: u32,
+    pub return_value: i64,  // Default return value for stub
+}
+
 /// PRX loader for managing shared libraries
 pub struct PrxLoader {
     modules: HashMap<String, PrxModule>,
     symbol_cache: HashMap<u32, u64>,  // NID -> address
+    stub_libraries: HashMap<String, StubLibrary>,  // Stub library support
+    nid_database: HashMap<u32, String>,  // NID -> function name mapping
 }
 
 impl PrxLoader {
     /// Create a new PRX loader
     pub fn new() -> Self {
-        Self {
+        let mut loader = Self {
             modules: HashMap::new(),
             symbol_cache: HashMap::new(),
+            stub_libraries: HashMap::new(),
+            nid_database: HashMap::new(),
+        };
+        
+        // Initialize NID database with known PS3 function NIDs
+        loader.init_nid_database();
+        
+        loader
+    }
+    
+    /// Initialize NID database with known PS3 system function NIDs
+    fn init_nid_database(&mut self) {
+        // Common PS3 system function NIDs (sample - real database would be much larger)
+        let known_nids = [
+            (0x9FB6228E, "sys_ppu_thread_create"),
+            (0x350D454E, "sys_ppu_thread_exit"),
+            (0x8461E528, "sys_process_exit"),
+            (0xDA0EB71A, "sys_lwmutex_create"),
+            (0x1573DC3F, "sys_lwmutex_destroy"),
+            (0xE7A3B5D8, "sys_prx_load_module"),
+            (0x26090058, "sys_prx_unload_module"),
+            (0xB27C8AE7, "cellFsOpen"),
+            (0x2CB51F0D, "cellFsClose"),
+            (0xB1840AE5, "cellFsRead"),
+            (0xC9AFD7F6, "cellFsWrite"),
+        ];
+        
+        for (nid, name) in &known_nids {
+            self.nid_database.insert(*nid, name.to_string());
         }
+        
+        debug!("Initialized NID database with {} entries", self.nid_database.len());
+    }
+    
+    /// Resolve NID to function name using database
+    pub fn resolve_nid_to_name(&self, nid: u32) -> Option<&str> {
+        self.nid_database.get(&nid).map(|s| s.as_str())
+    }
+    
+    /// Add a custom NID mapping
+    pub fn add_nid_mapping(&mut self, nid: u32, name: String) {
+        self.nid_database.insert(nid, name);
+    }
+    
+    /// Create a stub library for unresolved imports
+    pub fn create_stub_library(&mut self, name: String, version: u32) -> &mut StubLibrary {
+        debug!("Creating stub library: {} v{}", name, version);
+        
+        self.stub_libraries.entry(name.clone()).or_insert_with(|| {
+            StubLibrary {
+                name: name.clone(),
+                version,
+                stubs: HashMap::new(),
+            }
+        })
+    }
+    
+    /// Add a stub function to a library
+    pub fn add_stub_function(
+        &mut self,
+        library_name: &str,
+        nid: u32,
+        func_name: String,
+        stub_addr: u32,
+        return_value: i64,
+    ) {
+        if let Some(library) = self.stub_libraries.get_mut(library_name) {
+            library.stubs.insert(nid, StubFunction {
+                nid,
+                name: func_name.clone(),
+                stub_addr,
+                return_value,
+            });
+            
+            debug!("Added stub function: {}@{} (NID: 0x{:08x})", library_name, func_name, nid);
+        }
+    }
+    
+    /// Get stub function by NID
+    pub fn get_stub_function(&self, library_name: &str, nid: u32) -> Option<&StubFunction> {
+        self.stub_libraries.get(library_name)?.stubs.get(&nid)
     }
 
     /// Load a PRX module from ELF data
@@ -202,6 +302,7 @@ impl PrxLoader {
                 module: module.clone(),
                 import_type,
                 stub_addr: 0,  // Will be filled during linking
+                resolved_addr: None,  // Will be filled during resolution
             });
 
             debug!(
@@ -220,25 +321,65 @@ impl PrxLoader {
             .clone();
 
         let mut unresolved = Vec::new();
+        let mut resolved_count = 0;
 
         for import in &module.imports {
+            // Try to resolve from symbol cache
             if let Some(&address) = self.symbol_cache.get(&import.nid) {
                 debug!(
                     "Resolved import: {} (NID: 0x{:08x}) -> 0x{:x}",
                     import.name, import.nid, address
                 );
+                
+                // Update the import with resolved address
+                if let Some(module_mut) = self.modules.get_mut(module_name) {
+                    if let Some(import_mut) = module_mut.imports.iter_mut().find(|i| i.nid == import.nid) {
+                        import_mut.resolved_addr = Some(address);
+                    }
+                }
+                resolved_count += 1;
             } else {
-                unresolved.push(import.name.clone());
-                debug!("Unresolved import: {} (NID: 0x{:08x})", import.name, import.nid);
+                // Try to resolve using NID database
+                let func_name_opt = self.resolve_nid_to_name(import.nid).map(|s| s.to_string());
+                
+                if let Some(func_name) = func_name_opt {
+                    debug!(
+                        "NID 0x{:08x} resolved to function name: {}",
+                        import.nid, func_name
+                    );
+                    
+                    // Create stub for this import
+                    let stub_library = self.create_stub_library(import.module.clone(), 1);
+                    stub_library.stubs.insert(import.nid, StubFunction {
+                        nid: import.nid,
+                        name: func_name.clone(),
+                        stub_addr: import.stub_addr,
+                        return_value: 0,  // Default return value
+                    });
+                    
+                    debug!("Created stub for {} (NID: 0x{:08x})", func_name, import.nid);
+                } else {
+                    unresolved.push(format!("{}@{} (NID: 0x{:08x})", import.module, import.name, import.nid));
+                    debug!("Unresolved import: {} (NID: 0x{:08x})", import.name, import.nid);
+                }
             }
         }
 
         if !unresolved.is_empty() {
             info!(
-                "Module {} has {} unresolved imports",
+                "Module {} has {} unresolved imports (out of {}), {} resolved",
                 module_name,
-                unresolved.len()
+                unresolved.len(),
+                module.imports.len(),
+                resolved_count
             );
+            
+            // Log first few unresolved imports
+            for (i, imp) in unresolved.iter().take(5).enumerate() {
+                debug!("  Unresolved[{}]: {}", i, imp);
+            }
+        } else {
+            info!("All {} imports resolved for module {}", module.imports.len(), module_name);
         }
 
         Ok(())
