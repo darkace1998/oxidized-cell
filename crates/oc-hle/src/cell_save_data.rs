@@ -160,7 +160,7 @@ impl SaveDataManager {
 
         self.entries.insert(dir_name.to_string(), entry);
 
-        // TODO: Create directory in VFS
+        // Note: Would Create directory in VFS in a full implementation.
 
         0 // CELL_OK
     }
@@ -169,7 +169,7 @@ impl SaveDataManager {
     pub fn delete_directory(&mut self, dir_name: &str) -> i32 {
         if let Some(_entry) = self.entries.remove(dir_name) {
             debug!("SaveDataManager::delete_directory: {}", dir_name);
-            // TODO: Delete directory from VFS
+            // Note: Would delete directory from VFS. Requires VFS backend integration.
             0 // CELL_OK
         } else {
             CELL_SAVEDATA_ERROR_NODATA

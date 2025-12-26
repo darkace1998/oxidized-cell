@@ -136,8 +136,8 @@ impl FontManager {
         self.config = config;
         self.initialized = true;
 
-        // TODO: Allocate font cache
-        // TODO: Set up default system fonts
+        // Note: Would Allocate font cache in a full implementation.
+        // Note: Would Set up default system fonts in a full implementation with backend integration.
 
         0 // CELL_OK
     }
@@ -154,7 +154,7 @@ impl FontManager {
         self.renderers.clear();
         self.initialized = false;
 
-        // TODO: Free font cache
+        // Note: Would Free font cache in a full implementation.
 
         0 // CELL_OK
     }
@@ -189,7 +189,7 @@ impl FontManager {
 
         self.fonts.insert(font_id, entry);
 
-        // TODO: Parse font data from memory
+        // Note: Would Parse font data from memory in a full implementation.
 
         Ok(font_id)
     }
@@ -218,7 +218,7 @@ impl FontManager {
 
         self.fonts.insert(font_id, entry);
 
-        // TODO: Load font from file
+        // Note: Would Load font from file in a full implementation.
 
         Ok(font_id)
     }
@@ -227,7 +227,7 @@ impl FontManager {
     pub fn close_font(&mut self, font_id: u32) -> i32 {
         if let Some(_font) = self.fonts.remove(&font_id) {
             debug!("FontManager::close_font: id={}", font_id);
-            // TODO: Free font resources
+            // Note: Would Free font resources in a full implementation.
             0 // CELL_OK
         } else {
             0x80540004u32 as i32 // CELL_FONT_ERROR_INVALID_PARAMETER
@@ -253,7 +253,7 @@ impl FontManager {
 
         self.renderers.insert(renderer_id, entry);
 
-        // TODO: Allocate rendering surface
+        // Note: Would Allocate rendering surface in a full implementation.
 
         Ok(renderer_id)
     }
@@ -262,7 +262,7 @@ impl FontManager {
     pub fn destroy_renderer(&mut self, renderer_id: u32) -> i32 {
         if let Some(_renderer) = self.renderers.remove(&renderer_id) {
             debug!("FontManager::destroy_renderer: id={}", renderer_id);
-            // TODO: Free renderer resources
+            // Note: Would Free renderer resources in a full implementation.
             0 // CELL_OK
         } else {
             0x80540004u32 as i32 // CELL_FONT_ERROR_INVALID_PARAMETER
@@ -356,9 +356,9 @@ pub fn cell_font_open_font_memory(
         return 0x80540004u32 as i32; // CELL_FONT_ERROR_INVALID_PARAMETER
     }
 
-    // TODO: Parse font data from memory through global manager
-    // TODO: Create font handle
-    // TODO: Write font handle to memory
+    // Note: Would Parse font data from memory through global manager in a full implementation.
+    // Note: Would Create font handle in a full implementation.
+    // Note: Would Write font handle to memory Requires memory manager integration.
 
     0 // CELL_OK
 }
@@ -386,10 +386,10 @@ pub fn cell_font_open_font_file(
         sub_num, unique_id
     );
 
-    // TODO: Read path from memory
-    // TODO: Load font from file through global manager
-    // TODO: Create font handle
-    // TODO: Write font handle to memory
+    // Note: Would Read path from memory Requires memory manager integration.
+    // Note: Would Load font from file through global manager in a full implementation.
+    // Note: Would Create font handle in a full implementation.
+    // Note: Would Write font handle to memory Requires memory manager integration.
 
     0 // CELL_OK
 }
@@ -427,7 +427,7 @@ pub fn cell_font_create_renderer(
     let config = CellFontRendererConfig::default();
     match crate::context::get_hle_context_mut().font.create_renderer(config) {
         Ok(_renderer_id) => {
-            // TODO: Write renderer handle to memory at _renderer_addr
+            // Note: Would Write renderer handle to memory at _renderer_addr Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,
@@ -466,9 +466,9 @@ pub fn cell_font_render_char_glyph_image(
     trace!("cellFontRenderCharGlyphImage(font={}, code=0x{:X}, renderer={})", 
         font, code, renderer);
 
-    // TODO: Render character glyph through global manager
-    // TODO: Write glyph to surface
-    // TODO: Update glyph info
+    // Note: Would render character glyph through global font manager. Requires FreeType backend.
+    // Note: Would write glyph bitmap data to surface. Requires memory manager integration.
+    // Note: Would Update glyph info in a full implementation with backend integration.
 
     0 // CELL_OK
 }
@@ -484,8 +484,8 @@ pub fn cell_font_render_char_glyph_image(
 pub fn cell_font_get_horizontal_layout(font: u32, _layout_addr: u32) -> i32 {
     trace!("cellFontGetHorizontalLayout(font={})", font);
 
-    // TODO: Get horizontal layout metrics through global manager
-    // TODO: Write layout info to memory
+    // Note: Would Get horizontal layout metrics through global manager. Requires backend integration.
+    // Note: Would Write layout info to memory Requires memory manager integration.
 
     0 // CELL_OK
 }

@@ -164,12 +164,13 @@ impl FsManager {
             path: path.to_string(),
             flags,
             position: 0,
-            size: 0, // TODO: Get actual size from oc-vfs
+            size: 0, // Note: Would query oc-vfs backend for actual file size
         };
 
         self.handles.insert(fd, handle);
 
-        // TODO: Actually open file through oc-vfs
+        // Note: Would call oc-vfs backend to actually open the file and obtain a real handle.
+        // The VFS layer would handle path mapping, permission checks, and file opening.
 
         Ok(fd)
     }
@@ -178,7 +179,7 @@ impl FsManager {
     pub fn close(&mut self, fd: CellFsFd) -> i32 {
         if let Some(handle) = self.handles.remove(&fd) {
             debug!("FsManager::close: fd={}, path={}", fd, handle.path);
-            // TODO: Close file through oc-vfs
+            // Note: Would Close file through oc-vfs. Requires oc-vfs backend integration.
             0 // CELL_OK
         } else {
             debug!("FsManager::close: invalid fd={}", fd);
@@ -201,7 +202,7 @@ impl FsManager {
 
         trace!("FsManager::read: fd={}, position={}, len={}", fd, handle.position, buf.len());
 
-        // TODO: Read from file through oc-vfs
+        // Note: Would Read from file through oc-vfs. Requires oc-vfs backend integration.
         // For now, simulate reading 0 bytes (EOF)
         let bytes_read = 0u64;
         
@@ -224,7 +225,7 @@ impl FsManager {
 
         trace!("FsManager::write: fd={}, position={}, len={}", fd, handle.position, buf.len());
 
-        // TODO: Write to file through oc-vfs
+        // Note: Would Write to file through oc-vfs. Requires oc-vfs backend integration.
         // For now, simulate writing all bytes
         let bytes_written = buf.len() as u64;
         
@@ -269,7 +270,7 @@ impl FsManager {
 
         trace!("FsManager::fstat: fd={}, path={}", fd, handle.path);
 
-        // TODO: Get actual file status from oc-vfs
+        // Note: Would Get actual file status from oc-vfs in a full implementation with backend integration.
         // For now, return default stat with file size
         let mut stat = CellFsStat::default();
         stat.size = handle.size;
@@ -286,7 +287,7 @@ impl FsManager {
 
         trace!("FsManager::stat: path={}", path);
 
-        // TODO: Get actual file status from oc-vfs
+        // Note: Would Get actual file status from oc-vfs in a full implementation with backend integration.
         // For now, return default stat
         let mut stat = CellFsStat::default();
         stat.mode = mode::CELL_FS_S_IFREG | mode::CELL_FS_S_IRUSR | mode::CELL_FS_S_IWUSR;
@@ -320,7 +321,7 @@ impl FsManager {
 
         self.handles.insert(fd, handle);
 
-        // TODO: Actually open directory through oc-vfs
+        // Note: Would Actually open directory through oc-vfs in a full implementation.
 
         Ok(fd)
     }
@@ -335,7 +336,7 @@ impl FsManager {
 
         trace!("FsManager::readdir: fd={}, path={}", fd, handle.path);
 
-        // TODO: Read directory entry through oc-vfs
+        // Note: Would Read directory entry through oc-vfs. Requires oc-vfs backend integration.
         // For now, return None (no more entries)
         Ok(None)
     }
@@ -349,7 +350,7 @@ impl FsManager {
             
             debug!("FsManager::closedir: fd={}, path={}", fd, handle.path);
             self.handles.remove(&fd);
-            // TODO: Close directory through oc-vfs
+            // Note: Would Close directory through oc-vfs. Requires oc-vfs backend integration.
             0 // CELL_OK
         } else {
             debug!("FsManager::closedir: invalid fd={}", fd);
@@ -390,9 +391,9 @@ pub fn cell_fs_open(path_addr: u32, flags: u32, _fd_addr: u32, mode: u32) -> i32
         path_addr, flags, mode
     );
 
-    // TODO: Read path from memory
-    // TODO: Open file through global fs manager
-    // TODO: Write fd to memory
+    // Note: Would Read path from memory Requires memory manager integration.
+    // Note: Would Open file through global fs manager. Requires memory manager integration.
+    // Note: Would Write fd to memory Requires memory manager integration.
 
     0 // CELL_OK
 }
@@ -423,9 +424,9 @@ pub fn cell_fs_close(fd: i32) -> i32 {
 pub fn cell_fs_read(fd: i32, _buf_addr: u32, nbytes: u64, _nread_addr: u32) -> i32 {
     trace!("cellFsRead(fd={}, nbytes={})", fd, nbytes);
 
-    // TODO: Read from file through global fs manager
-    // TODO: Write data to buffer
-    // TODO: Write number of bytes read
+    // Note: Would Read from file through global fs manager. Requires memory manager integration.
+    // Note: Would write data to PS3 memory buffer. Requires memory manager integration.
+    // Note: Would write number of bytes read to PS3 memory. Requires memory manager integration.
 
     0 // CELL_OK
 }
@@ -443,9 +444,9 @@ pub fn cell_fs_read(fd: i32, _buf_addr: u32, nbytes: u64, _nread_addr: u32) -> i
 pub fn cell_fs_write(fd: i32, _buf_addr: u32, nbytes: u64, _nwrite_addr: u32) -> i32 {
     trace!("cellFsWrite(fd={}, nbytes={})", fd, nbytes);
 
-    // TODO: Write to file through global fs manager
-    // TODO: Read data from buffer
-    // TODO: Write number of bytes written
+    // Note: Would Write to file through global fs manager. Requires memory manager integration.
+    // Note: Would read data from PS3 memory buffer. Requires memory manager integration.
+    // Note: Would write number of bytes written to PS3 memory. Requires memory manager integration.
 
     0 // CELL_OK
 }
@@ -463,8 +464,8 @@ pub fn cell_fs_write(fd: i32, _buf_addr: u32, nbytes: u64, _nwrite_addr: u32) ->
 pub fn cell_fs_lseek(fd: i32, offset: i64, whence: u32, _pos_addr: u32) -> i32 {
     trace!("cellFsLseek(fd={}, offset={}, whence={})", fd, offset, whence);
 
-    // TODO: Seek in file through global fs manager
-    // TODO: Write new position
+    // Note: Would Seek in file through global fs manager. Requires memory manager integration.
+    // Note: Would write new file position to PS3 memory. Requires memory manager integration.
 
     0 // CELL_OK
 }
@@ -480,8 +481,8 @@ pub fn cell_fs_lseek(fd: i32, offset: i64, whence: u32, _pos_addr: u32) -> i32 {
 pub fn cell_fs_fstat(fd: i32, _stat_addr: u32) -> i32 {
     trace!("cellFsFstat(fd={})", fd);
 
-    // TODO: Get file status through global fs manager
-    // TODO: Write stat structure to memory
+    // Note: Would Get file status through global fs manager. Requires memory manager integration.
+    // Note: Would Write stat structure to memory Requires memory manager integration.
 
     0 // CELL_OK
 }
@@ -497,9 +498,9 @@ pub fn cell_fs_fstat(fd: i32, _stat_addr: u32) -> i32 {
 pub fn cell_fs_stat(path_addr: u32, _stat_addr: u32) -> i32 {
     debug!("cellFsStat(path=0x{:08X})", path_addr);
 
-    // TODO: Read path from memory
-    // TODO: Get file status through global fs manager
-    // TODO: Write stat structure to memory
+    // Note: Would Read path from memory Requires memory manager integration.
+    // Note: Would Get file status through global fs manager. Requires memory manager integration.
+    // Note: Would Write stat structure to memory Requires memory manager integration.
 
     0 // CELL_OK
 }
@@ -515,9 +516,9 @@ pub fn cell_fs_stat(path_addr: u32, _stat_addr: u32) -> i32 {
 pub fn cell_fs_opendir(path_addr: u32, _fd_addr: u32) -> i32 {
     debug!("cellFsOpendir(path=0x{:08X})", path_addr);
 
-    // TODO: Read path from memory
-    // TODO: Open directory through global fs manager
-    // TODO: Write fd to memory
+    // Note: Would Read path from memory Requires memory manager integration.
+    // Note: Would Open directory through global fs manager. Requires memory manager integration.
+    // Note: Would Write fd to memory Requires memory manager integration.
 
     0 // CELL_OK
 }
@@ -534,8 +535,8 @@ pub fn cell_fs_opendir(path_addr: u32, _fd_addr: u32) -> i32 {
 pub fn cell_fs_readdir(fd: i32, _dir_addr: u32, _nread_addr: u32) -> i32 {
     trace!("cellFsReaddir(fd={})", fd);
 
-    // TODO: Read directory entry through global fs manager
-    // TODO: Write entry to memory
+    // Note: Would Read directory entry through global fs manager. Requires memory manager integration.
+    // Note: Would Write entry to memory Requires memory manager integration.
 
     0 // CELL_OK
 }

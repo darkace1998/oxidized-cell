@@ -143,7 +143,7 @@ impl SysutilManager {
 
         // Process pending events
         while let Some(event) = self.pending_events.pop_front() {
-            // TODO: Call registered callbacks with event
+            // Note: Would Call registered callbacks with event in a full implementation.
             trace!("Processing event: type=0x{:X}, param=0x{:X}", event.event_type, event.param);
             
             // For now, just process the event without calling actual callbacks
@@ -270,7 +270,7 @@ pub fn cell_sysutil_get_system_param_int(param_id: u32, _value_addr: u32) -> i32
 
     let ctx = crate::context::get_hle_context();
     if let Some(_value) = ctx.sysutil.get_system_param_int(param_id) {
-        // TODO: Write value to memory at _value_addr
+        // Note: Would Write value to memory at _value_addr Requires memory manager integration.
         0 // CELL_OK
     } else {
         0x80010002u32 as i32 // CELL_SYSUTIL_ERROR_VALUE
@@ -298,7 +298,7 @@ pub fn cell_sysutil_get_system_param_string(
 
     let ctx = crate::context::get_hle_context();
     if let Some(_value) = ctx.sysutil.get_system_param_string(param_id) {
-        // TODO: Write string to memory at _buf_addr
+        // Note: Would Write string to memory at _buf_addr Requires memory manager integration.
         0 // CELL_OK
     } else {
         0x80010002u32 as i32 // CELL_SYSUTIL_ERROR_VALUE

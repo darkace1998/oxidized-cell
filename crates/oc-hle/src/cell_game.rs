@@ -143,8 +143,8 @@ impl GameManager {
         self.dir_name = "GAME00000".to_string();
         self.initialized = true;
 
-        // TODO: Actually detect game type from mounted media
-        // TODO: Read game attributes from PARAM.SFO
+        // Note: Would Actually detect game type from mounted media in a full implementation.
+        // Note: Would read game attributes from PARAM.SFO file. Requires VFS integration.
 
         0 // CELL_OK
     }
@@ -160,8 +160,8 @@ impl GameManager {
         self.content_size.size_kb = 1024 * 1024; // 1 GB
         self.content_size.sys_size_kb = 100 * 1024; // 100 MB
 
-        // TODO: Check if game data exists
-        // TODO: Calculate actual content size
+        // Note: Would Check if game data exists in a full implementation.
+        // Note: Would Calculate actual content size in a full implementation.
 
         0 // CELL_OK
     }

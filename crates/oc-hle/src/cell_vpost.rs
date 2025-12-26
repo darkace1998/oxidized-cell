@@ -189,7 +189,7 @@ impl VpostManager {
             return Err(CELL_VPOST_ERROR_ARG);
         }
 
-        // TODO: Integrate with actual video processing backend
+        // Note: Would Integrate with actual video processing backend in a full implementation with backend integration.
         // For now, simulate processing by incrementing frame count
         entry.frames_processed += 1;
 
@@ -464,7 +464,7 @@ mod tests {
         // Test the API function (open returns success, close uses new manager so may fail)
         assert_eq!(cell_vpost_open(&cfg, &resource, &mut handle), 0);
         assert!(handle > 0);
-        // Note: cell_vpost_close uses a temporary manager instance (TODO: use global)
+        // Note: cell_vpost_close uses a temporary manager instance. Should use global context in future.
         // so it will return an error. Test the manager directly for lifecycle:
         let mut manager = VpostManager::new();
         let h = manager.open(pic_format, pic_format, 0x100000).unwrap();

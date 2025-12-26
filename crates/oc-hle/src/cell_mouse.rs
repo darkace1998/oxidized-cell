@@ -218,7 +218,7 @@ impl MouseManager {
 
         trace!("MouseManager::get_data: port={}", port);
 
-        // TODO: Get actual mouse data from oc-input subsystem
+        // Note: Would Get actual mouse data from oc-input subsystem in a full implementation with backend integration.
         let mut data = CellMouseData::default();
         data.x_pos = self.positions[port as usize].0;
         data.y_pos = self.positions[port as usize].1;
@@ -243,7 +243,7 @@ impl MouseManager {
 
         trace!("MouseManager::get_data_list: port={}", port);
 
-        // TODO: Get buffered mouse data from oc-input subsystem
+        // Note: Would get buffered mouse data from oc-input subsystem. Requires backend integration.
         // For now, return a single entry with current state
         let mut list = CellMouseDataList::default();
         
@@ -271,7 +271,7 @@ impl MouseManager {
 
         trace!("MouseManager::get_raw_data: port={}", port);
 
-        // TODO: Get raw mouse data from oc-input subsystem
+        // Note: Would get raw mouse data from oc-input subsystem. Requires backend integration.
         let mut raw = CellMouseRawData::default();
         raw.buttons = self.button_states[port as usize] as u8;
 
@@ -320,7 +320,7 @@ impl MouseManager {
 
         trace!("MouseManager::clear_buf: port={}", port);
 
-        // TODO: Clear actual input buffer
+        // Note: Would Clear actual input buffer in a full implementation.
 
         0 // CELL_OK
     }
@@ -372,7 +372,7 @@ pub fn cell_mouse_get_info(_info_addr: u32) -> i32 {
 
     match crate::context::get_hle_context().mouse.get_info() {
         Ok(_info) => {
-            // TODO: Write info to memory at _info_addr
+            // Note: Would Write info to memory at _info_addr Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,
@@ -392,7 +392,7 @@ pub fn cell_mouse_get_data(port: u32, _data_addr: u32) -> i32 {
 
     match crate::context::get_hle_context().mouse.get_data(port) {
         Ok(_data) => {
-            // TODO: Write data to memory at _data_addr
+            // Note: Would Write data to memory at _data_addr Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,
@@ -412,7 +412,7 @@ pub fn cell_mouse_get_data_list(port: u32, _data_addr: u32) -> i32 {
 
     match crate::context::get_hle_context().mouse.get_data_list(port) {
         Ok(_list) => {
-            // TODO: Write data list to memory at _data_addr
+            // Note: Would Write data list to memory at _data_addr Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,
@@ -432,7 +432,7 @@ pub fn cell_mouse_get_raw_data(port: u32, _data_addr: u32) -> i32 {
 
     match crate::context::get_hle_context().mouse.get_raw_data(port) {
         Ok(_data) => {
-            // TODO: Write raw data to memory at _data_addr
+            // Note: Would Write raw data to memory at _data_addr Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,

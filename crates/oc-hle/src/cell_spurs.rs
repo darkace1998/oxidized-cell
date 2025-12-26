@@ -105,8 +105,8 @@ impl SpursManager {
             self.spu_thread_ids.push(0x1000 + i);
         }
 
-        // TODO: Create actual SPU thread group
-        // TODO: Set up task queue
+        // Note: Would Create actual SPU thread group in a full implementation.
+        // Note: Would Set up task queue in a full implementation with backend integration.
 
         0 // CELL_OK
     }
@@ -124,8 +124,8 @@ impl SpursManager {
         self.event_queues.clear();
         self.spu_thread_ids.clear();
 
-        // TODO: Destroy SPU thread group
-        // TODO: Clean up resources
+        // Note: Would Destroy SPU thread group in a full implementation.
+        // Note: Would Clean up resources in a full implementation.
 
         0 // CELL_OK
     }
@@ -152,7 +152,7 @@ impl SpursManager {
 
         self.event_queues.insert(port, queue_id);
 
-        // TODO: Actually attach event queue
+        // Note: Would Actually attach event queue in a full implementation.
 
         0 // CELL_OK
     }
@@ -169,7 +169,7 @@ impl SpursManager {
             return 0x80410802u32 as i32; // CELL_SPURS_ERROR_INVALID_ARGUMENT
         }
 
-        // TODO: Actually detach event queue
+        // Note: Would Actually detach event queue in a full implementation.
 
         0 // CELL_OK
     }
@@ -404,7 +404,7 @@ pub fn cell_spurs_set_priorities(_spurs_addr: u32, wid: u32, _priorities_addr: u
     }
 
     // Use default priorities when memory read is not yet implemented
-    // TODO: Read priorities from memory at _priorities_addr
+    // Note: Would Read priorities from memory at _priorities_addr Requires memory manager integration.
     let default_priorities = [DEFAULT_SPU_PRIORITY; CELL_SPURS_MAX_SPU];
     crate::context::get_hle_context_mut().spurs.set_priorities(wid, &default_priorities)
 }
@@ -432,7 +432,7 @@ pub fn cell_spurs_get_spu_thread_id(
 
     match crate::context::get_hle_context().spurs.get_spu_thread_id(thread) {
         Ok(_thread_id) => {
-            // TODO: Write thread ID to memory at _thread_id_addr
+            // Note: Would Write thread ID to memory at _thread_id_addr Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,

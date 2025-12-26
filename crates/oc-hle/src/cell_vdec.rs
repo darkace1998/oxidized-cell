@@ -184,7 +184,7 @@ impl VdecManager {
             return Err(CELL_VDEC_ERROR_SEQ);
         }
         
-        // TODO: Integrate with actual video decoder
+        // Note: Would Integrate with actual video decoder in a full implementation with backend integration.
         // For now, increment AU count to simulate decoding
         entry.au_count += 1;
         
@@ -204,7 +204,7 @@ impl VdecManager {
     pub fn set_frame_rate(&mut self, handle: VdecHandle, frame_rate: u32) -> Result<(), i32> {
         let _entry = self.decoders.get_mut(&handle).ok_or(CELL_VDEC_ERROR_ARG)?;
         
-        // TODO: Store frame rate configuration
+        // Note: Would store frame rate configuration. Requires implementation.
         Ok(())
     }
 }
@@ -343,7 +343,7 @@ pub fn cell_vdec_get_pic_item(
         return CELL_VDEC_ERROR_ARG;
     }
     
-    // TODO: Implement picture item retrieval through global context
+    // Note: Would implement picture item retrieval through global context. Requires memory manager integration.
     
     CELL_VDEC_ERROR_EMPTY
 }

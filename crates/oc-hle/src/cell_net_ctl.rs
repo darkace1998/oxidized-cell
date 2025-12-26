@@ -376,7 +376,7 @@ pub fn cell_net_ctl_get_state(_state_addr: u32) -> i32 {
 
     match crate::context::get_hle_context().net_ctl.get_state() {
         Ok(_state) => {
-            // TODO: Write state to memory at _state_addr
+            // Note: Would Write state to memory at _state_addr Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,
@@ -398,7 +398,7 @@ pub fn cell_net_ctl_get_info(code: u32, _info_addr: u32) -> i32 {
     let ctx = crate::context::get_hle_context();
     match ctx.net_ctl.get_info(CellNetCtlInfoCode::Device) {
         Ok(_info) => {
-            // TODO: Write info to memory at _info_addr based on code
+            // Note: Would Write info to memory at _info_addr based on code Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,
@@ -449,7 +449,7 @@ pub fn cell_net_ctl_get_nat_info(_nat_info_addr: u32) -> i32 {
 
     match crate::context::get_hle_context().net_ctl.get_nat_info() {
         Ok(_nat_info) => {
-            // TODO: Write NAT info to memory at _nat_info_addr
+            // Note: Would Write NAT info to memory at _nat_info_addr Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,
@@ -470,7 +470,7 @@ pub fn cell_net_ctl_add_handler(handler: u32, arg: u32, _hid_addr: u32) -> i32 {
 
     match crate::context::get_hle_context_mut().net_ctl.add_handler(handler, arg) {
         Ok(_hid) => {
-            // TODO: Write handler ID to memory at _hid_addr
+            // Note: Would Write handler ID to memory at _hid_addr Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,

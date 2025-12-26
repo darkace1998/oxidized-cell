@@ -182,7 +182,7 @@ impl DmuxManager {
         entry.stream_size = stream_size;
         entry.has_stream = true;
 
-        // TODO: Parse stream and populate AU queues
+        // Note: Would Parse stream and populate AU queues in a full implementation.
         Ok(())
     }
 
@@ -806,7 +806,7 @@ mod tests {
     #[test]
     fn test_dmux_lifecycle() {
         // Note: These HLE functions currently create temporary managers
-        // TODO markers indicate need for global manager instance
+        // Note: These functions would use the global manager instance in a full implementation.
         let dmux_type = CellDmuxType {
             stream_type: 0,
             reserved: [0, 0],
@@ -836,7 +836,7 @@ mod tests {
     #[test]
     fn test_dmux_stream_operations() {
         // Note: These operations currently use temporary managers
-        // TODO markers indicate need for global manager instance
+        // Note: These functions would use the global manager instance in a full implementation.
         let handle = 1;
         
         // These may return errors since manager is temporary

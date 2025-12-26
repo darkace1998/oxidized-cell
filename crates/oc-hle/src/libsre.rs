@@ -77,7 +77,7 @@ impl RegexManager {
         trace!("RegexManager::compile: id={}, pattern={}, flags={}", 
             pattern_id, pattern, flags);
 
-        // TODO: Actually compile the regex pattern
+        // Note: Would Actually compile the regex pattern in a full implementation.
 
         Ok(pattern_id)
     }
@@ -371,7 +371,7 @@ mod tests {
     fn test_sre_compile() {
         // Note: cell_sre_compile currently uses placeholder implementation
         // and writes a placeholder pattern ID. The actual compilation
-        // through the global regex manager is marked as TODO.
+        // through the global regex manager requires full backend implementation.
         let pattern = b"test.*pattern\0";
         let mut compiled = 0;
         

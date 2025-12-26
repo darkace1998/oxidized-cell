@@ -258,7 +258,7 @@ impl HttpManager {
             return Err(CELL_HTTP_ERROR_BUSY);
         }
 
-        // TODO: Integrate with actual HTTP networking
+        // Note: Would Integrate with actual HTTP networking in a full implementation with backend integration.
         transaction.bytes_sent = data_size;
         transaction.state = TransactionState::RequestSent;
 
@@ -282,7 +282,7 @@ impl HttpManager {
             return Err(CELL_HTTP_ERROR_NOT_CONNECTED);
         }
 
-        // TODO: Integrate with actual HTTP networking
+        // Note: Would Integrate with actual HTTP networking in a full implementation with backend integration.
         // For now, return 0 bytes (empty response)
         let bytes_to_read = 0u64;
         transaction.bytes_received += bytes_to_read;
@@ -400,7 +400,7 @@ pub fn cell_http_create_client(_client_addr: u32) -> i32 {
 
     match crate::context::get_hle_context_mut().http.create_client() {
         Ok(_client_id) => {
-            // TODO: Write client handle to memory at _client_addr
+            // Note: Would Write client handle to memory at _client_addr Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,

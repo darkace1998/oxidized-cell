@@ -37,3 +37,4 @@ cache/
 
 # Temporary files
 /tmp/
+*.bak

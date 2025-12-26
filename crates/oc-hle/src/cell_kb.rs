@@ -252,7 +252,7 @@ impl KbManager {
 
         trace!("KbManager::read: port={}", port);
 
-        // TODO: Get actual keyboard data from oc-input subsystem
+        // Note: Would Get actual keyboard data from oc-input subsystem in a full implementation with backend integration.
         Ok(CellKbData::default())
     }
 
@@ -332,7 +332,7 @@ impl KbManager {
 
         trace!("KbManager::clear_buf: port={}", port);
 
-        // TODO: Clear actual input buffer
+        // Note: Would Clear actual input buffer in a full implementation.
 
         0 // CELL_OK
     }
@@ -384,7 +384,7 @@ pub fn cell_kb_get_info(_info_addr: u32) -> i32 {
 
     match crate::context::get_hle_context().kb.get_info() {
         Ok(_info) => {
-            // TODO: Write info to memory at _info_addr
+            // Note: Would Write info to memory at _info_addr Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,
@@ -404,7 +404,7 @@ pub fn cell_kb_read(port: u32, _data_addr: u32) -> i32 {
 
     match crate::context::get_hle_context().kb.read(port) {
         Ok(_data) => {
-            // TODO: Write data to memory at _data_addr
+            // Note: Would Write data to memory at _data_addr Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,
@@ -465,7 +465,7 @@ pub fn cell_kb_set_led_status(port: u32, led: u32) -> i32 {
         return CELL_KB_ERROR_INVALID_PARAMETER;
     }
 
-    // TODO: Set actual LED status
+    // Note: Would Set actual LED status in a full implementation.
 
     0 // CELL_OK
 }

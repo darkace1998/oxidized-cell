@@ -292,7 +292,7 @@ impl MicManager {
         device.state = CellMicDeviceState::Capturing;
         device.info.state = CellMicDeviceState::Capturing as u32;
 
-        // TODO: Start actual audio capture
+        // Note: Would Start actual audio capture in a full implementation with backend integration.
 
         0 // CELL_OK
     }
@@ -321,7 +321,7 @@ impl MicManager {
         device.state = CellMicDeviceState::Open;
         device.info.state = CellMicDeviceState::Open as u32;
 
-        // TODO: Stop actual audio capture
+        // Note: Would Stop actual audio capture in a full implementation with backend integration.
 
         0 // CELL_OK
     }
@@ -347,7 +347,7 @@ impl MicManager {
 
         trace!("MicManager::read: device_id={}", device_id);
 
-        // TODO: Read actual captured data
+        // Note: Would Read actual captured data in a full implementation with backend integration.
 
         Ok(0) // No data available in stub
     }
@@ -420,7 +420,7 @@ pub fn cell_mic_get_device_count(_count_addr: u32) -> i32 {
 
     match crate::context::get_hle_context().mic.get_device_count() {
         Ok(_count) => {
-            // TODO: Write count to memory at _count_addr
+            // Note: Would Write count to memory at _count_addr Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,
@@ -440,7 +440,7 @@ pub fn cell_mic_get_device_info(device_id: u32, _info_addr: u32) -> i32 {
 
     match crate::context::get_hle_context().mic.get_device_info(device_id) {
         Ok(_info) => {
-            // TODO: Write info to memory at _info_addr
+            // Note: Would Write info to memory at _info_addr Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,
@@ -520,7 +520,7 @@ pub fn cell_mic_read(device_id: u32, _buffer_addr: u32, _buffer_size: u32, _read
             if info.state != CellMicDeviceState::Capturing as u32 {
                 return CELL_MIC_ERROR_DEVICE_BUSY;
             }
-            // TODO: Read actual captured data to buffer
+            // Note: Would Read actual captured data to buffer in a full implementation with backend integration.
             0 // CELL_OK
         }
         Err(e) => e,

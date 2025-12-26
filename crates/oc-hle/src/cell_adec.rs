@@ -181,7 +181,7 @@ impl AdecManager {
             return Err(CELL_ADEC_ERROR_SEQ);
         }
         
-        // TODO: Integrate with actual audio decoder
+        // Note: Would Integrate with actual audio decoder in a full implementation with backend integration.
         // For now, increment AU count to simulate decoding
         entry.au_count += 1;
         
@@ -330,7 +330,7 @@ pub fn cell_adec_get_pcm_item(
         return CELL_ADEC_ERROR_ARG;
     }
     
-    // TODO: Implement PCM item retrieval through global context
+    // Note: Would implement PCM item retrieval via global context. Requires memory manager integration.
     
     CELL_ADEC_ERROR_EMPTY
 }

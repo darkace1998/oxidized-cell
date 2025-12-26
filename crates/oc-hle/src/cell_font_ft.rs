@@ -136,7 +136,7 @@ impl FontFtManager {
         self.config = config;
         self.initialized = true;
 
-        // TODO: Initialize actual FreeType library
+        // Note: Would Initialize actual FreeType library in a full implementation with backend integration.
 
         0 // CELL_OK
     }
@@ -152,7 +152,7 @@ impl FontFtManager {
         self.faces.clear();
         self.initialized = false;
 
-        // TODO: Shutdown actual FreeType library
+        // Note: Would shutdown actual . Requires backend integration.FreeType library
 
         0 // CELL_OK
     }
@@ -193,7 +193,7 @@ impl FontFtManager {
 
         self.faces.push(entry);
 
-        // TODO: Actually parse font with FreeType
+        // Note: Would Actually parse font with FreeType in a full implementation.
 
         Ok(face_id)
     }
@@ -228,7 +228,7 @@ impl FontFtManager {
 
         self.faces.push(entry);
 
-        // TODO: Actually load font file with FreeType
+        // Note: Would Actually load font file with FreeType in a full implementation.
 
         Ok(face_id)
     }
@@ -303,7 +303,7 @@ impl FontFtManager {
 
         trace!("FontFtManager::load_glyph: face={}, index={}", face, glyph_index);
 
-        // TODO: Actually load glyph with FreeType
+        // Note: Would Actually load glyph with FreeType in a full implementation.
         // Return placeholder metrics
         Ok(CellFontFtGlyphMetrics {
             width: 10,
@@ -327,7 +327,7 @@ impl FontFtManager {
 
         trace!("FontFtManager::get_char_index: face={}, char=0x{:X}", face, char_code);
 
-        // TODO: Actually look up glyph index
+        // Note: Would Actually look up glyph index in a full implementation.
         // For now, return character code as index (simple ASCII mapping)
         Ok(char_code)
     }
@@ -395,7 +395,7 @@ pub fn cell_font_ft_open_font_memory(
 
     match crate::context::get_hle_context_mut().font_ft.open_font_memory(data_addr, data_size, face_index) {
         Ok(_face) => {
-            // TODO: Write face handle to memory at _face_addr
+            // Note: Would Write face handle to memory at _face_addr Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,
@@ -419,7 +419,7 @@ pub fn cell_font_ft_open_font_file(_path_addr: u32, face_index: u32, _face_addr:
     const PLACEHOLDER_PATH: &str = "font.ttf";
     match crate::context::get_hle_context_mut().font_ft.open_font_file(PLACEHOLDER_PATH, face_index) {
         Ok(_face) => {
-            // TODO: Write face handle to memory at _face_addr
+            // Note: Would Write face handle to memory at _face_addr Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,

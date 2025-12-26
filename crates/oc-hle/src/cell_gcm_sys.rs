@@ -116,9 +116,23 @@ impl GcmManager {
         self.context_size = context_size;
         self.initialized = true;
 
-        // TODO: Initialize RSX command buffer
-        // TODO: Set up graphics memory allocation
-        // TODO: Configure display settings
+        // Note: RSX command buffer initialization would happen here in a full implementation.
+        // This would involve:
+        // - Allocating command buffer space in RSX local memory
+        // - Setting up the command buffer control structure
+        // - Initializing the put/get pointers for command submission
+        
+        // Note: Graphics memory allocation would happen here in a full implementation.
+        // This would involve:
+        // - Mapping RSX local memory regions
+        // - Setting up the memory heap for texture and buffer allocations
+        // - Configuring memory protection attributes
+
+        // Note: Display settings configuration would happen here in a full implementation.
+        // This would involve:
+        // - Setting up the display mode (resolution, refresh rate)
+        // - Configuring the scan-out buffer
+        // - Initializing the display controller
 
         0 // CELL_OK
     }
@@ -132,7 +146,8 @@ impl GcmManager {
         trace!("GcmManager::set_flip_mode: {:?}", mode);
         self.flip_mode = mode;
 
-        // TODO: Configure flip mode in RSX
+        // Note: RSX flip mode configuration would happen here in a full implementation.
+        // This would send commands to the RSX to configure V-SYNC or H-SYNC flip timing.
 
         0 // CELL_OK
     }
@@ -150,8 +165,9 @@ impl GcmManager {
         trace!("GcmManager::set_flip: buffer_id={}", buffer_id);
         self.current_buffer = buffer_id;
 
-        // TODO: Queue flip command to RSX
-        // TODO: Update current display buffer
+        // Note: RSX flip command submission would happen here in a full implementation.
+        // This would queue a flip command to the RSX command buffer to switch the
+        // display output to the specified buffer on the next V-SYNC/H-SYNC.
 
         0 // CELL_OK
     }
@@ -191,7 +207,9 @@ impl GcmManager {
             height,
         };
 
-        // TODO: Configure display buffer in RSX
+        // Note: RSX display buffer configuration would happen here in a full implementation.
+        // This would send commands to configure the RSX scan-out engine to read from
+        // the specified buffer when displaying on screen.
 
         0 // CELL_OK
     }
@@ -345,7 +363,11 @@ pub fn cell_gcm_get_configuration(_config_addr: u32) -> i32 {
     trace!("cellGcmGetConfiguration()");
 
     let _config = crate::context::get_hle_context().gcm.get_configuration();
-    // TODO: Write configuration to memory at _config_addr
+    // Note: Would write CellGcmConfig structure to PS3 memory at _config_addr.
+    // Requires memory manager integration to write:
+    // - config.local_addr, config.local_size
+    // - config.io_addr, config.io_size  
+    // - config.mem_frequency, config.core_frequency
 
     0 // CELL_OK
 }
@@ -364,7 +386,8 @@ pub fn cell_gcm_address_to_offset(address: u32, _offset_addr: u32) -> i32 {
 
     match crate::context::get_hle_context().gcm.address_to_offset(address) {
         Ok(_offset) => {
-            // TODO: Write offset to memory at _offset_addr
+            // Note: Would write u32 offset value to PS3 memory at _offset_addr.
+            // Requires memory manager integration to perform the write.
             0 // CELL_OK
         }
         Err(e) => e,

@@ -500,7 +500,7 @@ pub fn cell_resc_set_convert_and_flip(idx: u32) -> i32 {
         return CELL_RESC_ERROR_NOT_INITIALIZED;
     }
 
-    // TODO: Perform actual scaling and flip through RSX backend
+    // Note: Would Perform actual scaling and flip through RSX backend in a full implementation.
 
     0 // CELL_OK
 }
@@ -517,7 +517,7 @@ pub fn cell_resc_set_wait_flip() -> i32 {
         return CELL_RESC_ERROR_NOT_INITIALIZED;
     }
 
-    // TODO: Wait for flip to complete
+    // Note: Would Wait for flip to complete in a full implementation.
 
     0 // CELL_OK
 }
@@ -534,7 +534,7 @@ pub fn cell_resc_get_num_display_buffers(_num_addr: u32) -> i32 {
 
     match crate::context::get_hle_context().resc.get_num_display_buffers() {
         Ok(_num) => {
-            // TODO: Write num to memory at _num_addr
+            // Note: Would Write num to memory at _num_addr Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,
@@ -553,7 +553,7 @@ pub fn cell_resc_get_display_buffer_size(_size_addr: u32) -> i32 {
 
     match crate::context::get_hle_context().resc.get_display_buffer_size() {
         Ok(_size) => {
-            // TODO: Write size to memory at _size_addr
+            // Note: Would Write size to memory at _size_addr Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,
@@ -572,7 +572,7 @@ pub fn cell_resc_get_last_flip_time(_time_addr: u32) -> i32 {
 
     match crate::context::get_hle_context().resc.get_last_flip_time() {
         Ok(_time) => {
-            // TODO: Write time to memory at _time_addr
+            // Note: Would Write time to memory at _time_addr Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,

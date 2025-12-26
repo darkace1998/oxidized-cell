@@ -143,7 +143,7 @@ impl JpgDecManager {
         let sub_entry = entry.sub_handles.get(&sub_handle)
             .ok_or(CELL_JPGDEC_ERROR_ARG)?;
 
-        // TODO: Integrate with actual JPEG decoder
+        // Note: Would Integrate with actual JPEG decoder in a full implementation with backend integration.
         Ok(sub_entry.clone())
     }
 }

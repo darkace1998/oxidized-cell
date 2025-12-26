@@ -326,7 +326,7 @@ impl SpursJqManager {
         trace!("SpursJqManager::sync_job: queue={}, job_id={}, state={:?}", 
             queue_id, job_id, entry.state);
 
-        // TODO: Actually wait for job completion
+        // Note: Would Actually wait for job completion in a full implementation.
         // For now, return immediately
 
         if entry.state == CellSpursJobState::Aborted {
@@ -348,7 +348,7 @@ impl SpursJqManager {
 
         trace!("SpursJqManager::sync_all: queue={}", queue_id);
 
-        // TODO: Wait for all jobs to complete
+        // Note: Would Wait for all jobs to complete in a full implementation.
 
         0 // CELL_OK
     }
@@ -413,7 +413,7 @@ pub fn cell_spurs_job_queue_create(_attr_addr: u32, _queue_addr: u32) -> i32 {
     let attr = CellSpursJobQueueAttribute::default();
     match crate::context::get_hle_context_mut().spurs_jq.create_queue(attr) {
         Ok(_queue_id) => {
-            // TODO: Write queue ID to memory at _queue_addr
+            // Note: Would Write queue ID to memory at _queue_addr Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,

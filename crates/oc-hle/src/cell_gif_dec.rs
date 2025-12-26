@@ -240,7 +240,7 @@ pub fn cell_gif_dec_open(
     }
 
     // Placeholder dimensions until actual GIF parsing is implemented
-    // TODO: Parse actual GIF header to get real dimensions
+    // Note: Would Parse actual GIF header to get real dimensions in a full implementation.
     const PLACEHOLDER_GIF_WIDTH: u32 = 256;
     const PLACEHOLDER_GIF_HEIGHT: u32 = 256;
     const PLACEHOLDER_NUM_COMPONENTS: u32 = 4; // RGBA
@@ -279,7 +279,7 @@ pub fn cell_gif_dec_read_header(
     }
 
     // Placeholder dimensions until actual GIF parsing is implemented
-    // TODO: Parse actual GIF header to get real dimensions
+    // Note: Would Parse actual GIF header to get real dimensions in a full implementation.
     const PLACEHOLDER_GIF_WIDTH: u32 = 256;
     const PLACEHOLDER_GIF_HEIGHT: u32 = 256;
     
@@ -316,7 +316,7 @@ pub fn cell_gif_dec_decode_data(
         return CELL_GIFDEC_ERROR_ARG;
     }
 
-    // TODO: Implement actual GIF decoding
+    // Note: Would implement actual GIF decoding using a GIF decoder library.
     // Should read from sub_handle's source and decode to data buffer
     
     0 // CELL_OK

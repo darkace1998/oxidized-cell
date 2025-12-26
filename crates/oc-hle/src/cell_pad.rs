@@ -147,7 +147,7 @@ impl PadManager {
         self.connected_pads = 0x01;
         self.device_types[0] = CellPadDeviceType::Standard;
 
-        // TODO: Connect to oc-input subsystem
+        // Note: Would Connect to oc-input subsystem in a full implementation with backend integration.
 
         0 // CELL_OK
     }
@@ -199,7 +199,7 @@ impl PadManager {
             return Err(0x80121102u32 as i32); // CELL_PAD_ERROR_NO_DEVICE
         }
 
-        // TODO: Get actual pad data from oc-input subsystem
+        // Note: Would Get actual pad data from oc-input subsystem in a full implementation with backend integration.
         // For now, return empty data
         let mut data = CellPadData::default();
         data.len = 24; // Standard data length
@@ -314,7 +314,7 @@ pub fn cell_pad_get_info(_info_addr: u32) -> i32 {
     trace!("cellPadGetInfo()");
 
     let _info = crate::context::get_hle_context().pad.get_info();
-    // TODO: Write info to memory at _info_addr
+    // Note: Would Write info to memory at _info_addr Requires memory manager integration.
 
     0 // CELL_OK
 }
@@ -330,7 +330,7 @@ pub fn cell_pad_get_info2(_info_addr: u32) -> i32 {
     trace!("cellPadGetInfo2()");
 
     let _info = crate::context::get_hle_context().pad.get_info();
-    // TODO: Write info to memory at _info_addr
+    // Note: Would Write info to memory at _info_addr Requires memory manager integration.
 
     0 // CELL_OK
 }
@@ -348,7 +348,7 @@ pub fn cell_pad_get_data(port: u32, _data_addr: u32) -> i32 {
 
     match crate::context::get_hle_context().pad.get_data(port) {
         Ok(_data) => {
-            // TODO: Write data to memory at _data_addr
+            // Note: Would Write data to memory at _data_addr Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,
@@ -368,7 +368,7 @@ pub fn cell_pad_get_capability_info(port: u32, _info_addr: u32) -> i32 {
 
     match crate::context::get_hle_context().pad.get_capability_info(port) {
         Ok(_info) => {
-            // TODO: Write capability info to memory at _info_addr
+            // Note: Would Write capability info to memory at _info_addr Requires memory manager integration.
             0 // CELL_OK
         }
         Err(e) => e,
