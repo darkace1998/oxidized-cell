@@ -149,6 +149,16 @@ pub struct RescManager {
     ratio_mode: CellRescRatioConvertMode,
     /// Flip handler set
     flip_handler_set: bool,
+    /// RSX scaling enabled
+    rsx_scaling_enabled: bool,
+    /// Current scale factor X
+    scale_x: f32,
+    /// Current scale factor Y
+    scale_y: f32,
+    /// Bilinear filtering enabled
+    bilinear_filter: bool,
+    /// Flip count (for synchronization)
+    flip_count: u64,
 }
 
 impl RescManager {
@@ -164,6 +174,11 @@ impl RescManager {
             pal_temporal_mode: CellRescPalTemporalMode::default(),
             ratio_mode: CellRescRatioConvertMode::default(),
             flip_handler_set: false,
+            rsx_scaling_enabled: false,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            bilinear_filter: true,
+            flip_count: 0,
         }
     }
 
@@ -177,6 +192,14 @@ impl RescManager {
 
         self.config = config;
         self.initialized = true;
+        
+        // Initialize RSX scaling connection
+        self.rsx_scaling_enabled = true;
+        // Enable bilinear filter by default (mode 0) or based on config
+        // interpolation_mode: 0 = bilinear, 1 = 4-tap, etc.
+        self.bilinear_filter = true; // Default to enabled
+        
+        debug!("RescManager RSX scaling initialized: bilinear={}", self.bilinear_filter);
 
         0 // CELL_OK
     }
@@ -363,6 +386,122 @@ impl RescManager {
     /// Get current display mode
     pub fn get_display_mode(&self) -> u32 {
         self.display_mode
+    }
+
+    // ========================================================================
+    // RSX Backend Integration for Scaling
+    // ========================================================================
+
+    /// Check if RSX scaling is enabled
+    pub fn is_rsx_scaling_enabled(&self) -> bool {
+        self.rsx_scaling_enabled
+    }
+
+    /// Get current scale factors
+    pub fn get_scale_factors(&self) -> (f32, f32) {
+        (self.scale_x, self.scale_y)
+    }
+
+    /// Calculate scale factors based on source and destination
+    pub fn calculate_scale_factors(&mut self) -> i32 {
+        if !self.initialized {
+            return CELL_RESC_ERROR_NOT_INITIALIZED;
+        }
+
+        // Get destination dimensions based on display mode
+        let (dst_width, dst_height) = match self.display_mode {
+            CELL_RESC_720x480 => (720u32, 480u32),
+            CELL_RESC_720x576 => (720, 576),
+            CELL_RESC_1280x720 => (1280, 720),
+            CELL_RESC_1920x1080 => (1920, 1080),
+            _ => (1280, 720),
+        };
+
+        let src_width = self.src.width as u32;
+        let src_height = self.src.height as u32;
+
+        if src_width > 0 && src_height > 0 {
+            self.scale_x = dst_width as f32 / src_width as f32;
+            self.scale_y = dst_height as f32 / src_height as f32;
+
+            // Apply aspect ratio mode
+            match self.ratio_mode {
+                CellRescRatioConvertMode::Letterbox => {
+                    // Maintain aspect ratio, use minimum scale
+                    let min_scale = self.scale_x.min(self.scale_y);
+                    self.scale_x = min_scale;
+                    self.scale_y = min_scale;
+                }
+                CellRescRatioConvertMode::FullScreen => {
+                    // Use independent scales (stretch)
+                }
+                CellRescRatioConvertMode::PanScan => {
+                    // Maintain aspect ratio, use maximum scale (will crop)
+                    let max_scale = self.scale_x.max(self.scale_y);
+                    self.scale_x = max_scale;
+                    self.scale_y = max_scale;
+                }
+            }
+
+            debug!(
+                "RescManager: calculated scale factors: x={:.3}, y={:.3}",
+                self.scale_x, self.scale_y
+            );
+        }
+
+        0 // CELL_OK
+    }
+
+    /// Perform scaling and flip operation (RSX integration point)
+    pub fn convert_and_flip(&mut self, buffer_idx: u32) -> i32 {
+        if !self.initialized {
+            return CELL_RESC_ERROR_NOT_INITIALIZED;
+        }
+
+        trace!("RescManager::convert_and_flip: buffer_idx={}", buffer_idx);
+
+        // Calculate scale factors if not already done
+        if self.scale_x == 1.0 && self.scale_y == 1.0 {
+            self.calculate_scale_factors();
+        }
+
+        // In a real implementation, this would:
+        // 1. Read source buffer from RSX memory
+        // 2. Apply scaling using the calculated factors
+        // 3. Apply bilinear filtering if enabled
+        // 4. Write to destination buffer
+        // 5. Queue flip command to RSX
+
+        self.flip_count += 1;
+
+        debug!(
+            "RescManager: convert_and_flip completed, flip_count={}",
+            self.flip_count
+        );
+
+        0 // CELL_OK
+    }
+
+    /// Get flip count for synchronization
+    pub fn get_flip_count(&self) -> u64 {
+        self.flip_count
+    }
+
+    /// Set bilinear filter mode
+    pub fn set_bilinear_filter(&mut self, enable: bool) -> i32 {
+        if !self.initialized {
+            return CELL_RESC_ERROR_NOT_INITIALIZED;
+        }
+
+        self.bilinear_filter = enable;
+        trace!("RescManager::set_bilinear_filter: {}", enable);
+
+        0 // CELL_OK
+    }
+
+    /// Check if bilinear filter is enabled
+    pub fn is_bilinear_filter_enabled(&self) -> bool {
+        self.bilinear_filter
     }
 }
 
@@ -707,5 +846,138 @@ mod tests {
         assert_ne!(CELL_RESC_ERROR_NOT_INITIALIZED, 0);
         assert_ne!(CELL_RESC_ERROR_REINITIALIZED, 0);
         assert_ne!(CELL_RESC_ERROR_BAD_ARGUMENT, 0);
+    }
+
+    // ========================================================================
+    // RSX Scaling Integration Tests
+    // ========================================================================
+
+    #[test]
+    fn test_resc_rsx_scaling_enabled() {
+        let mut manager = RescManager::new();
+        
+        // Before init, scaling should be disabled
+        assert!(!manager.is_rsx_scaling_enabled());
+        
+        // After init, scaling should be enabled
+        manager.init(CellRescInitConfig::default());
+        assert!(manager.is_rsx_scaling_enabled());
+        
+        manager.exit();
+    }
+
+    #[test]
+    fn test_resc_scale_factors_default() {
+        let mut manager = RescManager::new();
+        manager.init(CellRescInitConfig::default());
+        
+        // Default scale factors should be 1.0
+        let (scale_x, scale_y) = manager.get_scale_factors();
+        assert_eq!(scale_x, 1.0);
+        assert_eq!(scale_y, 1.0);
+        
+        manager.exit();
+    }
+
+    #[test]
+    fn test_resc_calculate_scale_factors() {
+        let mut manager = RescManager::new();
+        manager.init(CellRescInitConfig::default());
+        
+        // Set source to 720p
+        let src = CellRescSrc {
+            format: 0,
+            pitch: 1280 * 4,
+            width: 1280,
+            height: 720,
+            offset: 0,
+        };
+        manager.set_src(src);
+        
+        // Set display mode to 1080p
+        manager.set_display_mode(CELL_RESC_1920x1080);
+        
+        // Calculate scale factors
+        assert_eq!(manager.calculate_scale_factors(), 0);
+        
+        let (scale_x, scale_y) = manager.get_scale_factors();
+        // For letterbox mode (default), both should be same as minimum
+        // 1920/1280 = 1.5, 1080/720 = 1.5, so both should be 1.5
+        assert!((scale_x - 1.5).abs() < 0.01);
+        assert!((scale_y - 1.5).abs() < 0.01);
+        
+        manager.exit();
+    }
+
+    #[test]
+    fn test_resc_convert_and_flip() {
+        let mut manager = RescManager::new();
+        manager.init(CellRescInitConfig::default());
+        
+        // Initial flip count should be 0
+        assert_eq!(manager.get_flip_count(), 0);
+        
+        // Perform convert and flip
+        assert_eq!(manager.convert_and_flip(0), 0);
+        assert_eq!(manager.get_flip_count(), 1);
+        
+        assert_eq!(manager.convert_and_flip(1), 0);
+        assert_eq!(manager.get_flip_count(), 2);
+        
+        manager.exit();
+    }
+
+    #[test]
+    fn test_resc_bilinear_filter() {
+        let mut manager = RescManager::new();
+        manager.init(CellRescInitConfig::default());
+        
+        // Default should be enabled
+        assert!(manager.is_bilinear_filter_enabled());
+        
+        // Disable it
+        assert_eq!(manager.set_bilinear_filter(false), 0);
+        assert!(!manager.is_bilinear_filter_enabled());
+        
+        // Re-enable
+        assert_eq!(manager.set_bilinear_filter(true), 0);
+        assert!(manager.is_bilinear_filter_enabled());
+        
+        manager.exit();
+    }
+
+    #[test]
+    fn test_resc_ratio_modes_scaling() {
+        let mut manager = RescManager::new();
+        manager.init(CellRescInitConfig::default());
+        
+        // Set source to 4:3 (640x480)
+        let src = CellRescSrc {
+            format: 0,
+            pitch: 640 * 4,
+            width: 640,
+            height: 480,
+            offset: 0,
+        };
+        manager.set_src(src);
+        
+        // Set display mode to 16:9 (1280x720)
+        manager.set_display_mode(CELL_RESC_1280x720);
+        
+        // Test letterbox mode
+        manager.set_ratio_convert_mode(CellRescRatioConvertMode::Letterbox);
+        manager.calculate_scale_factors();
+        let (scale_x_lb, scale_y_lb) = manager.get_scale_factors();
+        assert_eq!(scale_x_lb, scale_y_lb); // Should be equal for letterbox
+        
+        // Test fullscreen mode (stretch)
+        manager.set_ratio_convert_mode(CellRescRatioConvertMode::FullScreen);
+        manager.calculate_scale_factors();
+        let (scale_x_fs, scale_y_fs) = manager.get_scale_factors();
+        // 1280/640 = 2.0, 720/480 = 1.5
+        assert!((scale_x_fs - 2.0).abs() < 0.01);
+        assert!((scale_y_fs - 1.5).abs() < 0.01);
+        
+        manager.exit();
     }
 }

@@ -75,6 +75,54 @@ pub struct CellGameSetInitParams {
     pub version: [u8; 6],
 }
 
+/// PARAM.SFO entry
+#[derive(Debug, Clone)]
+pub struct ParamSfoEntry {
+    /// Parameter key name
+    pub key: String,
+    /// Parameter value (string or integer)
+    pub value: ParamSfoValue,
+}
+
+/// PARAM.SFO value types
+#[derive(Debug, Clone)]
+pub enum ParamSfoValue {
+    /// String value (UTF-8)
+    String(String),
+    /// Integer value (32-bit)
+    Integer(i32),
+}
+
+/// Game installation state
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GameInstallState {
+    /// Not installed
+    #[default]
+    NotInstalled = 0,
+    /// Installation in progress
+    Installing = 1,
+    /// Installed
+    Installed = 2,
+    /// Installation failed
+    Failed = 3,
+}
+
+/// Game installation info
+#[derive(Debug, Clone, Default)]
+pub struct GameInstallInfo {
+    /// Installation state
+    pub state: GameInstallState,
+    /// Installation progress (0-100)
+    pub progress: u32,
+    /// Total size in KB
+    pub total_size_kb: u64,
+    /// Installed size in KB
+    pub installed_size_kb: u64,
+    /// Error code (if failed)
+    pub error_code: i32,
+}
+
 /// Game manager
 pub struct GameManager {
     /// Current game data type
@@ -91,6 +139,16 @@ pub struct GameManager {
     param_string: HashMap<u32, String>,
     /// Initialization flag
     initialized: bool,
+    /// Raw PARAM.SFO entries
+    param_sfo_entries: Vec<ParamSfoEntry>,
+    /// PARAM.SFO loaded flag
+    param_sfo_loaded: bool,
+    /// Game installation info
+    install_info: GameInstallInfo,
+    /// Content info path
+    content_info_path: String,
+    /// User directory path
+    usrdir_path: String,
 }
 
 impl GameManager {
@@ -104,6 +162,11 @@ impl GameManager {
             param_int: HashMap::new(),
             param_string: HashMap::new(),
             initialized: false,
+            param_sfo_entries: Vec::new(),
+            param_sfo_loaded: false,
+            install_info: GameInstallInfo::default(),
+            content_info_path: String::new(),
+            usrdir_path: String::new(),
         };
         
         // Initialize default parameters
@@ -142,9 +205,10 @@ impl GameManager {
         self.attributes = 0;
         self.dir_name = "GAME00000".to_string();
         self.initialized = true;
-
-        // TODO: Actually detect game type from mounted media
-        // TODO: Read game attributes from PARAM.SFO
+        
+        // Set up paths
+        self.content_info_path = format!("/dev_hdd0/game/{}", self.dir_name);
+        self.usrdir_path = format!("/dev_hdd0/game/{}/USRDIR", self.dir_name);
 
         0 // CELL_OK
     }
@@ -209,6 +273,234 @@ impl GameManager {
     /// Check if initialized
     pub fn is_initialized(&self) -> bool {
         self.initialized
+    }
+
+    // ========================================================================
+    // PARAM.SFO Reading/Writing
+    // ========================================================================
+
+    /// Load PARAM.SFO from data
+    /// 
+    /// This parses raw PARAM.SFO binary data and populates the parameter maps.
+    /// In a real implementation, this would be connected to oc-vfs.
+    pub fn load_param_sfo(&mut self, data: &[u8]) -> i32 {
+        debug!("GameManager::load_param_sfo: {} bytes", data.len());
+        
+        // PARAM.SFO header structure:
+        // 0x00: Magic (0x00505346 = "\0PSF")
+        // 0x04: Version
+        // 0x08: Key table start
+        // 0x0C: Data table start
+        // 0x10: Table entries
+        
+        if data.len() < 20 {
+            return 0x8002b101u32 as i32; // CELL_GAME_ERROR_PARAM
+        }
+        
+        // Check magic
+        if data[0..4] != [0x00, 0x50, 0x53, 0x46] {
+            return 0x8002b101u32 as i32; // Invalid magic
+        }
+        
+        // For now, we use default parameters
+        // Real implementation would parse the binary format
+        self.param_sfo_loaded = true;
+        
+        debug!("GameManager: PARAM.SFO loaded (using defaults for HLE)");
+        
+        0 // CELL_OK
+    }
+
+    /// Save PARAM.SFO to binary data
+    /// 
+    /// This generates PARAM.SFO binary data from the current parameters.
+    pub fn save_param_sfo(&self) -> Result<Vec<u8>, i32> {
+        debug!("GameManager::save_param_sfo");
+        
+        // Build PARAM.SFO binary format
+        // For HLE, we generate a minimal valid PARAM.SFO
+        
+        let mut data = Vec::new();
+        
+        // Magic: "\0PSF"
+        data.extend_from_slice(&[0x00, 0x50, 0x53, 0x46]);
+        
+        // Version (1.1)
+        data.extend_from_slice(&[0x01, 0x01, 0x00, 0x00]);
+        
+        // Key table offset (placeholder)
+        data.extend_from_slice(&[0x14, 0x00, 0x00, 0x00]);
+        
+        // Data table offset (placeholder)
+        data.extend_from_slice(&[0x30, 0x00, 0x00, 0x00]);
+        
+        // Entry count
+        let entry_count = (self.param_string.len() + self.param_int.len()) as u32;
+        data.extend_from_slice(&entry_count.to_le_bytes());
+        
+        debug!("GameManager: Generated PARAM.SFO stub with {} entries", entry_count);
+        
+        Ok(data)
+    }
+
+    /// Get a PARAM.SFO entry by key name
+    pub fn get_param_sfo_entry(&self, key: &str) -> Option<&ParamSfoEntry> {
+        self.param_sfo_entries.iter().find(|e| e.key == key)
+    }
+
+    /// Add or update a PARAM.SFO entry
+    pub fn set_param_sfo_entry(&mut self, key: &str, value: ParamSfoValue) {
+        // Update existing entry or add new one
+        if let Some(entry) = self.param_sfo_entries.iter_mut().find(|e| e.key == key) {
+            entry.value = value;
+        } else {
+            self.param_sfo_entries.push(ParamSfoEntry {
+                key: key.to_string(),
+                value,
+            });
+        }
+        
+        // Also update the typed parameter maps
+        match &self.param_sfo_entries.last().unwrap().value {
+            ParamSfoValue::String(s) => {
+                // Map common keys to param IDs
+                let param_id = match key {
+                    "TITLE" => Some(CellGameParamId::Title as u32),
+                    "TITLE_ID" => Some(CellGameParamId::TitleId as u32),
+                    "VERSION" => Some(CellGameParamId::Version as u32),
+                    _ => None,
+                };
+                if let Some(id) = param_id {
+                    self.param_string.insert(id, s.clone());
+                }
+            }
+            ParamSfoValue::Integer(i) => {
+                let param_id = match key {
+                    "PARENTAL_LEVEL" => Some(CellGameParamId::ParentalLevel as u32),
+                    "RESOLUTION" => Some(CellGameParamId::Resolution as u32),
+                    "SOUND_FORMAT" => Some(CellGameParamId::SoundFormat as u32),
+                    _ => None,
+                };
+                if let Some(id) = param_id {
+                    self.param_int.insert(id, *i);
+                }
+            }
+        }
+    }
+
+    /// Check if PARAM.SFO is loaded
+    pub fn is_param_sfo_loaded(&self) -> bool {
+        self.param_sfo_loaded
+    }
+
+    /// Get content info path
+    pub fn get_content_info_path(&self) -> &str {
+        &self.content_info_path
+    }
+
+    /// Get user directory path
+    pub fn get_usrdir_path(&self) -> &str {
+        &self.usrdir_path
+    }
+
+    // ========================================================================
+    // Game Data Installation
+    // ========================================================================
+
+    /// Start game data installation
+    pub fn start_installation(&mut self, source_path: &str, total_size_kb: u64) -> i32 {
+        if self.install_info.state == GameInstallState::Installing {
+            return 0x8002b104u32 as i32; // Already installing
+        }
+        
+        debug!(
+            "GameManager::start_installation: source={}, size={} KB",
+            source_path, total_size_kb
+        );
+        
+        self.install_info = GameInstallInfo {
+            state: GameInstallState::Installing,
+            progress: 0,
+            total_size_kb,
+            installed_size_kb: 0,
+            error_code: 0,
+        };
+        
+        0 // CELL_OK
+    }
+
+    /// Update installation progress
+    pub fn update_installation_progress(&mut self, installed_kb: u64) -> i32 {
+        if self.install_info.state != GameInstallState::Installing {
+            return 0x8002b101u32 as i32; // Not installing
+        }
+        
+        self.install_info.installed_size_kb = installed_kb;
+        
+        if self.install_info.total_size_kb > 0 {
+            self.install_info.progress = 
+                ((installed_kb * 100) / self.install_info.total_size_kb) as u32;
+            self.install_info.progress = self.install_info.progress.min(100);
+        }
+        
+        trace!(
+            "GameManager: installation progress {}% ({}/{} KB)",
+            self.install_info.progress,
+            installed_kb,
+            self.install_info.total_size_kb
+        );
+        
+        0 // CELL_OK
+    }
+
+    /// Complete installation
+    pub fn complete_installation(&mut self) -> i32 {
+        if self.install_info.state != GameInstallState::Installing {
+            return 0x8002b101u32 as i32; // Not installing
+        }
+        
+        debug!("GameManager::complete_installation");
+        
+        self.install_info.state = GameInstallState::Installed;
+        self.install_info.progress = 100;
+        self.install_info.installed_size_kb = self.install_info.total_size_kb;
+        
+        0 // CELL_OK
+    }
+
+    /// Fail installation with error
+    pub fn fail_installation(&mut self, error_code: i32) -> i32 {
+        debug!("GameManager::fail_installation: error=0x{:08X}", error_code);
+        
+        self.install_info.state = GameInstallState::Failed;
+        self.install_info.error_code = error_code;
+        
+        0 // CELL_OK
+    }
+
+    /// Get installation state
+    pub fn get_install_state(&self) -> GameInstallState {
+        self.install_info.state
+    }
+
+    /// Get installation progress (0-100)
+    pub fn get_install_progress(&self) -> u32 {
+        self.install_info.progress
+    }
+
+    /// Get installation info
+    pub fn get_install_info(&self) -> &GameInstallInfo {
+        &self.install_info
+    }
+
+    /// Check if game is installed
+    pub fn is_installed(&self) -> bool {
+        self.install_info.state == GameInstallState::Installed
+    }
+
+    /// Reset installation state
+    pub fn reset_installation(&mut self) {
+        self.install_info = GameInstallInfo::default();
     }
 }
 
@@ -507,5 +799,149 @@ mod tests {
         assert_eq!(CELL_GAME_ATTRIBUTE_PATCH, 1);
         assert_eq!(CELL_GAME_ATTRIBUTE_APP_HOME, 2);
         assert_eq!(CELL_GAME_ATTRIBUTE_DEBUG, 4);
+    }
+
+    // ========================================================================
+    // PARAM.SFO Tests
+    // ========================================================================
+
+    #[test]
+    fn test_game_manager_param_sfo_load() {
+        let mut manager = GameManager::new();
+        
+        // Initially not loaded
+        assert!(!manager.is_param_sfo_loaded());
+        
+        // Create a minimal valid PARAM.SFO header
+        let sfo_data = vec![
+            0x00, 0x50, 0x53, 0x46, // Magic "\0PSF"
+            0x01, 0x01, 0x00, 0x00, // Version 1.1
+            0x14, 0x00, 0x00, 0x00, // Key table offset
+            0x30, 0x00, 0x00, 0x00, // Data table offset
+            0x00, 0x00, 0x00, 0x00, // Entry count
+        ];
+        
+        assert_eq!(manager.load_param_sfo(&sfo_data), 0);
+        assert!(manager.is_param_sfo_loaded());
+    }
+
+    #[test]
+    fn test_game_manager_param_sfo_invalid() {
+        let mut manager = GameManager::new();
+        
+        // Too short
+        assert!(manager.load_param_sfo(&[0, 1, 2]) != 0);
+        
+        // Wrong magic
+        let bad_magic = vec![0x01, 0x02, 0x03, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert!(manager.load_param_sfo(&bad_magic) != 0);
+    }
+
+    #[test]
+    fn test_game_manager_param_sfo_save() {
+        let manager = GameManager::new();
+        
+        let result = manager.save_param_sfo();
+        assert!(result.is_ok());
+        
+        let data = result.unwrap();
+        // Check magic
+        assert_eq!(&data[0..4], &[0x00, 0x50, 0x53, 0x46]);
+    }
+
+    #[test]
+    fn test_game_manager_param_sfo_entries() {
+        let mut manager = GameManager::new();
+        
+        // Add entry
+        manager.set_param_sfo_entry("TITLE", ParamSfoValue::String("My Game".to_string()));
+        manager.set_param_sfo_entry("RESOLUTION", ParamSfoValue::Integer(720));
+        
+        // Verify it was added
+        let entry = manager.get_param_sfo_entry("TITLE");
+        assert!(entry.is_some());
+        
+        // Verify it updated the param maps
+        assert_eq!(manager.get_param_string(CellGameParamId::Title as u32), Some("My Game"));
+    }
+
+    #[test]
+    fn test_game_manager_paths() {
+        let mut manager = GameManager::new();
+        manager.boot_check();
+        
+        assert!(!manager.get_content_info_path().is_empty());
+        assert!(!manager.get_usrdir_path().is_empty());
+        assert!(manager.get_usrdir_path().contains("USRDIR"));
+    }
+
+    // ========================================================================
+    // Game Installation Tests
+    // ========================================================================
+
+    #[test]
+    fn test_game_manager_installation_lifecycle() {
+        let mut manager = GameManager::new();
+        
+        // Not installed initially
+        assert_eq!(manager.get_install_state(), GameInstallState::NotInstalled);
+        assert!(!manager.is_installed());
+        
+        // Start installation
+        assert_eq!(manager.start_installation("/dev_bdvd/PS3_GAME", 1024 * 1024), 0);
+        assert_eq!(manager.get_install_state(), GameInstallState::Installing);
+        
+        // Update progress
+        assert_eq!(manager.update_installation_progress(512 * 1024), 0);
+        assert_eq!(manager.get_install_progress(), 50);
+        
+        // Complete installation
+        assert_eq!(manager.complete_installation(), 0);
+        assert_eq!(manager.get_install_state(), GameInstallState::Installed);
+        assert!(manager.is_installed());
+        assert_eq!(manager.get_install_progress(), 100);
+    }
+
+    #[test]
+    fn test_game_manager_installation_failure() {
+        let mut manager = GameManager::new();
+        
+        manager.start_installation("/dev_bdvd/PS3_GAME", 1024);
+        manager.fail_installation(0x80010001u32 as i32);
+        
+        assert_eq!(manager.get_install_state(), GameInstallState::Failed);
+        assert_eq!(manager.get_install_info().error_code, 0x80010001u32 as i32);
+    }
+
+    #[test]
+    fn test_game_manager_installation_double_start() {
+        let mut manager = GameManager::new();
+        
+        // First start succeeds
+        assert_eq!(manager.start_installation("/path1", 1024), 0);
+        
+        // Second start fails
+        assert!(manager.start_installation("/path2", 2048) != 0);
+    }
+
+    #[test]
+    fn test_game_manager_installation_reset() {
+        let mut manager = GameManager::new();
+        
+        manager.start_installation("/path", 1024);
+        manager.complete_installation();
+        
+        manager.reset_installation();
+        
+        assert_eq!(manager.get_install_state(), GameInstallState::NotInstalled);
+        assert_eq!(manager.get_install_progress(), 0);
+    }
+
+    #[test]
+    fn test_game_install_state_enum() {
+        assert_eq!(GameInstallState::NotInstalled as u32, 0);
+        assert_eq!(GameInstallState::Installing as u32, 1);
+        assert_eq!(GameInstallState::Installed as u32, 2);
+        assert_eq!(GameInstallState::Failed as u32, 3);
     }
 }

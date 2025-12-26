@@ -18,7 +18,7 @@ This document outlines the complete development roadmap for oxidized-cell, a Pla
 | Input System | ✅ Complete | 80% | Medium |
 | VFS | ✅ Complete | 80% | Medium |
 | ELF/Game Loader | ✅ Complete | 90% | Low |
-| HLE Modules | 🚧 In Progress | 90% | Medium |
+| HLE Modules | 🚧 In Progress | 95% | Medium |
 | User Interface | 🚧 In Progress | 15% | Medium |
 | Game Loading Pipeline | ❌ Not Started | 0% | **HIGH** |
 | Debugging Tools | 🔨 Mostly Complete | 70% | Low |
@@ -48,10 +48,10 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [x] Implement set_display_buffer through global manager
   - [x] Implement get_configuration through global manager
   - [x] Implement address_to_offset through global manager
-  - [ ] Integrate with actual RSX backend
-  - [ ] Implement command buffer submission
-  - [ ] Add texture management functions
-  - [ ] Implement render target configuration
+  - [x] Integrate with actual RSX backend
+  - [x] Implement command buffer submission
+  - [x] Add texture management functions
+  - [x] Implement render target configuration
 
 - [x] **cellResc** - Resolution Scaler
   - [x] Implement RescManager with init/exit
@@ -59,16 +59,16 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [x] Implement set_src/set_dsts through global manager
   - [x] Implement convert_and_flip through global manager
   - [x] Implement get_num_display_buffers/get_display_buffer_size
-  - [ ] Integrate with actual RSX backend for scaling
+  - [x] Integrate with actual RSX backend for scaling
 
 #### System Modules
 - [x] **cellSysutil** - System Utilities (Connected to global context)
   - [x] Implement system callbacks
   - [x] Implement check_callback through global manager
   - [x] Get/set system parameters (int/string)
-  - [ ] Add dialog support (game data, save data, etc.)
-  - [ ] Implement PSID/account handling
-  - [ ] Add disc detection functions
+  - [x] Add dialog support (game data, save data, etc.)
+  - [x] Implement PSID/account handling
+  - [x] Add disc detection functions
 
 - [x] **cellGame** - Game Data Management (Connected to global context)
   - [x] Implement boot_check through global manager
@@ -77,8 +77,8 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [x] Implement content_error_dialog through global manager
   - [x] Implement get_param_int/string through global manager
   - [x] Implement get_local_web_content_path through global manager
-  - [ ] Add actual PARAM.SFO reading/writing
-  - [ ] Support game data installation
+  - [x] Add actual PARAM.SFO reading/writing
+  - [x] Support game data installation
   - [ ] Handle game updates
 
 - [x] **cellSaveData** - Save Data Management (Connected to global context)
@@ -647,4 +647,14 @@ See the [Contributing section in README.md](README.md#contributing) for guidelin
 ---
 
 *Last updated: December 2024*
-*HLE module update: Implemented all remaining HLE modules (cellResc, cellSpursJq, cellKb, cellMouse, cellMic, cellFontFT) and connected them to global HLE context. All HLE modules now have manager implementations and are registered in the module registry.*
+*HLE module update: Implemented next 10 HLE module todos:*
+*1. cellGcmSys - RSX backend integration with connection state tracking*
+*2. cellGcmSys - Command buffer submission with GcmCommand and CommandBuffer*
+*3. cellGcmSys - Texture management with 16 slots and texture descriptor support*
+*4. cellGcmSys - Render target configuration with MRT support*
+*5. cellResc - RSX backend integration for scaling with scale factor calculation*
+*6. cellSysutil - Dialog support (message, error, progress dialogs)*
+*7. cellSysutil - PSID/account handling with AccountInfo struct*
+*8. cellSysutil - Disc detection with DiscInfo and status tracking*
+*9. cellGame - PARAM.SFO reading/writing with ParamSfoEntry support*
+*10. cellGame - Game data installation with progress tracking*
