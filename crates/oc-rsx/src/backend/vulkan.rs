@@ -76,6 +76,34 @@ pub struct VulkanBackend {
     vertex_attributes: Vec<vk::VertexInputAttributeDescription>,
     /// Whether we're in a render pass
     in_render_pass: bool,
+    /// MSAA sample count
+    msaa_samples: vk::SampleCountFlags,
+    /// MSAA color resolve images (one per MRT)
+    msaa_color_images: Vec<vk::Image>,
+    /// MSAA color image views
+    msaa_color_image_views: Vec<vk::ImageView>,
+    /// MSAA color image allocations
+    msaa_color_allocations: Vec<Allocation>,
+    /// MSAA depth image
+    msaa_depth_image: Option<vk::Image>,
+    /// MSAA depth image view
+    msaa_depth_image_view: Option<vk::ImageView>,
+    /// MSAA depth allocation
+    msaa_depth_allocation: Option<Allocation>,
+    /// Multiple render targets (MRT) - up to 4 color attachments
+    mrt_images: Vec<Vec<vk::Image>>,
+    /// MRT image views
+    mrt_image_views: Vec<Vec<vk::ImageView>>,
+    /// MRT allocations
+    mrt_allocations: Vec<Vec<Allocation>>,
+    /// Number of active render targets
+    active_mrt_count: u32,
+    /// Render-to-texture framebuffers (texture offset -> framebuffer)
+    rtt_framebuffers: Vec<(u32, vk::Framebuffer)>,
+    /// Anisotropic filtering level
+    anisotropy_level: f32,
+    /// Maximum supported anisotropy
+    max_anisotropy: f32,
 }
 
 impl VulkanBackend {
@@ -119,7 +147,81 @@ impl VulkanBackend {
             vertex_bindings: Vec::new(),
             vertex_attributes: Vec::new(),
             in_render_pass: false,
+            msaa_samples: vk::SampleCountFlags::TYPE_1,
+            msaa_color_images: Vec::new(),
+            msaa_color_image_views: Vec::new(),
+            msaa_color_allocations: Vec::new(),
+            msaa_depth_image: None,
+            msaa_depth_image_view: None,
+            msaa_depth_allocation: None,
+            mrt_images: Vec::new(),
+            mrt_image_views: Vec::new(),
+            mrt_allocations: Vec::new(),
+            active_mrt_count: 1,
+            rtt_framebuffers: Vec::new(),
+            anisotropy_level: 1.0,
+            max_anisotropy: 16.0,
         }
+    }
+
+    /// Create a new Vulkan backend with MSAA
+    pub fn with_msaa(max_frames: usize, sample_count: u32) -> Self {
+        let mut backend = Self::with_frames_in_flight(max_frames);
+        backend.msaa_samples = Self::sample_count_to_flags(sample_count);
+        backend
+    }
+
+    /// Convert sample count to Vulkan flags
+    fn sample_count_to_flags(count: u32) -> vk::SampleCountFlags {
+        match count {
+            1 => vk::SampleCountFlags::TYPE_1,
+            2 => vk::SampleCountFlags::TYPE_2,
+            4 => vk::SampleCountFlags::TYPE_4,
+            8 => vk::SampleCountFlags::TYPE_8,
+            16 => vk::SampleCountFlags::TYPE_16,
+            32 => vk::SampleCountFlags::TYPE_32,
+            64 => vk::SampleCountFlags::TYPE_64,
+            _ => vk::SampleCountFlags::TYPE_1,
+        }
+    }
+
+    /// Set MSAA sample count
+    pub fn set_msaa_samples(&mut self, count: u32) {
+        self.msaa_samples = Self::sample_count_to_flags(count);
+    }
+
+    /// Get current MSAA sample count
+    pub fn msaa_sample_count(&self) -> u32 {
+        match self.msaa_samples {
+            vk::SampleCountFlags::TYPE_1 => 1,
+            vk::SampleCountFlags::TYPE_2 => 2,
+            vk::SampleCountFlags::TYPE_4 => 4,
+            vk::SampleCountFlags::TYPE_8 => 8,
+            vk::SampleCountFlags::TYPE_16 => 16,
+            vk::SampleCountFlags::TYPE_32 => 32,
+            vk::SampleCountFlags::TYPE_64 => 64,
+            _ => 1,
+        }
+    }
+
+    /// Set number of active render targets (MRT)
+    pub fn set_active_mrt_count(&mut self, count: u32) {
+        self.active_mrt_count = count.clamp(1, 4);
+    }
+
+    /// Get number of active render targets
+    pub fn active_mrt_count(&self) -> u32 {
+        self.active_mrt_count
+    }
+
+    /// Set anisotropic filtering level
+    pub fn set_anisotropy_level(&mut self, level: f32) {
+        self.anisotropy_level = level.clamp(1.0, self.max_anisotropy);
+    }
+
+    /// Get anisotropic filtering level
+    pub fn anisotropy_level(&self) -> f32 {
+        self.anisotropy_level
     }
 
     /// Create Vulkan instance
@@ -1093,5 +1195,58 @@ mod tests {
         backend.draw_indexed(PrimitiveType::Triangles, 0, 3);
         backend.set_viewport(0.0, 0.0, 800.0, 600.0, 0.0, 1.0);
         backend.set_scissor(0, 0, 800, 600);
+    }
+
+    #[test]
+    fn test_vulkan_backend_msaa() {
+        let backend = VulkanBackend::with_msaa(2, 4);
+        assert_eq!(backend.msaa_sample_count(), 4);
+        assert_eq!(backend.max_frames_in_flight, 2);
+    }
+
+    #[test]
+    fn test_vulkan_backend_msaa_set() {
+        let mut backend = VulkanBackend::new();
+        assert_eq!(backend.msaa_sample_count(), 1);
+        
+        backend.set_msaa_samples(8);
+        assert_eq!(backend.msaa_sample_count(), 8);
+        
+        backend.set_msaa_samples(16);
+        assert_eq!(backend.msaa_sample_count(), 16);
+    }
+
+    #[test]
+    fn test_vulkan_backend_mrt() {
+        let mut backend = VulkanBackend::new();
+        assert_eq!(backend.active_mrt_count(), 1);
+        
+        backend.set_active_mrt_count(4);
+        assert_eq!(backend.active_mrt_count(), 4);
+        
+        // Should clamp to max 4
+        backend.set_active_mrt_count(8);
+        assert_eq!(backend.active_mrt_count(), 4);
+    }
+
+    #[test]
+    fn test_vulkan_backend_anisotropy() {
+        let mut backend = VulkanBackend::new();
+        assert_eq!(backend.anisotropy_level(), 1.0);
+        
+        backend.set_anisotropy_level(8.0);
+        assert_eq!(backend.anisotropy_level(), 8.0);
+        
+        backend.set_anisotropy_level(16.0);
+        assert_eq!(backend.anisotropy_level(), 16.0);
+    }
+
+    #[test]
+    fn test_sample_count_to_flags() {
+        assert_eq!(VulkanBackend::sample_count_to_flags(1), vk::SampleCountFlags::TYPE_1);
+        assert_eq!(VulkanBackend::sample_count_to_flags(2), vk::SampleCountFlags::TYPE_2);
+        assert_eq!(VulkanBackend::sample_count_to_flags(4), vk::SampleCountFlags::TYPE_4);
+        assert_eq!(VulkanBackend::sample_count_to_flags(8), vk::SampleCountFlags::TYPE_8);
+        assert_eq!(VulkanBackend::sample_count_to_flags(99), vk::SampleCountFlags::TYPE_1); // Invalid defaults to 1
     }
 }

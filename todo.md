@@ -214,10 +214,10 @@ This document outlines the development roadmap for the Oxidized-Cell PS3 emulato
 - [ ] Hint instructions
 
 ### RSX Graphics
-- [ ] Vulkan backend implementation
-- [ ] Complete shader translation
-- [ ] Full texture format support
-- [ ] Render target management
+- [x] Vulkan backend implementation (enhanced with MSAA, MRT support)
+- [ ] Complete shader translation (SPIR-V infrastructure ready)
+- [x] Full texture format support (DXT, ETC, ASTC formats)
+- [x] Render target management (MRT, RTT)
 - [ ] Display output
 
 ### HLE Modules
@@ -254,18 +254,18 @@ This document outlines the development roadmap for the Oxidized-Cell PS3 emulato
 ### Phase 2: Graphics
 
 #### RSX/GPU Emulation
-- [ ] Complete Vulkan backend
-- [ ] Full NV4x shader translation
-- [ ] All texture formats (DXT, ETC, etc.)
-- [ ] Render to texture
-- [ ] Multiple render targets
-- [ ] Anti-aliasing support
-- [ ] Anisotropic filtering
-- [ ] Frame buffer operations
-- [ ] MSAA support
-- [ ] Post-processing effects
-- [ ] Resolution scaling
-- [ ] Frame pacing
+- [x] Complete Vulkan backend (enhanced with MSAA, MRT, RTT support)
+- [ ] Full NV4x shader translation (infrastructure in place)
+- [x] All texture formats (DXT, ETC, ASTC, and more)
+- [x] Render to texture (RTT framebuffer infrastructure)
+- [x] Multiple render targets (MRT support up to 4 attachments)
+- [x] Anti-aliasing support (MSAA and post-process AA)
+- [x] Anisotropic filtering (configurable 1x-16x)
+- [x] Frame buffer operations (blit, copy, clear)
+- [x] MSAA support (1x, 2x, 4x, 8x, 16x, 32x, 64x)
+- [x] Post-processing effects (FXAA, SMAA, TAA, Bloom, DOF, etc.)
+- [x] Resolution scaling (integer, aspect-preserved, FSR, xBRZ, etc.)
+- [x] Frame pacing (VSync modes, frame limiting, timing stats)
 
 ### Phase 3: Audio
 

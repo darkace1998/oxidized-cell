@@ -6,10 +6,13 @@ pub mod backend;
 pub mod buffer;
 pub mod fifo;
 pub mod methods;
+pub mod postprocess;
+pub mod scaling;
 pub mod shader;
 pub mod state;
 pub mod texture;
 pub mod thread;
+pub mod timing;
 pub mod vertex;
 
 pub use state::RsxState;

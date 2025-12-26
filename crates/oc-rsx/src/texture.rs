@@ -1,40 +1,158 @@
 //! RSX texture handling
 
-use bitflags::bitflags;
 use std::sync::mpsc::{channel, Sender, Receiver};
-use std::sync::{Arc, Mutex};
 use std::thread;
 
-bitflags! {
-    /// Texture format flags
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct TextureFormat: u8 {
-        const ARGB8 = 0x85;
-        const DXT1 = 0x86;
-        const DXT3 = 0x87;
-        const DXT5 = 0x88;
-        const A8R8G8B8 = 0x8A;
-        const R5G6B5 = 0x8B;
+/// Texture format constants for RSX
+/// Based on NV40/G70 texture formats used in PS3
+pub mod format {
+    // Standard uncompressed formats
+    pub const B8: u8 = 0x81;
+    pub const A1R5G5B5: u8 = 0x82;
+    pub const A4R4G4B4: u8 = 0x83;
+    pub const R5G6B5: u8 = 0x84;
+    pub const ARGB8: u8 = 0x85;
+    pub const DXT1: u8 = 0x86;
+    pub const DXT3: u8 = 0x87;
+    pub const DXT5: u8 = 0x88;
+    pub const A8R8G8B8: u8 = 0x8A;
+    pub const XRGB8: u8 = 0x8B;
+    
+    // 32-bit depth/HDR formats
+    pub const G8B8: u8 = 0x8C;
+    pub const R6G5B5: u8 = 0x8D;
+    pub const DEPTH24_D8: u8 = 0x8E;
+    pub const DEPTH24_D8_FLOAT: u8 = 0x8F;
+    pub const DEPTH16: u8 = 0x90;
+    pub const DEPTH16_FLOAT: u8 = 0x91;
+    pub const X16: u8 = 0x92;
+    pub const Y16_X16: u8 = 0x93;
+    pub const R5G5B5A1: u8 = 0x94;
+    pub const HILO8: u8 = 0x95;
+    pub const HILO_S8: u8 = 0x96;
+    pub const W16_Z16_Y16_X16_FLOAT: u8 = 0x97;
+    pub const W32_Z32_Y32_X32_FLOAT: u8 = 0x98;
+    pub const X32_FLOAT: u8 = 0x99;
+    pub const D1R5G5B5: u8 = 0x9A;
+    pub const D8R8G8B8: u8 = 0x9B;
+    pub const Y16_X16_FLOAT: u8 = 0x9C;
+    
+    // ETC/EAC compressed formats (common in mobile, some PS3 games use)
+    pub const ETC1_RGB8: u8 = 0xA0;
+    pub const ETC2_RGB8: u8 = 0xA1;
+    pub const ETC2_RGB8A1: u8 = 0xA2;
+    pub const ETC2_RGBA8: u8 = 0xA3;
+    pub const EAC_R11: u8 = 0xA4;
+    pub const EAC_RG11: u8 = 0xA5;
+    pub const EAC_R11_SIGNED: u8 = 0xA6;
+    pub const EAC_RG11_SIGNED: u8 = 0xA7;
+    
+    // ASTC compressed formats
+    pub const ASTC_4X4: u8 = 0xB0;
+    pub const ASTC_5X4: u8 = 0xB1;
+    pub const ASTC_5X5: u8 = 0xB2;
+    pub const ASTC_6X5: u8 = 0xB3;
+    pub const ASTC_6X6: u8 = 0xB4;
+    pub const ASTC_8X5: u8 = 0xB5;
+    pub const ASTC_8X6: u8 = 0xB6;
+    pub const ASTC_8X8: u8 = 0xB7;
+    pub const ASTC_10X5: u8 = 0xB8;
+    pub const ASTC_10X6: u8 = 0xB9;
+    pub const ASTC_10X8: u8 = 0xBA;
+    pub const ASTC_10X10: u8 = 0xBB;
+    pub const ASTC_12X10: u8 = 0xBC;
+    pub const ASTC_12X12: u8 = 0xBD;
+    
+    /// Get bytes per pixel for a format (returns 0 for compressed)
+    pub fn bytes_per_pixel(format: u8) -> u32 {
+        match format {
+            B8 => 1,
+            A1R5G5B5 | A4R4G4B4 | R5G6B5 | R5G5B5A1 | D1R5G5B5 | G8B8 | R6G5B5 | DEPTH16 | DEPTH16_FLOAT | X16 | HILO8 | HILO_S8 => 2,
+            ARGB8 | A8R8G8B8 | XRGB8 | DEPTH24_D8 | DEPTH24_D8_FLOAT | D8R8G8B8 | X32_FLOAT | Y16_X16 | Y16_X16_FLOAT => 4,
+            W16_Z16_Y16_X16_FLOAT => 8,
+            W32_Z32_Y32_X32_FLOAT => 16,
+            DXT1 | ETC1_RGB8 | ETC2_RGB8 | ETC2_RGB8A1 | EAC_R11 | EAC_R11_SIGNED => 0, // Block compressed - use block_size
+            DXT3 | DXT5 | ETC2_RGBA8 | EAC_RG11 | EAC_RG11_SIGNED => 0, // Block compressed
+            ASTC_4X4 | ASTC_5X4 | ASTC_5X5 | ASTC_6X5 | ASTC_6X6 | ASTC_8X5 | ASTC_8X6 | ASTC_8X8 |
+            ASTC_10X5 | ASTC_10X6 | ASTC_10X8 | ASTC_10X10 | ASTC_12X10 | ASTC_12X12 => 0,
+            _ => 4, // Default to 4 bytes
+        }
+    }
+    
+    /// Get block size for compressed formats (width, height, bytes)
+    pub fn block_size(format: u8) -> (u32, u32, u32) {
+        match format {
+            DXT1 | ETC1_RGB8 | ETC2_RGB8 | ETC2_RGB8A1 | EAC_R11 | EAC_R11_SIGNED => (4, 4, 8),
+            DXT3 | DXT5 | ETC2_RGBA8 | EAC_RG11 | EAC_RG11_SIGNED => (4, 4, 16),
+            ASTC_4X4 => (4, 4, 16),
+            ASTC_5X4 => (5, 4, 16),
+            ASTC_5X5 => (5, 5, 16),
+            ASTC_6X5 => (6, 5, 16),
+            ASTC_6X6 => (6, 6, 16),
+            ASTC_8X5 => (8, 5, 16),
+            ASTC_8X6 => (8, 6, 16),
+            ASTC_8X8 => (8, 8, 16),
+            ASTC_10X5 => (10, 5, 16),
+            ASTC_10X6 => (10, 6, 16),
+            ASTC_10X8 => (10, 8, 16),
+            ASTC_10X10 => (10, 10, 16),
+            ASTC_12X10 => (12, 10, 16),
+            ASTC_12X12 => (12, 12, 16),
+            _ => (1, 1, 0), // Not block compressed
+        }
+    }
+    
+    /// Check if format is compressed
+    pub fn is_compressed(format: u8) -> bool {
+        matches!(format, 
+            DXT1 | DXT3 | DXT5 |
+            ETC1_RGB8 | ETC2_RGB8 | ETC2_RGB8A1 | ETC2_RGBA8 | 
+            EAC_R11 | EAC_RG11 | EAC_R11_SIGNED | EAC_RG11_SIGNED |
+            ASTC_4X4 | ASTC_5X4 | ASTC_5X5 | ASTC_6X5 | ASTC_6X6 | ASTC_8X5 | ASTC_8X6 | ASTC_8X8 |
+            ASTC_10X5 | ASTC_10X6 | ASTC_10X8 | ASTC_10X10 | ASTC_12X10 | ASTC_12X12
+        )
+    }
+    
+    /// Check if format has alpha channel
+    pub fn has_alpha(format: u8) -> bool {
+        matches!(format,
+            A1R5G5B5 | A4R4G4B4 | ARGB8 | A8R8G8B8 | R5G5B5A1 | DXT3 | DXT5 |
+            ETC2_RGB8A1 | ETC2_RGBA8 | ASTC_4X4 | ASTC_5X4 | ASTC_5X5 | ASTC_6X5 | ASTC_6X6 |
+            ASTC_8X5 | ASTC_8X6 | ASTC_8X8 | ASTC_10X5 | ASTC_10X6 | ASTC_10X8 | ASTC_10X10 | ASTC_12X10 | ASTC_12X12
+        )
+    }
+    
+    /// Check if format is a depth format
+    pub fn is_depth(format: u8) -> bool {
+        matches!(format, DEPTH24_D8 | DEPTH24_D8_FLOAT | DEPTH16 | DEPTH16_FLOAT)
     }
 }
 
-bitflags! {
-    /// Texture filter modes
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct TextureFilter: u8 {
-        const NEAREST = 1;
-        const LINEAR = 2;
+/// Texture filter modes
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextureFilter {
+    Nearest = 1,
+    Linear = 2,
+}
+
+impl Default for TextureFilter {
+    fn default() -> Self {
+        Self::Linear
     }
 }
 
-bitflags! {
-    /// Texture wrap modes
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct TextureWrap: u8 {
-        const REPEAT = 1;
-        const MIRRORED_REPEAT = 2;
-        const CLAMP_TO_EDGE = 3;
-        const CLAMP_TO_BORDER = 4;
+/// Texture wrap modes
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextureWrap {
+    Repeat = 1,
+    MirroredRepeat = 2,
+    ClampToEdge = 3,
+    ClampToBorder = 4,
+}
+
+impl Default for TextureWrap {
+    fn default() -> Self {
+        Self::Repeat
     }
 }
 
@@ -88,11 +206,11 @@ impl Texture {
             depth: 1,
             mipmap_levels: 1,
             pitch: 0,
-            min_filter: TextureFilter::LINEAR,
-            mag_filter: TextureFilter::LINEAR,
-            wrap_s: TextureWrap::REPEAT,
-            wrap_t: TextureWrap::REPEAT,
-            wrap_r: TextureWrap::REPEAT,
+            min_filter: TextureFilter::Linear,
+            mag_filter: TextureFilter::Linear,
+            wrap_s: TextureWrap::Repeat,
+            wrap_t: TextureWrap::Repeat,
+            wrap_r: TextureWrap::Repeat,
             is_cubemap: false,
             anisotropy: 1.0,
             lod_bias: 0.0,
@@ -103,26 +221,19 @@ impl Texture {
 
     /// Get size in bytes for this texture
     pub fn byte_size(&self) -> u32 {
-        let bytes_per_pixel = match self.format {
-            0x85 | 0x8A => 4, // ARGB8, A8R8G8B8
-            0x8B => 2,         // R5G6B5
-            0x86 => 1,         // DXT1 (0.5 bytes per pixel in 4x4 blocks = 8 bytes per block)
-            0x87 | 0x88 => 1,  // DXT3/DXT5 (1 byte per pixel in 4x4 blocks = 16 bytes per block)
-            _ => 4,
-        };
-
         let mut size = 0u32;
         let mut w = self.width as u32;
         let mut h = self.height as u32;
 
         for _ in 0..self.mipmap_levels {
-            if self.format == 0x86 || self.format == 0x87 || self.format == 0x88 {
-                // Block-compressed formats: size in 4x4 blocks
-                let blocks_w = w.div_ceil(4);
-                let blocks_h = h.div_ceil(4);
-                let block_size = if self.format == 0x86 { 8 } else { 16 };
-                size += blocks_w * blocks_h * block_size;
+            if format::is_compressed(self.format) {
+                // Block-compressed formats: size in blocks
+                let (block_w, block_h, block_bytes) = format::block_size(self.format);
+                let blocks_w = w.div_ceil(block_w);
+                let blocks_h = h.div_ceil(block_h);
+                size += blocks_w * blocks_h * block_bytes;
             } else {
+                let bytes_per_pixel = format::bytes_per_pixel(self.format);
                 size += w * h * bytes_per_pixel;
             }
             w = (w / 2).max(1);
@@ -280,12 +391,12 @@ impl TextureSampler {
     /// Create a new texture sampler with default settings
     pub fn new() -> Self {
         Self {
-            min_filter: TextureFilter::LINEAR,
-            mag_filter: TextureFilter::LINEAR,
-            mipmap_filter: TextureFilter::LINEAR,
-            wrap_s: TextureWrap::REPEAT,
-            wrap_t: TextureWrap::REPEAT,
-            wrap_r: TextureWrap::REPEAT,
+            min_filter: TextureFilter::Linear,
+            mag_filter: TextureFilter::Linear,
+            mipmap_filter: TextureFilter::Linear,
+            wrap_s: TextureWrap::Repeat,
+            wrap_t: TextureWrap::Repeat,
+            wrap_r: TextureWrap::Repeat,
             max_anisotropy: 1.0,
             lod_bias: 0.0,
             min_lod: -1000.0,
@@ -532,5 +643,64 @@ mod tests {
         assert_eq!(tex.lod_bias, 0.5);
         assert_eq!(tex.min_lod, 0.0);
         assert_eq!(tex.max_lod, 10.0);
+    }
+
+    #[test]
+    fn test_texture_format_bytes_per_pixel() {
+        assert_eq!(format::bytes_per_pixel(format::ARGB8), 4);
+        assert_eq!(format::bytes_per_pixel(format::R5G6B5), 2);
+        assert_eq!(format::bytes_per_pixel(format::B8), 1);
+        assert_eq!(format::bytes_per_pixel(format::W16_Z16_Y16_X16_FLOAT), 8);
+        assert_eq!(format::bytes_per_pixel(format::W32_Z32_Y32_X32_FLOAT), 16);
+    }
+
+    #[test]
+    fn test_texture_format_compressed() {
+        assert!(format::is_compressed(format::DXT1));
+        assert!(format::is_compressed(format::DXT3));
+        assert!(format::is_compressed(format::DXT5));
+        assert!(format::is_compressed(format::ETC1_RGB8));
+        assert!(format::is_compressed(format::ETC2_RGB8));
+        assert!(format::is_compressed(format::ASTC_4X4));
+        assert!(!format::is_compressed(format::ARGB8));
+        assert!(!format::is_compressed(format::R5G6B5));
+    }
+
+    #[test]
+    fn test_texture_format_block_size() {
+        assert_eq!(format::block_size(format::DXT1), (4, 4, 8));
+        assert_eq!(format::block_size(format::DXT3), (4, 4, 16));
+        assert_eq!(format::block_size(format::DXT5), (4, 4, 16));
+        assert_eq!(format::block_size(format::ASTC_8X8), (8, 8, 16));
+        assert_eq!(format::block_size(format::ARGB8), (1, 1, 0)); // Not block compressed
+    }
+
+    #[test]
+    fn test_texture_format_has_alpha() {
+        assert!(format::has_alpha(format::ARGB8));
+        assert!(format::has_alpha(format::A8R8G8B8));
+        assert!(format::has_alpha(format::DXT3));
+        assert!(format::has_alpha(format::DXT5));
+        assert!(!format::has_alpha(format::R5G6B5));
+        assert!(!format::has_alpha(format::DXT1));
+    }
+
+    #[test]
+    fn test_texture_format_is_depth() {
+        assert!(format::is_depth(format::DEPTH24_D8));
+        assert!(format::is_depth(format::DEPTH16));
+        assert!(!format::is_depth(format::ARGB8));
+    }
+
+    #[test]
+    fn test_texture_compressed_byte_size() {
+        let mut tex = Texture::new();
+        tex.width = 256;
+        tex.height = 256;
+        tex.format = format::DXT1;
+        tex.mipmap_levels = 1;
+        // DXT1: 4x4 blocks, 8 bytes per block
+        // 256/4 = 64 blocks per dimension, 64*64 = 4096 blocks, 4096*8 = 32768 bytes
+        assert_eq!(tex.byte_size(), 32768);
     }
 }
