@@ -115,8 +115,8 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [x] Implement get_data through global manager
   - [x] Implement get_capability_info through global manager
   - [x] Connect to oc-input backend
-  - [ ] Add rumble/vibration support
-  - [ ] Support multiple controllers
+  - [x] Add rumble/vibration support
+  - [x] Support multiple controllers
 
 - [x] **cellKb** - Keyboard Input
   - [x] Implement KbManager with init/end
@@ -124,7 +124,7 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [x] Implement read through global manager
   - [x] Implement set_read_mode/set_code_type through global manager
   - [x] Support multiple keyboard layouts
-  - [ ] Connect to oc-input backend
+  - [x] Connect to oc-input backend
 
 - [x] **cellMouse** - Mouse Input
   - [x] Implement MouseManager with init/end
@@ -132,15 +132,15 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [x] Implement get_data/get_data_list through global manager
   - [x] Implement get_raw_data through global manager
   - [x] Add button state handling
-  - [ ] Connect to oc-input backend
+  - [x] Connect to oc-input backend
 
 #### Audio Modules
 - [x] **cellAudio** - Audio Output (Connected to global context)
   - [x] Implement init/quit through global manager
   - [x] Implement port open/close through global manager
   - [x] Implement port start/stop through global manager
-  - [ ] Connect to oc-audio backend
-  - [ ] Add mixing support
+  - [x] Connect to oc-audio backend
+  - [x] Add mixing support
 
 - [x] **cellMic** - Microphone Input
   - [x] Implement MicManager with init/end

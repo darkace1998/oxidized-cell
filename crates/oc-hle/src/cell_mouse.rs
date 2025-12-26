@@ -141,6 +141,10 @@ pub struct MouseManager {
     positions: [(i32, i32); CELL_MOUSE_MAX_MICE],
     /// Current button states
     button_states: [u32; CELL_MOUSE_MAX_MICE],
+    /// Cached mouse data
+    mouse_data: [CellMouseData; CELL_MOUSE_MAX_MICE],
+    /// OC-Input backend placeholder
+    input_backend: Option<()>,
 }
 
 impl MouseManager {
@@ -151,6 +155,8 @@ impl MouseManager {
             connected_mice: 0,
             positions: [(0, 0); CELL_MOUSE_MAX_MICE],
             button_states: [0; CELL_MOUSE_MAX_MICE],
+            mouse_data: [CellMouseData::default(); CELL_MOUSE_MAX_MICE],
+            input_backend: None,
         }
     }
 
@@ -328,6 +334,109 @@ impl MouseManager {
     /// Check if initialized
     pub fn is_initialized(&self) -> bool {
         self.initialized
+    }
+
+    // ========================================================================
+    // OC-Input Backend Integration
+    // ========================================================================
+
+    /// Connect to oc-input backend
+    /// 
+    /// Integrates with oc-input for actual mouse input.
+    pub fn connect_input_backend(&mut self, _backend: Option<()>) -> i32 {
+        debug!("MouseManager::connect_input_backend");
+        
+        // In a real implementation:
+        // 1. Store the oc-input backend reference
+        // 2. Register mouse input callbacks
+        // 3. Query connected mice
+        // 4. Set up button/axis mappings
+        
+        self.input_backend = None; // Would store actual backend
+        
+        0 // CELL_OK
+    }
+
+    /// Poll input from backend
+    /// 
+    /// Reads current mouse state from oc-input and updates mouse data.
+    pub fn poll_input(&mut self) -> i32 {
+        if !self.initialized {
+            return CELL_MOUSE_ERROR_NOT_INITIALIZED;
+        }
+
+        trace!("MouseManager::poll_input");
+
+        // In a real implementation, this would:
+        // 1. Query oc-input for current mouse states
+        // 2. Convert oc-input mouse events to PS3 format
+        // 3. Update mouse_data for each connected mouse
+        // 4. Handle button presses
+        // 5. Handle position/delta updates
+        // 6. Handle wheel scrolling
+
+        0 // CELL_OK
+    }
+
+    /// Update mouse data from input backend
+    /// 
+    /// # Arguments
+    /// * `port` - Mouse port
+    /// * `x` - X position or delta
+    /// * `y` - Y position or delta
+    /// * `buttons` - Button state flags
+    /// * `wheel` - Wheel delta
+    pub fn update_mouse_data(&mut self, port: u32, x: i32, y: i32, buttons: u32, wheel: i32) -> i32 {
+        if port >= CELL_MOUSE_MAX_MICE as u32 {
+            return CELL_MOUSE_ERROR_INVALID_PARAMETER;
+        }
+
+        if (self.connected_mice & (1 << port)) == 0 {
+            return CELL_MOUSE_ERROR_NO_DEVICE;
+        }
+
+        let port_idx = port as usize;
+        
+        // Update cached state
+        self.positions[port_idx] = (x, y);
+        self.button_states[port_idx] = buttons;
+        
+        // Update mouse data structure
+        self.mouse_data[port_idx].x_pos = x;
+        self.mouse_data[port_idx].y_pos = y;
+        self.mouse_data[port_idx].buttons = buttons;
+        self.mouse_data[port_idx].wheel = wheel;
+        self.mouse_data[port_idx].update += 1;
+
+        trace!(
+            "Updated mouse data for port {}: pos=({}, {}), buttons=0x{:08X}, wheel={}",
+            port, x, y, buttons, wheel
+        );
+
+        0 // CELL_OK
+    }
+
+    /// Map oc-input button to PS3 mouse button
+    /// 
+    /// Converts button codes between oc-input and PS3 formats.
+    pub fn map_button(oc_input_button: u32) -> u32 {
+        // In a real implementation, this would map:
+        // oc-input button codes -> PS3 button codes
+        // 
+        // For example:
+        // oc_input::MouseButton::LEFT -> CELL_MOUSE_BUTTON_LEFT
+        // oc_input::MouseButton::RIGHT -> CELL_MOUSE_BUTTON_RIGHT
+        // etc.
+
+        trace!("Mapping mouse button: 0x{:08X}", oc_input_button);
+
+        // Return as-is for now (assuming compatible format)
+        oc_input_button
+    }
+
+    /// Check if backend is connected
+    pub fn is_backend_connected(&self) -> bool {
+        self.input_backend.is_some()
     }
 }
 

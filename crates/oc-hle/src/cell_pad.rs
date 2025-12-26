@@ -101,6 +101,49 @@ impl Default for CellPadData {
     }
 }
 
+/// Actuator (rumble/vibration) parameters
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CellPadActParam {
+    /// Small motor intensity (0-255)
+    pub motor_small: u8,
+    /// Large motor intensity (0-255)
+    pub motor_large: u8,
+    /// Reserved
+    pub reserved: [u8; 6],
+}
+
+impl Default for CellPadActParam {
+    fn default() -> Self {
+        Self {
+            motor_small: 0,
+            motor_large: 0,
+            reserved: [0; 6],
+        }
+    }
+}
+
+/// Rumble/vibration state for a controller
+#[derive(Debug, Clone, Copy)]
+pub struct RumbleState {
+    /// Small motor intensity (0-255)
+    pub motor_small: u8,
+    /// Large motor intensity (0-255)
+    pub motor_large: u8,
+    /// Whether rumble is currently active
+    pub active: bool,
+}
+
+impl Default for RumbleState {
+    fn default() -> Self {
+        Self {
+            motor_small: 0,
+            motor_large: 0,
+            active: false,
+        }
+    }
+}
+
 /// Pad capability info
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -129,6 +172,8 @@ pub struct PadManager {
     input_backend: InputBackend,
     /// Cached pad data for each port
     pad_data: [CellPadData; CELL_PAD_MAX_PORT_NUM],
+    /// Rumble/vibration state for each port
+    rumble_states: [RumbleState; CELL_PAD_MAX_PORT_NUM],
 }
 
 impl PadManager {
@@ -140,6 +185,7 @@ impl PadManager {
             device_types: [CellPadDeviceType::Standard; CELL_PAD_MAX_PORT_NUM],
             input_backend: None,
             pad_data: [CellPadData::default(); CELL_PAD_MAX_PORT_NUM],
+            rumble_states: [RumbleState::default(); CELL_PAD_MAX_PORT_NUM],
         }
     }
 
@@ -209,12 +255,9 @@ impl PadManager {
             return Err(0x80121102u32 as i32); // CELL_PAD_ERROR_NO_DEVICE
         }
 
-        // TODO: Get actual pad data from oc-input subsystem
-        // For now, return empty data
-        let mut data = CellPadData::default();
-        data.len = 24; // Standard data length
-
-        Ok(data)
+        // Return cached pad data for the specified port
+        // This supports multiple controllers by using the port index
+        Ok(self.pad_data[port as usize])
     }
 
     /// Get capability info for a pad
@@ -382,6 +425,106 @@ impl PadManager {
     pub fn is_backend_connected(&self) -> bool {
         self.input_backend.is_some()
     }
+
+    // ========================================================================
+    // Rumble/Vibration Support
+    // ========================================================================
+
+    /// Set actuator (rumble/vibration) parameters
+    /// 
+    /// # Arguments
+    /// * `port` - Controller port number
+    /// * `param` - Actuator parameters (motor intensities)
+    /// 
+    /// # Returns
+    /// * 0 on success, error code otherwise
+    pub fn set_actuator(&mut self, port: u32, param: &CellPadActParam) -> i32 {
+        if !self.initialized {
+            return 0x80121103u32 as i32; // CELL_PAD_ERROR_UNINITIALIZED
+        }
+
+        if port >= CELL_PAD_MAX_PORT_NUM as u32 {
+            return 0x80121104u32 as i32; // CELL_PAD_ERROR_INVALID_PARAMETER
+        }
+
+        if (self.connected_pads & (1 << port)) == 0 {
+            return 0x80121102u32 as i32; // CELL_PAD_ERROR_NO_DEVICE
+        }
+
+        let port_idx = port as usize;
+        self.rumble_states[port_idx].motor_small = param.motor_small;
+        self.rumble_states[port_idx].motor_large = param.motor_large;
+        self.rumble_states[port_idx].active = param.motor_small > 0 || param.motor_large > 0;
+
+        debug!(
+            "Set actuator for port {}: small={}, large={}",
+            port, param.motor_small, param.motor_large
+        );
+
+        // In a real implementation, this would:
+        // 1. Send rumble commands to oc-input backend
+        // 2. Control actual controller motors
+        // 3. Handle timing and duration
+
+        0 // CELL_OK
+    }
+
+    /// Get actuator status
+    /// 
+    /// # Arguments
+    /// * `port` - Controller port number
+    /// 
+    /// # Returns
+    /// * Current actuator parameters
+    pub fn get_actuator(&self, port: u32) -> Result<CellPadActParam, i32> {
+        if !self.initialized {
+            return Err(0x80121103u32 as i32); // CELL_PAD_ERROR_UNINITIALIZED
+        }
+
+        if port >= CELL_PAD_MAX_PORT_NUM as u32 {
+            return Err(0x80121104u32 as i32); // CELL_PAD_ERROR_INVALID_PARAMETER
+        }
+
+        if (self.connected_pads & (1 << port)) == 0 {
+            return Err(0x80121102u32 as i32); // CELL_PAD_ERROR_NO_DEVICE
+        }
+
+        let port_idx = port as usize;
+        let rumble = &self.rumble_states[port_idx];
+
+        Ok(CellPadActParam {
+            motor_small: rumble.motor_small,
+            motor_large: rumble.motor_large,
+            reserved: [0; 6],
+        })
+    }
+
+    /// Stop rumble/vibration on a controller
+    /// 
+    /// # Arguments
+    /// * `port` - Controller port number
+    /// 
+    /// # Returns
+    /// * 0 on success
+    pub fn stop_actuator(&mut self, port: u32) -> i32 {
+        let param = CellPadActParam::default();
+        self.set_actuator(port, &param)
+    }
+
+    /// Check if rumble is active on a controller
+    /// 
+    /// # Arguments
+    /// * `port` - Controller port number
+    /// 
+    /// # Returns
+    /// * true if rumble is active
+    pub fn is_rumble_active(&self, port: u32) -> bool {
+        if port >= CELL_PAD_MAX_PORT_NUM as u32 {
+            return false;
+        }
+
+        self.rumble_states[port as usize].active
+    }
 }
 
 impl Default for PadManager {
@@ -483,6 +626,47 @@ pub fn cell_pad_get_capability_info(port: u32, _info_addr: u32) -> i32 {
         }
         Err(e) => e,
     }
+}
+
+/// cellPadSetActParam - Set actuator (rumble/vibration) parameters
+///
+/// # Arguments
+/// * `port` - Controller port number
+/// * `param_addr` - Address of CellPadActParam structure
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_pad_set_act_param(port: u32, _param_addr: u32) -> i32 {
+    debug!("cellPadSetActParam(port={})", port);
+
+    // TODO: Read param from memory at _param_addr
+    let param = CellPadActParam::default();
+    
+    crate::context::get_hle_context_mut().pad.set_actuator(port, &param)
+}
+
+/// cellPadLddSetActParam - Set actuator parameters (legacy)
+///
+/// # Arguments
+/// * `port` - Controller port number
+/// * `motor_small` - Small motor intensity (0-255)
+/// * `motor_large` - Large motor intensity (0-255)
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_pad_ldd_set_act_param(port: u32, motor_small: u8, motor_large: u8) -> i32 {
+    debug!(
+        "cellPadLddSetActParam(port={}, small={}, large={})",
+        port, motor_small, motor_large
+    );
+
+    let param = CellPadActParam {
+        motor_small,
+        motor_large,
+        reserved: [0; 6],
+    };
+    
+    crate::context::get_hle_context_mut().pad.set_actuator(port, &param)
 }
 
 #[cfg(test)]
@@ -591,5 +775,89 @@ mod tests {
         assert_eq!(CellPadDeviceType::Standard as u32, 0);
         assert_eq!(CellPadDeviceType::Guitar as u32, 4);
         assert_eq!(CellPadDeviceType::Drum as u32, 6);
+    }
+
+    #[test]
+    fn test_rumble_support() {
+        let mut manager = PadManager::new();
+        manager.init(7);
+
+        // Test setting actuator on connected port
+        let param = CellPadActParam {
+            motor_small: 100,
+            motor_large: 200,
+            reserved: [0; 6],
+        };
+        assert_eq!(manager.set_actuator(0, &param), 0);
+
+        // Verify rumble state
+        assert!(manager.is_rumble_active(0));
+        let result = manager.get_actuator(0);
+        assert!(result.is_ok());
+        let retrieved = result.unwrap();
+        assert_eq!(retrieved.motor_small, 100);
+        assert_eq!(retrieved.motor_large, 200);
+
+        // Stop rumble
+        assert_eq!(manager.stop_actuator(0), 0);
+        assert!(!manager.is_rumble_active(0));
+
+        // Test on disconnected port should fail
+        let result = manager.set_actuator(1, &param);
+        assert!(result != 0);
+
+        manager.end();
+    }
+
+    #[test]
+    fn test_multiple_controllers() {
+        let mut manager = PadManager::new();
+        manager.init(7);
+
+        // Connect multiple controllers
+        assert_eq!(manager.connect_pad(1, CellPadDeviceType::Standard), 0);
+        assert_eq!(manager.connect_pad(2, CellPadDeviceType::Guitar), 0);
+        assert_eq!(manager.connect_pad(3, CellPadDeviceType::Drum), 0);
+
+        let info = manager.get_info();
+        assert_eq!(info.now_connect, 4); // 4 controllers connected
+
+        // Update data for each controller
+        assert_eq!(manager.update_pad_data(0, [0x0001, 0x0002]), 0);
+        assert_eq!(manager.update_pad_data(1, [0x0004, 0x0008]), 0);
+        assert_eq!(manager.update_pad_data(2, [0x0010, 0x0020]), 0);
+
+        // Verify each controller has its own data
+        let data0 = manager.get_data(0).unwrap();
+        assert_eq!(data0.button[0], 0x0001);
+        assert_eq!(data0.button[1], 0x0002);
+
+        let data1 = manager.get_data(1).unwrap();
+        assert_eq!(data1.button[0], 0x0004);
+        assert_eq!(data1.button[1], 0x0008);
+
+        let data2 = manager.get_data(2).unwrap();
+        assert_eq!(data2.button[0], 0x0010);
+        assert_eq!(data2.button[1], 0x0020);
+
+        // Test rumble on different controllers
+        let param = CellPadActParam {
+            motor_small: 50,
+            motor_large: 150,
+            reserved: [0; 6],
+        };
+        assert_eq!(manager.set_actuator(1, &param), 0);
+        assert!(manager.is_rumble_active(1));
+        assert!(!manager.is_rumble_active(2));
+
+        manager.end();
+    }
+
+    #[test]
+    fn test_axis_conversion() {
+        // Test axis conversion
+        assert_eq!(PadManager::convert_axis(-1.0), 0);
+        assert_eq!(PadManager::convert_axis(0.0), 127);
+        assert_eq!(PadManager::convert_axis(1.0), 255);
     }
 }

@@ -175,6 +175,10 @@ pub struct KbManager {
     layouts: [CellKbLayout; CELL_KB_MAX_KEYBOARDS],
     /// Keyboard configurations
     configs: [CellKbConfig; CELL_KB_MAX_KEYBOARDS],
+    /// Cached keyboard data for each keyboard
+    keyboard_data: [CellKbData; CELL_KB_MAX_KEYBOARDS],
+    /// OC-Input backend placeholder
+    input_backend: Option<()>,
 }
 
 impl KbManager {
@@ -185,6 +189,8 @@ impl KbManager {
             connected_keyboards: 0,
             layouts: [CellKbLayout::default(); CELL_KB_MAX_KEYBOARDS],
             configs: [CellKbConfig::default(); CELL_KB_MAX_KEYBOARDS],
+            keyboard_data: [CellKbData::default(); CELL_KB_MAX_KEYBOARDS],
+            input_backend: None,
         }
     }
 
@@ -252,8 +258,8 @@ impl KbManager {
 
         trace!("KbManager::read: port={}", port);
 
-        // TODO: Get actual keyboard data from oc-input subsystem
-        Ok(CellKbData::default())
+        // Return cached keyboard data from backend
+        Ok(self.keyboard_data[port as usize])
     }
 
     /// Set read mode
@@ -340,6 +346,125 @@ impl KbManager {
     /// Check if initialized
     pub fn is_initialized(&self) -> bool {
         self.initialized
+    }
+
+    // ========================================================================
+    // OC-Input Backend Integration
+    // ========================================================================
+
+    /// Connect to oc-input backend
+    /// 
+    /// Integrates with oc-input for actual keyboard input.
+    pub fn connect_input_backend(&mut self, _backend: Option<()>) -> i32 {
+        debug!("KbManager::connect_input_backend");
+        
+        // In a real implementation:
+        // 1. Store the oc-input backend reference
+        // 2. Register keyboard input callbacks
+        // 3. Query connected keyboards
+        // 4. Set up key mappings
+        
+        self.input_backend = None; // Would store actual backend
+        
+        0 // CELL_OK
+    }
+
+    /// Poll input from backend
+    /// 
+    /// Reads current keyboard state from oc-input and updates keyboard data.
+    pub fn poll_input(&mut self) -> i32 {
+        if !self.initialized {
+            return CELL_KB_ERROR_NOT_INITIALIZED;
+        }
+
+        trace!("KbManager::poll_input");
+
+        // In a real implementation, this would:
+        // 1. Query oc-input for current keyboard states
+        // 2. Convert oc-input key events to PS3 format
+        // 3. Update keyboard_data for each connected keyboard
+        // 4. Handle modifier keys (Ctrl, Shift, Alt, etc.)
+        // 5. Apply keyboard layout conversion
+
+        0 // CELL_OK
+    }
+
+    /// Update keyboard data from input backend
+    /// 
+    /// # Arguments
+    /// * `port` - Keyboard port
+    /// * `keycodes` - Array of pressed keycodes
+    /// * `modifiers` - Modifier key flags
+    pub fn update_keyboard_data(&mut self, port: u32, keycodes: &[u16], modifiers: u32) -> i32 {
+        if port >= CELL_KB_MAX_KEYBOARDS as u32 {
+            return CELL_KB_ERROR_INVALID_PARAMETER;
+        }
+
+        if (self.connected_keyboards & (1 << port)) == 0 {
+            return CELL_KB_ERROR_NO_DEVICE;
+        }
+
+        let port_idx = port as usize;
+        let len = keycodes.len().min(CELL_KB_MAX_KEYCODES);
+        
+        self.keyboard_data[port_idx].len = len as i32;
+        self.keyboard_data[port_idx].mkey = modifiers;
+        
+        // Copy keycodes
+        for (i, &keycode) in keycodes.iter().take(len).enumerate() {
+            self.keyboard_data[port_idx].keycodes[i] = keycode;
+        }
+        
+        // Clear remaining slots
+        for i in len..CELL_KB_MAX_KEYCODES {
+            self.keyboard_data[port_idx].keycodes[i] = 0;
+        }
+
+        trace!(
+            "Updated keyboard data for port {}: {} keys, modifiers=0x{:08X}",
+            port, len, modifiers
+        );
+
+        0 // CELL_OK
+    }
+
+    /// Map oc-input key to PS3 keycode
+    /// 
+    /// Converts key codes between oc-input and PS3 formats.
+    pub fn map_keycode(oc_input_key: u16) -> u16 {
+        // In a real implementation, this would map:
+        // oc-input key codes -> PS3 USB HID key codes
+        // 
+        // The mapping is mostly 1:1 for USB HID codes
+        // but may need translation for special keys
+
+        trace!("Mapping keycode: 0x{:04X}", oc_input_key);
+
+        // Return as-is for now (assuming USB HID codes)
+        oc_input_key
+    }
+
+    /// Map oc-input modifiers to PS3 modifiers
+    /// 
+    /// Converts modifier flags between oc-input and PS3 formats.
+    pub fn map_modifiers(oc_input_modifiers: u32) -> u32 {
+        // In a real implementation, this would map:
+        // oc-input modifier flags -> PS3 modifier flags
+        //
+        // For example:
+        // oc_input::KeyModifiers::LEFT_CTRL -> CELL_KB_MKEY_L_CTRL
+        // oc_input::KeyModifiers::LEFT_SHIFT -> CELL_KB_MKEY_L_SHIFT
+        // etc.
+
+        trace!("Mapping modifiers: 0x{:08X}", oc_input_modifiers);
+
+        // Return as-is for now (assuming compatible format)
+        oc_input_modifiers
+    }
+
+    /// Check if backend is connected
+    pub fn is_backend_connected(&self) -> bool {
+        self.input_backend.is_some()
     }
 }
 

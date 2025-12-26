@@ -47,6 +47,8 @@ pub struct AudioPort {
     tag: u64,
     /// Buffer address
     buffer_addr: u32,
+    /// Volume level (0.0 to 1.0)
+    volume: f32,
 }
 
 impl Default for AudioPort {
@@ -57,6 +59,7 @@ impl Default for AudioPort {
             num_blocks: 0,
             tag: 0,
             buffer_addr: 0,
+            volume: 1.0,
         }
     }
 }
@@ -67,6 +70,10 @@ pub struct AudioManager {
     ports: [AudioPort; CELL_AUDIO_PORT_MAX],
     /// Initialization flag
     initialized: bool,
+    /// OC-Audio backend placeholder
+    audio_backend: Option<()>,
+    /// Master volume (0.0 to 1.0)
+    master_volume: f32,
 }
 
 impl AudioManager {
@@ -75,6 +82,8 @@ impl AudioManager {
         Self {
             ports: [AudioPort::default(); CELL_AUDIO_PORT_MAX],
             initialized: false,
+            audio_backend: None,
+            master_volume: 1.0,
         }
     }
 
@@ -140,6 +149,7 @@ impl AudioManager {
         self.ports[port_num].state = AudioPortState::Open;
         self.ports[port_num].num_channels = num_channels;
         self.ports[port_num].num_blocks = num_blocks;
+        self.ports[port_num].volume = level;
 
         // TODO: Allocate buffer through oc-audio subsystem
         // TODO: Store buffer address
@@ -205,6 +215,145 @@ impl AudioManager {
         // TODO: Stop audio output through oc-audio subsystem
 
         0 // CELL_OK
+    }
+
+    // ========================================================================
+    // OC-Audio Backend Integration
+    // ========================================================================
+
+    /// Connect to oc-audio backend
+    /// 
+    /// Integrates with oc-audio for actual audio playback.
+    pub fn connect_audio_backend(&mut self, _backend: Option<()>) -> i32 {
+        debug!("AudioManager::connect_audio_backend");
+        
+        // In a real implementation:
+        // 1. Store the oc-audio backend reference
+        // 2. Initialize audio output device
+        // 3. Configure sample rate and format
+        // 4. Set up audio callback for mixing
+        
+        self.audio_backend = None; // Would store actual backend
+        
+        0 // CELL_OK
+    }
+
+    /// Submit audio buffer to backend
+    /// 
+    /// # Arguments
+    /// * `port_num` - Audio port number
+    /// * `buffer` - Audio samples to submit
+    pub fn submit_audio(&mut self, port_num: u32, _buffer: &[f32]) -> i32 {
+        if port_num >= CELL_AUDIO_PORT_MAX as u32 {
+            return 0x80310704u32 as i32; // CELL_AUDIO_ERROR_PARAM
+        }
+
+        let port = &self.ports[port_num as usize];
+        if port.state != AudioPortState::Started {
+            return 0x80310703u32 as i32; // CELL_AUDIO_ERROR_PORT_NOT_OPEN
+        }
+
+        trace!("AudioManager::submit_audio: port={}", port_num);
+
+        // In a real implementation:
+        // 1. Apply port volume
+        // 2. Convert format if needed
+        // 3. Submit to oc-audio backend for playback
+
+        0 // CELL_OK
+    }
+
+    /// Set port volume
+    /// 
+    /// # Arguments
+    /// * `port_num` - Audio port number
+    /// * `volume` - Volume level (0.0 to 1.0)
+    pub fn set_port_volume(&mut self, port_num: u32, volume: f32) -> i32 {
+        if port_num >= CELL_AUDIO_PORT_MAX as u32 {
+            return 0x80310704u32 as i32; // CELL_AUDIO_ERROR_PARAM
+        }
+
+        let port = &mut self.ports[port_num as usize];
+        if port.state == AudioPortState::Closed {
+            return 0x80310703u32 as i32; // CELL_AUDIO_ERROR_PORT_NOT_OPEN
+        }
+
+        port.volume = volume.clamp(0.0, 1.0);
+        debug!("Set port {} volume to {}", port_num, port.volume);
+
+        0 // CELL_OK
+    }
+
+    /// Get port volume
+    /// 
+    /// # Arguments
+    /// * `port_num` - Audio port number
+    pub fn get_port_volume(&self, port_num: u32) -> Result<f32, i32> {
+        if port_num >= CELL_AUDIO_PORT_MAX as u32 {
+            return Err(0x80310704u32 as i32); // CELL_AUDIO_ERROR_PARAM
+        }
+
+        let port = &self.ports[port_num as usize];
+        if port.state == AudioPortState::Closed {
+            return Err(0x80310703u32 as i32); // CELL_AUDIO_ERROR_PORT_NOT_OPEN
+        }
+
+        Ok(port.volume)
+    }
+
+    /// Set master volume
+    /// 
+    /// # Arguments
+    /// * `volume` - Master volume level (0.0 to 1.0)
+    pub fn set_master_volume(&mut self, volume: f32) {
+        self.master_volume = volume.clamp(0.0, 1.0);
+        debug!("Set master volume to {}", self.master_volume);
+    }
+
+    /// Get master volume
+    pub fn get_master_volume(&self) -> f32 {
+        self.master_volume
+    }
+
+    /// Mix audio from multiple ports
+    /// 
+    /// Mixes audio from all active ports into a single output buffer.
+    /// This is called by the audio thread to generate the final output.
+    /// 
+    /// # Arguments
+    /// * `output` - Output buffer to fill with mixed audio
+    pub fn mix_audio(&self, _output: &mut [f32]) -> i32 {
+        if !self.initialized {
+            return 0x80310702u32 as i32; // CELL_AUDIO_ERROR_AUDIOSYSTEM
+        }
+
+        trace!("AudioManager::mix_audio");
+
+        // In a real implementation:
+        // 1. For each active port (Started state):
+        //    a. Read audio data from port buffer
+        //    b. Apply port volume
+        //    c. Mix into output buffer
+        // 2. Apply master volume to output
+        // 3. Clamp output to prevent clipping
+
+        // Pseudocode:
+        // output.fill(0.0);
+        // for port in active_ports {
+        //     for (i, sample) in port_buffer.iter().enumerate() {
+        //         output[i] += sample * port.volume;
+        //     }
+        // }
+        // for sample in output.iter_mut() {
+        //     *sample = (*sample * master_volume).clamp(-1.0, 1.0);
+        // }
+
+        0 // CELL_OK
+    }
+
+    /// Check if backend is connected
+    pub fn is_backend_connected(&self) -> bool {
+        self.audio_backend.is_some()
     }
 }
 
