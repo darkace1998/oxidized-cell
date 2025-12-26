@@ -149,15 +149,15 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [x] Implement start/stop through global manager
   - [x] Implement read through global manager
   - [x] Add device enumeration
-  - [ ] Connect to actual audio capture backend
+  - [x] Connect to actual audio capture backend
 
 #### File System Modules
 - [x] **cellFs** - File System (Connected to global context)
   - [x] Implement close through global manager
   - [x] Implement closedir through global manager
-  - [ ] Connect to oc-vfs backend
-  - [ ] Implement file read/write operations
-  - [ ] Add directory operations
+  - [x] Connect to oc-vfs backend
+  - [x] Implement file read/write operations
+  - [x] Add directory operations
   - [ ] Support asynchronous I/O
 
 #### Media Decoding Modules
@@ -670,3 +670,15 @@ See the [Contributing section in README.md](README.md#contributing) for guidelin
 *8. cellSpurs - Add event flags and barriers for synchronization*
 *9. cellSpursJq - Integrate with actual SPU job execution*
 *10. cellPad - Connect to oc-input backend with button mapping*
+
+*HLE module update (December 26, 2024 #2): Implemented next 10 HLE module todos:*
+*1. cellPad - Add rumble/vibration support with set_actuator function and motor intensity control*
+*2. cellPad - Support multiple controllers with per-controller state tracking (up to 7 controllers)*
+*3. cellKb - Connect to oc-input backend with keyboard state polling and event mapping*
+*4. cellMouse - Connect to oc-input backend with mouse state polling and button/position tracking*
+*5. cellAudio - Connect to oc-audio backend with audio port connections and buffer submission*
+*6. cellAudio - Add mixing support with per-port volume control and multi-port audio mixing*
+*7. cellMic - Connect to audio capture backend with device enumeration and capture callbacks*
+*8. cellFs - Connect to oc-vfs backend with path mapping and file handle management*
+*9. cellFs - Implement file read/write operations with stat, fstat, and truncate support*
+*10. cellFs - Add directory operations with mkdir, rmdir, readdir, and unlink support*

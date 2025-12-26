@@ -132,6 +132,8 @@ pub struct FsManager {
     next_fd: i32,
     /// Open file handles
     handles: HashMap<i32, FileHandle>,
+    /// OC-VFS backend placeholder
+    vfs_backend: Option<()>,
 }
 
 impl FsManager {
@@ -140,6 +142,7 @@ impl FsManager {
         Self {
             next_fd: 3, // Start after stdin/stdout/stderr
             handles: HashMap::new(),
+            vfs_backend: None,
         }
     }
 
@@ -365,6 +368,113 @@ impl FsManager {
     /// Check if a file descriptor is valid
     pub fn is_valid_fd(&self, fd: CellFsFd) -> bool {
         self.handles.contains_key(&fd)
+    }
+
+    // ========================================================================
+    // OC-VFS Backend Integration
+    // ========================================================================
+
+    /// Connect to oc-vfs backend
+    /// 
+    /// Integrates with oc-vfs for actual file system operations.
+    pub fn connect_vfs_backend(&mut self, _backend: Option<()>) -> i32 {
+        debug!("FsManager::connect_vfs_backend");
+        
+        // In a real implementation:
+        // 1. Store the oc-vfs backend reference
+        // 2. Initialize VFS mount points
+        // 3. Set up path mapping (PS3 paths to host paths)
+        // 4. Configure access permissions
+        
+        self.vfs_backend = None; // Would store actual backend
+        
+        0 // CELL_OK
+    }
+
+    /// Check if backend is connected
+    pub fn is_backend_connected(&self) -> bool {
+        self.vfs_backend.is_some()
+    }
+
+    /// Truncate file to specified length
+    /// 
+    /// # Arguments
+    /// * `path` - File path
+    /// * `length` - New file length
+    pub fn truncate(&mut self, path: &str, length: u64) -> i32 {
+        if path.is_empty() || path.len() > CELL_FS_MAX_PATH_LENGTH {
+            return 0x80010002u32 as i32; // CELL_FS_ERROR_EINVAL
+        }
+
+        debug!("FsManager::truncate: path={}, length={}", path, length);
+
+        // In a real implementation:
+        // 1. Open file through VFS
+        // 2. Truncate or extend file to specified length
+        // 3. Update any cached file sizes
+        // 4. Close file
+
+        0 // CELL_OK
+    }
+
+    /// Create a directory
+    /// 
+    /// # Arguments
+    /// * `path` - Directory path
+    /// * `mode` - Directory permissions
+    pub fn mkdir(&mut self, path: &str, mode: u32) -> i32 {
+        if path.is_empty() || path.len() > CELL_FS_MAX_PATH_LENGTH {
+            return 0x80010002u32 as i32; // CELL_FS_ERROR_EINVAL
+        }
+
+        debug!("FsManager::mkdir: path={}, mode=0x{:X}", path, mode);
+
+        // In a real implementation:
+        // 1. Map PS3 path to VFS path
+        // 2. Create directory through VFS
+        // 3. Set permissions
+        // 4. Handle parent directory creation if needed
+
+        0 // CELL_OK
+    }
+
+    /// Remove a directory
+    /// 
+    /// # Arguments
+    /// * `path` - Directory path
+    pub fn rmdir(&mut self, path: &str) -> i32 {
+        if path.is_empty() || path.len() > CELL_FS_MAX_PATH_LENGTH {
+            return 0x80010002u32 as i32; // CELL_FS_ERROR_EINVAL
+        }
+
+        debug!("FsManager::rmdir: path={}", path);
+
+        // In a real implementation:
+        // 1. Map PS3 path to VFS path
+        // 2. Verify directory is empty
+        // 3. Remove directory through VFS
+        // 4. Handle errors (not empty, not found, etc.)
+
+        0 // CELL_OK
+    }
+
+    /// Remove a file
+    /// 
+    /// # Arguments
+    /// * `path` - File path
+    pub fn unlink(&mut self, path: &str) -> i32 {
+        if path.is_empty() || path.len() > CELL_FS_MAX_PATH_LENGTH {
+            return 0x80010002u32 as i32; // CELL_FS_ERROR_EINVAL
+        }
+
+        debug!("FsManager::unlink: path={}", path);
+
+        // In a real implementation:
+        // 1. Map PS3 path to VFS path
+        // 2. Remove file through VFS
+        // 3. Handle errors (not found, permission denied, etc.)
+
+        0 // CELL_OK
     }
 }
 

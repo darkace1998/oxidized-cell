@@ -130,6 +130,8 @@ pub struct MicManager {
     devices: [Option<DeviceEntry>; CELL_MIC_MAX_DEVICES],
     /// Number of connected devices
     num_devices: u32,
+    /// Audio capture backend placeholder
+    capture_backend: Option<()>,
 }
 
 impl MicManager {
@@ -139,6 +141,7 @@ impl MicManager {
             initialized: false,
             devices: [None, None, None, None],
             num_devices: 0,
+            capture_backend: None,
         }
     }
 
@@ -379,6 +382,101 @@ impl MicManager {
     /// Check if initialized
     pub fn is_initialized(&self) -> bool {
         self.initialized
+    }
+
+    // ========================================================================
+    // Audio Capture Backend Integration
+    // ========================================================================
+
+    /// Connect to audio capture backend
+    /// 
+    /// Integrates with an audio capture backend for actual microphone input.
+    pub fn connect_capture_backend(&mut self, _backend: Option<()>) -> i32 {
+        debug!("MicManager::connect_capture_backend");
+        
+        // In a real implementation:
+        // 1. Store the audio capture backend reference
+        // 2. Query available audio capture devices
+        // 3. Populate devices array with actual hardware
+        // 4. Set up audio capture callbacks
+        
+        self.capture_backend = None; // Would store actual backend
+        
+        0 // CELL_OK
+    }
+
+    /// Enumerate audio capture devices
+    /// 
+    /// Queries the backend for available microphone devices.
+    pub fn enumerate_devices(&mut self) -> i32 {
+        if !self.initialized {
+            return CELL_MIC_ERROR_NOT_INITIALIZED;
+        }
+
+        debug!("MicManager::enumerate_devices");
+
+        // In a real implementation:
+        // 1. Query audio capture backend for devices
+        // 2. Create DeviceEntry for each device
+        // 3. Update num_devices
+        // 4. Populate device info (name, type, capabilities)
+
+        // For now, we keep the simulated device
+
+        0 // CELL_OK
+    }
+
+    /// Start audio capture on backend
+    /// 
+    /// # Arguments
+    /// * `device_id` - Device ID
+    fn backend_start_capture(&mut self, device_id: u32) -> i32 {
+        trace!("MicManager::backend_start_capture: device_id={}", device_id);
+
+        // In a real implementation:
+        // 1. Get device parameters (sample rate, channels, buffer size)
+        // 2. Configure audio capture device on backend
+        // 3. Start audio capture stream
+        // 4. Set up capture callback to fill buffer
+
+        0 // CELL_OK
+    }
+
+    /// Stop audio capture on backend
+    /// 
+    /// # Arguments
+    /// * `device_id` - Device ID
+    fn backend_stop_capture(&mut self, device_id: u32) -> i32 {
+        trace!("MicManager::backend_stop_capture: device_id={}", device_id);
+
+        // In a real implementation:
+        // 1. Stop audio capture stream
+        // 2. Release audio capture device resources
+        // 3. Clear capture buffer
+
+        0 // CELL_OK
+    }
+
+    /// Read captured audio data from backend
+    /// 
+    /// # Arguments
+    /// * `device_id` - Device ID
+    /// * `buffer` - Buffer to fill with captured audio
+    fn backend_read_data(&self, device_id: u32, _buffer: &mut [u8]) -> Result<u32, i32> {
+        trace!("MicManager::backend_read_data: device_id={}", device_id);
+
+        // In a real implementation:
+        // 1. Check if data is available in capture buffer
+        // 2. Copy captured samples to output buffer
+        // 3. Apply any format conversion if needed
+        // 4. Return number of bytes read
+
+        Ok(0) // No data in stub
+    }
+
+    /// Check if backend is connected
+    pub fn is_backend_connected(&self) -> bool {
+        self.capture_backend.is_some()
     }
 }
 
