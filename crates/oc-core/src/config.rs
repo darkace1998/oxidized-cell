@@ -36,6 +36,16 @@ pub struct CpuConfig {
     pub accurate_dfma: bool,
     pub accurate_rsx_reservation: bool,
     pub spu_loop_detection: bool,
+    /// Enable cycle-accurate timing simulation
+    pub cycle_accurate_timing: bool,
+    /// Enable pipeline simulation
+    pub pipeline_simulation: bool,
+    /// Enable power management emulation
+    pub power_management: bool,
+    /// Enable cache simulation
+    pub cache_simulation: bool,
+    /// Enable memory access profiling
+    pub memory_profiling: bool,
 }
 
 /// PPU decoder type
@@ -207,6 +217,11 @@ impl Default for CpuConfig {
             accurate_dfma: false,
             accurate_rsx_reservation: false,
             spu_loop_detection: true,
+            cycle_accurate_timing: false,
+            pipeline_simulation: false,
+            power_management: false,
+            cache_simulation: false,
+            memory_profiling: false,
         }
     }
 }

@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 use oc_memory::MemoryManager;
+use oc_core::error::{PpuExceptionType, PowerState};
 
 /// PPU register set
 #[derive(Debug, Clone)]
@@ -26,6 +27,15 @@ pub struct PpuRegisters {
     pub vscr: u32,
     /// Program Counter / Next Instruction Address
     pub cia: u64,
+    /// Machine State Register
+    pub msr: u64,
+    /// Save/Restore Registers (for exception handling)
+    pub srr0: u64,
+    pub srr1: u64,
+    /// Decrementer register
+    pub dec: u32,
+    /// Time Base registers (for timing)
+    pub tb: u64,
 }
 
 impl Default for PpuRegisters {
@@ -41,6 +51,11 @@ impl Default for PpuRegisters {
             fpscr: 0,
             vscr: 0,
             cia: 0,
+            msr: 0x8000_0000_0000_0000, // 64-bit mode enabled by default
+            srr0: 0,
+            srr1: 0,
+            dec: 0,
+            tb: 0,
         }
     }
 }
@@ -56,6 +71,251 @@ pub enum PpuThreadState {
     Waiting,
     /// Thread is suspended
     Suspended,
+}
+
+/// Pipeline stage representation for simulation
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PipelineStage {
+    #[default]
+    Fetch,
+    Decode,
+    Execute,
+    Memory,
+    WriteBack,
+}
+
+/// Pipeline state for simulation
+#[derive(Debug, Clone, Default)]
+pub struct PipelineState {
+    /// Current pipeline stage
+    pub stage: PipelineStage,
+    /// Instructions in flight (address, opcode)
+    pub in_flight: [(u64, u32); 5],
+    /// Pipeline stall cycles
+    pub stall_cycles: u32,
+    /// Branch prediction hit/miss statistics
+    pub branch_hits: u64,
+    pub branch_misses: u64,
+}
+
+impl PipelineState {
+    /// Create a new pipeline state
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a branch prediction result
+    pub fn record_branch(&mut self, hit: bool) {
+        if hit {
+            self.branch_hits += 1;
+        } else {
+            self.branch_misses += 1;
+        }
+    }
+
+    /// Get branch prediction accuracy
+    pub fn branch_accuracy(&self) -> f64 {
+        let total = self.branch_hits + self.branch_misses;
+        if total == 0 {
+            1.0
+        } else {
+            self.branch_hits as f64 / total as f64
+        }
+    }
+
+    /// Flush the pipeline (e.g., after a branch misprediction)
+    pub fn flush(&mut self) {
+        self.in_flight = [(0, 0); 5];
+        self.stall_cycles += 4; // Penalty for flush
+    }
+}
+
+/// Timing state for cycle-accurate emulation
+#[derive(Debug, Clone, Default)]
+pub struct TimingState {
+    /// Total cycles executed
+    pub cycles: u64,
+    /// Cycles per instruction (for averaging)
+    pub cycles_per_instruction: f64,
+    /// Enable cycle-accurate timing
+    pub enabled: bool,
+    /// Cycle frequency in Hz (Cell BE runs at 3.2 GHz)
+    pub frequency_hz: u64,
+    /// Last timestamp for real-time sync
+    pub last_sync_time: u64,
+    /// Instructions since last sync
+    pub instructions_since_sync: u64,
+}
+
+impl TimingState {
+    /// Create a new timing state
+    pub fn new(enabled: bool) -> Self {
+        Self {
+            cycles: 0,
+            cycles_per_instruction: 1.0,
+            enabled,
+            frequency_hz: 3_200_000_000, // 3.2 GHz
+            last_sync_time: 0,
+            instructions_since_sync: 0,
+        }
+    }
+
+    /// Add cycles for an instruction
+    pub fn add_cycles(&mut self, cycles: u64) {
+        self.cycles += cycles;
+        self.instructions_since_sync += 1;
+    }
+
+    /// Get estimated cycles for an instruction type
+    pub fn get_instruction_cycles(&self, instruction_type: InstructionLatency) -> u64 {
+        if !self.enabled {
+            return 1;
+        }
+        match instruction_type {
+            InstructionLatency::Simple => 1,
+            InstructionLatency::Load => 3,
+            InstructionLatency::Store => 2,
+            InstructionLatency::Branch => 1,
+            InstructionLatency::BranchMispredict => 23,
+            InstructionLatency::FloatSimple => 6,
+            InstructionLatency::FloatComplex => 10,
+            InstructionLatency::FloatDivide => 33,
+            InstructionLatency::FloatSqrt => 44,
+            InstructionLatency::Vector => 4,
+            InstructionLatency::Multiply => 4,
+            InstructionLatency::Divide => 36,
+        }
+    }
+}
+
+/// Instruction latency categories
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstructionLatency {
+    /// Simple ALU operations (add, sub, logic)
+    Simple,
+    /// Load from memory
+    Load,
+    /// Store to memory
+    Store,
+    /// Branch (predicted correctly)
+    Branch,
+    /// Branch misprediction penalty
+    BranchMispredict,
+    /// Simple floating-point (add, sub, mul)
+    FloatSimple,
+    /// Complex floating-point (fma, fms)
+    FloatComplex,
+    /// Floating-point divide
+    FloatDivide,
+    /// Floating-point square root
+    FloatSqrt,
+    /// Vector (VMX/AltiVec) operations
+    Vector,
+    /// Integer multiply
+    Multiply,
+    /// Integer divide
+    Divide,
+}
+
+/// Exception state for full exception model
+#[derive(Debug, Clone, Default)]
+pub struct ExceptionState {
+    /// Pending exception (if any)
+    pub pending: Option<PpuExceptionType>,
+    /// Exception mask (which exceptions are enabled)
+    pub mask: u64,
+    /// Exception handler addresses
+    pub handlers: [u64; 16],
+}
+
+impl ExceptionState {
+    /// Create a new exception state
+    pub fn new() -> Self {
+        Self {
+            pending: None,
+            mask: 0xFFFF_FFFF_FFFF_FFFF, // All exceptions enabled by default
+            handlers: [0; 16],
+        }
+    }
+
+    /// Raise an exception
+    pub fn raise(&mut self, exception: PpuExceptionType) {
+        self.pending = Some(exception);
+    }
+
+    /// Clear pending exception
+    pub fn clear(&mut self) {
+        self.pending = None;
+    }
+
+    /// Check if exception is masked
+    pub fn is_masked(&self, exception: &PpuExceptionType) -> bool {
+        let bit = Self::exception_bit(exception);
+        (self.mask & (1 << bit)) == 0
+    }
+
+    /// Get the bit position for an exception type
+    fn exception_bit(exception: &PpuExceptionType) -> u32 {
+        match exception {
+            PpuExceptionType::SystemReset => 0,
+            PpuExceptionType::MachineCheck => 1,
+            PpuExceptionType::DataStorage => 2,
+            PpuExceptionType::DataSegment => 3,
+            PpuExceptionType::InstructionStorage => 4,
+            PpuExceptionType::InstructionSegment => 5,
+            PpuExceptionType::ExternalInterrupt => 6,
+            PpuExceptionType::Alignment => 7,
+            PpuExceptionType::Program { .. } => 8,
+            PpuExceptionType::FloatingPointUnavailable => 9,
+            PpuExceptionType::Decrementer => 10,
+            PpuExceptionType::SystemCall => 11,
+            PpuExceptionType::Trace => 12,
+            PpuExceptionType::FloatingPointAssist => 13,
+            PpuExceptionType::PerformanceMonitor => 14,
+            PpuExceptionType::VmxUnavailable => 15,
+        }
+    }
+}
+
+/// Power management state
+#[derive(Debug, Clone)]
+pub struct PowerManagementState {
+    /// Current power state
+    pub state: PowerState,
+    /// Power-on cycles counter
+    pub power_on_cycles: u64,
+    /// Idle cycles counter
+    pub idle_cycles: u64,
+    /// Throttle level (0-100, where 100 is full speed)
+    pub throttle_level: u8,
+}
+
+impl Default for PowerManagementState {
+    fn default() -> Self {
+        Self {
+            state: PowerState::Running,
+            power_on_cycles: 0,
+            idle_cycles: 0,
+            throttle_level: 100,
+        }
+    }
+}
+
+impl PowerManagementState {
+    /// Create a new power management state
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Transition to a new power state
+    pub fn transition(&mut self, new_state: PowerState) {
+        self.state = new_state;
+    }
+
+    /// Check if CPU should execute
+    pub fn should_execute(&self) -> bool {
+        self.state == PowerState::Running
+    }
 }
 
 /// PPU thread
@@ -76,6 +336,14 @@ pub struct PpuThread {
     pub stack_size: u32,
     /// Priority
     pub priority: u32,
+    /// Pipeline state (for simulation)
+    pub pipeline: PipelineState,
+    /// Timing state (for cycle-accurate emulation)
+    pub timing: TimingState,
+    /// Exception state (for full exception model)
+    pub exceptions: ExceptionState,
+    /// Power management state
+    pub power: PowerManagementState,
 }
 
 impl PpuThread {
@@ -90,7 +358,18 @@ impl PpuThread {
             stack_addr: 0,
             stack_size: 0,
             priority: 0,
+            pipeline: PipelineState::new(),
+            timing: TimingState::new(false),
+            exceptions: ExceptionState::new(),
+            power: PowerManagementState::new(),
         }
+    }
+
+    /// Create a new PPU thread with timing enabled
+    pub fn new_with_timing(id: u32, memory: Arc<MemoryManager>, timing_enabled: bool) -> Self {
+        let mut thread = Self::new(id, memory);
+        thread.timing = TimingState::new(timing_enabled);
+        thread
     }
 
     /// Get the current instruction address
@@ -217,6 +496,102 @@ impl PpuThread {
         } else {
             self.regs.xer &= !0x80000000;
         }
+    }
+
+    /// Evaluate a trap condition (used by tw, td, twi, tdi instructions)
+    /// Returns true if the trap should be taken
+    pub fn evaluate_trap_condition(&self, to: u8, a: i64, b: i64) -> bool {
+        let lt = a < b;
+        let gt = a > b;
+        let eq = a == b;
+        let ltu = (a as u64) < (b as u64);
+        let gtu = (a as u64) > (b as u64);
+
+        ((to & 0x10) != 0 && lt)
+            || ((to & 0x08) != 0 && gt)
+            || ((to & 0x04) != 0 && eq)
+            || ((to & 0x02) != 0 && ltu)
+            || ((to & 0x01) != 0 && gtu)
+    }
+
+    /// Handle exception entry
+    pub fn enter_exception(&mut self, exception: PpuExceptionType, vector: u64) {
+        // Save current state to SRR0/SRR1
+        self.regs.srr0 = self.regs.cia;
+        self.regs.srr1 = self.regs.msr;
+
+        // Clear recoverable bits in MSR
+        self.regs.msr &= !(1 << 15); // Clear EE (External Interrupt Enable)
+        self.regs.msr &= !(1 << 14); // Clear PR (Problem State)
+
+        // Set pending exception
+        self.exceptions.raise(exception);
+
+        // Jump to exception vector
+        self.regs.cia = vector;
+    }
+
+    /// Return from exception (rfi instruction)
+    pub fn return_from_exception(&mut self) {
+        // Restore state from SRR0/SRR1
+        self.regs.cia = self.regs.srr0;
+        self.regs.msr = self.regs.srr1;
+
+        // Clear pending exception
+        self.exceptions.clear();
+    }
+
+    /// Update time base register
+    pub fn update_time_base(&mut self, cycles: u64) {
+        self.regs.tb = self.regs.tb.wrapping_add(cycles);
+    }
+
+    /// Decrement the decrementer register and check for exception
+    pub fn update_decrementer(&mut self, cycles: u32) -> bool {
+        let old_dec = self.regs.dec;
+        self.regs.dec = self.regs.dec.wrapping_sub(cycles);
+
+        // Decrementer exception when it crosses from positive to negative
+        old_dec > 0 && self.regs.dec == 0
+    }
+
+    /// Add timing cycles for the current instruction
+    pub fn add_instruction_cycles(&mut self, latency: InstructionLatency) {
+        if self.timing.enabled {
+            let cycles = self.timing.get_instruction_cycles(latency);
+            self.timing.add_cycles(cycles);
+            self.update_time_base(cycles);
+        }
+    }
+
+    /// Get the current cycle count
+    pub fn get_cycles(&self) -> u64 {
+        self.timing.cycles
+    }
+
+    /// Get MSR (Machine State Register)
+    pub fn get_msr(&self) -> u64 {
+        self.regs.msr
+    }
+
+    /// Set MSR (Machine State Register)
+    pub fn set_msr(&mut self, value: u64) {
+        self.regs.msr = value;
+    }
+
+    /// Check if in 64-bit mode
+    pub fn is_64bit_mode(&self) -> bool {
+        (self.regs.msr & 0x8000_0000_0000_0000) != 0
+    }
+
+    /// Check if external interrupts are enabled
+    pub fn interrupts_enabled(&self) -> bool {
+        (self.regs.msr & (1 << 15)) != 0
+    }
+
+    /// Check if in privileged mode (supervisor)
+    pub fn is_privileged(&self) -> bool {
+        (self.regs.msr & (1 << 14)) == 0
     }
 }
 

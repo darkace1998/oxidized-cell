@@ -238,6 +238,33 @@ pub fn td(_thread: &PpuThread, to: u8, ra: u64, rb: u64) -> bool {
     ((to & 0x01) != 0 && ra > rb)
 }
 
+/// Trap Word Immediate (check condition with immediate and trap)
+pub fn twi(_thread: &PpuThread, to: u8, ra: u64, si: i16) -> bool {
+    let a = ra as i32;
+    let b = si as i32;
+    let ra_u = ra as u32;
+    let si_u = si as u16 as u32;
+    
+    ((to & 0x10) != 0 && a < b) ||
+    ((to & 0x08) != 0 && a > b) ||
+    ((to & 0x04) != 0 && a == b) ||
+    ((to & 0x02) != 0 && ra_u < si_u) ||
+    ((to & 0x01) != 0 && ra_u > si_u)
+}
+
+/// Trap Doubleword Immediate (check condition with immediate and trap)
+pub fn tdi(_thread: &PpuThread, to: u8, ra: u64, si: i16) -> bool {
+    let a = ra as i64;
+    let b = si as i64;
+    let si_u = si as u16 as u64;
+    
+    ((to & 0x10) != 0 && a < b) ||
+    ((to & 0x08) != 0 && a > b) ||
+    ((to & 0x04) != 0 && a == b) ||
+    ((to & 0x02) != 0 && ra < si_u) ||
+    ((to & 0x01) != 0 && ra > si_u)
+}
+
 /// Synchronization instructions (these are mostly no-ops in emulation)
 pub fn sync(_thread: &mut PpuThread, _l: u8) {
     // Memory barrier - in emulation, memory is coherent
@@ -322,5 +349,48 @@ mod tests {
         // Trap if a < b (signed)
         assert!(tw(&thread, 0x10, (-1i32) as u64, 0));
         assert!(!tw(&thread, 0x10, 5, 3));
+    }
+
+    #[test]
+    fn test_twi_trap() {
+        let thread = create_test_thread();
+        
+        // Trap if a == b (immediate)
+        assert!(twi(&thread, 0x04, 5, 5));
+        assert!(!twi(&thread, 0x04, 5, 6));
+        
+        // Trap if a < b (signed, immediate)
+        assert!(twi(&thread, 0x10, (-1i32) as u64, 0));
+        assert!(!twi(&thread, 0x10, 5, 3));
+        
+        // Trap if a > b (signed, immediate)
+        assert!(twi(&thread, 0x08, 10, 5));
+        assert!(!twi(&thread, 0x08, 3, 5));
+    }
+
+    #[test]
+    fn test_td_trap() {
+        let thread = create_test_thread();
+        
+        // Trap if a == b (64-bit)
+        assert!(td(&thread, 0x04, 0x1_0000_0000, 0x1_0000_0000));
+        assert!(!td(&thread, 0x04, 0x1_0000_0000, 0x2_0000_0000));
+        
+        // Trap if a < b (signed, 64-bit)
+        assert!(td(&thread, 0x10, (-1i64) as u64, 0));
+        assert!(!td(&thread, 0x10, 5, 3));
+    }
+
+    #[test]
+    fn test_tdi_trap() {
+        let thread = create_test_thread();
+        
+        // Trap if a == b (immediate, 64-bit)
+        assert!(tdi(&thread, 0x04, 5, 5));
+        assert!(!tdi(&thread, 0x04, 5, 6));
+        
+        // Trap if a < b (signed, immediate, 64-bit)
+        assert!(tdi(&thread, 0x10, (-1i64) as u64, 0));
+        assert!(!tdi(&thread, 0x10, 5, 3));
     }
 }

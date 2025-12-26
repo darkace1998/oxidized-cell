@@ -53,6 +53,12 @@ pub enum MemoryError {
 
     #[error("Alignment error: address 0x{addr:08x} not aligned to {align}")]
     AlignmentError { addr: u32, align: u32 },
+
+    #[error("Watchpoint hit at 0x{addr:08x}: {kind}")]
+    WatchpointHit { addr: u32, kind: AccessKind },
+
+    #[error("Self-modifying code detected at 0x{0:08x}")]
+    SelfModifyingCode(u32),
 }
 
 /// PPU (PowerPC Processing Unit) errors
@@ -75,6 +81,75 @@ pub enum PpuError {
 
     #[error("Breakpoint hit at 0x{addr:08x}")]
     Breakpoint { addr: u64 },
+
+    #[error("Exception {exception:?} at 0x{addr:08x}")]
+    Exception { addr: u32, exception: PpuExceptionType },
+
+    #[error("Power state transition: {0:?}")]
+    PowerState(PowerState),
+}
+
+/// PPU exception types (based on PowerPC architecture)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PpuExceptionType {
+    /// System reset exception
+    SystemReset,
+    /// Machine check exception
+    MachineCheck,
+    /// Data storage exception (page fault)
+    DataStorage,
+    /// Data segment exception
+    DataSegment,
+    /// Instruction storage exception
+    InstructionStorage,
+    /// Instruction segment exception
+    InstructionSegment,
+    /// External interrupt
+    ExternalInterrupt,
+    /// Alignment exception
+    Alignment,
+    /// Program exception (trap, illegal instruction, privileged instruction)
+    Program { reason: ProgramExceptionReason },
+    /// Floating-point unavailable
+    FloatingPointUnavailable,
+    /// Decrementer exception
+    Decrementer,
+    /// System call exception
+    SystemCall,
+    /// Trace exception
+    Trace,
+    /// Floating-point assist exception
+    FloatingPointAssist,
+    /// Performance monitor exception
+    PerformanceMonitor,
+    /// VMX unavailable exception
+    VmxUnavailable,
+}
+
+/// Reason for a program exception
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgramExceptionReason {
+    /// Floating-point enabled exception
+    FloatingPointEnabled,
+    /// Illegal instruction
+    IllegalInstruction,
+    /// Privileged instruction
+    PrivilegedInstruction,
+    /// Trap instruction
+    Trap,
+}
+
+/// Power management states
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerState {
+    /// Full power mode
+    Running,
+    /// Low power standby
+    Standby,
+    /// Deep sleep
+    Sleep,
+    /// Hibernation
+    Hibernate,
 }
 
 /// SPU (Synergistic Processing Unit) errors
@@ -148,6 +223,18 @@ pub enum LoaderError {
 
     #[error("Missing module: {0}")]
     MissingModule(String),
+
+    #[error("Invalid PKG file: {0}")]
+    InvalidPkg(String),
+
+    #[error("Invalid PUP file: {0}")]
+    InvalidPup(String),
+
+    #[error("Invalid firmware: {0}")]
+    InvalidFirmware(String),
+
+    #[error("Unsupported format: {0}")]
+    UnsupportedFormat(String),
 }
 
 /// Kind of memory access

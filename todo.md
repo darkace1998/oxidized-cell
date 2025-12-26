@@ -233,23 +233,23 @@ This document outlines the development roadmap for the Oxidized-Cell PS3 emulato
 ### Phase 1: Stability & Compatibility
 
 #### CPU Emulation
-- [ ] Cycle-accurate timing option
-- [ ] Pipeline simulation
-- [ ] Power management emulation
-- [ ] Full exception model
-- [ ] Trap instruction implementation
+- [x] Cycle-accurate timing option
+- [x] Pipeline simulation
+- [x] Power management emulation
+- [x] Full exception model
+- [x] Trap instruction implementation
 
 #### Memory System
-- [ ] Memory watchpoints
-- [ ] Self-modifying code detection
-- [ ] Cache simulation mode
-- [ ] Memory access profiling
+- [x] Memory watchpoints
+- [x] Self-modifying code detection
+- [x] Cache simulation mode
+- [x] Memory access profiling
 
 #### Loader
-- [ ] Complete SELF decryption
-- [ ] Firmware file support
-- [ ] PSN package extraction
-- [ ] Update package support
+- [ ] Complete SELF decryption (partial - infrastructure in place)
+- [x] Firmware file support (PUP parsing)
+- [x] PSN package extraction (PKG parsing)
+- [x] Update package support (PUP parsing)
 
 ### Phase 2: Graphics
 

@@ -4,11 +4,16 @@
 //! address space, including reservation system for SPU atomics.
 
 pub mod constants;
+pub mod debug;
 pub mod manager;
 pub mod pages;
 pub mod reservation;
 
 pub use constants::*;
+pub use debug::{
+    CacheMode, CacheSimulator, CacheStats, MemoryProfiler, SmcDetector,
+    Watchpoint, WatchpointCondition, WatchpointManager, WatchpointType,
+};
 pub use manager::MemoryManager;
 pub use pages::PageFlags;
 pub use reservation::Reservation;
