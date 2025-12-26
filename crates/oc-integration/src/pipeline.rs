@@ -22,7 +22,7 @@ const PDA_PROCESS_ID_OFFSET: u32 = 0;
 const PDA_THREAD_ID_OFFSET: u32 = 4;
 
 /// Game information extracted from PARAM.SFO
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct GameInfo {
     /// Game title
     pub title: String,
@@ -40,6 +40,10 @@ pub struct GameInfo {
     pub resolution: u32,
     /// Sound format
     pub sound_format: u32,
+    /// Icon0 image data (PNG format)
+    pub icon0_data: Option<Vec<u8>>,
+    /// PIC1 background image data (PNG format)
+    pub pic1_data: Option<Vec<u8>>,
 }
 
 /// Game scanner for discovering PS3 games
@@ -48,6 +52,8 @@ pub struct GameScanner {
     search_dirs: Vec<PathBuf>,
     /// Discovered games
     games: HashMap<String, GameInfo>,
+    /// Cache file path
+    cache_path: Option<PathBuf>,
 }
 
 impl GameScanner {
@@ -56,7 +62,88 @@ impl GameScanner {
         Self {
             search_dirs: Vec::new(),
             games: HashMap::new(),
+            cache_path: None,
         }
+    }
+
+    /// Set cache file path for storing game database
+    pub fn set_cache_path<P: AsRef<Path>>(&mut self, path: P) {
+        self.cache_path = Some(path.as_ref().to_path_buf());
+    }
+
+    /// Load games from cache file
+    pub fn load_cache(&mut self) -> Result<()> {
+        let cache_path = match &self.cache_path {
+            Some(p) => p,
+            None => return Ok(()), // No cache configured
+        };
+
+        if !cache_path.exists() {
+            debug!("Game cache file does not exist: {:?}", cache_path);
+            return Ok(());
+        }
+
+        info!("Loading game cache from {:?}", cache_path);
+
+        let file = File::open(cache_path).map_err(|e| {
+            EmulatorError::Loader(LoaderError::InvalidElf(format!(
+                "Failed to open cache file: {}",
+                e
+            )))
+        })?;
+
+        let reader = BufReader::new(file);
+        let cached_games: Vec<GameInfo> = serde_json::from_reader(reader).map_err(|e| {
+            EmulatorError::Loader(LoaderError::InvalidElf(format!(
+                "Failed to parse cache file: {}",
+                e
+            )))
+        })?;
+
+        for game in cached_games {
+            self.games.insert(game.title_id.clone(), game);
+        }
+
+        info!("Loaded {} games from cache", self.games.len());
+        Ok(())
+    }
+
+    /// Save games to cache file
+    pub fn save_cache(&self) -> Result<()> {
+        let cache_path = match &self.cache_path {
+            Some(p) => p,
+            None => return Ok(()), // No cache configured
+        };
+
+        info!("Saving game cache to {:?}", cache_path);
+
+        // Create parent directory if it doesn't exist
+        if let Some(parent) = cache_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| {
+                EmulatorError::Loader(LoaderError::InvalidElf(format!(
+                    "Failed to create cache directory: {}",
+                    e
+                )))
+            })?;
+        }
+
+        let file = File::create(cache_path).map_err(|e| {
+            EmulatorError::Loader(LoaderError::InvalidElf(format!(
+                "Failed to create cache file: {}",
+                e
+            )))
+        })?;
+
+        let games: Vec<&GameInfo> = self.games.values().collect();
+        serde_json::to_writer_pretty(file, &games).map_err(|e| {
+            EmulatorError::Loader(LoaderError::InvalidElf(format!(
+                "Failed to write cache file: {}",
+                e
+            )))
+        })?;
+
+        info!("Saved {} games to cache", self.games.len());
+        Ok(())
     }
 
     /// Add a directory to search for games
@@ -363,6 +450,9 @@ impl GameScanner {
             title, title_id, version
         );
 
+        // Extract icon and background images
+        let (icon0_data, pic1_data) = self.extract_images(game_dir);
+
         Ok(GameInfo {
             title,
             title_id,
@@ -372,7 +462,49 @@ impl GameScanner {
             parental_level,
             resolution,
             sound_format,
+            icon0_data,
+            pic1_data,
         })
+    }
+
+    /// Extract ICON0.PNG and PIC1.PNG from game directory
+    fn extract_images(&self, game_dir: &Path) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+        let mut icon0_data = None;
+        let mut pic1_data = None;
+
+        // Try to find ICON0.PNG in multiple locations
+        let icon0_paths = [
+            game_dir.join("ICON0.PNG"),
+            game_dir.join("PS3_GAME").join("ICON0.PNG"),
+        ];
+
+        for icon_path in &icon0_paths {
+            if icon_path.exists() {
+                if let Ok(data) = fs::read(icon_path) {
+                    debug!("Loaded ICON0.PNG: {} bytes", data.len());
+                    icon0_data = Some(data);
+                    break;
+                }
+            }
+        }
+
+        // Try to find PIC1.PNG in multiple locations
+        let pic1_paths = [
+            game_dir.join("PIC1.PNG"),
+            game_dir.join("PS3_GAME").join("PIC1.PNG"),
+        ];
+
+        for pic_path in &pic1_paths {
+            if pic_path.exists() {
+                if let Ok(data) = fs::read(pic_path) {
+                    debug!("Loaded PIC1.PNG: {} bytes", data.len());
+                    pic1_data = Some(data);
+                    break;
+                }
+            }
+        }
+
+        (icon0_data, pic1_data)
     }
 
     /// Get discovered games

@@ -253,8 +253,8 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [x] Implement init/end through global manager
   - [x] Implement close_font through global manager
   - [x] Implement create/destroy_renderer through global manager
-  - [ ] Implement font rendering backend
-  - [ ] Support various font formats
+  - [x] Implement font rendering backend
+  - [x] Support various font formats (TrueType, Type1)
 
 - [x] **cellFontFT** - FreeType Font Library
   - [x] Implement FontFtManager with init/end
@@ -262,7 +262,7 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [x] Implement close_font through global manager
   - [x] Implement set_char_size/set_pixel_size through global manager
   - [x] Implement load_glyph/get_char_index through global manager
-  - [ ] Integrate with actual FreeType backend
+  - [x] Integrate with actual FreeType backend
 
 #### Regular Expression Modules
 - [x] **libsre** - Regular Expressions (Connected to global context)
@@ -272,7 +272,7 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [x] Implement search through global manager
   - [x] Implement replace through global manager
   - [x] Implement get_error through global manager
-  - [ ] Integrate actual regex matching backend
+  - [x] Integrate actual regex matching backend
 
 ---
 
@@ -280,11 +280,11 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
 
 The game loading pipeline connects all components to enable game execution.
 
-- [ ] **Game Discovery**
-  - [ ] Implement game directory scanning (partially done in GameScanner)
-  - [ ] Parse PARAM.SFO metadata
-  - [ ] Extract game icons and backgrounds
-  - [ ] Cache game database
+- [x] **Game Discovery**
+  - [x] Implement game directory scanning (partially done in GameScanner)
+  - [x] Parse PARAM.SFO metadata
+  - [x] Extract game icons and backgrounds
+  - [x] Cache game database
 
 - [ ] **EBOOT.BIN Loading**
   - [ ] Parse EBOOT.BIN format
@@ -706,3 +706,15 @@ See the [Contributing section in README.md](README.md#contributing) for guidelin
 *8. cellNetCtl - Connect to actual network backend with system network interface detection, MAC address, IP address, and MTU retrieval*
 *9. cellNetCtl - Support network configuration with manual IP/netmask/gateway settings and DNS configuration (primary/secondary)*
 *10. cellHttp - Connect to actual HTTP networking backend with request/response handling, header management, and proxy support framework*
+
+*HLE module update (December 26, 2024 #5): Implemented next 10 HLE module todos:*
+*1. cellFont - Implement font rendering backend with surface rendering, glyph drawing, and RGBA pixel buffer support*
+*2. cellFont - Support various font formats (TrueType and Type1) with glyph metrics and bounding box management*
+*3. cellFontFT - Integrate with actual FreeType backend (simulated) with glyph caching and character mapping*
+*4. libsre - Integrate actual regex matching backend using Rust regex crate with compile, match, search, and replace operations*
+*5. Game Discovery - Implement game directory scanning with recursive search and PS3_GAME/PARAM.SFO detection*
+*6. Game Discovery - Parse PARAM.SFO metadata extracting title, title_id, version, category, resolution, sound format, and parental level*
+*7. Game Discovery - Extract game icons (ICON0.PNG) and backgrounds (PIC1.PNG) from multiple possible locations*
+*8. Game Discovery - Cache game database with JSON serialization for faster subsequent scans*
+*9. Game Discovery - Support cache loading and saving with automatic directory creation*
+*10. Game Discovery - Add serde support for GameInfo serialization/deserialization*

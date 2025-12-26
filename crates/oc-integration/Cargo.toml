@@ -10,6 +10,8 @@ description = "Core integration layer for oxidized-cell PS3 emulator"
 thiserror.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 # Internal dependencies
 oc-core.workspace = true

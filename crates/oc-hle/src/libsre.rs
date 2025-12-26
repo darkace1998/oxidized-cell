@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use tracing::trace;
+use regex::{Regex, RegexBuilder};
 
 /// Regular expression match result
 #[repr(C)]
@@ -38,6 +39,8 @@ struct PatternEntry {
     pattern: String,
     /// Compilation flags
     flags: u32,
+    /// Compiled regex
+    regex: Option<Regex>,
 }
 
 /// Regular expression manager
@@ -66,18 +69,36 @@ impl RegexManager {
         let pattern_id = self.next_pattern_id;
         self.next_pattern_id += 1;
 
+        // Build regex with flags
+        let case_insensitive = (flags & SRE_FLAG_CASELESS) != 0;
+        let multiline = (flags & SRE_FLAG_MULTILINE) != 0;
+        let dot_matches_newline = (flags & SRE_FLAG_DOTALL) != 0;
+
+        let regex_result = RegexBuilder::new(pattern)
+            .case_insensitive(case_insensitive)
+            .multi_line(multiline)
+            .dot_matches_new_line(dot_matches_newline)
+            .build();
+
+        let compiled_regex = match regex_result {
+            Ok(r) => Some(r),
+            Err(e) => {
+                trace!("RegexManager::compile: Failed to compile pattern: {}", e);
+                return Err(SRE_ERROR_INVALID_PATTERN);
+            }
+        };
+
         let entry = PatternEntry {
             id: pattern_id,
             pattern: pattern.to_string(),
             flags,
+            regex: compiled_regex,
         };
 
         self.patterns.insert(pattern_id, entry);
 
-        trace!("RegexManager::compile: id={}, pattern={}, flags={}", 
+        trace!("RegexManager::compile: id={}, pattern={}, flags={} (with actual regex backend)", 
             pattern_id, pattern, flags);
-
-        // TODO: Actually compile the regex pattern
 
         Ok(pattern_id)
     }
@@ -105,6 +126,63 @@ impl RegexManager {
     /// Get pattern info
     pub fn get_pattern(&self, pattern_id: u32) -> Option<&PatternEntry> {
         self.patterns.get(&pattern_id)
+    }
+
+    /// Match pattern against text
+    pub fn match_pattern(&self, pattern_id: u32, text: &str) -> Vec<SreMatch> {
+        let pattern = match self.patterns.get(&pattern_id) {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+
+        let regex = match &pattern.regex {
+            Some(r) => r,
+            None => return Vec::new(),
+        };
+
+        let mut matches = Vec::new();
+        for capture in regex.captures_iter(text) {
+            if let Some(m) = capture.get(0) {
+                matches.push(SreMatch {
+                    start: m.start() as u32,
+                    end: m.end() as u32,
+                });
+            }
+        }
+
+        trace!("RegexManager::match_pattern: id={}, found {} matches", pattern_id, matches.len());
+        matches
+    }
+
+    /// Search for first match in text
+    pub fn search_pattern(&self, pattern_id: u32, text: &str, start_offset: usize) -> Option<SreMatch> {
+        let pattern = self.patterns.get(&pattern_id)?;
+        let regex = pattern.regex.as_ref()?;
+
+        let search_text = &text[start_offset..];
+        let m = regex.find(search_text)?;
+
+        let result = SreMatch {
+            start: (m.start() + start_offset) as u32,
+            end: (m.end() + start_offset) as u32,
+        };
+
+        trace!("RegexManager::search_pattern: id={}, found match at {}-{}", 
+            pattern_id, result.start, result.end);
+
+        Some(result)
+    }
+
+    /// Replace matches in text
+    pub fn replace_pattern(&self, pattern_id: u32, text: &str, replacement: &str) -> Option<String> {
+        let pattern = self.patterns.get(&pattern_id)?;
+        let regex = pattern.regex.as_ref()?;
+
+        let result = regex.replace_all(text, replacement).to_string();
+
+        trace!("RegexManager::replace_pattern: id={}, replaced text", pattern_id);
+
+        Some(result)
     }
 }
 
@@ -177,8 +255,8 @@ pub fn cell_sre_match(
     pattern: SrePattern,
     text: *const u8,
     text_len: u32,
-    _matches: *mut SreMatch,
-    _max_matches: u32,
+    matches: *mut SreMatch,
+    max_matches: u32,
     num_matches: *mut u32,
 ) -> i32 {
     trace!("cellSreMatch called with pattern={}, text_len={}", pattern, text_len);
@@ -193,13 +271,32 @@ pub fn cell_sre_match(
         return SRE_ERROR_INVALID_PARAMETER;
     }
     
-    // Note: Actual regex matching requires implementing the regex backend
-    // For now, return 0 matches
+    // Read text string
+    let text_str = unsafe {
+        match std::str::from_utf8(std::slice::from_raw_parts(text, text_len as usize)) {
+            Ok(s) => s,
+            Err(_) => return SRE_ERROR_INVALID_PARAMETER,
+        }
+    };
+    
+    // Perform actual regex matching using the backend
+    let found_matches = crate::context::get_hle_context().regex.match_pattern(pattern, text_str);
+    
+    let match_count = found_matches.len().min(max_matches as usize);
+    
     unsafe {
+        if !matches.is_null() && match_count > 0 {
+            for (i, m) in found_matches.iter().take(match_count).enumerate() {
+                *matches.add(i) = *m;
+            }
+        }
+        
         if !num_matches.is_null() {
-            *num_matches = 0;
+            *num_matches = match_count as u32;
         }
     }
+    
+    trace!("cellSreMatch: Found {} matches", match_count);
     
     0 // CELL_OK
 }
@@ -210,7 +307,7 @@ pub fn cell_sre_search(
     text: *const u8,
     text_len: u32,
     start_offset: u32,
-    _match_result: *mut SreMatch,
+    match_result: *mut SreMatch,
 ) -> i32 {
     trace!("cellSreSearch called with pattern={}, text_len={}, offset={}", 
         pattern, text_len, start_offset);
@@ -229,8 +326,31 @@ pub fn cell_sre_search(
         return SRE_ERROR_INVALID_PARAMETER;
     }
     
-    // Note: Actual regex searching requires implementing the regex backend
-    -1 // Not found
+    // Read text string
+    let text_str = unsafe {
+        match std::str::from_utf8(std::slice::from_raw_parts(text, text_len as usize)) {
+            Ok(s) => s,
+            Err(_) => return SRE_ERROR_INVALID_PARAMETER,
+        }
+    };
+    
+    // Perform actual regex search using the backend
+    if let Some(found_match) = crate::context::get_hle_context().regex.search_pattern(
+        pattern, 
+        text_str, 
+        start_offset as usize
+    ) {
+        unsafe {
+            if !match_result.is_null() {
+                *match_result = found_match;
+            }
+        }
+        trace!("cellSreSearch: Found match at {}-{}", found_match.start, found_match.end);
+        0 // CELL_OK (found)
+    } else {
+        trace!("cellSreSearch: No match found");
+        -1 // Not found
+    }
 }
 
 /// cellSreReplace - Replace text matching regular expression
@@ -239,9 +359,9 @@ pub fn cell_sre_replace(
     text: *const u8,
     text_len: u32,
     replacement: *const u8,
-    _replacement_len: u32,
+    replacement_len: u32,
     output: *mut u8,
-    _output_len: u32,
+    output_len: u32,
     result_len: *mut u32,
 ) -> i32 {
     trace!("cellSreReplace called with pattern={}, text_len={}", 
@@ -257,14 +377,49 @@ pub fn cell_sre_replace(
         return SRE_ERROR_INVALID_PARAMETER;
     }
     
-    // Note: Actual regex replacement requires implementing the regex backend
-    unsafe {
-        if !result_len.is_null() {
-            *result_len = 0;
+    // Read text string
+    let text_str = unsafe {
+        match std::str::from_utf8(std::slice::from_raw_parts(text, text_len as usize)) {
+            Ok(s) => s,
+            Err(_) => return SRE_ERROR_INVALID_PARAMETER,
         }
-    }
+    };
     
-    0 // CELL_OK
+    // Read replacement string
+    let replacement_str = unsafe {
+        match std::str::from_utf8(std::slice::from_raw_parts(replacement, replacement_len as usize)) {
+            Ok(s) => s,
+            Err(_) => return SRE_ERROR_INVALID_PARAMETER,
+        }
+    };
+    
+    // Perform actual regex replacement using the backend
+    if let Some(result) = crate::context::get_hle_context().regex.replace_pattern(
+        pattern, 
+        text_str, 
+        replacement_str
+    ) {
+        let result_bytes = result.as_bytes();
+        let copy_len = result_bytes.len().min(output_len as usize);
+        
+        unsafe {
+            std::ptr::copy_nonoverlapping(result_bytes.as_ptr(), output, copy_len);
+            
+            if !result_len.is_null() {
+                *result_len = copy_len as u32;
+            }
+        }
+        
+        trace!("cellSreReplace: Replaced text, result length: {}", copy_len);
+        0 // CELL_OK
+    } else {
+        unsafe {
+            if !result_len.is_null() {
+                *result_len = 0;
+            }
+        }
+        SRE_ERROR_INVALID_PARAMETER
+    }
 }
 
 /// cellSreGetError - Get error message
