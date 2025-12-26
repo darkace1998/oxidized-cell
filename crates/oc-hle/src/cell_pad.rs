@@ -202,6 +202,9 @@ impl PadManager {
         // Simulate one controller connected on port 0
         self.connected_pads = 0x01;
         self.device_types[0] = CellPadDeviceType::Standard;
+        
+        // Initialize pad data for the connected controller
+        self.pad_data[0].len = 24; // Standard data length
 
         // TODO: Connect to oc-input subsystem
 
@@ -303,6 +306,9 @@ impl PadManager {
 
         self.connected_pads |= 1 << port;
         self.device_types[port as usize] = device_type;
+        
+        // Initialize pad data for the connected controller
+        self.pad_data[port as usize].len = 24; // Standard data length
         
         debug!("Connected pad on port {} with type {:?}", port, device_type);
         
