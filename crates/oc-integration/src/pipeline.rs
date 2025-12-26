@@ -1338,6 +1338,143 @@ impl GamePipeline {
             ))))
         }
     }
+    
+    /// Create initial PPU thread for game execution
+    /// 
+    /// This creates the main thread that will execute the game's entry point.
+    /// The thread is created in a stopped state and must be explicitly started.
+    pub fn create_initial_ppu_thread(&self, entry_point: u64, stack_info: &ThreadStackInfo, 
+                                      tls_info: &TlsLayoutInfo, toc: u64) -> Result<MainThreadInfo> {
+        info!("Creating initial PPU thread at entry 0x{:x}", entry_point);
+        
+        // Create thread ID (main thread is always ID 0)
+        let thread_id = 0;
+        
+        // Create thread state structure
+        let thread_state = MainThreadState {
+            thread_id,
+            entry_point,
+            stack_base: stack_info.stack_base,
+            stack_top: stack_info.stack_top,
+            initial_sp: stack_info.initial_sp,
+            tls_pointer: tls_info.main_tls_pointer,
+            toc,
+            priority: 1000,  // High priority for main thread
+            name: "main".to_string(),
+        };
+        
+        debug!(
+            "Main thread created: id={}, entry=0x{:x}, sp=0x{:08x}, tls=0x{:08x}, toc=0x{:x}",
+            thread_id, entry_point, stack_info.initial_sp, tls_info.main_tls_pointer, toc
+        );
+        
+        Ok(MainThreadInfo {
+            state: thread_state,
+            created: true,
+            started: false,
+        })
+    }
+    
+    /// Set up register state for the main thread
+    /// 
+    /// Initializes all PPU registers according to PS3 ABI conventions:
+    /// - R1: Stack pointer
+    /// - R2: TOC (Table of Contents) pointer
+    /// - R3-R5: argc, argv, envp (zeroed for now)
+    /// - R13: TLS pointer
+    /// - PC: Entry point address
+    pub fn setup_register_state(&self, thread_info: &MainThreadInfo) -> Result<RegisterState> {
+        info!("Setting up register state for main thread");
+        
+        let mut register_state = RegisterState::default();
+        
+        // Set up according to PS3 ABI
+        register_state.gpr[1] = thread_info.state.initial_sp as u64;  // Stack pointer
+        register_state.gpr[2] = thread_info.state.toc;                 // TOC pointer
+        register_state.gpr[3] = 0;                                     // argc
+        register_state.gpr[4] = 0;                                     // argv
+        register_state.gpr[5] = 0;                                     // envp
+        register_state.gpr[13] = thread_info.state.tls_pointer as u64; // TLS pointer
+        
+        register_state.pc = thread_info.state.entry_point;
+        
+        // Initialize other registers to safe defaults
+        register_state.lr = 0;           // Link register (return address)
+        register_state.ctr = 0;          // Count register
+        register_state.cr = 0;           // Condition register
+        register_state.xer = 0;          // Fixed-point exception register
+        register_state.fpscr = 0;        // FP status and control
+        register_state.vscr = 0;         // Vector status and control
+        
+        debug!(
+            "Registers initialized: SP=0x{:x}, TOC=0x{:x}, TLS=0x{:x}, PC=0x{:x}",
+            register_state.gpr[1], register_state.gpr[2], register_state.gpr[13], register_state.pc
+        );
+        
+        Ok(register_state)
+    }
+    
+    /// Initialize thread local storage for the main thread
+    /// 
+    /// Sets up the TLS area with initial values and ensures it's properly mapped in memory.
+    pub fn initialize_thread_local_storage(&self, thread_info: &MainThreadInfo, 
+                                            tls_info: &TlsLayoutInfo) -> Result<()> {
+        info!("Initializing thread local storage for main thread");
+        
+        // Verify TLS area is already zeroed (done in configure_tls_areas)
+        let tls_addr = tls_info.thread_areas[0].address;
+        let tls_size = tls_info.thread_areas[0].size;
+        
+        // Write TLS template signature (magic number for debugging)
+        const TLS_MAGIC: u32 = 0x544C5321;  // "TLS!" in ASCII
+        self.memory.write_be32(tls_addr, TLS_MAGIC)?;
+        
+        // Write thread ID at offset 4
+        self.memory.write_be32(tls_addr + 4, thread_info.state.thread_id)?;
+        
+        // Write TLS pointer (R13 value) at the standard offset
+        const TLS_POINTER_OFFSET: u32 = 0x7000;
+        self.memory.write_be32(
+            tls_addr + TLS_POINTER_OFFSET,
+            thread_info.state.tls_pointer
+        )?;
+        
+        debug!(
+            "TLS initialized: base=0x{:08x}, size=0x{:x}, pointer=0x{:08x}",
+            tls_addr, tls_size, thread_info.state.tls_pointer
+        );
+        
+        Ok(())
+    }
+    
+    /// Start execution of the main thread
+    /// 
+    /// Marks the main thread as ready to execute. After calling this,
+    /// the thread will be scheduled for execution.
+    pub fn start_execution(&self, thread_info: &mut MainThreadInfo) -> Result<()> {
+        info!("Starting execution of main thread {}", thread_info.state.thread_id);
+        
+        if thread_info.started {
+            warn!("Main thread already started");
+            return Ok(());
+        }
+        
+        if !thread_info.created {
+            return Err(EmulatorError::Loader(LoaderError::InvalidElf(
+                "Cannot start thread that hasn't been created".to_string()
+            )));
+        }
+        
+        // Mark as started
+        thread_info.started = true;
+        
+        debug!(
+            "Main thread {} started at PC=0x{:x}",
+            thread_info.state.thread_id, thread_info.state.entry_point
+        );
+        
+        Ok(())
+    }
 }
 
 /// Memory layout information
@@ -1427,6 +1564,65 @@ pub struct KernelObjectsInfo {
     pub rwlock_count: u32,
     /// Whether kernel objects have been initialized
     pub initialized: bool,
+}
+
+/// Main thread state information
+#[derive(Debug, Clone)]
+pub struct MainThreadState {
+    /// Thread ID
+    pub thread_id: u32,
+    /// Entry point address
+    pub entry_point: u64,
+    /// Stack base address (lowest address)
+    pub stack_base: u32,
+    /// Stack top address (highest address)
+    pub stack_top: u32,
+    /// Initial stack pointer
+    pub initial_sp: u32,
+    /// TLS pointer (R13 register value)
+    pub tls_pointer: u32,
+    /// TOC pointer (R2 register value)
+    pub toc: u64,
+    /// Thread priority
+    pub priority: u32,
+    /// Thread name
+    pub name: String,
+}
+
+/// Main thread information
+#[derive(Debug, Clone)]
+pub struct MainThreadInfo {
+    /// Thread state
+    pub state: MainThreadState,
+    /// Whether the thread has been created
+    pub created: bool,
+    /// Whether the thread has been started
+    pub started: bool,
+}
+
+/// Register state for PPU thread
+#[derive(Debug, Clone, Default)]
+pub struct RegisterState {
+    /// General Purpose Registers (GPRs)
+    pub gpr: [u64; 32],
+    /// Floating Point Registers (FPRs)
+    pub fpr: [f64; 32],
+    /// Vector Registers (VRs) - 128-bit each, stored as 4 x u32
+    pub vr: [[u32; 4]; 32],
+    /// Program Counter
+    pub pc: u64,
+    /// Link Register
+    pub lr: u64,
+    /// Count Register
+    pub ctr: u64,
+    /// Condition Register
+    pub cr: u32,
+    /// Fixed-Point Exception Register
+    pub xer: u64,
+    /// FP Status and Control Register
+    pub fpscr: u64,
+    /// Vector Status and Control Register
+    pub vscr: u32,
 }
 
 #[cfg(test)]
