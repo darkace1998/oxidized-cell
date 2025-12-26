@@ -3217,6 +3217,7 @@ name = "oxidized-cell"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "oc-audio",
  "oc-core",
  "oc-integration",
  "oc-ui",

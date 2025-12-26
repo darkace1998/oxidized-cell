@@ -14,6 +14,7 @@ path = "src/main.rs"
 oc-ui = { path = "crates/oc-ui" }
 oc-core = { path = "crates/oc-core" }
 oc-integration = { path = "crates/oc-integration" }
+oc-audio = { path = "crates/oc-audio" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 eframe = "0.29"
