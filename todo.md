@@ -270,11 +270,11 @@ This document outlines the development roadmap for the Oxidized-Cell PS3 emulato
 ### Phase 3: Audio
 
 #### Audio Emulation
-- [ ] Complete SPDIF output
-- [ ] Multi-channel audio (5.1, 7.1)
-- [ ] Audio resampling
-- [ ] Time stretching
-- [ ] All audio codecs (AAC, AT3, etc.)
+- [x] Complete SPDIF output
+- [x] Multi-channel audio (5.1, 7.1)
+- [x] Audio resampling
+- [x] Time stretching
+- [x] All audio codecs (AAC, AT3, etc.)
 
 ### Phase 4: Input & Peripherals
 
