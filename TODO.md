@@ -368,13 +368,13 @@ The game loading pipeline connects all components to enable game execution.
 
 ### 5. RSX/Graphics Improvements (95% → 100%)
 
-- [ ] Implement missing NV4097 methods
-- [ ] Add shader caching
-- [ ] Improve texture sampling accuracy
-- [ ] Fix depth buffer handling
-- [ ] Add anti-aliasing support
-- [ ] Implement vertex processing optimizations
-- [ ] Add asynchronous texture loading
+- [x] Implement missing NV4097 methods
+- [x] Add shader caching
+- [x] Improve texture sampling accuracy
+- [x] Fix depth buffer handling
+- [x] Add anti-aliasing support
+- [x] Implement vertex processing optimizations
+- [x] Add asynchronous texture loading
 
 ### 6. Audio System Improvements (85% → 100%)
 
@@ -508,7 +508,7 @@ The game loading pipeline connects all components to enable game execution.
 - [x] Vulkan backend ✅
 - [x] NV4097 method handlers ✅
 - [x] Texture management ✅
-- [ ] Shader cache persistence
+- [x] Shader cache persistence ✅
 
 ### oc-lv2
 - [x] Process management ✅
@@ -759,3 +759,15 @@ See the [Contributing section in README.md](README.md#contributing) for guidelin
 *13. Debugger View - Disassembly view (already implemented with enhancements)*
 *14. Debugger View - Breakpoint management (already implemented with enhancements)*
 *15. Debugger View - Call stack view with frame display, function addresses, and copy functionality*
+
+*RSX/Graphics Improvements update (December 26, 2024): Implemented next 10 RSX/Graphics todos:*
+*1. Implement missing NV4097 methods - Added alpha test (enable, func, ref), polygon offset (fill/line/point enable, scale factor, bias), line width, point size/sprite control*
+*2. Add shader caching - Implemented ShaderCache with disk persistence, hash-based lookup, LRU eviction, preload support, and cache statistics*
+*3. Improve texture sampling accuracy - Added anisotropic filtering (1.0-16.0x), LOD bias, min/max LOD range, and TextureSampler class for precise control*
+*4. Fix depth buffer handling - Added depth compare functions to texture sampler, proper depth test enable/disable, and depth function configuration*
+*5. Add anti-aliasing support - Implemented MSAA with configurable sample count (1, 2, 4, 8 samples) and sample-to-coverage control*
+*6. Implement vertex processing optimizations - Added PostTransformVertexCache (16-32 entries), VertexProcessor with batching, and cache hit/miss statistics*
+*7. Add asynchronous texture loading - Implemented multi-threaded texture loading with configurable worker threads and non-blocking requests*
+*8. Primitive restart support - Added SET_RESTART_INDEX_ENABLE and SET_RESTART_INDEX methods for indexed drawing optimization*
+*9. Occlusion queries - Added SET_ZPASS_PIXEL_COUNT_ENABLE and SET_REPORT_SEMAPHORE_OFFSET for visibility testing*
+*10. Shader cache persistence - Included in shader caching system with disk storage, hash-based filenames, and automatic cache management*
