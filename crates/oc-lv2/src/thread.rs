@@ -55,10 +55,10 @@ pub struct Thread {
 struct ThreadInner {
     state: ThreadState,
     priority: u32,
-    stack_addr: u64,
-    stack_size: usize,
-    entry_point: u64,
-    attributes: ThreadAttributes,
+    _stack_addr: u64,
+    _stack_size: usize,
+    _entry_point: u64,
+    _attributes: ThreadAttributes,
     /// CPU affinity mask (bit N = can run on CPU N)
     affinity_mask: u64,
     /// Thread-local storage pointer
@@ -79,10 +79,10 @@ impl Thread {
             inner: Mutex::new(ThreadInner {
                 state: ThreadState::Ready,
                 priority: attributes.priority,
-                stack_addr,
-                stack_size: attributes.stack_size,
-                entry_point,
-                attributes,
+                _stack_addr: stack_addr,
+                _stack_size: attributes.stack_size,
+                _entry_point: entry_point,
+                _attributes: attributes,
                 affinity_mask: 0xFF, // All CPUs by default (8 cores max)
                 tls_pointer: 0,
                 tls_data: HashMap::new(),

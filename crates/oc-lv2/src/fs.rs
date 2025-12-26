@@ -93,7 +93,7 @@ struct FileState {
     virtual_path: String,
     path: PathBuf,
     file: Option<std::fs::File>,
-    flags: u32,
+    _flags: u32,
 }
 
 impl FileDescriptor {
@@ -106,7 +106,7 @@ impl FileDescriptor {
                 virtual_path,
                 path,
                 file: Some(file),
-                flags,
+                _flags: flags,
             }),
         })
     }
@@ -241,7 +241,7 @@ pub struct DirectoryDescriptor {
 }
 
 struct DirectoryState {
-    path: PathBuf,
+    _path: PathBuf,
     entries: Vec<CellFsDirent>,
     position: usize,
 }
@@ -253,7 +253,7 @@ impl DirectoryDescriptor {
         Ok(Self {
             id,
             inner: Mutex::new(DirectoryState {
-                path,
+                _path: path,
                 entries,
                 position: 0,
             }),

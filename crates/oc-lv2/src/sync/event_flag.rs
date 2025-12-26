@@ -72,8 +72,8 @@ struct EventFlagState {
 #[derive(Debug, Clone)]
 struct WaitingThread {
     thread_id: u64,
-    wait_pattern: u64,
-    wait_mode: u32,
+    _wait_pattern: u64,
+    _wait_mode: u32,
 }
 
 impl EventFlag {
@@ -169,8 +169,8 @@ impl EventFlag {
             if !state.waiting_threads.iter().any(|w| w.thread_id == thread_id) {
                 state.waiting_threads.push_back(WaitingThread {
                     thread_id,
-                    wait_pattern,
-                    wait_mode: mode,
+                    _wait_pattern: wait_pattern,
+                    _wait_mode: mode,
                 });
             }
             

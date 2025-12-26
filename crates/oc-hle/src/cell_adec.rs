@@ -233,6 +233,7 @@ impl AudioDecoderBackend {
     }
 
     /// Get PCM format information
+    #[allow(dead_code)]
     fn get_pcm_format(&self) -> CellAdecPcmFormat {
         CellAdecPcmFormat {
             num_channels: self.channels,

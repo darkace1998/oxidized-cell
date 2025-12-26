@@ -400,7 +400,7 @@ pub struct DualShock3Manager {
     /// Controllers (up to 7)
     controllers: [Option<DualShock3>; 7],
     /// Maximum controllers allowed
-    max_controllers: u8,
+    _max_controllers: u8,
 }
 
 impl DualShock3Manager {
@@ -408,7 +408,7 @@ impl DualShock3Manager {
     pub fn new(max_controllers: u8) -> Self {
         Self {
             controllers: Default::default(),
-            max_controllers: max_controllers.min(7),
+            _max_controllers: max_controllers.min(7),
         }
     }
 

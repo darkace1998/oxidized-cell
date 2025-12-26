@@ -32,7 +32,7 @@ pub mod flags {
 struct MemoryAllocation {
     addr: u64,
     size: usize,
-    container_id: ContainerId,
+    _container_id: ContainerId,
     flags: u64,
 }
 
@@ -68,7 +68,7 @@ impl MemoryManager {
         let allocation = MemoryAllocation {
             addr,
             size: aligned_size,
-            container_id,
+            _container_id: container_id,
             flags,
         };
 

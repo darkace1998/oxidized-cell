@@ -242,7 +242,7 @@ pub struct ControllerConfig {
     /// Currently binding axis
     binding_axis: Option<Ps3Axis>,
     /// Show advanced settings
-    show_advanced: bool,
+    _show_advanced: bool,
     /// Status message
     status_message: String,
     /// Test mode active
@@ -258,7 +258,7 @@ impl ControllerConfig {
             connected_controllers: Vec::new(),
             binding_button: None,
             binding_axis: None,
-            show_advanced: false,
+            _show_advanced: false,
             status_message: String::from("Controller configuration ready"),
             test_mode: false,
         }

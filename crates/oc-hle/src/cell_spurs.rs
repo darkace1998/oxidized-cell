@@ -94,10 +94,12 @@ impl TaskQueue {
         }
     }
 
+    #[allow(dead_code)]
     fn is_empty(&self) -> bool {
         self.tasks.is_empty()
     }
 
+    #[allow(dead_code)]
     fn task_count(&self) -> usize {
         self.tasks.len()
     }
@@ -195,6 +197,7 @@ impl Taskset {
         self.enabled && self.completed.len() == self.tasks.len()
     }
 
+    #[allow(dead_code)]
     fn task_count(&self) -> usize {
         self.tasks.len()
     }

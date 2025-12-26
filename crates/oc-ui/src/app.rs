@@ -71,7 +71,7 @@ pub struct OxidizedCellApp {
     /// Enable frame skipping
     enable_frame_skipping: bool,
     /// Frame skip counter
-    frame_skip_counter: u32,
+    _frame_skip_counter: u32,
 }
 
 /// Application views
@@ -148,7 +148,7 @@ impl OxidizedCellApp {
             fullscreen: false,
             enable_frame_limiting: true,
             enable_frame_skipping: false,
-            frame_skip_counter: 0,
+            _frame_skip_counter: 0,
         }
     }
 

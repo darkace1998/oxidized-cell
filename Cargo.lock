@@ -3122,7 +3122,9 @@ dependencies = [
 name = "oc-integration"
 version = "0.1.0"
 dependencies = [
+ "oc-audio",
  "oc-core",
+ "oc-ffi",
  "oc-hle",
  "oc-loader",
  "oc-lv2",
@@ -3130,6 +3132,7 @@ dependencies = [
  "oc-ppu",
  "oc-rsx",
  "oc-spu",
+ "oc-vfs",
  "parking_lot",
  "serde",
  "serde_json",
@@ -3221,6 +3224,7 @@ dependencies = [
  "image",
  "oc-core",
  "oc-debug",
+ "oc-input",
  "oc-integration",
  "oc-loader",
  "oc-memory",

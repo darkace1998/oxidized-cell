@@ -25,7 +25,7 @@ pub struct ProcessInfo {
 struct ProcessInfoInner {
     state: ProcessState,
     sdk_version: u32,
-    parent_pid: ProcessId,
+    _parent_pid: ProcessId,
 }
 
 impl ProcessInfo {
@@ -35,7 +35,7 @@ impl ProcessInfo {
             inner: Mutex::new(ProcessInfoInner {
                 state: ProcessState::Running,
                 sdk_version,
-                parent_pid: 0,
+                _parent_pid: 0,
             }),
         }
     }

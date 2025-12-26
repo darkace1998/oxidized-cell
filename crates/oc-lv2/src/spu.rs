@@ -64,7 +64,7 @@ pub struct SpuSegment {
 pub struct SpuThreadGroup {
     id: ObjectId,
     inner: Mutex<SpuThreadGroupState>,
-    attributes: SpuThreadGroupAttributes,
+    _attributes: SpuThreadGroupAttributes,
 }
 
 #[derive(Debug)]
@@ -76,6 +76,7 @@ struct SpuThreadGroupState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SpuThreadGroupStatus {
     NotInitialized,
+    #[allow(dead_code)]
     Initialized,
     Running,
     Stopped,
@@ -89,7 +90,7 @@ impl SpuThreadGroup {
                 threads: Vec::with_capacity(num_threads as usize),
                 status: SpuThreadGroupStatus::NotInitialized,
             }),
-            attributes,
+            _attributes: attributes,
         }
     }
 
@@ -139,7 +140,7 @@ pub struct SpuThread {
     id: ObjectId,
     group_id: ObjectId,
     inner: Mutex<SpuThreadState>,
-    attributes: SpuThreadAttributes,
+    _attributes: SpuThreadAttributes,
 }
 
 #[derive(Debug)]
@@ -158,6 +159,7 @@ struct SpuSignals {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 enum SpuThreadStatus {
     NotInitialized,
     Initialized,
@@ -179,7 +181,7 @@ impl SpuThread {
                     signal2: 0,
                 },
             }),
-            attributes,
+            _attributes: attributes,
         }
     }
 

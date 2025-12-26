@@ -9,6 +9,7 @@ use oc_core::Result;
 use oc_loader::elf::{pt, sht};
 use oc_loader::{ElfLoader, PrxLoader, SelfLoader};
 use oc_memory::MemoryManager;
+use oc_vfs::IsoReader;
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read};
 use std::path::{Path, PathBuf};
@@ -89,7 +90,7 @@ impl GameLoader {
     ///
     /// This will automatically detect whether the file is an ELF or SELF file
     /// and handle it accordingly. It also supports loading from PS3 game
-    /// folder structures (looking for USRDIR/EBOOT.BIN).
+    /// folder structures (looking for USRDIR/EBOOT.BIN) and ISO disc images.
     pub fn load<P: AsRef<Path>>(&self, path: P) -> Result<LoadedGame> {
         let path = path.as_ref();
         let path_str = path.to_string_lossy().to_string();
@@ -99,19 +100,32 @@ impl GameLoader {
         let executable_path = self.find_executable(path)?;
         info!("Found executable: {}", executable_path.display());
 
-        // Read the file
-        let file = File::open(&executable_path).map_err(|e| {
-            EmulatorError::Loader(LoaderError::InvalidElf(format!(
-                "Failed to open file: {}",
-                e
-            )))
-        })?;
+        // Check if this is an ISO file
+        let is_iso = executable_path.extension()
+            .map(|ext| ext.eq_ignore_ascii_case("iso"))
+            .unwrap_or(false);
 
-        let mut reader = BufReader::new(file);
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).map_err(|e| {
-            EmulatorError::Loader(LoaderError::InvalidElf(format!("Failed to read file: {}", e)))
-        })?;
+        let (data, actual_path) = if is_iso {
+            // Load from ISO
+            info!("Detected ISO disc image, extracting EBOOT.BIN...");
+            let (iso_data, eboot_path) = self.load_from_iso(&executable_path)?;
+            (iso_data, eboot_path)
+        } else {
+            // Read the file normally
+            let file = File::open(&executable_path).map_err(|e| {
+                EmulatorError::Loader(LoaderError::InvalidElf(format!(
+                    "Failed to open file: {}",
+                    e
+                )))
+            })?;
+
+            let mut reader = BufReader::new(file);
+            let mut data = Vec::new();
+            reader.read_to_end(&mut data).map_err(|e| {
+                EmulatorError::Loader(LoaderError::InvalidElf(format!("Failed to read file: {}", e)))
+            })?;
+            (data, executable_path.to_string_lossy().to_string())
+        };
 
         // Check file magic to determine format
         if data.len() < 4 {
@@ -162,28 +176,55 @@ impl GameLoader {
             info!("Detected plain ELF file");
             (data, false)
         } else {
-            // Unknown format
+            // Unknown format - try to identify what the file might be
             let magic_hex: String = data[0..4.min(data.len())]
                 .iter()
                 .map(|b| format!("{:02X}", b))
                 .collect::<Vec<_>>()
                 .join(" ");
             
+            // Check for common PS3 file formats to give better error messages
+            let format_hint = if data.len() >= 4 {
+                if &data[0..4] == b"\x00PSF" || (data[0] == 0x00 && data[1] == 0x00 && data[2] == 0x00 && data[3] <= 0x10) {
+                    // PARAM.SFO or similar metadata file
+                    "\nThis appears to be a PARAM.SFO or metadata file, not an executable.\n\
+                     Look for EBOOT.BIN in the USRDIR folder instead."
+                } else if &data[0..4] == b"\x7FPKG" {
+                    // PKG file
+                    "\nThis is a PKG (package) file. You need to extract/install it first.\n\
+                     Use a PKG extractor tool, then load the EBOOT.BIN from the extracted contents."
+                } else if data.len() >= 8 && &data[0..8] == b"PS3LICDA" {
+                    // License file
+                    "\nThis is a license data file, not an executable."
+                } else if data.len() >= 16 && (&data[0x8000..0x8006] == b"\x01CD001" || (data.len() > 0x8000 && &data[0..6] == b"\x01CD001")) {
+                    // ISO image
+                    "\nThis appears to be an ISO disc image.\n\
+                     Mount or extract the ISO, then load EBOOT.BIN from PS3_GAME/USRDIR/."
+                } else if &data[0..3] == b"NPD" {
+                    // EDAT/SDAT encrypted data
+                    "\nThis is an encrypted data file (EDAT/SDAT), not an executable."
+                } else {
+                    ""
+                }
+            } else {
+                ""
+            };
+            
             return Err(EmulatorError::Loader(LoaderError::InvalidElf(
                 format!(
                     "Unrecognized file format. Expected SELF (SCE\\0) or ELF (\\x7FELF).\n\
-                     File magic bytes: {}\n\n\
+                     File magic bytes: {}{}\n\n\
                      Make sure you are loading a valid PS3 executable:\n\
                      - EBOOT.BIN (usually in USRDIR folder)\n\
                      - Decrypted ELF file\n\
                      - PRX module",
-                    magic_hex
+                    magic_hex, format_hint
                 )
             )));
         };
 
         // Load the ELF
-        self.load_elf(&elf_data, executable_path.to_string_lossy().to_string(), is_self)
+        self.load_elf(&elf_data, actual_path, is_self)
     }
 
     /// Create a SELF loader with firmware keys if available
@@ -225,6 +266,78 @@ impl GameLoader {
         SelfLoader::new()
     }
 
+    /// Load executable from an ISO disc image
+    fn load_from_iso(&self, iso_path: &Path) -> Result<(Vec<u8>, String)> {
+        let mut iso_reader = IsoReader::new(iso_path.to_path_buf());
+        
+        iso_reader.open().map_err(|e| {
+            EmulatorError::Loader(LoaderError::InvalidElf(format!(
+                "Failed to open ISO file: {}\n\n\
+                 Make sure the file is a valid ISO 9660 disc image.",
+                e
+            )))
+        })?;
+
+        // Log volume info
+        if let Some(volume) = iso_reader.volume() {
+            info!("ISO Volume: '{}' (System: {})", volume.volume_id, volume.system_id);
+        }
+
+        // Try to find EBOOT.BIN in common locations
+        let eboot_paths = [
+            "/PS3_GAME/USRDIR/EBOOT.BIN",
+            "/USRDIR/EBOOT.BIN",
+            "/EBOOT.BIN",
+        ];
+
+        for eboot_path in &eboot_paths {
+            info!("Looking for {} in ISO...", eboot_path);
+            match iso_reader.read_file(eboot_path) {
+                Ok(data) => {
+                    info!("Found EBOOT.BIN at {} ({} bytes)", eboot_path, data.len());
+                    let display_path = format!("{}:{}", iso_path.display(), eboot_path);
+                    return Ok((data, display_path));
+                }
+                Err(e) => {
+                    debug!("Not found at {}: {}", eboot_path, e);
+                }
+            }
+        }
+
+        // Try to list root directory contents for debugging
+        let mut available_files = String::new();
+        if let Ok(entries) = iso_reader.list_directory("/") {
+            available_files.push_str("\n\nISO root directory contents:\n");
+            for entry in entries.iter().take(20) {
+                let entry_type = if entry.is_directory { "DIR " } else { "FILE" };
+                available_files.push_str(&format!("  [{}] {}\n", entry_type, entry.name));
+            }
+            if entries.len() > 20 {
+                available_files.push_str(&format!("  ... and {} more\n", entries.len() - 20));
+            }
+        }
+
+        // Check if PS3_GAME exists
+        if let Ok(entries) = iso_reader.list_directory("/PS3_GAME") {
+            available_files.push_str("\n/PS3_GAME contents:\n");
+            for entry in entries.iter().take(10) {
+                let entry_type = if entry.is_directory { "DIR " } else { "FILE" };
+                available_files.push_str(&format!("  [{}] {}\n", entry_type, entry.name));
+            }
+        }
+
+        Err(EmulatorError::Loader(LoaderError::InvalidElf(format!(
+            "Could not find EBOOT.BIN in ISO file: {}\n\n\
+             Searched locations:\n\
+             - /PS3_GAME/USRDIR/EBOOT.BIN\n\
+             - /USRDIR/EBOOT.BIN\n\
+             - /EBOOT.BIN\n\n\
+             This ISO may not be a valid PS3 game disc.{}",
+            iso_path.display(),
+            available_files
+        ))))
+    }
+
     /// Find the actual executable from a path
     ///
     /// Supports:
@@ -232,8 +345,15 @@ impl GameLoader {
     /// - Path to PS3 game folder (will look for PS3_GAME/USRDIR/EBOOT.BIN)
     /// - Path to USRDIR folder (will look for EBOOT.BIN inside)
     fn find_executable(&self, path: &Path) -> Result<PathBuf> {
-        // If it's a file, use it directly
+        // If it's a file, check if it's an ISO or use it directly
         if path.is_file() {
+            // Check if it's an ISO file by extension
+            if let Some(ext) = path.extension() {
+                if ext.eq_ignore_ascii_case("iso") {
+                    // This is an ISO file, we'll handle it specially
+                    return Ok(path.to_path_buf());
+                }
+            }
             return Ok(path.to_path_buf());
         }
 

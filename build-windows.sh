@@ -17,20 +17,25 @@ fi
 echo "Adding Windows target..."
 rustup target add x86_64-pc-windows-gnu
 
-# Install MinGW-w64 cross-compiler
+# Install MinGW-w64 cross-compiler (includes C++ support)
 echo "Installing MinGW-w64 cross-compiler..."
 if command -v apt-get &> /dev/null; then
     sudo apt-get update
-    sudo apt-get install -y mingw-w64
+    sudo apt-get install -y mingw-w64 g++-mingw-w64-x86-64
 elif command -v dnf &> /dev/null; then
-    sudo dnf install -y mingw64-gcc mingw64-winpthreads-static
+    sudo dnf install -y mingw64-gcc mingw64-gcc-c++ mingw64-winpthreads-static
 elif command -v pacman &> /dev/null; then
     sudo pacman -S mingw-w64-gcc
 else
     echo "Warning: Could not detect package manager. Please install mingw-w64 manually."
 fi
 
-echo "Building for Windows..."
+# Set up cross-compilation environment for C++
+export CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc
+export CXX_x86_64_pc_windows_gnu=x86_64-w64-mingw32-g++
+export AR_x86_64_pc_windows_gnu=x86_64-w64-mingw32-ar
+
+echo "Building for Windows (including C++ JIT components)..."
 # Build the main oxidized-cell binary
 cargo build --release --target x86_64-pc-windows-gnu
 

@@ -217,15 +217,39 @@ impl SelfLoader {
         // Attempt basic decryption
         warn!("Encrypted SELF detected, attempting decryption");
         
-        match header.key_type {
-            0x0001 => self.decrypt_with_key(data, &header, KeyType::Retail),
-            0x0002 => self.decrypt_with_key(data, &header, KeyType::Debug),
+        // Map SELF key_type to our KeyType enum
+        // Key types in SELF header:
+        // 0x01 = retail/production
+        // 0x02 = debug  
+        // 0x1c (28) = retail game NPDRM
+        // 0x1d (29) = retail game disc
+        // 0x1e (30) = retail game HDD
+        // 0x02-0x10 = various system modules
+        let key_type_enum = match header.key_type {
+            0x0001 => KeyType::Retail,
+            0x0002 => KeyType::Debug,
+            0x0003 => KeyType::Lv0,
+            0x0004 => KeyType::Lv1,
+            0x0005 => KeyType::Lv2,
+            0x0006 => KeyType::App,
+            0x0007 => KeyType::IsoSpu,
+            0x0008 => KeyType::Lv2,
+            0x000C => KeyType::Vsh,
+            0x001C => KeyType::Npd,      // NPDRM game
+            0x001D => KeyType::Retail,   // Disc game
+            0x001E => KeyType::Retail,   // HDD game
             _ => {
-                Err(LoaderError::DecryptionFailed(
-                    format!("Unsupported key type: 0x{:x}", header.key_type)
+                return Err(LoaderError::DecryptionFailed(
+                    format!("Unsupported key type: 0x{:02x}. This game requires decryption keys.\n\
+                             To play encrypted games, you need to:\n\
+                             1. Place PS3 firmware (PS3UPDAT.PUP) in the 'firmware/' folder\n\
+                             2. Or provide a keys.txt file with the required keys\n\
+                             3. Or use a decrypted EBOOT.ELF file", header.key_type)
                 ))
             }
-        }
+        };
+        
+        self.decrypt_with_key(data, &header, key_type_enum)
     }
 
     /// Decrypt SELF with specific key type

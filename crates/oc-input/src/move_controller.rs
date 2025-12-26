@@ -6,7 +6,7 @@
 //! - Buttons and trigger
 //! - Vibration feedback
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Move button flags
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

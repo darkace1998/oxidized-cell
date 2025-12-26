@@ -10,6 +10,7 @@ description = "User interface for oxidized-cell PS3 emulator"
 oc-core.workspace = true
 oc-debug.workspace = true
 oc-integration.workspace = true
+oc-input.workspace = true
 oc-loader.workspace = true
 oc-memory.workspace = true
 eframe.workspace = true

@@ -48,7 +48,7 @@ pub struct Event {
 pub struct EventQueue {
     id: ObjectId,
     inner: Mutex<EventQueueState>,
-    attributes: EventQueueAttributes,
+    _attributes: EventQueueAttributes,
 }
 
 #[derive(Debug)]
@@ -68,7 +68,7 @@ impl EventQueue {
                 max_size: size,
                 waiting_threads: VecDeque::new(),
             }),
-            attributes,
+            _attributes: attributes,
         }
     }
 
@@ -188,7 +188,7 @@ impl KernelObject for EventQueue {
 pub struct EventPort {
     id: ObjectId,
     queue_id: ObjectId,
-    attributes: EventPortAttributes,
+    _attributes: EventPortAttributes,
 }
 
 impl EventPort {
@@ -196,7 +196,7 @@ impl EventPort {
         Self {
             id,
             queue_id,
-            attributes,
+            _attributes: attributes,
         }
     }
 

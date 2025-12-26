@@ -9,6 +9,7 @@ pub mod trophy;
 pub mod users;
 
 pub use disc::{DiscFormat, DiscInfo, DiscManager};
+pub use formats::iso::{IsoReader, IsoVolume, IsoDirectoryEntry};
 pub use mount::{devices as ps3_devices, VirtualFileSystem};
 pub use savedata::{SaveDataInfo, SaveDataManager, SaveDataType};
 pub use trophy::{Trophy, TrophyGrade, TrophyManager, TrophySet, TrophyType};

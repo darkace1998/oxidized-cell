@@ -443,7 +443,7 @@ impl SyscallHandler {
             SYS_EVENT_QUEUE_RECEIVE => {
                 let queue_id = args[0] as u32;
                 let timeout_usec = args[1];
-                let event = event::syscalls::sys_event_queue_receive(&self.object_manager, queue_id, timeout_usec)?;
+                let _event = event::syscalls::sys_event_queue_receive(&self.object_manager, queue_id, timeout_usec)?;
                 // In real implementation, would write event data to memory
                 Ok(0)
             }
@@ -602,7 +602,7 @@ impl SyscallHandler {
 
             SYS_FS_FSTAT => {
                 let fd = args[0] as u32;
-                let stat = fs::syscalls::sys_fs_fstat(&self.object_manager, fd)?;
+                let _stat = fs::syscalls::sys_fs_fstat(&self.object_manager, fd)?;
                 // In real implementation, would write stat to memory at args[1]
                 Ok(0)
             }
@@ -610,7 +610,7 @@ impl SyscallHandler {
             SYS_FS_STAT => {
                 // In real impl, would read path from memory at args[0]
                 let path = "/dev_hdd0/test.txt";
-                let stat = fs::syscalls::sys_fs_stat(&self.vfs, path)?;
+                let _stat = fs::syscalls::sys_fs_stat(&self.vfs, path)?;
                 // In real implementation, would write stat to memory at args[1]
                 Ok(0)
             }

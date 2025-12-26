@@ -9,7 +9,7 @@
 use std::time::Instant;
 
 /// Guitar fret buttons
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GuitarFrets(pub u8);
 
 impl GuitarFrets {
@@ -49,7 +49,7 @@ impl GuitarFrets {
 }
 
 /// Guitar special buttons
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GuitarButtons(pub u16);
 
 impl GuitarButtons {
@@ -212,7 +212,7 @@ impl GuitarController {
 }
 
 /// Drum pad indices
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DrumPads(pub u16);
 
 impl DrumPads {
