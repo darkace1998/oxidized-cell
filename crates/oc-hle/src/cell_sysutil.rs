@@ -9,6 +9,12 @@ use tracing::{debug, trace};
 /// Maximum number of callback slots
 pub const CELL_SYSUTIL_MAX_CALLBACK_SLOTS: usize = 4;
 
+/// Error: Invalid value/parameter
+pub const CELL_SYSUTIL_ERROR_VALUE: i32 = 0x80010002u32 as i32;
+
+/// Error: Dialog already open
+pub const CELL_SYSUTIL_ERROR_DIALOG_ALREADY_OPEN: i32 = 0x80010003u32 as i32;
+
 /// System callback function type
 pub type SysutilCallback = fn(status: u64, param: u64, userdata: u64);
 
@@ -340,7 +346,7 @@ impl SysutilManager {
     /// Open a message dialog
     pub fn open_message_dialog(&mut self, message: &str) -> i32 {
         if self.dialog.dialog_type.is_some() {
-            return 0x80010003u32 as i32; // Dialog already open
+            return CELL_SYSUTIL_ERROR_DIALOG_ALREADY_OPEN;
         }
 
         debug!("SysutilManager::open_message_dialog: {}", message);
@@ -355,7 +361,7 @@ impl SysutilManager {
     /// Open an error dialog
     pub fn open_error_dialog(&mut self, error_code: u32, message: &str) -> i32 {
         if self.dialog.dialog_type.is_some() {
-            return 0x80010003u32 as i32; // Dialog already open
+            return CELL_SYSUTIL_ERROR_DIALOG_ALREADY_OPEN;
         }
 
         debug!("SysutilManager::open_error_dialog: error=0x{:08X}, {}", error_code, message);
@@ -370,7 +376,7 @@ impl SysutilManager {
     /// Open a progress dialog
     pub fn open_progress_dialog(&mut self, message: &str) -> i32 {
         if self.dialog.dialog_type.is_some() {
-            return 0x80010003u32 as i32; // Dialog already open
+            return CELL_SYSUTIL_ERROR_DIALOG_ALREADY_OPEN;
         }
 
         debug!("SysutilManager::open_progress_dialog: {}", message);
@@ -386,7 +392,7 @@ impl SysutilManager {
     /// Update progress dialog
     pub fn update_progress(&mut self, progress: u32) -> i32 {
         if self.dialog.dialog_type != Some(DialogType::Progress) {
-            return 0x80010002u32 as i32; // No progress dialog open
+            return CELL_SYSUTIL_ERROR_VALUE; // No progress dialog open
         }
 
         self.dialog.progress = progress.min(100);
@@ -398,7 +404,7 @@ impl SysutilManager {
     /// Close the current dialog
     pub fn close_dialog(&mut self, result: DialogStatus) -> i32 {
         if self.dialog.dialog_type.is_none() {
-            return 0x80010002u32 as i32; // No dialog open
+            return CELL_SYSUTIL_ERROR_VALUE; // No dialog open
         }
 
         debug!("SysutilManager::close_dialog: result={:?}", result);
@@ -709,11 +715,10 @@ pub fn cell_msg_dialog_progress_bar_set_msg(_bar_index: u32, _msg_addr: u32) -> 
 pub fn cell_msg_dialog_progress_bar_inc(_bar_index: u32, delta: u32) -> i32 {
     trace!("cellMsgDialogProgressBarInc(delta={})", delta);
     
-    let ctx = crate::context::get_hle_context();
+    // Use a single mutable context access to avoid race conditions
+    let mut ctx = crate::context::get_hle_context_mut();
     let current = ctx.sysutil.dialog.progress;
-    drop(ctx);
-    
-    crate::context::get_hle_context_mut().sysutil.update_progress(current + delta)
+    ctx.sysutil.update_progress(current + delta)
 }
 
 // ============================================================================

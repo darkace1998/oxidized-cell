@@ -948,16 +948,21 @@ pub fn cell_gcm_set_texture(slot: u32, _texture_addr: u32) -> i32 {
         return 0x80410002u32 as i32; // CELL_GCM_ERROR_INVALID_VALUE
     }
     
+    // Default texture dimensions for HLE stub
+    const DEFAULT_TEXTURE_WIDTH: u16 = 256;
+    const DEFAULT_TEXTURE_HEIGHT: u16 = 256;
+    const BYTES_PER_PIXEL: u32 = 4; // ARGB8 format
+    
     // Create a default texture descriptor (in real implementation, would read from memory)
     let texture = CellGcmTexture {
         format: CellGcmTextureFormat::Argb8 as u32,
         mipmap: 1,
         dimension: 2, // 2D texture
         cubemap: false,
-        width: 256,
-        height: 256,
+        width: DEFAULT_TEXTURE_WIDTH,
+        height: DEFAULT_TEXTURE_HEIGHT,
         depth: 1,
-        pitch: 256 * 4,
+        pitch: DEFAULT_TEXTURE_WIDTH as u32 * BYTES_PER_PIXEL,
         offset: 0,
         location: 0, // Local memory
     };

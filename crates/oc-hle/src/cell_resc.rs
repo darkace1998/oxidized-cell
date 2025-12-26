@@ -460,8 +460,9 @@ impl RescManager {
 
         trace!("RescManager::convert_and_flip: buffer_idx={}", buffer_idx);
 
-        // Calculate scale factors if not already done
-        if self.scale_x == 1.0 && self.scale_y == 1.0 {
+        // Calculate scale factors if not already done (use epsilon comparison for floats)
+        let epsilon = 0.0001f32;
+        if (self.scale_x - 1.0).abs() < epsilon && (self.scale_y - 1.0).abs() < epsilon {
             self.calculate_scale_factors();
         }
 
