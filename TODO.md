@@ -18,7 +18,7 @@ This document outlines the complete development roadmap for oxidized-cell, a Pla
 | Input System | ✅ Complete | 80% | Medium |
 | VFS | ✅ Complete | 80% | Medium |
 | ELF/Game Loader | ✅ Complete | 90% | Low |
-| HLE Modules | 🚧 In Progress | 75% | **HIGH** |
+| HLE Modules | 🚧 In Progress | 90% | Medium |
 | User Interface | 🚧 In Progress | 15% | Medium |
 | Game Loading Pipeline | ❌ Not Started | 0% | **HIGH** |
 | Debugging Tools | 🔨 Mostly Complete | 70% | Low |
@@ -29,7 +29,7 @@ This document outlines the complete development roadmap for oxidized-cell, a Pla
 
 ### 1. HLE Module Implementation (Critical for Game Execution)
 
-The HLE (High-Level Emulation) modules are essential for running PS3 games. Currently at ~75% completion.
+The HLE (High-Level Emulation) modules are essential for running PS3 games. Currently at ~90% completion.
 
 #### HLE Infrastructure
 - [x] **Global HLE Context** - Centralized manager instances
@@ -53,10 +53,13 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [ ] Add texture management functions
   - [ ] Implement render target configuration
 
-- [ ] **cellResc** - Resolution Scaler
-  - [ ] Implement resolution conversion
-  - [ ] Add aspect ratio handling
-  - [ ] Support upscaling/downscaling
+- [x] **cellResc** - Resolution Scaler
+  - [x] Implement RescManager with init/exit
+  - [x] Implement set_display_mode through global manager
+  - [x] Implement set_src/set_dsts through global manager
+  - [x] Implement convert_and_flip through global manager
+  - [x] Implement get_num_display_buffers/get_display_buffer_size
+  - [ ] Integrate with actual RSX backend for scaling
 
 #### System Modules
 - [x] **cellSysutil** - System Utilities (Connected to global context)
@@ -97,10 +100,13 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [ ] Implement taskset operations
   - [ ] Add event flags and barriers
 
-- [ ] **cellSpursJq** - SPURS Job Queue
-  - [ ] Implement job submission
-  - [ ] Add job completion callbacks
-  - [ ] Support job priorities
+- [x] **cellSpursJq** - SPURS Job Queue
+  - [x] Implement SpursJqManager with init/finalize
+  - [x] Implement create_queue/destroy_queue through global manager
+  - [x] Implement push_job through global manager
+  - [x] Implement sync_job/sync_all through global manager
+  - [x] Implement abort_job through global manager
+  - [ ] Integrate with actual SPU job execution
 
 #### Input Modules
 - [x] **cellPad** - Controller Input (Connected to global context)
@@ -112,13 +118,21 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [ ] Add rumble/vibration support
   - [ ] Support multiple controllers
 
-- [ ] **cellKb** - Keyboard Input
-  - [ ] Implement keyboard mapping
-  - [ ] Support multiple keyboard layouts
+- [x] **cellKb** - Keyboard Input
+  - [x] Implement KbManager with init/end
+  - [x] Implement get_info through global manager
+  - [x] Implement read through global manager
+  - [x] Implement set_read_mode/set_code_type through global manager
+  - [x] Support multiple keyboard layouts
+  - [ ] Connect to oc-input backend
 
-- [ ] **cellMouse** - Mouse Input
-  - [ ] Implement mouse position tracking
-  - [ ] Add button state handling
+- [x] **cellMouse** - Mouse Input
+  - [x] Implement MouseManager with init/end
+  - [x] Implement get_info through global manager
+  - [x] Implement get_data/get_data_list through global manager
+  - [x] Implement get_raw_data through global manager
+  - [x] Add button state handling
+  - [ ] Connect to oc-input backend
 
 #### Audio Modules
 - [x] **cellAudio** - Audio Output (Connected to global context)
@@ -128,9 +142,14 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [ ] Connect to oc-audio backend
   - [ ] Add mixing support
 
-- [ ] **cellMic** - Microphone Input
-  - [ ] Implement audio capture
-  - [ ] Add device enumeration
+- [x] **cellMic** - Microphone Input
+  - [x] Implement MicManager with init/end
+  - [x] Implement get_device_count/get_device_info through global manager
+  - [x] Implement open/close through global manager
+  - [x] Implement start/stop through global manager
+  - [x] Implement read through global manager
+  - [x] Add device enumeration
+  - [ ] Connect to actual audio capture backend
 
 #### File System Modules
 - [x] **cellFs** - File System (Connected to global context)
@@ -237,8 +256,13 @@ The HLE (High-Level Emulation) modules are essential for running PS3 games. Curr
   - [ ] Implement font rendering backend
   - [ ] Support various font formats
 
-- [ ] **cellFontFT** - FreeType Font Library
-  - [ ] Integrate with FreeType
+- [x] **cellFontFT** - FreeType Font Library
+  - [x] Implement FontFtManager with init/end
+  - [x] Implement open_font_memory/open_font_file through global manager
+  - [x] Implement close_font through global manager
+  - [x] Implement set_char_size/set_pixel_size through global manager
+  - [x] Implement load_glyph/get_char_index through global manager
+  - [ ] Integrate with actual FreeType backend
 
 #### Regular Expression Modules
 - [x] **libsre** - Regular Expressions (Connected to global context)
@@ -517,6 +541,12 @@ The game loading pipeline connects all components to enable game execution.
 - [x] Global HLE Context ✅
 - [x] cellGcmSys connected to global context ✅
 - [x] cellSpurs connected to global context ✅
+- [x] cellSpursJq connected to global context ✅
+- [x] cellResc connected to global context ✅
+- [x] cellKb connected to global context ✅
+- [x] cellMouse connected to global context ✅
+- [x] cellMic connected to global context ✅
+- [x] cellFontFT connected to global context ✅
 - [x] cellSysutil connected to global context ✅
 - [x] cellPad connected to global context ✅
 - [x] cellFs connected to global context ✅
@@ -617,4 +647,4 @@ See the [Contributing section in README.md](README.md#contributing) for guidelin
 ---
 
 *Last updated: December 2024*
-*HLE module update: Connected GcmManager, SpursManager, PadManager, FsManager, FontManager, VpostManager, GifDecManager, SslManager, and RegexManager to global HLE context.*
+*HLE module update: Implemented all remaining HLE modules (cellResc, cellSpursJq, cellKb, cellMouse, cellMic, cellFontFT) and connected them to global HLE context. All HLE modules now have manager implementations and are registered in the module registry.*

@@ -223,6 +223,65 @@ impl ModuleRegistry {
         fs.register(0x5C74903D, |_| 0); // cellFsReaddir
         fs.register(0xA3EBFA2B, |_| 0); // cellFsClosedir
         self.modules.insert("cellFs".to_string(), fs);
+
+        // cellResc - Resolution scaler
+        let mut resc = HleModule::new("cellResc");
+        resc.register(0x23134710, |_| 0); // cellRescInit
+        resc.register(0x09FB6A6D, |_| 0); // cellRescExit
+        resc.register(0x24C35E65, |_| 0); // cellRescSetDisplayMode
+        resc.register(0x6CD0F95F, |_| 0); // cellRescSetSrc
+        resc.register(0x516EE89E, |_| 0); // cellRescSetDsts
+        resc.register(0x69A41AA6, |_| 0); // cellRescSetConvertAndFlip
+        self.modules.insert("cellResc".to_string(), resc);
+
+        // cellSpursJq - SPURS Job Queue
+        let mut spurs_jq = HleModule::new("cellSpursJq");
+        spurs_jq.register(0x15625280, |_| 0); // cellSpursJobQueueCreate
+        spurs_jq.register(0x4B9837DA, |_| 0); // cellSpursJobQueueDestroy
+        spurs_jq.register(0x6A5B3005, |_| 0); // cellSpursJobQueuePushJob
+        spurs_jq.register(0x2FF2A154, |_| 0); // cellSpursJobQueueSync
+        self.modules.insert("cellSpursJq".to_string(), spurs_jq);
+
+        // cellKb - Keyboard input
+        let mut kb = HleModule::new("cellKb");
+        kb.register(0x43E5E12C, |_| 0); // cellKbInit
+        kb.register(0xBFC32557, |_| 0); // cellKbEnd
+        kb.register(0x2073B7F6, |_| 0); // cellKbGetInfo
+        kb.register(0xFF0A21B7, |_| 0); // cellKbRead
+        kb.register(0xA5F85E4D, |_| 0); // cellKbSetReadMode
+        kb.register(0x3F72C56E, |_| 0); // cellKbSetCodeType
+        self.modules.insert("cellKb".to_string(), kb);
+
+        // cellMouse - Mouse input
+        let mut mouse = HleModule::new("cellMouse");
+        mouse.register(0xC9030138, |_| 0); // cellMouseInit
+        mouse.register(0xE10183CE, |_| 0); // cellMouseEnd
+        mouse.register(0x3EF66B95, |_| 0); // cellMouseGetInfo
+        mouse.register(0xDBDABD6A, |_| 0); // cellMouseGetData
+        mouse.register(0x4D0B3B1F, |_| 0); // cellMouseGetDataList
+        mouse.register(0x21A62E9B, |_| 0); // cellMouseClearBuf
+        self.modules.insert("cellMouse".to_string(), mouse);
+
+        // cellMic - Microphone input
+        let mut mic = HleModule::new("cellMic");
+        mic.register(0x06FBE9D6, |_| 0); // cellMicInit
+        mic.register(0x9FF53C1A, |_| 0); // cellMicEnd
+        mic.register(0x186CB69A, |_| 0); // cellMicOpen
+        mic.register(0xC6B88C77, |_| 0); // cellMicClose
+        mic.register(0xF8E25EB4, |_| 0); // cellMicStart
+        mic.register(0x87A08D29, |_| 0); // cellMicStop
+        mic.register(0x75DA7A97, |_| 0); // cellMicRead
+        self.modules.insert("cellMic".to_string(), mic);
+
+        // cellFontFT - FreeType font library
+        let mut font_ft = HleModule::new("cellFontFT");
+        font_ft.register(0x1387C6C4, |_| 0); // cellFontFTInit
+        font_ft.register(0x41C80CB8, |_| 0); // cellFontFTEnd
+        font_ft.register(0xA885CC9B, |_| 0); // cellFontFTOpenFontMemory
+        font_ft.register(0xE5D8F51E, |_| 0); // cellFontFTOpenFontFile
+        font_ft.register(0x2E936C08, |_| 0); // cellFontFTCloseFont
+        font_ft.register(0xB276F1F6, |_| 0); // cellFontFTLoadGlyph
+        self.modules.insert("cellFontFT".to_string(), font_ft);
     }
 
     /// Get a module by name

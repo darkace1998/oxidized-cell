@@ -10,6 +10,7 @@ pub mod cell_gcm_sys;
 pub mod cell_gif_dec;
 pub mod cell_png_dec;
 pub mod cell_jpg_dec;
+pub mod cell_resc;
 
 // System Modules
 pub mod cell_sysutil;
@@ -29,13 +30,20 @@ pub mod cell_ssl;
 
 // Utilities Modules
 pub mod cell_font;
+pub mod cell_font_ft;
 pub mod cell_spurs;
+pub mod cell_spurs_jq;
 pub mod libsre;
+
+// Input Modules
+pub mod cell_pad;
+pub mod cell_kb;
+pub mod cell_mouse;
+pub mod cell_mic;
 
 // Other System Modules
 pub mod cell_audio;
 pub mod cell_fs;
-pub mod cell_pad;
 
 pub use module::ModuleRegistry;
 pub use context::{HleContext, HLE_CONTEXT, get_hle_context, get_hle_context_mut, reset_hle_context};

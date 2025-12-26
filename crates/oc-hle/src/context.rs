@@ -23,9 +23,15 @@ use crate::cell_net_ctl::NetCtlManager;
 use crate::cell_http::HttpManager;
 use crate::cell_ssl::SslManager;
 use crate::cell_font::FontManager;
+use crate::cell_font_ft::FontFtManager;
 use crate::libsre::RegexManager;
 use crate::cell_gcm_sys::GcmManager;
 use crate::cell_spurs::SpursManager;
+use crate::cell_spurs_jq::SpursJqManager;
+use crate::cell_resc::RescManager;
+use crate::cell_kb::KbManager;
+use crate::cell_mouse::MouseManager;
+use crate::cell_mic::MicManager;
 
 /// Global HLE context instance
 pub static HLE_CONTEXT: Lazy<Arc<RwLock<HleContext>>> = Lazy::new(|| {
@@ -68,12 +74,24 @@ pub struct HleContext {
     pub ssl: SslManager,
     /// Font manager
     pub font: FontManager,
+    /// FreeType font manager
+    pub font_ft: FontFtManager,
     /// Regular expression manager
     pub regex: RegexManager,
     /// GCM (Graphics) manager
     pub gcm: GcmManager,
     /// SPURS manager
     pub spurs: SpursManager,
+    /// SPURS Job Queue manager
+    pub spurs_jq: SpursJqManager,
+    /// Resolution scaler manager
+    pub resc: RescManager,
+    /// Keyboard input manager
+    pub kb: KbManager,
+    /// Mouse input manager
+    pub mouse: MouseManager,
+    /// Microphone input manager
+    pub mic: MicManager,
 }
 
 impl HleContext {
@@ -97,9 +115,15 @@ impl HleContext {
             http: HttpManager::new(),
             ssl: SslManager::new(),
             font: FontManager::new(),
+            font_ft: FontFtManager::new(),
             regex: RegexManager::new(),
             gcm: GcmManager::new(),
             spurs: SpursManager::new(),
+            spurs_jq: SpursJqManager::new(),
+            resc: RescManager::new(),
+            kb: KbManager::new(),
+            mouse: MouseManager::new(),
+            mic: MicManager::new(),
         }
     }
 
