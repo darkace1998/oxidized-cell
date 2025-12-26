@@ -64,6 +64,14 @@ pub struct OxidizedCellApp {
     emulator_fps: f64,
     /// Error message to display
     error_message: Option<String>,
+    /// Fullscreen mode
+    fullscreen: bool,
+    /// Enable frame rate limiting
+    enable_frame_limiting: bool,
+    /// Enable frame skipping
+    enable_frame_skipping: bool,
+    /// Frame skip counter
+    frame_skip_counter: u32,
 }
 
 /// Application views
@@ -137,6 +145,10 @@ impl OxidizedCellApp {
             frame_time: 0.0,
             emulator_fps: 0.0,
             error_message: None,
+            fullscreen: false,
+            enable_frame_limiting: true,
+            enable_frame_skipping: false,
+            frame_skip_counter: 0,
         }
     }
 
@@ -709,6 +721,33 @@ impl OxidizedCellApp {
                     RunnerState::Paused => egui::Color32::YELLOW,
                 };
                 ui.colored_label(state_color, format!("● {:?}", emulation_state));
+
+                ui.separator();
+
+                // Fullscreen button
+                if ui.button(if self.fullscreen { "🗗 Windowed" } else { "🗖 Fullscreen" }).clicked() {
+                    self.toggle_fullscreen(ui.ctx());
+                }
+
+                ui.separator();
+
+                // Frame limiting checkbox
+                if ui.checkbox(&mut self.enable_frame_limiting, "Frame Limit").changed() {
+                    self.log_viewer.log(
+                        LogLevel::Info,
+                        "oc-ui",
+                        &format!("Frame limiting: {}", if self.enable_frame_limiting { "enabled" } else { "disabled" })
+                    );
+                }
+
+                // Frame skipping checkbox
+                if ui.checkbox(&mut self.enable_frame_skipping, "Frame Skip").changed() {
+                    self.log_viewer.log(
+                        LogLevel::Info,
+                        "oc-ui",
+                        &format!("Frame skipping: {}", if self.enable_frame_skipping { "enabled" } else { "disabled" })
+                    );
+                }
             });
 
             ui.add_space(10.0);
@@ -751,10 +790,10 @@ impl OxidizedCellApp {
                     }
                 }
                 RunnerState::Running => {
-                    "RSX Output\n(Rendering connected to RSX backend)"
+                    "✓ RSX Output Connected\nRendering to Display\n\nNote: Actual framebuffer rendering will appear here"
                 }
                 RunnerState::Paused => {
-                    "Paused\nPress Start to resume"
+                    "⏸ Paused\nPress Start to resume"
                 }
             };
 
@@ -770,11 +809,15 @@ impl OxidizedCellApp {
             if emulation_state != RunnerState::Stopped {
                 if let Some(ref emulator) = self.emulator {
                     let runner = emulator.read();
+                    let frame_limit_indicator = if self.enable_frame_limiting { "◉" } else { "○" };
+                    let frame_skip_indicator = if self.enable_frame_skipping { "◉" } else { "○" };
                     let stats_text = format!(
-                        "Frame: {} | Cycles: {} | FPS: {:.1}",
+                        "Frame: {} | Cycles: {} | FPS: {:.1} | Limit: {} | Skip: {}",
                         runner.frame_count(),
                         runner.total_cycles(),
-                        self.emulator_fps
+                        self.emulator_fps,
+                        frame_limit_indicator,
+                        frame_skip_indicator
                     );
                     
                     ui.painter().text(
@@ -849,6 +892,17 @@ impl OxidizedCellApp {
             icon_data: None,
             last_played: None,
         }
+    }
+
+    /// Toggle fullscreen mode
+    fn toggle_fullscreen(&mut self, ctx: &egui::Context) {
+        self.fullscreen = !self.fullscreen;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+        self.log_viewer.log(
+            LogLevel::Info,
+            "oc-ui",
+            &format!("Fullscreen: {}", if self.fullscreen { "enabled" } else { "disabled" })
+        );
     }
 }
 

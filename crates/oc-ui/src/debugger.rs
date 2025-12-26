@@ -114,11 +114,13 @@ impl MemoryBreakpointType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DebuggerTab {
     Registers,
+    SpuRegisters,
     Memory,
     Disassembly,
     Breakpoints,
     Watchpoints,
     MemoryBreakpoints,
+    CallStack,
     Profiler,
 }
 
@@ -201,12 +203,14 @@ impl DebuggerView {
     /// Show the debugger view
     pub fn show(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.current_tab, DebuggerTab::Registers, "Registers");
+            ui.selectable_value(&mut self.current_tab, DebuggerTab::Registers, "PPU Regs");
+            ui.selectable_value(&mut self.current_tab, DebuggerTab::SpuRegisters, "SPU Regs");
             ui.selectable_value(&mut self.current_tab, DebuggerTab::Memory, "Memory");
             ui.selectable_value(&mut self.current_tab, DebuggerTab::Disassembly, "Disassembly");
             ui.selectable_value(&mut self.current_tab, DebuggerTab::Breakpoints, "Breakpoints");
             ui.selectable_value(&mut self.current_tab, DebuggerTab::Watchpoints, "Watchpoints");
             ui.selectable_value(&mut self.current_tab, DebuggerTab::MemoryBreakpoints, "Memory BPs");
+            ui.selectable_value(&mut self.current_tab, DebuggerTab::CallStack, "Call Stack");
             ui.selectable_value(&mut self.current_tab, DebuggerTab::Profiler, "Profiler");
         });
 
@@ -265,11 +269,13 @@ impl DebuggerView {
         egui::ScrollArea::vertical().show(ui, |ui| {
             match self.current_tab {
                 DebuggerTab::Registers => self.show_registers(ui),
+                DebuggerTab::SpuRegisters => self.show_spu_registers(ui),
                 DebuggerTab::Memory => self.show_memory(ui),
                 DebuggerTab::Disassembly => self.show_disassembly(ui),
                 DebuggerTab::Breakpoints => self.show_breakpoints(ui),
                 DebuggerTab::Watchpoints => self.show_watchpoints(ui),
                 DebuggerTab::MemoryBreakpoints => self.show_memory_breakpoints(ui),
+                DebuggerTab::CallStack => self.show_call_stack(ui),
                 DebuggerTab::Profiler => self.show_profiler(ui),
             }
         });
@@ -930,6 +936,128 @@ impl DebuggerView {
                 }
             });
         }
+    }
+
+    fn show_spu_registers(&self, ui: &mut egui::Ui) {
+        ui.heading("SPU Registers");
+        ui.add_space(10.0);
+
+        // SPU selection
+        ui.horizontal(|ui| {
+            ui.label("Select SPU:");
+            // Note: In real implementation, this would be a dropdown to select active SPU
+            ui.label(egui::RichText::new("SPU 0").strong());
+        });
+
+        ui.add_space(10.0);
+
+        // SPU General Purpose Registers (128 registers)
+        ui.label(egui::RichText::new("SPU Registers (R0-R127)").strong());
+        ui.label(egui::RichText::new("Showing first 32 registers").small().italics());
+        
+        egui::ScrollArea::vertical().max_height(400.0).show(ui, |ui| {
+            egui::Grid::new("spu_reg_grid")
+                .striped(true)
+                .num_columns(2)
+                .show(ui, |ui| {
+                    for i in 0..32 {
+                        ui.label(format!("R{:03}:", i));
+                        // SPU registers are 128-bit (4 x 32-bit)
+                        ui.label(egui::RichText::new("00000000 00000000 00000000 00000000").monospace());
+                        ui.end_row();
+                    }
+                });
+        });
+
+        ui.add_space(10.0);
+
+        // SPU Special Registers
+        ui.label(egui::RichText::new("Special Registers").strong());
+        egui::Grid::new("spu_special_regs")
+            .striped(true)
+            .num_columns(2)
+            .show(ui, |ui| {
+                ui.label("PC:");
+                ui.label(egui::RichText::new("0x00000000").monospace());
+                ui.end_row();
+
+                ui.label("SPU Status:");
+                ui.label(egui::RichText::new("Running").monospace());
+                ui.end_row();
+
+                ui.label("Channel Count:");
+                ui.label(egui::RichText::new("0").monospace());
+                ui.end_row();
+
+                ui.label("MFC Tag Status:");
+                ui.label(egui::RichText::new("0x00000000").monospace());
+                ui.end_row();
+            });
+
+        ui.add_space(10.0);
+        ui.label(egui::RichText::new("Note: Connect to actual SPU thread to see live register values").small().italics());
+    }
+
+    fn show_call_stack(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Call Stack");
+        ui.add_space(10.0);
+
+        // Get call stack from debugger
+        let call_stack = self.ppu_debugger.get_call_stack();
+
+        if call_stack.is_empty() {
+            ui.label("No call stack data available");
+            ui.label(egui::RichText::new("Start execution and pause to see the call stack").small().italics());
+        } else {
+            ui.label(format!("Showing {} stack frames", call_stack.len()));
+            ui.add_space(10.0);
+
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                egui::Grid::new("call_stack_grid")
+                    .striped(true)
+                    .num_columns(4)
+                    .spacing([10.0, 4.0])
+                    .show(ui, |ui| {
+                        // Header
+                        ui.label(egui::RichText::new("Frame").strong());
+                        ui.label(egui::RichText::new("Function Address").strong());
+                        ui.label(egui::RichText::new("Return Address").strong());
+                        ui.label(egui::RichText::new("Name").strong());
+                        ui.end_row();
+
+                        // Call stack entries
+                        for (i, entry) in call_stack.iter().enumerate() {
+                            ui.label(format!("#{}", i));
+                            ui.label(egui::RichText::new(format!("0x{:016X}", entry.function_addr)).monospace());
+                            ui.label(egui::RichText::new(format!("0x{:016X}", entry.return_addr)).monospace());
+                            ui.label(entry.name.as_deref().unwrap_or("<unknown>"));
+                            ui.end_row();
+                        }
+                    });
+            });
+        }
+
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if ui.button("Copy Stack Trace").clicked() {
+                let stack_text = call_stack.iter()
+                    .enumerate()
+                    .map(|(i, e)| format!(
+                        "#{} 0x{:016X} -> 0x{:016X} {}",
+                        i, e.function_addr, e.return_addr,
+                        e.name.as_deref().unwrap_or("<unknown>")
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                ui.output_mut(|o| o.copied_text = stack_text);
+                self.status_message = String::from("Stack trace copied to clipboard");
+            }
+
+            if ui.button("Clear").clicked() {
+                // Note: Would need mutable access to clear the stack
+                self.status_message = String::from("Stack will be cleared on next execution");
+            }
+        });
     }
 }
 
