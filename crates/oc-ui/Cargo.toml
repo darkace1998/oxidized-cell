@@ -16,6 +16,7 @@ egui.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
 rfd = "0.15"
+image = "0.25"
 
 [dev-dependencies]
 tracing-subscriber.workspace = true

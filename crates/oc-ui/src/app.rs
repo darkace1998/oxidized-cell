@@ -98,6 +98,9 @@ impl OxidizedCellApp {
             id: "BLUS00001".to_string(),
             version: "1.00".to_string(),
             region: "US".to_string(),
+            category: "Action".to_string(),
+            icon_data: None,
+            last_played: None,
         });
         game_list.add_game(GameInfo {
             title: "Sample Game 2".to_string(),
@@ -105,6 +108,9 @@ impl OxidizedCellApp {
             id: "BLES00002".to_string(),
             version: "1.01".to_string(),
             region: "EU".to_string(),
+            category: "RPG".to_string(),
+            icon_data: None,
+            last_played: None,
         });
         
         Self {
@@ -473,7 +479,7 @@ impl eframe::App for OxidizedCellApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             match self.current_view {
                 View::GameList => {
-                    if let Some(game_path) = self.game_list.show(ui) {
+                    if let Some(game_path) = self.game_list.show(ctx, ui) {
                         // Launch game using the emulator runner
                         self.launch_game(game_path);
                     }
@@ -839,6 +845,9 @@ impl OxidizedCellApp {
             id,
             version: "1.00".to_string(),
             region,
+            category: "Other".to_string(),
+            icon_data: None,
+            last_played: None,
         }
     }
 }

@@ -282,6 +282,120 @@ impl Scheduler {
             }
         }
     }
+    
+    /// Perform context switch from one thread to another
+    /// 
+    /// This improved context switching implementation handles the transition
+    /// between threads more efficiently by directly swapping contexts without
+    /// going through the ready queue.
+    pub fn context_switch(&mut self, from: ThreadId, to: ThreadId) -> Result<(), SchedulerError> {
+        // Validate threads exist
+        if !self.threads.contains_key(&from) {
+            return Err(SchedulerError::ThreadNotFound(from));
+        }
+        if !self.threads.contains_key(&to) {
+            return Err(SchedulerError::ThreadNotFound(to));
+        }
+        
+        // Save state of 'from' thread
+        if let Some(from_thread) = self.threads.get_mut(&from) {
+            if from_thread.state == ThreadState::Running {
+                from_thread.state = ThreadState::Ready;
+                from_thread.time_slice_us = self.default_time_slice_us;
+                // Only add to ready queue if not being removed
+                self.ready_queue.push(from_thread.clone());
+            }
+        }
+        
+        // Load state of 'to' thread
+        if let Some(to_thread) = self.threads.get_mut(&to) {
+            if to_thread.state != ThreadState::Ready {
+                return Err(SchedulerError::ThreadNotReady(to));
+            }
+            to_thread.state = ThreadState::Running;
+            to_thread.time_slice_us = self.default_time_slice_us;
+        }
+        
+        self.current = Some(to);
+        
+        tracing::debug!("Context switch: {:?} -> {:?}", from, to);
+        Ok(())
+    }
+    
+    /// Force a context switch to the next available ready thread
+    /// 
+    /// This is more efficient than yielding and scheduling separately.
+    pub fn force_context_switch(&mut self) -> Result<Option<ThreadId>, SchedulerError> {
+        let from = self.current;
+        
+        // Save current thread state
+        if let Some(from_id) = from {
+            if let Some(thread) = self.threads.get_mut(&from_id) {
+                if thread.state == ThreadState::Running {
+                    thread.state = ThreadState::Ready;
+                    thread.time_slice_us = self.default_time_slice_us;
+                    self.ready_queue.push(thread.clone());
+                }
+            }
+        }
+        
+        // Get next ready thread (bypassing normal schedule)
+        while let Some(thread) = self.ready_queue.pop() {
+            if let Some(stored_thread) = self.threads.get_mut(&thread.id) {
+                if stored_thread.state == ThreadState::Ready {
+                    stored_thread.state = ThreadState::Running;
+                    stored_thread.time_slice_us = self.default_time_slice_us;
+                    self.current = Some(thread.id);
+                    
+                    tracing::debug!("Forced context switch: {:?} -> {:?}", from, thread.id);
+                    return Ok(Some(thread.id));
+                }
+            }
+        }
+        
+        self.current = None;
+        Ok(None)
+    }
+    
+    /// Set time slice duration for all threads
+    pub fn set_time_slice(&mut self, time_slice_us: u64) {
+        self.default_time_slice_us = time_slice_us;
+        tracing::debug!("Time slice set to {} us", time_slice_us);
+    }
+    
+    /// Get current time slice setting
+    pub fn get_time_slice(&self) -> u64 {
+        self.default_time_slice_us
+    }
+    
+    /// Preempt current thread and schedule highest priority ready thread
+    /// 
+    /// This is useful for interrupt handling and high-priority events.
+    pub fn preempt_current(&mut self) -> Option<ThreadId> {
+        if let Some(current_id) = self.current {
+            // Save current thread to ready queue
+            if let Some(thread) = self.threads.get_mut(&current_id) {
+                if thread.state == ThreadState::Running {
+                    thread.state = ThreadState::Ready;
+                    thread.time_slice_us = self.default_time_slice_us;
+                    self.ready_queue.push(thread.clone());
+                }
+            }
+        }
+        
+        // Schedule highest priority thread
+        self.current = None;
+        self.schedule()
+    }
+}
+
+/// Scheduler error types
+#[derive(Debug, Clone)]
+pub enum SchedulerError {
+    /// Thread not found
+    ThreadNotFound(ThreadId),
+    /// Thread is not in ready state
+    ThreadNotReady(ThreadId),
 }
 
 impl Default for Scheduler {
