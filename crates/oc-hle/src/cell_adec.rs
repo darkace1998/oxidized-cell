@@ -399,7 +399,7 @@ impl Default for AdecManager {
 }
 
 /// cellAdecQueryAttr - Query decoder attributes
-pub fn cell_adec_query_attr(
+pub unsafe fn cell_adec_query_attr(
     adec_type: *const CellAdecType,
     attr: *mut CellAdecAttr,
 ) -> i32 {
@@ -418,7 +418,7 @@ pub fn cell_adec_query_attr(
 }
 
 /// cellAdecOpen - Open audio decoder
-pub fn cell_adec_open(
+pub unsafe fn cell_adec_open(
     adec_type: *const CellAdecType,
     _resource: *const CellAdecResource,
     _cb: *const CellAdecCb,
@@ -472,7 +472,7 @@ pub fn cell_adec_end_seq(handle: AdecHandle) -> i32 {
 }
 
 /// cellAdecDecodeAu - Decode access unit
-pub fn cell_adec_decode_au(
+pub unsafe fn cell_adec_decode_au(
     handle: AdecHandle,
     au_info: *const CellAdecAuInfo,
 ) -> i32 {
@@ -491,7 +491,7 @@ pub fn cell_adec_decode_au(
 }
 
 /// cellAdecGetPcm - Get decoded PCM data
-pub fn cell_adec_get_pcm(
+pub unsafe fn cell_adec_get_pcm(
     handle: AdecHandle,
     pcm_item: *mut CellAdecPcmItem,
 ) -> i32 {

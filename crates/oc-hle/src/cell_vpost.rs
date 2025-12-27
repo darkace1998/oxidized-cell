@@ -687,7 +687,7 @@ impl Default for VpostManager {
 }
 
 /// cellVpostQueryAttr - Query video post-processing attributes
-pub fn cell_vpost_query_attr(
+pub unsafe fn cell_vpost_query_attr(
     cfg: *const CellVpostCfg,
     attr: *mut CellVpostResource,
 ) -> i32 {
@@ -708,7 +708,7 @@ pub fn cell_vpost_query_attr(
 }
 
 /// cellVpostOpen - Open video post-processor
-pub fn cell_vpost_open(
+pub unsafe fn cell_vpost_open(
     cfg: *const CellVpostCfg,
     resource: *const CellVpostResource,
     handle: *mut VpostHandle,
@@ -744,7 +744,7 @@ pub fn cell_vpost_close(handle: VpostHandle) -> i32 {
 }
 
 /// cellVpostExec - Execute video post-processing
-pub fn cell_vpost_exec(
+pub unsafe fn cell_vpost_exec(
     handle: VpostHandle,
     _in_buffer: *const u8,
     ctrl_param: *const CellVpostCtrlParam,

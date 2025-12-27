@@ -194,7 +194,7 @@ impl Default for RegexManager {
 }
 
 /// cellSreCompile - Compile regular expression
-pub fn cell_sre_compile(
+pub unsafe fn cell_sre_compile(
     pattern: *const u8,
     flags: u32,
     compiled: *mut SrePattern,
@@ -252,7 +252,7 @@ pub fn cell_sre_free(pattern: SrePattern) -> i32 {
 }
 
 /// cellSreMatch - Match regular expression
-pub fn cell_sre_match(
+pub unsafe fn cell_sre_match(
     pattern: SrePattern,
     text: *const u8,
     text_len: u32,
@@ -303,7 +303,7 @@ pub fn cell_sre_match(
 }
 
 /// cellSreSearch - Search for regular expression
-pub fn cell_sre_search(
+pub unsafe fn cell_sre_search(
     pattern: SrePattern,
     text: *const u8,
     text_len: u32,
@@ -355,7 +355,7 @@ pub fn cell_sre_search(
 }
 
 /// cellSreReplace - Replace text matching regular expression
-pub fn cell_sre_replace(
+pub unsafe fn cell_sre_replace(
     pattern: SrePattern,
     text: *const u8,
     text_len: u32,
@@ -424,7 +424,7 @@ pub fn cell_sre_replace(
 }
 
 /// cellSreGetError - Get error message
-pub fn cell_sre_get_error(
+pub unsafe fn cell_sre_get_error(
     error_code: i32,
     buffer: *mut u8,
     buffer_size: u32,

@@ -479,7 +479,7 @@ pub struct CellJpgDecDataOutInfo {
 }
 
 /// cellJpgDecCreate - Create JPEG decoder
-pub fn cell_jpg_dec_create(
+pub unsafe fn cell_jpg_dec_create(
     main_handle: *mut CellJpgDecMainHandle,
     thread_in_param: *const CellJpgDecThreadInParam,
     thread_out_param: *mut CellJpgDecThreadOutParam,
@@ -507,7 +507,7 @@ pub fn cell_jpg_dec_create(
 }
 
 /// cellJpgDecOpen - Open JPEG stream
-pub fn cell_jpg_dec_open(
+pub unsafe fn cell_jpg_dec_open(
     main_handle: u32,
     sub_handle: *mut CellJpgDecSubHandle,
     src: *const CellJpgDecSrc,
@@ -543,7 +543,7 @@ pub fn cell_jpg_dec_open(
 }
 
 /// cellJpgDecReadHeader - Read JPEG header
-pub fn cell_jpg_dec_read_header(
+pub unsafe fn cell_jpg_dec_read_header(
     main_handle: u32,
     sub_handle: u32,
     info: *mut CellJpgDecOutParam,
@@ -570,7 +570,7 @@ pub fn cell_jpg_dec_read_header(
 }
 
 /// cellJpgDecDecodeData - Decode JPEG data
-pub fn cell_jpg_dec_decode_data(
+pub unsafe fn cell_jpg_dec_decode_data(
     main_handle: u32,
     sub_handle: u32,
     _data: *mut u8,

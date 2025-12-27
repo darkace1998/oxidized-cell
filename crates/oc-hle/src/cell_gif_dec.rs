@@ -475,7 +475,7 @@ impl Default for GifDecManager {
 }
 
 /// cellGifDecCreate - Create GIF decoder
-pub fn cell_gif_dec_create(
+pub unsafe fn cell_gif_dec_create(
     main_handle: *mut CellGifDecMainHandle,
     thread_in_param: *const CellGifDecThreadInParam,
     thread_out_param: *mut CellGifDecThreadOutParam,
@@ -503,7 +503,7 @@ pub fn cell_gif_dec_create(
 }
 
 /// cellGifDecOpen - Open GIF stream
-pub fn cell_gif_dec_open(
+pub unsafe fn cell_gif_dec_open(
     main_handle: u32,
     sub_handle: *mut CellGifDecSubHandle,
     src: *const CellGifDecSrc,
@@ -543,7 +543,7 @@ pub fn cell_gif_dec_open(
 }
 
 /// cellGifDecReadHeader - Read GIF header
-pub fn cell_gif_dec_read_header(
+pub unsafe fn cell_gif_dec_read_header(
     main_handle: u32,
     sub_handle: u32,
     info: *mut CellGifDecOutParam,
