@@ -21,8 +21,10 @@ pub const CELL_KB_MAX_KEYCODES: usize = 8;
 /// Keyboard layout types
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum CellKbLayout {
     /// US layout
+    #[default]
     Us = 0,
     /// UK layout
     Uk = 1,
@@ -44,27 +46,19 @@ pub enum CellKbLayout {
     Chinese = 9,
 }
 
-impl Default for CellKbLayout {
-    fn default() -> Self {
-        CellKbLayout::Us
-    }
-}
 
 /// Keyboard read mode
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum CellKbReadMode {
     /// Input gets single-char strings
+    #[default]
     InputCharacter = 0,
     /// Input gets raw keycodes
     RawKey = 1,
 }
 
-impl Default for CellKbReadMode {
-    fn default() -> Self {
-        CellKbReadMode::InputCharacter
-    }
-}
 
 /// Keyboard code type
 #[repr(u32)]

@@ -164,7 +164,7 @@ impl SaveDataManager {
             // Extract from directory name
             let parts: Vec<&str> = dir_name.split('-').collect();
             let game_id = parts.first().unwrap_or(&"UNKNOWN").to_string();
-            (format!("Save Data"), game_id)
+            ("Save Data".to_string(), game_id)
         };
 
         // Calculate directory size

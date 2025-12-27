@@ -475,7 +475,7 @@ impl Default for GifDecManager {
 }
 
 /// cellGifDecCreate - Create GIF decoder
-pub fn cell_gif_dec_create(
+pub unsafe fn cell_gif_dec_create(
     main_handle: *mut CellGifDecMainHandle,
     thread_in_param: *const CellGifDecThreadInParam,
     thread_out_param: *mut CellGifDecThreadOutParam,
@@ -503,7 +503,7 @@ pub fn cell_gif_dec_create(
 }
 
 /// cellGifDecOpen - Open GIF stream
-pub fn cell_gif_dec_open(
+pub unsafe fn cell_gif_dec_open(
     main_handle: u32,
     sub_handle: *mut CellGifDecSubHandle,
     src: *const CellGifDecSrc,
@@ -543,7 +543,7 @@ pub fn cell_gif_dec_open(
 }
 
 /// cellGifDecReadHeader - Read GIF header
-pub fn cell_gif_dec_read_header(
+pub unsafe fn cell_gif_dec_read_header(
     main_handle: u32,
     sub_handle: u32,
     info: *mut CellGifDecOutParam,
@@ -753,7 +753,7 @@ mod tests {
         };
         let mut thread_out = CellGifDecThreadOutParam { version: 0 };
         
-        let result = cell_gif_dec_create(&mut main_handle, &thread_in, &mut thread_out);
+        let result = unsafe { cell_gif_dec_create(&mut main_handle, &thread_in, &mut thread_out) };
         assert_eq!(result, 0);
         assert!(main_handle.main_handle > 0);
     }
@@ -768,7 +768,7 @@ mod tests {
         };
         
         // Null main_handle
-        let result = cell_gif_dec_create(std::ptr::null_mut(), &thread_in, std::ptr::null_mut());
+        let result = unsafe { cell_gif_dec_create(std::ptr::null_mut(), &thread_in, std::ptr::null_mut()) };
         assert_eq!(result, CELL_GIFDEC_ERROR_ARG);
     }
 
@@ -785,14 +785,14 @@ mod tests {
         };
         
         // Null sub_handle
-        let result = cell_gif_dec_open(1, std::ptr::null_mut(), &src, std::ptr::null_mut());
+        let result = unsafe { cell_gif_dec_open(1, std::ptr::null_mut(), &src, std::ptr::null_mut()) };
         assert_eq!(result, CELL_GIFDEC_ERROR_ARG);
     }
 
     #[test]
     fn test_gif_dec_read_header_validation() {
         // Null info
-        let result = cell_gif_dec_read_header(1, 1, std::ptr::null_mut());
+        let result = unsafe { cell_gif_dec_read_header(1, 1, std::ptr::null_mut()) };
         assert_eq!(result, CELL_GIFDEC_ERROR_ARG);
     }
 
@@ -815,7 +815,9 @@ mod tests {
         };
         let mut thread_out = CellGifDecThreadOutParam { version: 0 };
         
-        assert_eq!(cell_gif_dec_create(&mut main_handle, &thread_in, &mut thread_out), 0);
+        unsafe {
+            assert_eq!(cell_gif_dec_create(&mut main_handle, &thread_in, &mut thread_out), 0);
+        }
         assert_eq!(cell_gif_dec_destroy(main_handle.main_handle), 0);
     }
 }

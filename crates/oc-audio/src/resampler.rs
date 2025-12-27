@@ -61,7 +61,7 @@ impl AudioResampler {
 
     /// Resample audio data
     pub fn resample(&mut self, input: &[f32], output: &mut Vec<f32>) -> Result<(), String> {
-        if input.len() % self.num_channels != 0 {
+        if !input.len().is_multiple_of(self.num_channels) {
             return Err("Input length must be multiple of channel count".to_string());
         }
 

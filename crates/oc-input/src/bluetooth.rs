@@ -22,6 +22,7 @@ pub mod device_class {
 
 /// Bluetooth address (BD_ADDR)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub struct BluetoothAddress([u8; 6]);
 
 impl BluetoothAddress {
@@ -61,7 +62,7 @@ impl BluetoothAddress {
             .as_nanos() as u64;
         
         Self([
-            ((seed >> 0) & 0xFF) as u8,
+            (seed & 0xFF) as u8,
             ((seed >> 8) & 0xFF) as u8,
             ((seed >> 16) & 0xFF) as u8,
             ((seed >> 24) & 0xFF) as u8,
@@ -71,11 +72,6 @@ impl BluetoothAddress {
     }
 }
 
-impl Default for BluetoothAddress {
-    fn default() -> Self {
-        Self([0; 6])
-    }
-}
 
 /// Bluetooth connection state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

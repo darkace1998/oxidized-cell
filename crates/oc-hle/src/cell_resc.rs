@@ -22,8 +22,10 @@ pub const CELL_RESC_1920X1080: u32 = 0x08;
 /// Palette format
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum CellRescPalTemporalMode {
     /// No temporal filter
+    #[default]
     None = 0,
     /// 50Hz temporal filter
     Filter50 = 1,
@@ -31,33 +33,27 @@ pub enum CellRescPalTemporalMode {
     Filter60 = 2,
 }
 
-impl Default for CellRescPalTemporalMode {
-    fn default() -> Self {
-        CellRescPalTemporalMode::None
-    }
-}
 
 /// Buffer mode
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum CellRescBufferMode {
     /// Single buffer
+    #[default]
     A1B1 = 0,
     /// Double buffer (alternate)
     A2B2 = 1,
 }
 
-impl Default for CellRescBufferMode {
-    fn default() -> Self {
-        CellRescBufferMode::A1B1
-    }
-}
 
 /// Aspect ratio
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum CellRescRatioConvertMode {
     /// Letterbox (maintain aspect with black bars)
+    #[default]
     Letterbox = 0,
     /// Full screen (stretch to fill)
     FullScreen = 1,
@@ -65,11 +61,6 @@ pub enum CellRescRatioConvertMode {
     PanScan = 2,
 }
 
-impl Default for CellRescRatioConvertMode {
-    fn default() -> Self {
-        CellRescRatioConvertMode::Letterbox
-    }
-}
 
 /// RESC initialization parameters
 #[repr(C)]
@@ -775,11 +766,11 @@ mod tests {
         manager.init(CellRescInitConfig::default());
         
         // Set valid modes
-        assert_eq!(manager.set_display_mode(CELL_RESC_720x480), 0);
-        assert_eq!(manager.get_display_mode(), CELL_RESC_720x480);
+        assert_eq!(manager.set_display_mode(CELL_RESC_720X480), 0);
+        assert_eq!(manager.get_display_mode(), CELL_RESC_720X480);
         
-        assert_eq!(manager.set_display_mode(CELL_RESC_1920x1080), 0);
-        assert_eq!(manager.get_display_mode(), CELL_RESC_1920x1080);
+        assert_eq!(manager.set_display_mode(CELL_RESC_1920X1080), 0);
+        assert_eq!(manager.get_display_mode(), CELL_RESC_1920X1080);
         
         // Invalid mode
         assert_eq!(manager.set_display_mode(0xFF), CELL_RESC_ERROR_BAD_ARGUMENT);
@@ -793,10 +784,10 @@ mod tests {
         manager.init(CellRescInitConfig::default());
         
         // Check buffer size for different modes
-        manager.set_display_mode(CELL_RESC_720x480);
+        manager.set_display_mode(CELL_RESC_720X480);
         assert_eq!(manager.get_display_buffer_size().unwrap(), 720 * 480 * 4);
         
-        manager.set_display_mode(CELL_RESC_1920x1080);
+        manager.set_display_mode(CELL_RESC_1920X1080);
         assert_eq!(manager.get_display_buffer_size().unwrap(), 1920 * 1080 * 4);
         
         manager.exit();
@@ -830,16 +821,16 @@ mod tests {
     #[test]
     fn test_resc_config_default() {
         let config = CellRescInitConfig::default();
-        assert!(config.display_modes & CELL_RESC_1920x1080 != 0);
-        assert!(config.display_modes & CELL_RESC_1280x720 != 0);
+        assert!(config.display_modes & CELL_RESC_1920X1080 != 0);
+        assert!(config.display_modes & CELL_RESC_1280X720 != 0);
     }
 
     #[test]
     fn test_resc_display_mode_flags() {
-        assert_eq!(CELL_RESC_720x480, 0x01);
-        assert_eq!(CELL_RESC_720x576, 0x02);
-        assert_eq!(CELL_RESC_1280x720, 0x04);
-        assert_eq!(CELL_RESC_1920x1080, 0x08);
+        assert_eq!(CELL_RESC_720X480, 0x01);
+        assert_eq!(CELL_RESC_720X576, 0x02);
+        assert_eq!(CELL_RESC_1280X720, 0x04);
+        assert_eq!(CELL_RESC_1920X1080, 0x08);
     }
 
     #[test]
@@ -896,7 +887,7 @@ mod tests {
         manager.set_src(src);
         
         // Set display mode to 1080p
-        manager.set_display_mode(CELL_RESC_1920x1080);
+        manager.set_display_mode(CELL_RESC_1920X1080);
         
         // Calculate scale factors
         assert_eq!(manager.calculate_scale_factors(), 0);
@@ -963,7 +954,7 @@ mod tests {
         manager.set_src(src);
         
         // Set display mode to 16:9 (1280x720)
-        manager.set_display_mode(CELL_RESC_1280x720);
+        manager.set_display_mode(CELL_RESC_1280X720);
         
         // Test letterbox mode
         manager.set_ratio_convert_mode(CellRescRatioConvertMode::Letterbox);

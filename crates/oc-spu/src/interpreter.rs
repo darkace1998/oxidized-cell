@@ -203,8 +203,8 @@ impl SpuInterpreter {
         let a = thread.regs.read_u32x4(ra as usize);
         let mut result = [0u32; 4];
         for i in 0..4 {
-            let hi = ((a[i] >> 16) as i16).wrapping_add(i10 as i16) as u16;
-            let lo = ((a[i] & 0xFFFF) as i16).wrapping_add(i10 as i16) as u16;
+            let hi = ((a[i] >> 16) as i16).wrapping_add(i10) as u16;
+            let lo = ((a[i] & 0xFFFF) as i16).wrapping_add(i10) as u16;
             result[i] = ((hi as u32) << 16) | (lo as u32);
         }
         thread.regs.write_u32x4(rt as usize, result);
@@ -233,8 +233,8 @@ impl SpuInterpreter {
         let a = thread.regs.read_u32x4(ra as usize);
         let mut result = [0u32; 4];
         for i in 0..4 {
-            let hi = (i10 as i16).wrapping_sub((a[i] >> 16) as i16) as u16;
-            let lo = (i10 as i16).wrapping_sub((a[i] & 0xFFFF) as i16) as u16;
+            let hi = i10.wrapping_sub((a[i] >> 16) as i16) as u16;
+            let lo = i10.wrapping_sub((a[i] & 0xFFFF) as i16) as u16;
             result[i] = ((hi as u32) << 16) | (lo as u32);
         }
         thread.regs.write_u32x4(rt as usize, result);
@@ -375,7 +375,7 @@ impl SpuInterpreter {
     /// Execute stop
     fn execute_stop(&self, thread: &mut SpuThread, opcode: u32) -> Result<(), SpuError> {
         let stop_type = (opcode >> 14) & 0x3FFF;
-        thread.stop_signal = stop_type as u32;
+        thread.stop_signal = stop_type;
         thread.state = crate::thread::SpuThreadState::Halted;
         Ok(())
     }

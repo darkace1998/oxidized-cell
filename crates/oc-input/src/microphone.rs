@@ -141,7 +141,7 @@ impl AudioBuffer {
         let samples = self.as_i16_samples();
         let max = samples
             .iter()
-            .map(|&s| s.abs() as u16)
+            .map(|&s| s.unsigned_abs())
             .max()
             .unwrap_or(0);
         

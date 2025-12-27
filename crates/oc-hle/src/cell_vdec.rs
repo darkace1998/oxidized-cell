@@ -402,7 +402,7 @@ impl Default for VdecManager {
 }
 
 /// cellVdecQueryAttr - Query decoder attributes
-pub fn cell_vdec_query_attr(
+pub unsafe fn cell_vdec_query_attr(
     vdec_type: *const CellVdecType,
     attr: *mut CellVdecAttr,
 ) -> i32 {
@@ -422,7 +422,7 @@ pub fn cell_vdec_query_attr(
 }
 
 /// cellVdecOpen - Open video decoder
-pub fn cell_vdec_open(
+pub unsafe fn cell_vdec_open(
     vdec_type: *const CellVdecType,
     _resource: *const CellVdecResource,
     _cb: *const CellVdecCb,
@@ -476,7 +476,7 @@ pub fn cell_vdec_end_seq(handle: VdecHandle) -> i32 {
 }
 
 /// cellVdecDecodeAu - Decode access unit
-pub fn cell_vdec_decode_au(
+pub unsafe fn cell_vdec_decode_au(
     handle: VdecHandle,
     _mode: u32,
     au_info: *const CellVdecAuInfo,
@@ -496,7 +496,7 @@ pub fn cell_vdec_decode_au(
 }
 
 /// cellVdecGetPicture - Get decoded picture
-pub fn cell_vdec_get_picture(
+pub unsafe fn cell_vdec_get_picture(
     handle: VdecHandle,
     pic_format: *const CellVdecPicFormat,
     pic_item: *mut CellVdecPicItem,

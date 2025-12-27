@@ -760,7 +760,7 @@ pub fn cell_game_data_check(data_type: u32, _dir_name_addr: u32, _size_addr: u32
     debug!("cellGameDataCheck(type={})", data_type);
 
     // Validate data type
-    if data_type < 1 || data_type > 3 {
+    if !(1..=3).contains(&data_type) {
         return 0x8002b101u32 as i32; // CELL_GAME_ERROR_PARAM
     }
 

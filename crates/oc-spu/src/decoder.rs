@@ -48,10 +48,10 @@ impl SpuDecoder {
         let itype = if (op4 == 0b0100) || (op4 == 0b1100) {
             // RI18-type (branches)
             SpuInstructionType::RI18
-        } else if (op7 >= 0b0100000) && (op7 <= 0b0111111) {
+        } else if (0b0100000..=0b0111111).contains(&op7) {
             // RI16-type
             SpuInstructionType::RI16
-        } else if (op8 >= 0b00010000) && (op8 <= 0b00011111) {
+        } else if (0b00010000..=0b00011111).contains(&op8) {
             // RI10-type
             SpuInstructionType::RI10
         } else if op9 >= 0b011100000 {

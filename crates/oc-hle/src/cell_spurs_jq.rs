@@ -29,8 +29,10 @@ pub const CELL_SPURS_JQ_PRIORITY_LOW: u32 = 2;
 /// Job state
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum CellSpursJobState {
     /// Job is pending
+    #[default]
     Pending = 0,
     /// Job is running
     Running = 1,
@@ -40,11 +42,6 @@ pub enum CellSpursJobState {
     Aborted = 3,
 }
 
-impl Default for CellSpursJobState {
-    fn default() -> Self {
-        CellSpursJobState::Pending
-    }
-}
 
 /// Job descriptor
 #[repr(C)]

@@ -313,7 +313,7 @@ impl MemoryManager {
     /// Free allocated memory
     pub fn free(&self, addr: u32, size: u32) -> Result<(), MemoryError> {
         let start_page = (addr / PAGE_SIZE) as usize;
-        let num_pages = ((size + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
+        let num_pages = size.div_ceil(PAGE_SIZE) as usize;
 
         let mut allocation_map = self.allocation_map.write();
         let mut page_flags = self.page_flags.write();

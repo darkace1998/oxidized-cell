@@ -21,7 +21,7 @@ impl PageSize {
     
     /// Check if address is aligned to this page size
     pub fn is_aligned(&self, addr: u32) -> bool {
-        addr % self.bytes() == 0
+        addr.is_multiple_of(self.bytes())
     }
     
     /// Align address down to page boundary

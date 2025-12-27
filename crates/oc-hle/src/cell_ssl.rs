@@ -334,7 +334,7 @@ pub fn cell_ssl_end() -> i32 {
 }
 
 /// cellSslCertificateLoader - Load certificate
-pub fn cell_ssl_certificate_loader(
+pub unsafe fn cell_ssl_certificate_loader(
     cert_id: *mut SslCertId,
     _cert_path: *const u8,
     _buffer: *mut u8,
@@ -654,12 +654,14 @@ mod tests {
         let cert_path = b"test.pem\0";
         let mut buffer = vec![0u8; 1024];
 
-        let result = cell_ssl_certificate_loader(
-            &mut cert_id,
-            cert_path.as_ptr(),
-            buffer.as_mut_ptr(),
-            buffer.len() as u32,
-        );
+        let result = unsafe {
+            cell_ssl_certificate_loader(
+                &mut cert_id,
+                cert_path.as_ptr(),
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+            )
+        };
 
         assert_eq!(result, 0);
         assert!(cert_id > 0);

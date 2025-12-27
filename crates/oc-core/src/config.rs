@@ -6,6 +6,7 @@ use std::path::PathBuf;
 /// Main configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct Config {
     pub general: GeneralConfig,
     pub cpu: CpuConfig,
@@ -108,6 +109,7 @@ pub enum AudioBackend {
 /// Input settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct InputConfig {
     pub controller: ControllerConfig,
     pub keyboard_mapping: KeyboardMapping,
@@ -184,19 +186,6 @@ pub enum LogLevel {
 
 // Default implementations
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            general: GeneralConfig::default(),
-            cpu: CpuConfig::default(),
-            gpu: GpuConfig::default(),
-            audio: AudioConfig::default(),
-            input: InputConfig::default(),
-            paths: PathConfig::default(),
-            debug: DebugConfig::default(),
-        }
-    }
-}
 
 impl Default for GeneralConfig {
     fn default() -> Self {
@@ -254,14 +243,6 @@ impl Default for AudioConfig {
     }
 }
 
-impl Default for InputConfig {
-    fn default() -> Self {
-        Self {
-            controller: ControllerConfig::default(),
-            keyboard_mapping: KeyboardMapping::default(),
-        }
-    }
-}
 
 impl Default for KeyboardMapping {
     fn default() -> Self {

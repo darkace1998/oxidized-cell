@@ -401,11 +401,9 @@ impl UsbControllerManager {
             self.controllers.remove(index);
             
             // Update indices in port assignments
-            for assignment in &mut self.port_assignments {
-                if let Some(idx) = assignment {
-                    if *idx > index {
-                        *idx -= 1;
-                    }
+            for idx in self.port_assignments.iter_mut().flatten() {
+                if *idx > index {
+                    *idx -= 1;
                 }
             }
         }

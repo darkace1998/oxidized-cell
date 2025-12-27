@@ -194,7 +194,7 @@ impl Default for RegexManager {
 }
 
 /// cellSreCompile - Compile regular expression
-pub fn cell_sre_compile(
+pub unsafe fn cell_sre_compile(
     pattern: *const u8,
     flags: u32,
     compiled: *mut SrePattern,
@@ -252,7 +252,7 @@ pub fn cell_sre_free(pattern: SrePattern) -> i32 {
 }
 
 /// cellSreMatch - Match regular expression
-pub fn cell_sre_match(
+pub unsafe fn cell_sre_match(
     pattern: SrePattern,
     text: *const u8,
     text_len: u32,
@@ -303,7 +303,7 @@ pub fn cell_sre_match(
 }
 
 /// cellSreSearch - Search for regular expression
-pub fn cell_sre_search(
+pub unsafe fn cell_sre_search(
     pattern: SrePattern,
     text: *const u8,
     text_len: u32,
@@ -355,7 +355,7 @@ pub fn cell_sre_search(
 }
 
 /// cellSreReplace - Replace text matching regular expression
-pub fn cell_sre_replace(
+pub unsafe fn cell_sre_replace(
     pattern: SrePattern,
     text: *const u8,
     text_len: u32,
@@ -424,7 +424,7 @@ pub fn cell_sre_replace(
 }
 
 /// cellSreGetError - Get error message
-pub fn cell_sre_get_error(
+pub unsafe fn cell_sre_get_error(
     error_code: i32,
     buffer: *mut u8,
     buffer_size: u32,
@@ -531,7 +531,7 @@ mod tests {
         let pattern = b"test.*pattern\0";
         let mut compiled = 0;
         
-        let result = cell_sre_compile(pattern.as_ptr(), 0, &mut compiled);
+        let result = unsafe { cell_sre_compile(pattern.as_ptr(), 0, &mut compiled) };
         assert_eq!(result, 0);
         assert!(compiled > 0);
         
@@ -546,13 +546,15 @@ mod tests {
         let mut compiled = 0;
         
         // Valid compile
-        assert_eq!(cell_sre_compile(pattern.as_ptr(), 0, &mut compiled), 0);
-        
-        // Null pattern
-        assert!(cell_sre_compile(std::ptr::null(), 0, &mut compiled) != 0);
-        
-        // Null output
-        assert!(cell_sre_compile(pattern.as_ptr(), 0, std::ptr::null_mut()) != 0);
+        unsafe {
+            assert_eq!(cell_sre_compile(pattern.as_ptr(), 0, &mut compiled), 0);
+            
+            // Null pattern
+            assert!(cell_sre_compile(std::ptr::null(), 0, &mut compiled) != 0);
+            
+            // Null output
+            assert!(cell_sre_compile(pattern.as_ptr(), 0, std::ptr::null_mut()) != 0);
+        }
     }
 
     #[test]
@@ -572,14 +574,16 @@ mod tests {
         let mut matches = [SreMatch { start: 0, end: 0 }; 10];
         let mut num_matches = 0;
         
-        let result = cell_sre_match(
-            pattern,
-            text.as_ptr(),
-            text.len() as u32,
-            matches.as_mut_ptr(),
-            10,
-            &mut num_matches,
-        );
+        let result = unsafe {
+            cell_sre_match(
+                pattern,
+                text.as_ptr(),
+                text.len() as u32,
+                matches.as_mut_ptr(),
+                10,
+                &mut num_matches,
+            )
+        };
         
         assert_eq!(result, 0);
     }
@@ -590,11 +594,13 @@ mod tests {
         let mut matches = [SreMatch::default(); 10];
         let mut num_matches = 0;
         
-        // Invalid pattern (0)
-        assert!(cell_sre_match(0, text.as_ptr(), 4, matches.as_mut_ptr(), 10, &mut num_matches) != 0);
-        
-        // Null text
-        assert!(cell_sre_match(1, std::ptr::null(), 4, matches.as_mut_ptr(), 10, &mut num_matches) != 0);
+        unsafe {
+            // Invalid pattern (0)
+            assert!(cell_sre_match(0, text.as_ptr(), 4, matches.as_mut_ptr(), 10, &mut num_matches) != 0);
+            
+            // Null text
+            assert!(cell_sre_match(1, std::ptr::null(), 4, matches.as_mut_ptr(), 10, &mut num_matches) != 0);
+        }
     }
 
     #[test]
@@ -603,13 +609,15 @@ mod tests {
         let text = b"test string";
         let mut match_result = SreMatch { start: 0, end: 0 };
         
-        let _result = cell_sre_search(
-            pattern,
-            text.as_ptr(),
-            text.len() as u32,
-            0,
-            &mut match_result,
-        );
+        let _result = unsafe {
+            cell_sre_search(
+                pattern,
+                text.as_ptr(),
+                text.len() as u32,
+                0,
+                &mut match_result,
+            )
+        };
         
         // Result may be -1 (not found) since we're not actually matching
     }
@@ -619,14 +627,16 @@ mod tests {
         let text = b"test";
         let mut match_result = SreMatch::default();
         
-        // Invalid pattern (0)
-        assert!(cell_sre_search(0, text.as_ptr(), 4, 0, &mut match_result) != 0);
-        
-        // Null text
-        assert!(cell_sre_search(1, std::ptr::null(), 4, 0, &mut match_result) != 0);
-        
-        // Invalid offset
-        assert!(cell_sre_search(1, text.as_ptr(), 4, 10, &mut match_result) != 0);
+        unsafe {
+            // Invalid pattern (0)
+            assert!(cell_sre_search(0, text.as_ptr(), 4, 0, &mut match_result) != 0);
+            
+            // Null text
+            assert!(cell_sre_search(1, std::ptr::null(), 4, 0, &mut match_result) != 0);
+            
+            // Invalid offset
+            assert!(cell_sre_search(1, text.as_ptr(), 4, 10, &mut match_result) != 0);
+        }
     }
 
     #[test]
@@ -636,13 +646,15 @@ mod tests {
         let mut output = [0u8; 100];
         let mut result_len = 0;
         
-        // Valid call
-        assert_eq!(cell_sre_replace(1, text.as_ptr(), 4, replacement.as_ptr(), 3, 
-            output.as_mut_ptr(), 100, &mut result_len), 0);
-        
-        // Invalid pattern (0)
-        assert!(cell_sre_replace(0, text.as_ptr(), 4, replacement.as_ptr(), 3,
-            output.as_mut_ptr(), 100, &mut result_len) != 0);
+        unsafe {
+            // Valid call
+            assert_eq!(cell_sre_replace(1, text.as_ptr(), 4, replacement.as_ptr(), 3, 
+                output.as_mut_ptr(), 100, &mut result_len), 0);
+            
+            // Invalid pattern (0)
+            assert!(cell_sre_replace(0, text.as_ptr(), 4, replacement.as_ptr(), 3,
+                output.as_mut_ptr(), 100, &mut result_len) != 0);
+        }
     }
 
     #[test]
