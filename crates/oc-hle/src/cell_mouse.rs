@@ -81,6 +81,7 @@ pub struct CellMouseRawData {
 /// Mouse data structure
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Default)]
 pub struct CellMouseData {
     /// Update timestamp
     pub update: u64,
@@ -98,19 +99,6 @@ pub struct CellMouseData {
     pub tilt_y: i32,
 }
 
-impl Default for CellMouseData {
-    fn default() -> Self {
-        Self {
-            update: 0,
-            buttons: 0,
-            x_pos: 0,
-            y_pos: 0,
-            wheel: 0,
-            tilt_x: 0,
-            tilt_y: 0,
-        }
-    }
-}
 
 /// Mouse data buffer
 #[repr(C)]

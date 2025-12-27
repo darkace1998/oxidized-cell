@@ -235,6 +235,7 @@ impl std::fmt::Display for JitError {
 impl std::error::Error for JitError {}
 
 /// JIT compiler handle (legacy, for backwards compatibility)
+#[derive(Default)]
 pub struct JitCompiler {
     _private: (),
 }
@@ -246,11 +247,6 @@ impl JitCompiler {
     }
 }
 
-impl Default for JitCompiler {
-    fn default() -> Self {
-        Self { _private: () }
-    }
-}
 
 #[cfg(test)]
 mod tests {

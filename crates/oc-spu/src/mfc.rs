@@ -53,7 +53,7 @@ impl MfcCommand {
 
     /// Calculate transfer latency based on size (cycles per 128 bytes)
     pub fn transfer_latency(&self, size: u32) -> u64 {
-        let blocks = (size + 127) / 128;
+        let blocks = size.div_ceil(128);
         blocks as u64 * 10 // 10 cycles per 128-byte block
     }
 }

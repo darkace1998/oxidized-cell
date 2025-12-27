@@ -104,7 +104,7 @@ impl SpdifOutput {
         }
 
         // Convert to stereo if needed
-        if samples.len() % 2 != 0 {
+        if !samples.len().is_multiple_of(2) {
             return Err("S/PDIF requires even number of samples (stereo)".to_string());
         }
 

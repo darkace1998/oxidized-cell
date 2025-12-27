@@ -22,8 +22,10 @@ pub const CELL_RESC_1920X1080: u32 = 0x08;
 /// Palette format
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum CellRescPalTemporalMode {
     /// No temporal filter
+    #[default]
     None = 0,
     /// 50Hz temporal filter
     Filter50 = 1,
@@ -31,33 +33,27 @@ pub enum CellRescPalTemporalMode {
     Filter60 = 2,
 }
 
-impl Default for CellRescPalTemporalMode {
-    fn default() -> Self {
-        CellRescPalTemporalMode::None
-    }
-}
 
 /// Buffer mode
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum CellRescBufferMode {
     /// Single buffer
+    #[default]
     A1B1 = 0,
     /// Double buffer (alternate)
     A2B2 = 1,
 }
 
-impl Default for CellRescBufferMode {
-    fn default() -> Self {
-        CellRescBufferMode::A1B1
-    }
-}
 
 /// Aspect ratio
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum CellRescRatioConvertMode {
     /// Letterbox (maintain aspect with black bars)
+    #[default]
     Letterbox = 0,
     /// Full screen (stretch to fill)
     FullScreen = 1,
@@ -65,11 +61,6 @@ pub enum CellRescRatioConvertMode {
     PanScan = 2,
 }
 
-impl Default for CellRescRatioConvertMode {
-    fn default() -> Self {
-        CellRescRatioConvertMode::Letterbox
-    }
-}
 
 /// RESC initialization parameters
 #[repr(C)]

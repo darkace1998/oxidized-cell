@@ -25,8 +25,10 @@ pub const CELL_MIC_SAMPLE_RATE_16K: u32 = 16000;
 /// Device type
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum CellMicDeviceType {
     /// USB microphone
+    #[default]
     Usb = 0,
     /// Bluetooth headset
     Bluetooth = 1,
@@ -34,17 +36,14 @@ pub enum CellMicDeviceType {
     Camera = 2,
 }
 
-impl Default for CellMicDeviceType {
-    fn default() -> Self {
-        CellMicDeviceType::Usb
-    }
-}
 
 /// Device state
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum CellMicDeviceState {
     /// Device is closed
+    #[default]
     Closed = 0,
     /// Device is open
     Open = 1,
@@ -52,11 +51,6 @@ pub enum CellMicDeviceState {
     Capturing = 2,
 }
 
-impl Default for CellMicDeviceState {
-    fn default() -> Self {
-        CellMicDeviceState::Closed
-    }
-}
 
 /// Device info
 #[repr(C)]

@@ -520,10 +520,7 @@ pub fn cell_font_ft_load_glyph(face: u32, glyph_index: u32, _flags: u32) -> i32 
 pub fn cell_font_ft_get_char_index(face: u32, char_code: u32) -> u32 {
     trace!("cellFontFtGetCharIndex(face={}, char=0x{:X})", face, char_code);
 
-    match crate::context::get_hle_context().font_ft.get_char_index(face, char_code) {
-        Ok(index) => index,
-        Err(_) => 0,
-    }
+    crate::context::get_hle_context().font_ft.get_char_index(face, char_code).unwrap_or_default()
 }
 
 #[cfg(test)]

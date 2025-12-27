@@ -85,6 +85,7 @@ impl Default for CellPadInfo {
 /// Pad data structure
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
+#[derive(Default)]
 pub struct CellPadData {
     /// Length of valid data
     pub len: i32,
@@ -92,18 +93,11 @@ pub struct CellPadData {
     pub button: [u16; 2],
 }
 
-impl Default for CellPadData {
-    fn default() -> Self {
-        Self {
-            len: 0,
-            button: [0; 2],
-        }
-    }
-}
 
 /// Actuator (rumble/vibration) parameters
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
+#[derive(Default)]
 pub struct CellPadActParam {
     /// Small motor intensity (0-255)
     pub motor_small: u8,
@@ -113,18 +107,10 @@ pub struct CellPadActParam {
     pub reserved: [u8; 6],
 }
 
-impl Default for CellPadActParam {
-    fn default() -> Self {
-        Self {
-            motor_small: 0,
-            motor_large: 0,
-            reserved: [0; 6],
-        }
-    }
-}
 
 /// Rumble/vibration state for a controller
 #[derive(Debug, Clone, Copy)]
+#[derive(Default)]
 pub struct RumbleState {
     /// Small motor intensity (0-255)
     pub motor_small: u8,
@@ -134,15 +120,6 @@ pub struct RumbleState {
     pub active: bool,
 }
 
-impl Default for RumbleState {
-    fn default() -> Self {
-        Self {
-            motor_small: 0,
-            motor_large: 0,
-            active: false,
-        }
-    }
-}
 
 /// Pad capability info
 #[repr(C)]
@@ -422,9 +399,9 @@ impl PadManager {
         // PS3 uses 0-255 with 128 as center
         
         let normalized = (oc_input_value + 1.0) / 2.0; // Convert to 0.0-1.0
-        let value = (normalized * 255.0) as u8;
         
-        value
+        
+        (normalized * 255.0) as u8
     }
 
     /// Check if backend is connected

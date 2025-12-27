@@ -77,7 +77,7 @@ impl AudioTimeStretcher {
             return Err("Stretch factor must be positive".to_string());
         }
 
-        if input.len() % self.config.num_channels != 0 {
+        if !input.len().is_multiple_of(self.config.num_channels) {
             return Err("Input length must be multiple of channel count".to_string());
         }
 

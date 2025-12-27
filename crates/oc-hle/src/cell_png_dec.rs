@@ -156,7 +156,7 @@ impl PngDecoder {
             return Err(CELL_PNGDEC_ERROR_ARG);
         }
         
-        if &data[0..8] != &PNG_SIGNATURE {
+        if data[0..8] != PNG_SIGNATURE {
             trace!("PngDecoder::parse_header: invalid PNG signature");
             // For HLE, we'll be lenient and use placeholder values
         }

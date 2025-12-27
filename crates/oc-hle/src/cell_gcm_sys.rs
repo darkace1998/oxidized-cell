@@ -57,18 +57,15 @@ pub struct CellGcmDisplayBuffer {
 /// GCM flip mode
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum CellGcmFlipMode {
     /// VSYNC mode (wait for vertical sync)
+    #[default]
     Vsync = 1,
     /// HSYNC mode (wait for horizontal sync)
     Hsync = 2,
 }
 
-impl Default for CellGcmFlipMode {
-    fn default() -> Self {
-        CellGcmFlipMode::Vsync
-    }
-}
 
 // ============================================================================
 // RSX Backend Integration
