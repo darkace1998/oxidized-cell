@@ -334,7 +334,7 @@ pub fn cell_ssl_end() -> i32 {
 }
 
 /// cellSslCertificateLoader - Load certificate
-pub fn cell_ssl_certificate_loader(
+pub unsafe fn cell_ssl_certificate_loader(
     cert_id: *mut SslCertId,
     _cert_path: *const u8,
     _buffer: *mut u8,

@@ -515,7 +515,7 @@ impl Default for DmuxManager {
 }
 
 /// cellDmuxOpen - Open demuxer
-pub fn cell_dmux_open(
+pub unsafe fn cell_dmux_open(
     dmux_type: *const CellDmuxType,
     resource: *const CellDmuxResource,
     cb: *const CellDmuxCb,
@@ -578,7 +578,7 @@ pub fn cell_dmux_reset_stream(handle: DmuxHandle) -> i32 {
 }
 
 /// cellDmuxQueryAttr - Query demuxer attributes
-pub fn cell_dmux_query_attr(
+pub unsafe fn cell_dmux_query_attr(
     dmux_type: *const CellDmuxType,
     _resource: *const CellDmuxResource,
     attr: *mut CellDmuxType,
@@ -604,7 +604,7 @@ pub fn cell_dmux_query_attr(
 }
 
 /// cellDmuxEnableEs - Enable elementary stream
-pub fn cell_dmux_enable_es(
+pub unsafe fn cell_dmux_enable_es(
     handle: DmuxHandle,
     es_attr: *const CellDmuxEsAttr,
     es_cb: *const CellDmuxEsCb,
@@ -651,7 +651,7 @@ pub fn cell_dmux_reset_es(handle: DmuxHandle, es_handle: u32) -> i32 {
 }
 
 /// cellDmuxGetAu - Get access unit
-pub fn cell_dmux_get_au(
+pub unsafe fn cell_dmux_get_au(
     handle: DmuxHandle,
     es_handle: u32,
     au_info: *mut CellDmuxAuInfo,
@@ -675,7 +675,7 @@ pub fn cell_dmux_get_au(
 }
 
 /// cellDmuxPeekAu - Peek at access unit
-pub fn cell_dmux_peek_au(
+pub unsafe fn cell_dmux_peek_au(
     handle: DmuxHandle,
     es_handle: u32,
     au_info: *mut CellDmuxAuInfo,
