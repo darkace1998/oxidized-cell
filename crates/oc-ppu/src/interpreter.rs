@@ -443,9 +443,10 @@ impl PpuInterpreter {
                 let mut ea = if ra == 0 { d as u64 } else { thread.gpr(ra as usize).wrapping_add(d as u64) };
                 for r in rt..32 {
                     let value = thread.gpr(r as usize) as u32;
-                    self.memory.write_be32(ea as u32, value).map_err(|_| PpuError::InvalidInstruction {
-                        addr: thread.pc() as u32,
-                        opcode,
+                    self.memory.write_be32(ea as u32, value).map_err(|e| {
+                        tracing::error!("stmw: memory write failed at EA=0x{:08x}, r{}=0x{:08x}, RA(r{})=0x{:016x}, D={}: {:?}",
+                            ea, r, value, ra, thread.gpr(ra as usize), d as i16, e);
+                        PpuError::MemoryError { addr: ea as u32, message: format!("stmw write failed: {:?}", e) }
                     })?;
                     ea = ea.wrapping_add(4);
                 }

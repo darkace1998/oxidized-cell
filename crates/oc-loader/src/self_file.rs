@@ -146,9 +146,18 @@ impl SelfLoader {
             ]),
         };
 
+        // Log raw header bytes for debugging
         info!(
-            "SELF header: version=0x{:x}, key_type=0x{:x}, metadata_offset=0x{:x}",
-            header.version, header.key_type, header.metadata_offset
+            "SELF header raw bytes: {:02x} {:02x} {:02x} {:02x}  {:02x} {:02x} {:02x} {:02x}  {:02x} {:02x} {:02x} {:02x}  {:02x} {:02x} {:02x} {:02x}",
+            data[0], data[1], data[2], data[3],
+            data[4], data[5], data[6], data[7],
+            data[8], data[9], data[10], data[11],
+            data[12], data[13], data[14], data[15]
+        );
+
+        info!(
+            "SELF header: version=0x{:08x}, se_flags=0x{:04x}, se_type=0x{:04x}, metadata_offset=0x{:08x}",
+            header.version, header.key_type, header.header_type, header.metadata_offset
         );
 
         Ok(header)
@@ -210,14 +219,22 @@ impl SelfLoader {
         }
 
         // Check for ELF magic at expected offset
+        // Note: This is for unencrypted SELF files (debug builds, homebrew, etc.)
+        // If data at this offset is NOT ELF magic, we need full decryption
         if data[elf_offset..elf_offset + 4] == [0x7F, b'E', b'L', b'F'] {
-            info!("Found unencrypted ELF data");
+            info!("Found unencrypted ELF data at offset 0x{:x} (header_len=0x{:x})", 
+                elf_offset, header.header_len);
             // Extract the ELF portion
             return Ok(data[elf_offset..].to_vec());
         }
 
-        // Attempt basic decryption
-        warn!("Encrypted SELF detected, attempting decryption");
+        // Data is encrypted - need full decryption
+        info!(
+            "No ELF magic at offset 0x{:x}, data is encrypted. Bytes: {:02x?}",
+            elf_offset,
+            &data[elf_offset..elf_offset + 4]
+        );
+        warn!("Encrypted SELF detected, attempting full decryption...");
         
         // Parse the extended header to get app info offset
         // Extended header starts at offset 32 (after main SELF header)
@@ -234,22 +251,39 @@ impl SelfLoader {
             data[ext_hdr_offset + 14], data[ext_hdr_offset + 15],
         ]) as usize;
         
+        let elf_hdr_offset = u64::from_be_bytes([
+            data[ext_hdr_offset + 16], data[ext_hdr_offset + 17], 
+            data[ext_hdr_offset + 18], data[ext_hdr_offset + 19],
+            data[ext_hdr_offset + 20], data[ext_hdr_offset + 21], 
+            data[ext_hdr_offset + 22], data[ext_hdr_offset + 23],
+        ]) as usize;
+        
+        info!(
+            "Extended header: app_info_offset=0x{:x}, elf_hdr_offset=0x{:x}",
+            app_info_offset, elf_hdr_offset
+        );
+        
         // Parse app info at the specified offset
         let app_info = Self::parse_app_info(data, app_info_offset)?;
         
         // The program_type from app_info determines which key set to use
-        // RPCS3 uses: program_type, se_flags, program_sceversion
-        // se_flags is at offset 8-9 in SCE header (which is header.key_type essentially)
+        // RPCS3 approach: 
+        //   - program_type (from AppInfo.self_type) selects key array (APP, NPDRM, LV2, etc.)
+        //   - se_flags (from SCE header at offset 0x08, 2 bytes) is the revision
+        //   - program_sceversion (from AppInfo.version) is only used for LV1/LV2/ISO keys
+        //
+        // For APP keys (type 4): only program_type and revision matter
+        // For NPDRM keys (type 8): only program_type and revision matter
         let program_type = app_info.self_type;
-        let revision = header.key_type; // se_flags in RPCS3 terminology
-        let version = app_info.version;
+        let se_flags = header.key_type; // This is se_flags from SCE header (revision)
+        let program_sceversion = app_info.version;
         
         info!(
-            "SELF key lookup: program_type={}, revision=0x{:04x}, version=0x{:016x}",
-            program_type, revision, version
+            "SELF info: program_type={}, se_flags=0x{:04x}, program_sceversion=0x{:016x}",
+            program_type, se_flags, program_sceversion
         );
         
-        self.decrypt_with_program_type(data, &header, program_type, revision, version)
+        self.decrypt_with_program_type(data, &header, program_type, se_flags, program_sceversion)
     }
 
     /// Decrypt SELF with specific program type (matching RPCS3's approach)
@@ -258,64 +292,89 @@ impl SelfLoader {
         data: &[u8],
         header: &SelfHeader,
         program_type: u32,
-        revision: u16,
-        _version: u64,
+        se_flags: u16,
+        _program_sceversion: u64,
     ) -> Result<Vec<u8>, LoaderError> {
         // Check if this is a DEBUG SELF (se_flags & 0x8000)
         // Debug SELFs have unencrypted metadata
-        let is_debug = (revision & 0x8000) == 0x8000;
+        let is_debug = (se_flags & 0x8000) == 0x8000;
         
         if is_debug {
             info!("DEBUG SELF detected - metadata is not encrypted");
         }
         
-        // Map program_type to internal key type
-        // RPCS3's SELF_KEY_TYPE enum:
+        // Map program_type to internal key type (they're the same, 1:1 mapping)
+        // RPCS3's KeyVault::FindSelfKey() uses program_type directly as the switch case
         // KEY_LV0 = 1, KEY_LV1 = 2, KEY_LV2 = 3, KEY_APP = 4, KEY_ISO = 5, 
         // KEY_LDR = 6, KEY_UNK7 = 7, KEY_NPDRM = 8
-        //
-        // program_type values from SELF files:
-        // 1 = LV0, 2 = LV1, 3 = LV2, 4 = APP, 5 = ISO (SPU module), 
-        // 6 = LDR (secure loader), 7 = UNK7, 8 = NPDRM
-        let internal_key_type: u16 = match program_type {
-            1 => 1,  // LV0
-            2 => 2,  // LV1
-            3 => 3,  // LV2
-            4 => 4,  // APP
-            5 => 5,  // ISO (SPU isolated modules)
-            6 => 6,  // LDR
-            7 => 7,  // UNK7
-            8 => 8,  // NPDRM
+        let key_type: u16 = match program_type {
+            1 => 1,  // KEY_LV0
+            2 => 2,  // KEY_LV1
+            3 => 3,  // KEY_LV2
+            4 => 4,  // KEY_APP (retail games from disc)
+            5 => 5,  // KEY_ISO (SPU isolated modules)
+            6 => 6,  // KEY_LDR (secure loader)
+            7 => 7,  // KEY_UNK7
+            8 => 8,  // KEY_NPDRM (PSN downloaded content)
             _ => {
                 return Err(LoaderError::DecryptionFailed(format!(
-                    "Unknown program type: {}. Expected 1-8.\n\
+                    "Unknown program_type: {}. Expected 1-8.\n\
                      This may be an unsupported SELF format.",
                     program_type
                 )));
             }
         };
         
-        // For APP keys (type 4), the revision in the key set is the se_flags value
-        // but masked to remove the debug flag
-        let key_revision = revision & 0x7FFF; // Remove debug flag for key lookup
+        // For APP/NPDRM keys: revision = se_flags & 0x7FFF (remove debug flag)
+        // For LV1/LV2/ISO: revision is used differently (version-based)
+        // RPCS3's GetSelfAPPKey() and GetSelfNPDRMKey() only look at revision
+        let revision = se_flags & 0x7FFF; // Remove debug flag (0x8000) for key lookup
         
-        info!("Looking for key: program_type={}, internal_type={}, key_revision=0x{:04x}", 
-            program_type, internal_key_type, key_revision);
+        info!(
+            "Key lookup: key_type={} (program_type={}), revision=0x{:04x}, is_debug={}",
+            key_type, program_type, revision, is_debug
+        );
         
-        // Get the key set using internal key type and revision
-        let key_set = self.crypto.get_self_key_set(internal_key_type, key_revision)
+        // Get the key set using key type and revision (matching RPCS3's KeyVault::FindSelfKey)
+        let key_set = self.crypto.get_self_key_set(key_type, revision)
             .ok_or_else(|| {
                 let available_keys = self.crypto.list_available_keys();
+                let key_count = self.crypto.self_key_count();
+                
+                let key_type_name = match key_type {
+                    1 => "LV0 (bootloader)",
+                    2 => "LV1 (hypervisor)",
+                    3 => "LV2 (kernel)",
+                    4 => "APP (retail disc games)",
+                    5 => "ISO (SPU modules)",
+                    6 => "LDR (secure loader)",
+                    7 => "UNK7",
+                    8 => "NPDRM (PSN content)",
+                    _ => "Unknown",
+                };
+                
                 LoaderError::DecryptionFailed(format!(
-                    "Key not available for program_type={}, internal_type={}, revision=0x{:04x}\n\
-                     This game may require additional decryption keys.\n\
-                     Available keys ({} total): {}\n\n\
-                     Tip: Disc games typically use APP keys (type 4). PSN downloads use NPDRM keys (type 8).",
-                    program_type, internal_key_type, key_revision, 
-                    self.crypto.self_key_count(), available_keys
+                    "DECRYPTION KEY NOT FOUND\n\n\
+                     Needed key: type={} ({}), revision=0x{:04x}\n\
+                     Available: {} key sets loaded\n\n\
+                     This game requires a specific decryption key that is not currently available.\n\n\
+                     Key Information:\n\
+                     - Type {} is for: {}\n\
+                     - Revision 0x{:04x} corresponds to specific PS3 firmware version\n\n\
+                     Built-in APP keys (for retail disc games):\n\
+                     - Revisions 0x0000 to 0x001D (firmware 1.00 to 4.88)\n\n\
+                     Troubleshooting:\n\
+                     1. If revision > 0x001D: You need newer keys from PS3 firmware 4.90+\n\
+                     2. If type is 8 (NPDRM): PSN games need .rap license files\n\
+                     3. Check if this is a debug SELF (homebrew) - may need different keys\n\n\
+                     Available keys:\n{}",
+                    key_type, key_type_name, revision,
+                    key_count,
+                    key_type, key_type_name, revision,
+                    available_keys
                 ))
             })?;
-        
+                   
         info!("Found key set: type={}, rev=0x{:04x}", key_set.key_type, key_set.revision);
         
         let metadata_offset = header.metadata_offset as usize;
@@ -366,9 +425,19 @@ impl SelfLoader {
         let iv_pad = &decrypted_meta_info[48..64];
         
         if key_pad[0] != 0 || iv_pad[0] != 0 {
-            return Err(LoaderError::DecryptionFailed(
-                "Metadata decryption verification failed. Wrong keys or corrupted file.".to_string()
-            ));
+            // Log what we got for debugging
+            warn!("Metadata decryption verification FAILED!");
+            warn!("  key_pad[0]=0x{:02x} (expected 0x00), iv_pad[0]=0x{:02x} (expected 0x00)", 
+                key_pad[0], iv_pad[0]);
+            warn!("  key_pad: {:02x?}", key_pad);
+            warn!("  iv_pad: {:02x?}", iv_pad);
+            warn!("  First 16 bytes (data_key would be): {:02x?}", &decrypted_meta_info[0..16]);
+            
+            return Err(LoaderError::DecryptionFailed(format!(
+                "Metadata decryption verification failed (key_pad[0]=0x{:02x}, iv_pad[0]=0x{:02x}). \
+                 This usually means wrong decryption key was used. The SELF may require a different key revision.",
+                key_pad[0], iv_pad[0]
+            )));
         }
         
         info!("Metadata info decrypted successfully!");
@@ -446,25 +515,28 @@ impl SelfLoader {
         }
         
         // Extract data keys from the decrypted metadata headers
-        // Keys are stored after section headers
+        // Keys are stored after section headers as a flat array of 16-byte blocks
+        // RPCS3: memcpy(data_keys.get(), metadata_headers.get() + sizeof(meta_hdr) + meta_hdr.section_count * sizeof(MetadataSectionHeader), data_keys_length);
+        // Each section's key_idx and iv_idx point directly into this array
         let keys_offset = section_hdr_offset + (meta_hdr.section_count as usize * section_hdr_size);
-        let mut section_keys: Vec<[u8; 16]> = Vec::new();
-        let mut section_ivs: Vec<[u8; 16]> = Vec::new();
+        let data_keys_length = meta_hdr.key_count as usize * 16;
         
+        // Store all keys as a flat array of 16-byte blocks
+        let mut data_keys: Vec<[u8; 16]> = Vec::new();
         for i in 0..meta_hdr.key_count as usize {
             let key_offset = keys_offset + i * 16;
             if decrypted_headers.len() >= key_offset + 16 {
                 let mut key = [0u8; 16];
                 key.copy_from_slice(&decrypted_headers[key_offset..key_offset + 16]);
-                if i % 2 == 0 {
-                    section_keys.push(key);
-                } else {
-                    section_ivs.push(key);
-                }
+                data_keys.push(key);
             }
         }
         
-        debug!("Extracted {} section keys and {} IVs", section_keys.len(), section_ivs.len());
+        info!("Extracted {} data keys (total {} bytes) from offset 0x{:x}", data_keys.len(), data_keys_length, keys_offset);
+        // Log first few keys to debug
+        for (i, key) in data_keys.iter().enumerate().take(20) {
+            info!("  data_keys[{}] = {:02x?}", i, key);
+        }
         
         // Now we need to read the ELF header to understand the structure
         // Extended header starts at offset 32
@@ -500,20 +572,22 @@ impl SelfLoader {
         let is_elf64 = data[elf_offset + 4] == 2;
         debug!("ELF format: {}", if is_elf64 { "64-bit" } else { "32-bit" });
         
-        // Parse ELF header to get program header info
-        let (e_phoff, e_phentsize, e_phnum) = if is_elf64 {
+        // Parse ELF header to get entry point and program header info
+        let (e_entry, e_phoff, e_phentsize, e_phnum) = if is_elf64 {
+            let entry = u64::from_be_bytes(data[elf_offset + 24..elf_offset + 32].try_into().unwrap());
             let phoff = u64::from_be_bytes(data[elf_offset + 32..elf_offset + 40].try_into().unwrap());
             let phentsize = u16::from_be_bytes(data[elf_offset + 54..elf_offset + 56].try_into().unwrap());
             let phnum = u16::from_be_bytes(data[elf_offset + 56..elf_offset + 58].try_into().unwrap());
-            (phoff, phentsize, phnum)
+            (entry, phoff, phentsize, phnum)
         } else {
+            let entry = u32::from_be_bytes(data[elf_offset + 24..elf_offset + 28].try_into().unwrap()) as u64;
             let phoff = u32::from_be_bytes(data[elf_offset + 28..elf_offset + 32].try_into().unwrap()) as u64;
             let phentsize = u16::from_be_bytes(data[elf_offset + 42..elf_offset + 44].try_into().unwrap());
             let phnum = u16::from_be_bytes(data[elf_offset + 44..elf_offset + 46].try_into().unwrap());
-            (phoff, phentsize, phnum)
+            (entry, phoff, phentsize, phnum)
         };
         
-        debug!("ELF: phoff=0x{:x}, phentsize={}, phnum={}", e_phoff, e_phentsize, e_phnum);
+        info!("ELF: entry=0x{:x}, phoff=0x{:x}, phentsize={}, phnum={}", e_entry, e_phoff, e_phentsize, e_phnum);
         
         // Read program headers from the SELF file
         if data.len() < phdr_offset + (e_phnum as usize * e_phentsize as usize) {
@@ -578,14 +652,22 @@ impl SelfLoader {
         // Decrypt and copy each section
         let mut sections_written = 0;
         for (i, section_hdr) in section_headers.iter().enumerate() {
-            if section_hdr.data_size == 0 {
-                debug!("Section {} has data_size=0, skipping", i);
+            // Only process type 2 sections (actual segment data)
+            // Type 1 = section hash (SHA-1), Type 2 = segment data, Type 3 = version info
+            if section_hdr.section_type != 2 {
+                info!("Section {} has type {} (not segment data, skipping)", i, section_hdr.section_type);
                 continue;
             }
             
-            debug!("Section {}: offset=0x{:x}, size=0x{:x}, encrypted={}, compressed={}, section_index={}",
-                i, section_hdr.data_offset, section_hdr.data_size, 
-                section_hdr.encrypted, section_hdr.compressed, section_hdr.section_index);
+            if section_hdr.data_size == 0 {
+                info!("Section {} has data_size=0, skipping", i);
+                continue;
+            }
+            
+            info!("Section {}: type={}, offset=0x{:x}, size=0x{:x}, encrypted={}, compressed={}, key_idx={}, iv_idx={}, program_idx={}",
+                i, section_hdr.section_type, section_hdr.data_offset, section_hdr.data_size, 
+                section_hdr.encrypted, section_hdr.compressed, 
+                section_hdr.key_index, section_hdr.iv_index, section_hdr.section_index);
             
             let section_offset = section_hdr.data_offset as usize;
             let section_size = section_hdr.data_size as usize;
@@ -595,26 +677,75 @@ impl SelfLoader {
                 continue;
             }
             
+            // Get the matching program header to find the destination offset
+            // This is needed for proper CTR decryption when sections share the same key/IV
+            let section_idx = section_hdr.section_index as usize;
+            let dest_p_offset = if section_idx < program_headers.len() {
+                program_headers[section_idx].1 // p_offset
+            } else {
+                0
+            };
+            
+            info!("Section {}: destination p_offset=0x{:x}", i, dest_p_offset);
+            
             let encrypted_section = &data[section_offset..section_offset + section_size];
+            
+            // Log raw encrypted bytes at entry point offset if this is the entry segment
+            if section_hdr.section_index == 1 {
+                let entry_offset = 0x8a60usize; // We know this is the entry point offset within section 1
+                if encrypted_section.len() > entry_offset + 16 {
+                    info!("Section 1 RAW ENCRYPTED bytes at entry offset 0x8a60: {:02x?}", 
+                        &encrypted_section[entry_offset..entry_offset+16]);
+                }
+            }
             
             // Check if section is encrypted
             let decrypted_section = if section_hdr.encrypted == 3 {
-                // Get the key and IV for this section
+                // Get the key and IV for this section - direct indices into flat data_keys array
+                // RPCS3: memcpy(data_key, data_keys.get() + meta_shdr[i].key_idx * 0x10, 0x10);
+                // RPCS3: memcpy(data_iv, data_keys.get() + meta_shdr[i].iv_idx * 0x10, 0x10);
                 let key_idx = section_hdr.key_index as usize;
                 let iv_idx = section_hdr.iv_index as usize;
                 
-                if key_idx < section_keys.len() * 2 && iv_idx < section_keys.len() * 2 {
-                    let key = &section_keys[key_idx / 2];
-                    let iv = &section_ivs[iv_idx / 2];
+                if key_idx < data_keys.len() && iv_idx < data_keys.len() {
+                    let key = &data_keys[key_idx];
+                    let iv = &data_keys[iv_idx];
                     
-                    self.crypto.decrypt_aes_ctr(encrypted_section, key, iv)
-                        .unwrap_or_else(|_| encrypted_section.to_vec())
+                    info!("Section {} decryption: key_idx={}, iv_idx={}, key={:02x?}, iv={:02x?}", 
+                        i, key_idx, iv_idx, key, iv);
+                    
+                    info!("Section {} encrypted size: {} bytes, offset in file: 0x{:x}, dest offset: 0x{:x}", 
+                        i, encrypted_section.len(), section_offset, dest_p_offset);
+                    
+                    // Use decrypt_aes_ctr_with_offset to properly handle sections that share
+                    // the same key/IV but are placed at different offsets in the destination ELF.
+                    // In CTR mode, the counter must be adjusted based on the destination offset
+                    // so that each section gets the correct keystream.
+                    let result = self.crypto.decrypt_aes_ctr_with_offset(encrypted_section, key, iv, dest_p_offset)
+                        .unwrap_or_else(|e| {
+                            warn!("Section {} AES-CTR decryption failed: {:?}", i, e);
+                            encrypted_section.to_vec()
+                        });
+                    info!("Section {} decrypted: first 16 bytes = {:02x?}", i, &result[0..16.min(result.len())]);
+                    
+                    // Check decrypted bytes at entry offset for Section 1
+                    if section_hdr.section_index == 1 {
+                        let entry_offset = 0x8a60usize;
+                        if result.len() > entry_offset + 16 {
+                            info!("Section 1 DECRYPTED bytes at entry offset 0x8a60: {:02x?}", 
+                                &result[entry_offset..entry_offset+16]);
+                        }
+                    }
+                    
+                    result
                 } else {
-                    warn!("Section {} missing keys, using raw data", i);
+                    warn!("Section {} key_idx {} or iv_idx {} out of range (have {} keys)", 
+                        i, key_idx, iv_idx, data_keys.len());
                     encrypted_section.to_vec()
                 }
             } else {
                 // Not encrypted, use as-is
+                info!("Section {} not encrypted (encrypted field = {})", i, section_hdr.encrypted);
                 encrypted_section.to_vec()
             };
             
@@ -634,11 +765,37 @@ impl SelfLoader {
             };
             
             // Copy to the correct position in ELF
-            // Find the matching program header
-            if (section_hdr.section_index as usize) < program_headers.len() {
-                let (_, p_offset, _, _p_filesz, _) = program_headers[section_hdr.section_index as usize];
-                let dest_offset = p_offset as usize;
-                let section_data = &final_section[..];
+            // Find the matching program header using section_index (program_idx)
+            let section_idx = section_hdr.section_index as usize;
+            if section_idx >= program_headers.len() {
+                // This shouldn't happen for type 2 sections, but log it
+                warn!("Section {} (type 2) has program_idx {} but only {} program headers exist", 
+                    i, section_idx, program_headers.len());
+                continue;
+            }
+            
+            let (p_type, p_offset, p_vaddr, p_filesz, _p_memsz) = program_headers[section_idx];
+            
+            // Check if entry point falls within this segment's virtual address range
+            let entry_in_segment = e_entry >= p_vaddr && e_entry < (p_vaddr + p_filesz);
+            
+            info!("Section {} -> PHDR {}: p_type={}, p_vaddr=0x{:x}..0x{:x}, p_offset=0x{:x}, p_filesz=0x{:x} {}",
+                i, section_idx, p_type, p_vaddr, p_vaddr + p_filesz, p_offset, p_filesz,
+                if entry_in_segment { "<-- ENTRY POINT IS HERE" } else { "" });
+            
+            // If this is the segment containing the entry point, log what's at the entry point offset
+            if entry_in_segment {
+                let entry_offset_in_section = (e_entry - p_vaddr) as usize;
+                if final_section.len() > entry_offset_in_section + 4 {
+                    info!("Entry point within section {}: offset_in_section=0x{:x}, bytes={:02x?}",
+                        i, entry_offset_in_section, &final_section[entry_offset_in_section..entry_offset_in_section+4]);
+                } else {
+                    warn!("Entry point offset 0x{:x} is beyond section size 0x{:x}!", entry_offset_in_section, final_section.len());
+                }
+            }
+            
+            let dest_offset = p_offset as usize;
+            let section_data = &final_section[..];
                 
                 // Check if this section data starts with ELF magic
                 // If so, it contains segment data that starts at file offset 0
@@ -671,11 +828,19 @@ impl SelfLoader {
                 }
                 
                 debug!("Wrote section {} ({} bytes) to ELF offset 0x{:x}", i, section_data.len(), dest_offset);
+                
+                // Log what bytes are at the entry point if this section contains it
+                let entry_in_segment = e_entry >= p_vaddr && e_entry < (p_vaddr + p_filesz);
+                if entry_in_segment {
+                    let entry_file_offset = dest_offset + (e_entry - p_vaddr) as usize;
+                    if elf_data.len() >= entry_file_offset + 4 {
+                        let entry_bytes = &elf_data[entry_file_offset..entry_file_offset + 4];
+                        info!("Entry point 0x{:x} is at file offset 0x{:x}: {:02x?}", 
+                            e_entry, entry_file_offset, entry_bytes);
+                    }
+                }
+                
                 sections_written += 1;
-            } else {
-                warn!("Section {} has invalid section_index {} (only {} program headers)", 
-                    i, section_hdr.section_index, program_headers.len());
-            }
         }
         
         info!("Wrote {} sections to ELF", sections_written);

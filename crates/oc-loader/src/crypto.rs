@@ -14,7 +14,7 @@ use sha1::{Sha1, Digest};
 use std::collections::HashMap;
 use std::path::Path;
 use std::fs;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// AES-128 CBC decryptor type
 type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
@@ -219,6 +219,11 @@ impl CryptoEngine {
         self.add_key_set(4, 0x0014,
             "491B0D72BB21ED115950379F4564CE784A4BFAABB00E8CB71294B192B7B9F88E",
             "F98843588FED8B0E62D7DDCB6F0CECF4");
+        
+        // App key revision 0x15 (was missing!)
+        self.add_key_set(4, 0x0015,
+            "F11DBD2C97B32AD37E55F8E743BC821D3E67630A6784D9A058DDD26313482F0F",
+            "FC5FA12CA3D2D336C4B8B425D679DA55");
         
         // App keys revision 0x16-0x18 (firmware 4.xx era - MOST MODERN GAMES)
         self.add_key_set(4, 0x0016,
@@ -480,25 +485,54 @@ impl CryptoEngine {
     /// Get SELF key set by type and revision
     /// 
     /// This implements RPCS3-style key lookup:
-    /// 1. Try exact match (type, revision)
-    /// 2. Try with revision 0 (default key for type)
-    /// 3. Try to find any key with matching type
+    /// For APP/NPDRM keys: exact revision match is required
+    /// RPCS3's GetSelfAPPKey() only returns a key if revision matches exactly
     pub fn get_self_key_set(&self, key_type: u16, revision: u16) -> Option<&SelfKeySet> {
-        debug!("Looking for key: type=0x{:04x}, revision=0x{:04x}", key_type, revision);
+        info!("Looking for key: type=0x{:04x} ({}), revision=0x{:04x}", 
+            key_type, 
+            match key_type {
+                1 => "LV0",
+                2 => "LV1", 
+                3 => "LV2",
+                4 => "APP",
+                5 => "ISO",
+                6 => "LDR",
+                7 => "UNK7",
+                8 => "NPDRM",
+                _ => "UNKNOWN",
+            },
+            revision);
         
-        // Try exact match first
+        // Try exact match first (type, revision)
         if let Some(keys) = self.self_keys.get(&(key_type, revision)) {
-            debug!("Found exact key match");
+            info!("Found exact key match for (type=0x{:04x}, revision=0x{:04x})", key_type, revision);
             return Some(keys);
         }
         
-        // Try with revision 0 as fallback (common for many game types)
+        // For APP and NPDRM keys, RPCS3 only uses exact revision matches
+        // Don't fall back to wrong keys - that causes garbage decryption
+        if key_type == 4 || key_type == 8 {
+            // Log available revisions for this type to help debug
+            let available_revisions: Vec<u16> = self.self_keys.keys()
+                .filter(|(t, _)| *t == key_type)
+                .map(|(_, r)| *r)
+                .collect();
+            
+            warn!("No key found for type=0x{:04x}, revision=0x{:04x}", key_type, revision);
+            warn!("Available revisions for this type: {:?}", available_revisions);
+            warn!("This game may require a different firmware key set.");
+            
+            return None;
+        }
+        
+        // For other key types (LV0, LV1, LV2, etc.), try fallback strategies
+        // Try with revision 0 as fallback
         if let Some(keys) = self.self_keys.get(&(key_type, 0)) {
             debug!("Found key with revision 0 fallback");
             return Some(keys);
         }
         
-        // Try to find any key with matching type (for games with different revisions)
+        // Try to find any key with matching type
         let type_match = self.self_keys.iter()
             .find(|((t, _r), _)| *t == key_type)
             .map(|(_, v)| v);
@@ -506,7 +540,7 @@ impl CryptoEngine {
         if type_match.is_some() {
             debug!("Found key with matching type (different revision)");
         } else {
-            debug!("No key found. Available keys: {:?}", 
+            warn!("No key found. Available keys: {:?}", 
                 self.self_keys.keys().collect::<Vec<_>>());
         }
         
@@ -617,6 +651,67 @@ impl CryptoEngine {
         }
 
         buffer.truncate(encrypted_data.len());
+        Ok(buffer)
+    }
+
+    /// Decrypt data using AES-128-CTR with offset
+    /// The offset is used to adjust the counter for sections that don't start at offset 0
+    /// This is needed when multiple sections share the same key/IV but are placed at different
+    /// offsets in the destination ELF file.
+    pub fn decrypt_aes_ctr_with_offset(
+        &self,
+        encrypted_data: &[u8],
+        key: &[u8],
+        iv: &[u8],
+        byte_offset: u64,
+    ) -> Result<Vec<u8>, LoaderError> {
+        debug!(
+            "AES-CTR decryption with offset: data_len={}, key_len={}, iv_len={}, byte_offset=0x{:x}",
+            encrypted_data.len(),
+            key.len(),
+            iv.len(),
+            byte_offset
+        );
+
+        if key.len() != AES_128_KEY_SIZE {
+            return Err(LoaderError::DecryptionFailed(
+                format!("Invalid key length for CTR mode (must be {} bytes)", AES_128_KEY_SIZE),
+            ));
+        }
+
+        if iv.len() != AES_IV_SIZE {
+            return Err(LoaderError::DecryptionFailed(
+                format!("Invalid IV length (must be {} bytes)", AES_IV_SIZE),
+            ));
+        }
+
+        // Calculate block offset (16 bytes per block)
+        let block_offset = byte_offset / 16;
+        
+        // Adjust the IV by adding the block offset to the counter portion
+        // The IV is treated as a 128-bit big-endian counter
+        let mut adjusted_iv = [0u8; 16];
+        adjusted_iv.copy_from_slice(iv);
+        
+        // Add block_offset to the IV (treating it as a big-endian 128-bit number)
+        let mut carry = block_offset;
+        for i in (0..16).rev() {
+            let sum = adjusted_iv[i] as u64 + (carry & 0xFF);
+            adjusted_iv[i] = sum as u8;
+            carry = (carry >> 8) + (sum >> 8);
+            if carry == 0 {
+                break;
+            }
+        }
+        
+        debug!("Adjusted IV for offset 0x{:x}: {:02x?}", byte_offset, adjusted_iv);
+
+        let mut buffer = encrypted_data.to_vec();
+        let mut cipher = Aes128Ctr::new_from_slices(key, &adjusted_iv)
+            .map_err(|e| LoaderError::DecryptionFailed(format!("Failed to create CTR cipher: {}", e)))?;
+        
+        cipher.apply_keystream(&mut buffer);
+        
         Ok(buffer)
     }
 

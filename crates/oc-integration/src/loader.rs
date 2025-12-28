@@ -143,7 +143,31 @@ impl GameLoader {
             
             match self_loader.decrypt(&data) {
                 Ok(decrypted) => {
-                    info!("Successfully decrypted SELF file");
+                    // Verify we got valid ELF data
+                    if decrypted.len() < 4 || decrypted[0..4] != [0x7F, b'E', b'L', b'F'] {
+                        error!(
+                            "SELF decryption returned {} bytes but it's not valid ELF data. Magic: {:02x?}",
+                            decrypted.len(),
+                            &decrypted[..4.min(decrypted.len())]
+                        );
+                        return Err(EmulatorError::Loader(LoaderError::DecryptionFailed(
+                            format!(
+                                "SELF decryption completed but produced invalid ELF data.\n\
+                                 Expected ELF magic (7F 45 4C 46) but got: {:02x?}\n\n\
+                                 This indicates:\n\
+                                 - Incorrect or missing decryption keys\n\
+                                 - Corrupted SELF file\n\
+                                 - Unsupported SELF encryption version\n\n\
+                                 The emulator has built-in keys for most retail games (APP type, revisions 0x00-0x1D).\n\
+                                 If this is a recent game (2013+), it may need newer keys from PS3 firmware 4.8x+.\n\
+                                 If this is a PSN/NPDRM game, it may need NPDRM-specific keys (type 8).\n\n\
+                                 File: {}",
+                                &decrypted[..4.min(decrypted.len())],
+                                actual_path
+                            )
+                        )));
+                    }
+                    info!("Successfully decrypted SELF file → valid ELF data ({} bytes)", decrypted.len());
                     (decrypted, true)
                 }
                 Err(e) => {
@@ -576,6 +600,9 @@ impl GameLoader {
             entry_point, base_addr, stack_addr, toc, tls_addr
         );
 
+        // Validate that the entry point contains valid code
+        self.validate_entry_point(entry_point, &path, is_self)?;
+
         Ok(LoadedGame {
             entry_point,
             base_addr,
@@ -667,6 +694,85 @@ impl GameLoader {
 
         debug!("Default TLS allocated at 0x{:08x}, size=0x{:x}", tls_addr, tls_size);
         Ok((tls_addr, tls_size))
+    }
+
+    /// Validate that the entry point contains valid PowerPC code
+    ///
+    /// This checks that the first instruction at the entry point is a valid
+    /// PowerPC instruction to catch issues with:
+    /// - Failed SELF decryption (encrypted data)
+    /// - Incorrect entry point
+    /// - Corrupted executable
+    fn validate_entry_point(&self, entry_point: u64, path: &str, is_self: bool) -> Result<()> {
+        // Read the first instruction at the entry point
+        let entry_addr = entry_point as u32;
+        let opcode = match self.memory.read_be32(entry_addr) {
+            Ok(op) => op,
+            Err(e) => {
+                return Err(EmulatorError::Loader(LoaderError::InvalidElf(
+                    format!(
+                        "Entry point 0x{:08x} is not accessible in memory: {}\n\
+                         This may indicate that the entry point is outside loaded segments.\n\
+                         File: {}",
+                        entry_point, e, path
+                    )
+                )));
+            }
+        };
+
+        // Check if the primary opcode is valid (not reserved)
+        let primary_op = (opcode >> 26) & 0x3F;
+        
+        // Primary opcodes 0, 1, 5, 6 are reserved/invalid on PowerPC
+        // If we see these, it's likely encrypted data or corruption
+        if primary_op == 0 || primary_op == 1 || primary_op == 5 || primary_op == 6 {
+            let bytes = [
+                (opcode >> 24) & 0xFF,
+                (opcode >> 16) & 0xFF,
+                (opcode >> 8) & 0xFF,
+                opcode & 0xFF,
+            ];
+            
+            let error_msg = if is_self {
+                format!(
+                    "Invalid instruction at entry point 0x{:08x}: 0x{:08x} ({:02x} {:02x} {:02x} {:02x})\n\
+                     Primary opcode {} is reserved/invalid on PowerPC.\n\n\
+                     This SELF file appears to be incompletely or incorrectly decrypted.\n\
+                     The entry point contains encrypted or invalid data instead of valid PowerPC code.\n\n\
+                     Possible solutions:\n\
+                     1. Ensure PS3 firmware keys are properly installed:\n\
+                        - Download official PS3 firmware (PS3UPDAT.PUP)\n\
+                        - Place it in the 'firmware/' folder\n\
+                        - Restart the emulator to load keys\n\
+                     2. Use a decrypted ELF file instead of encrypted SELF\n\
+                     3. Verify the game file is not corrupted\n\
+                     4. Some homebrew SELF files may use non-standard encryption\n\n\
+                     File: {}",
+                    entry_point, opcode, bytes[0], bytes[1], bytes[2], bytes[3],
+                    primary_op, path
+                )
+            } else {
+                format!(
+                    "Invalid instruction at entry point 0x{:08x}: 0x{:08x} ({:02x} {:02x} {:02x} {:02x})\n\
+                     Primary opcode {} is reserved/invalid on PowerPC.\n\n\
+                     This suggests the file is corrupted or not a valid PS3 executable.\n\
+                     The entry point should contain valid PowerPC instructions.\n\n\
+                     File: {}",
+                    entry_point, opcode, bytes[0], bytes[1], bytes[2], bytes[3],
+                    primary_op, path
+                )
+            };
+            
+            return Err(EmulatorError::Loader(LoaderError::InvalidElf(error_msg)));
+        }
+
+        // Entry point looks valid
+        debug!(
+            "Entry point validation passed: 0x{:08x} contains opcode 0x{:08x} (primary_op={})",
+            entry_point, opcode, primary_op
+        );
+        
+        Ok(())
     }
 
     /// Find and load PRX dependencies

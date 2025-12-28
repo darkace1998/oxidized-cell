@@ -271,12 +271,60 @@ impl EmulatorRunner {
 
         let mut thread = PpuThread::new(thread_id, self.memory.clone());
 
+        // PS3 uses function descriptors (OPD) for entry points in some cases.
+        // The entry point address in the ELF may point to a descriptor containing:
+        // - u32: actual code address
+        // - u32: TOC value
+        // 
+        // However, many games have the entry point pointing directly to code.
+        // We need to distinguish between:
+        // 1. OPD: first word is a valid code address (typically 0x10000 - 0x3FFFFFFF)
+        // 2. Direct code: first word is an instruction opcode
+        //
+        // PS3 user memory is typically in range 0x00010000 - 0x3FFFFFFF.
+        // Instruction opcodes often have high bits set (e.g., 0xbc3be527 for stmw).
+        let (real_entry, toc) = if let (Ok(first_word), Ok(second_word)) = (
+            self.memory.read_be32(game.entry_point as u32),
+            self.memory.read_be32(game.entry_point as u32 + 4),
+        ) {
+            // Check if first word looks like a valid code address in PS3 user memory range
+            // Valid code addresses are typically between 0x10000 and 0x40000000
+            // and are 4-byte aligned
+            let is_valid_code_addr = first_word >= 0x10000 
+                && first_word < 0x40000000 
+                && (first_word & 3) == 0;
+            
+            // Also check if TOC looks reasonable (in user memory range)
+            let is_valid_toc = second_word >= 0x10000 && second_word < 0x40000000;
+            
+            if is_valid_code_addr && is_valid_toc {
+                tracing::info!(
+                    "OPD at 0x{:x}: code_addr=0x{:x}, rtoc=0x{:x}",
+                    game.entry_point, first_word, second_word
+                );
+                (first_word as u64, second_word as u64)
+            } else {
+                // Entry point is direct code, not OPD
+                tracing::info!(
+                    "Entry point 0x{:x} is direct code (first_word=0x{:x}), using TOC from ELF: 0x{:x}",
+                    game.entry_point, first_word, game.toc
+                );
+                (game.entry_point, game.toc)
+            }
+        } else {
+            // Fallback if can't read memory
+            (game.entry_point, game.toc)
+        };
+
         // Set up initial register state according to PS3 ABI
         // R1 = Stack pointer (pointing to top of stack, grows downward)
-        thread.set_gpr(1, game.stack_addr as u64);
+        // The stack pointer needs a small offset from the top for the initial stack frame
+        const PPU_STACK_START_OFFSET: u64 = 0x70;
+        thread.set_gpr(1, game.stack_addr as u64 - PPU_STACK_START_OFFSET);
         
         // R2 = TOC (Table of Contents) pointer for PPC64 ELF ABI
-        thread.set_gpr(2, game.toc);
+        // Use TOC from OPD if available, otherwise from ELF
+        thread.set_gpr(2, toc);
         
         // R3 = argc (0 for now, could be set to actual argument count)
         thread.set_gpr(3, 0);
@@ -290,8 +338,8 @@ impl EmulatorRunner {
         // R13 = Thread-Local Storage (TLS) pointer
         thread.set_gpr(13, game.tls_addr as u64);
 
-        // Set program counter to entry point
-        thread.set_pc(game.entry_point);
+        // Set program counter to real entry point (from OPD if available)
+        thread.set_pc(real_entry);
 
         // Set stack info
         thread.stack_addr = game.stack_addr;
@@ -312,11 +360,13 @@ impl EmulatorRunner {
         self.ppu_threads.write().push(thread_arc);
 
         tracing::debug!(
-            "Created main PPU thread {}: entry=0x{:x}, stack=0x{:08x}, toc=0x{:x}, tls=0x{:08x}",
+            "Created main PPU thread {}: entry=0x{:x} (OPD at 0x{:x}), stack=0x{:08x}, sp=0x{:08x}, toc=0x{:x}, tls=0x{:08x}",
             thread_id,
+            real_entry,
             game.entry_point,
             game.stack_addr,
-            game.toc,
+            game.stack_addr as u64 - PPU_STACK_START_OFFSET,
+            toc,
             game.tls_addr
         );
 
