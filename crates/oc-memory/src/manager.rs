@@ -822,4 +822,124 @@ mod tests {
         let new_time = res.acquire();
         assert_eq!(new_time, time + 128);
     }
+    
+    #[test]
+    fn test_shared_memory_region() {
+        let mem = MemoryManager::new().unwrap();
+        
+        // Allocate some memory
+        let addr = mem.allocate(0x1000, 0x1000, PageFlags::RW).unwrap();
+        
+        // Create shared region
+        let region_id = mem.create_shared_region(addr, 0x1000, PageFlags::RW).unwrap();
+        assert!(region_id > 0);
+        
+        // Get the region
+        let region = mem.get_shared_region(region_id).unwrap();
+        assert_eq!(region.main_addr, addr);
+        assert_eq!(region.size, 0x1000);
+        
+        // Grant SPU access
+        mem.grant_spu_access(region_id, 0).unwrap();
+        assert!(mem.check_spu_access(region_id, 0));
+        assert!(!mem.check_spu_access(region_id, 1));
+        
+        // Revoke SPU access
+        mem.revoke_spu_access(region_id, 0).unwrap();
+        assert!(!mem.check_spu_access(region_id, 0));
+        
+        // Destroy the region
+        mem.destroy_shared_region(region_id).unwrap();
+        assert!(mem.get_shared_region(region_id).is_none());
+    }
+    
+    #[test]
+    fn test_rsx_memory_mapping() {
+        let mem = MemoryManager::new().unwrap();
+        
+        // Allocate main memory for mapping
+        let addr = mem.allocate(0x10000, 0x1000, PageFlags::RW).unwrap();
+        
+        // Create RSX mapping
+        mem.map_rsx_memory(0x1000, addr, 0x10000, false, 0).unwrap();
+        
+        // Find the mapping
+        let mapping = mem.find_rsx_mapping(0x1000).unwrap();
+        assert_eq!(mapping.rsx_offset, 0x1000);
+        assert_eq!(mapping.main_addr, addr);
+        assert_eq!(mapping.size, 0x10000);
+        
+        // Find mapping at offset within range
+        let mapping2 = mem.find_rsx_mapping(0x5000).unwrap();
+        assert_eq!(mapping2.rsx_offset, 0x1000);
+        
+        // Offset outside range should not find
+        assert!(mem.find_rsx_mapping(0x100000).is_none());
+        
+        // Unmap
+        mem.unmap_rsx_memory(0x1000);
+        assert!(mem.find_rsx_mapping(0x1000).is_none());
+    }
+    
+    #[test]
+    fn test_rsx_read_write() {
+        let mem = MemoryManager::new().unwrap();
+        
+        // Write to RSX memory
+        let data = b"RSX Test Data";
+        mem.write_rsx(0x1000, data).unwrap();
+        
+        // Read it back
+        let read_data = mem.read_rsx(0x1000, data.len() as u32).unwrap();
+        assert_eq!(read_data.as_slice(), data);
+    }
+    
+    #[test]
+    fn test_page_flags() {
+        let mem = MemoryManager::new().unwrap();
+        
+        let addr = mem.allocate(0x2000, 0x1000, PageFlags::RW).unwrap();
+        
+        // Check initial flags
+        let flags = mem.get_page_flags(addr);
+        assert!(flags.contains(PageFlags::READ));
+        assert!(flags.contains(PageFlags::WRITE));
+        
+        // Change to read-only
+        mem.set_page_flags(addr, 0x1000, PageFlags::READ).unwrap();
+        let flags = mem.get_page_flags(addr);
+        assert!(flags.contains(PageFlags::READ));
+        assert!(!flags.contains(PageFlags::WRITE));
+    }
+    
+    #[test]
+    fn test_exception_handler() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        
+        let mem = MemoryManager::new().unwrap();
+        let handler_called = Arc::new(AtomicBool::new(false));
+        let handler_called_clone = handler_called.clone();
+        
+        // Set exception handler
+        mem.set_exception_handler(move |exception| {
+            handler_called_clone.store(true, Ordering::SeqCst);
+            match exception {
+                MemoryException::AccessViolation { .. } => ExceptionHandlerResult::Handled,
+                _ => ExceptionHandlerResult::NotHandled,
+            }
+        });
+        
+        // Try to access invalid address - should trigger handler
+        let addr = mem.allocate(0x1000, 0x1000, PageFlags::READ).unwrap();
+        
+        // Try write access on read-only page
+        let result = mem.check_access_with_exception(addr, 4, PageFlags::WRITE);
+        
+        // Handler was called
+        assert!(handler_called.load(Ordering::SeqCst));
+        
+        // Since handler returned Handled, the result should be Ok
+        assert!(result.is_ok());
+    }
 }
