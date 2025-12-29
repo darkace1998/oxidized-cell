@@ -96,8 +96,22 @@ impl PpuDecoder {
             
             31 => {
                 let xo = ((opcode >> 1) & 0x3FF) as u16;
-                // Could be X, XO, XS, XFX, or other forms
-                (InstructionForm::X, xo)
+                // Differentiate between X-form and XO-form based on extended opcode
+                // XO-form arithmetic instructions have specific xo values
+                match xo {
+                    // XO-form: Integer arithmetic with OE bit
+                    8 | 10 | 40 | 73 | 75 | 104 | 136 | 138 | 200 | 202 | 232 | 233 | 234 | 235 | 
+                    266 | 457 | 459 | 489 | 491 | // divw, divwu, divd, divdu
+                    9 | 11 => { // mulhdu, mulhwu
+                        // XO-form uses a 9-bit xo field (bits 22-30)
+                        let xo_9bit = ((opcode >> 1) & 0x1FF) as u16;
+                        (InstructionForm::XO, xo_9bit)
+                    }
+                    _ => {
+                        // X-form and other variants
+                        (InstructionForm::X, xo)
+                    }
+                }
             }
             
             30 => {
