@@ -670,62 +670,60 @@ impl PpuInterpreter {
         let (rt, ra, rb, _, rc) = PpuDecoder::x_form(opcode);
         let primary = (opcode >> 26) & 0x3F;
 
-        match xo {
-            // xo=0 is shared by both integer cmp (primary 31) and FP fcmpu (primary 63)
-            // This is valid because they have different primary opcodes
-            0 => {
-                if primary == 31 {
-                    // cmp - Integer compare (signed)
-                    let bf = (rt >> 2) & 7;
-                    let l = (rt & 1) != 0;
-                    let a = if l { thread.gpr(ra as usize) as i64 } else { thread.gpr(ra as usize) as i32 as i64 };
-                    let b = if l { thread.gpr(rb as usize) as i64 } else { thread.gpr(rb as usize) as i32 as i64 };
-                    let c = if a < b { 0b1000 } else if a > b { 0b0100 } else { 0b0010 };
-                    let c = c | if thread.get_xer_so() { 1 } else { 0 };
-                    thread.set_cr_field(bf as usize, c);
-                } else if primary == 63 {
-                    // fcmpu - Floating-point compare unordered
-                    let bf = (rt >> 2) & 7;
-                    let fa = thread.fpr(ra as usize);
-                    let fb = thread.fpr(rb as usize);
-                    let result = float::compare_f64(fa, fb);
-                    let c = match result {
-                        float::FpCompareResult::Less => 0b1000,
-                        float::FpCompareResult::Greater => 0b0100,
-                        float::FpCompareResult::Equal => 0b0010,
-                        float::FpCompareResult::Unordered => 0b0001,
-                    };
-                    thread.set_cr_field(bf as usize, c);
-                }
+        match (primary, xo) {
+            // Integer cmp (primary 31, xo 0) vs FP fcmpu (primary 63, xo 0)
+            (31, 0) => {
+                // cmp - Integer compare (signed)
+                let bf = (rt >> 2) & 7;
+                let l = (rt & 1) != 0;
+                let a = if l { thread.gpr(ra as usize) as i64 } else { thread.gpr(ra as usize) as i32 as i64 };
+                let b = if l { thread.gpr(rb as usize) as i64 } else { thread.gpr(rb as usize) as i32 as i64 };
+                let c = if a < b { 0b1000 } else if a > b { 0b0100 } else { 0b0010 };
+                let c = c | if thread.get_xer_so() { 1 } else { 0 };
+                thread.set_cr_field(bf as usize, c);
             }
-            // xo=32 is shared by both integer cmpl (primary 31) and FP fcmpo (primary 63)
-            // This is valid because they have different primary opcodes
-            32 => {
-                if primary == 31 {
-                    // cmpl - Integer compare (unsigned)
-                    let bf = (rt >> 2) & 7;
-                    let l = (rt & 1) != 0;
-                    let a = if l { thread.gpr(ra as usize) } else { thread.gpr(ra as usize) as u32 as u64 };
-                    let b = if l { thread.gpr(rb as usize) } else { thread.gpr(rb as usize) as u32 as u64 };
-                    let c = if a < b { 0b1000 } else if a > b { 0b0100 } else { 0b0010 };
-                    let c = c | if thread.get_xer_so() { 1 } else { 0 };
-                    thread.set_cr_field(bf as usize, c);
-                } else if primary == 63 {
-                    // fcmpo - Floating-point compare ordered
-                    let bf = (rt >> 2) & 7;
-                    let fa = thread.fpr(ra as usize);
-                    let fb = thread.fpr(rb as usize);
-                    let result = float::compare_f64(fa, fb);
-                    let c = match result {
-                        float::FpCompareResult::Less => 0b1000,
-                        float::FpCompareResult::Greater => 0b0100,
-                        float::FpCompareResult::Equal => 0b0010,
-                        float::FpCompareResult::Unordered => 0b0001,
-                    };
-                    thread.set_cr_field(bf as usize, c);
-                    // fcmpo may raise exceptions on unordered (SNaN), but we'll skip that for now
-                }
+            (63, 0) => {
+                // fcmpu - Floating-point compare unordered
+                let bf = (rt >> 2) & 7;
+                let fa = thread.fpr(ra as usize);
+                let fb = thread.fpr(rb as usize);
+                let result = float::compare_f64(fa, fb);
+                let c = match result {
+                    float::FpCompareResult::Less => 0b1000,
+                    float::FpCompareResult::Greater => 0b0100,
+                    float::FpCompareResult::Equal => 0b0010,
+                    float::FpCompareResult::Unordered => 0b0001,
+                };
+                thread.set_cr_field(bf as usize, c);
             }
+            // Integer cmpl (primary 31, xo 32) vs FP fcmpo (primary 63, xo 32)
+            (31, 32) => {
+                // cmpl - Integer compare (unsigned)
+                let bf = (rt >> 2) & 7;
+                let l = (rt & 1) != 0;
+                let a = if l { thread.gpr(ra as usize) } else { thread.gpr(ra as usize) as u32 as u64 };
+                let b = if l { thread.gpr(rb as usize) } else { thread.gpr(rb as usize) as u32 as u64 };
+                let c = if a < b { 0b1000 } else if a > b { 0b0100 } else { 0b0010 };
+                let c = c | if thread.get_xer_so() { 1 } else { 0 };
+                thread.set_cr_field(bf as usize, c);
+            }
+            (63, 32) => {
+                // fcmpo - Floating-point compare ordered
+                let bf = (rt >> 2) & 7;
+                let fa = thread.fpr(ra as usize);
+                let fb = thread.fpr(rb as usize);
+                let result = float::compare_f64(fa, fb);
+                let c = match result {
+                    float::FpCompareResult::Less => 0b1000,
+                    float::FpCompareResult::Greater => 0b0100,
+                    float::FpCompareResult::Equal => 0b0010,
+                    float::FpCompareResult::Unordered => 0b0001,
+                };
+                thread.set_cr_field(bf as usize, c);
+                // fcmpo may raise exceptions on unordered (SNaN), but we'll skip that for now
+            }
+            // All other instructions dispatch based on xo only
+            (_, xo) => match xo {
             // and - AND
             28 => {
                 let value = thread.gpr(rt as usize) & thread.gpr(rb as usize);
@@ -1303,7 +1301,8 @@ impl PpuInterpreter {
                     opcode,
                 });
             }
-        }
+            } // End inner match
+        } // End outer match
 
         thread.advance_pc();
         Ok(())
