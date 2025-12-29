@@ -68,6 +68,7 @@ struct BasicBlock {
  */
 struct CodeCache {
     std::unordered_map<uint32_t, std::unique_ptr<BasicBlock>> blocks;
+    std::mutex mutex;
     size_t total_size;
     size_t max_size;
     
@@ -1248,8 +1249,10 @@ void oc_ppu_jit_start_compile_threads(oc_ppu_jit_t* jit, size_t num_threads) {
         emit_machine_code(block.get());
         
         // Insert into cache (thread-safe)
-        std::lock_guard<std::mutex> lock(jit->inline_cache.mutex);
-        jit->cache.insert_block(task.address, std::move(block));
+        {
+            std::lock_guard<std::mutex> lock(jit->cache.mutex);
+            jit->cache.insert_block(task.address, std::move(block));
+        }
         
         // Update lazy state
         jit->lazy_manager.mark_compiled(task.address);

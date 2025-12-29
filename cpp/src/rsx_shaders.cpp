@@ -19,6 +19,7 @@
 #include <mutex>
 #include <functional>
 #include <array>
+#include <new>
 
 // ============================================================================
 // RSX Shader Instruction Definitions
@@ -784,7 +785,7 @@ int oc_rsx_shader_compile_vertex(oc_rsx_shader_t* shader, const uint32_t* code,
         auto it = shader->vertex_cache.find(hash);
         if (it != shader->vertex_cache.end()) {
             *out_size = it->second.size();
-            *out_spirv = static_cast<uint32_t*>(malloc(*out_size * sizeof(uint32_t)));
+            *out_spirv = new (std::nothrow) uint32_t[*out_size];
             if (*out_spirv) {
                 memcpy(*out_spirv, it->second.data(), *out_size * sizeof(uint32_t));
             }
@@ -813,7 +814,7 @@ int oc_rsx_shader_compile_vertex(oc_rsx_shader_t* shader, const uint32_t* code,
     }
     
     *out_size = spirv.size();
-    *out_spirv = static_cast<uint32_t*>(malloc(*out_size * sizeof(uint32_t)));
+    *out_spirv = new (std::nothrow) uint32_t[*out_size];
     if (*out_spirv) {
         memcpy(*out_spirv, spirv.data(), *out_size * sizeof(uint32_t));
     }
@@ -835,7 +836,7 @@ int oc_rsx_shader_compile_fragment(oc_rsx_shader_t* shader, const uint32_t* code
         auto it = shader->fragment_cache.find(hash);
         if (it != shader->fragment_cache.end()) {
             *out_size = it->second.size();
-            *out_spirv = static_cast<uint32_t*>(malloc(*out_size * sizeof(uint32_t)));
+            *out_spirv = new (std::nothrow) uint32_t[*out_size];
             if (*out_spirv) {
                 memcpy(*out_spirv, it->second.data(), *out_size * sizeof(uint32_t));
             }
@@ -863,7 +864,7 @@ int oc_rsx_shader_compile_fragment(oc_rsx_shader_t* shader, const uint32_t* code
     }
     
     *out_size = spirv.size();
-    *out_spirv = static_cast<uint32_t*>(malloc(*out_size * sizeof(uint32_t)));
+    *out_spirv = new (std::nothrow) uint32_t[*out_size];
     if (*out_spirv) {
         memcpy(*out_spirv, spirv.data(), *out_size * sizeof(uint32_t));
     }
@@ -873,7 +874,7 @@ int oc_rsx_shader_compile_fragment(oc_rsx_shader_t* shader, const uint32_t* code
 
 void oc_rsx_shader_free_spirv(uint32_t* spirv) {
     if (spirv) {
-        free(spirv);
+        delete[] spirv;
     }
 }
 
