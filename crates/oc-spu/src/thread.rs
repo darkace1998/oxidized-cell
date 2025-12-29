@@ -1,5 +1,6 @@
 //! SPU thread state
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use oc_memory::MemoryManager;
 use crate::channels::SpuChannels;
@@ -176,8 +177,8 @@ pub enum SpuEventType {
 pub struct SpuEventQueue {
     /// Queue ID
     pub id: u32,
-    /// Events in the queue
-    events: Vec<SpuEvent>,
+    /// Events in the queue (using VecDeque for O(1) pop_front)
+    events: VecDeque<SpuEvent>,
     /// Maximum queue size
     max_size: usize,
     /// Waiting threads (PPU thread IDs)
@@ -189,7 +190,7 @@ impl SpuEventQueue {
     pub fn new(id: u32, max_size: usize) -> Self {
         Self {
             id,
-            events: Vec::with_capacity(max_size),
+            events: VecDeque::with_capacity(max_size),
             max_size,
             waiters: Vec::new(),
         }
@@ -198,20 +199,16 @@ impl SpuEventQueue {
     /// Push an event to the queue
     pub fn push(&mut self, event: SpuEvent) -> bool {
         if self.events.len() < self.max_size {
-            self.events.push(event);
+            self.events.push_back(event);
             true
         } else {
             false
         }
     }
     
-    /// Pop an event from the queue
+    /// Pop an event from the queue (O(1) operation)
     pub fn pop(&mut self) -> Option<SpuEvent> {
-        if self.events.is_empty() {
-            None
-        } else {
-            Some(self.events.remove(0))
-        }
+        self.events.pop_front()
     }
     
     /// Check if queue is empty
@@ -546,21 +543,26 @@ impl SpuThread {
     }
     
     /// Enter isolation mode
+    /// 
+    /// In isolation mode, the SPU's local storage is encrypted and protected.
+    /// The PPU cannot access the SPU's local storage or registers.
+    /// This is used for secure code execution (e.g., SPU security modules).
     pub fn enter_isolation(&mut self) {
         if self.isolation == IsolationState::Normal {
-            self.isolation = IsolationState::Entering;
-            // In isolation mode, the SPU's local storage is encrypted
-            // and cannot be accessed by the PPU
+            // Transition directly to isolated state
+            // The Entering state is tracked internally for debugging/introspection
             self.isolation = IsolationState::Isolated;
             self.state = SpuThreadState::Isolated;
         }
     }
     
     /// Exit isolation mode
+    ///
+    /// Clears the isolation flag and returns the SPU to normal operation.
+    /// Note: In a real PS3, exiting isolation would also clear sensitive data.
     pub fn exit_isolation(&mut self) {
         if self.isolation == IsolationState::Isolated {
-            self.isolation = IsolationState::Exiting;
-            // Clear sensitive data
+            // Transition directly to normal state
             self.isolation = IsolationState::Normal;
             if self.state == SpuThreadState::Isolated {
                 self.state = SpuThreadState::Ready;
