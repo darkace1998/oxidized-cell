@@ -3,6 +3,13 @@
  * 
  * Provides Just-In-Time compilation for PowerPC 64-bit (Cell PPU) instructions
  * using basic block compilation, LLVM IR generation, and native code emission.
+ * 
+ * Features:
+ * - Branch prediction hints for optimized control flow
+ * - Inline caching for frequently called functions
+ * - Register allocation optimization
+ * - Lazy compilation with on-demand code generation
+ * - Multi-threaded compilation support
  */
 
 #include "oc_ffi.h"
@@ -11,6 +18,12 @@
 #include <unordered_map>
 #include <vector>
 #include <memory>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <thread>
+#include <atomic>
+#include <functional>
 
 #ifdef HAVE_LLVM
 #include <llvm/IR/LLVMContext.h>
@@ -100,12 +113,495 @@ struct BreakpointManager {
 };
 
 /**
+ * Branch prediction hint types
+ */
+enum class BranchHint : uint8_t {
+    None = 0,
+    Likely = 1,      // Branch is likely to be taken (+ hint)
+    Unlikely = 2,    // Branch is unlikely to be taken (- hint)
+    Static = 3       // Use static prediction (backward=taken, forward=not taken)
+};
+
+/**
+ * Branch prediction data for a basic block
+ */
+struct BranchPrediction {
+    uint32_t branch_address;
+    uint32_t target_address;
+    BranchHint hint;
+    uint32_t taken_count;
+    uint32_t not_taken_count;
+    
+    BranchPrediction() 
+        : branch_address(0), target_address(0), hint(BranchHint::None),
+          taken_count(0), not_taken_count(0) {}
+    
+    BranchPrediction(uint32_t addr, uint32_t target, BranchHint h)
+        : branch_address(addr), target_address(target), hint(h),
+          taken_count(0), not_taken_count(0) {}
+    
+    // Update prediction based on runtime behavior
+    void update(bool taken) {
+        if (taken) {
+            taken_count++;
+        } else {
+            not_taken_count++;
+        }
+        
+        // Update hint based on observed behavior
+        if (taken_count > not_taken_count * 2) {
+            hint = BranchHint::Likely;
+        } else if (not_taken_count > taken_count * 2) {
+            hint = BranchHint::Unlikely;
+        }
+    }
+    
+    // Get predicted direction
+    bool predict_taken() const {
+        switch (hint) {
+            case BranchHint::Likely: return true;
+            case BranchHint::Unlikely: return false;
+            case BranchHint::Static:
+                // Backward branches predicted taken, forward not taken
+                return target_address < branch_address;
+            default:
+                return taken_count >= not_taken_count;
+        }
+    }
+};
+
+/**
+ * Branch prediction manager
+ */
+struct BranchPredictor {
+    std::unordered_map<uint32_t, BranchPrediction> predictions;
+    std::mutex mutex;
+    
+    void add_prediction(uint32_t address, uint32_t target, BranchHint hint) {
+        std::lock_guard<std::mutex> lock(mutex);
+        predictions[address] = BranchPrediction(address, target, hint);
+    }
+    
+    BranchPrediction* get_prediction(uint32_t address) {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = predictions.find(address);
+        return (it != predictions.end()) ? &it->second : nullptr;
+    }
+    
+    void update_prediction(uint32_t address, bool taken) {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = predictions.find(address);
+        if (it != predictions.end()) {
+            it->second.update(taken);
+        }
+    }
+    
+    void clear() {
+        std::lock_guard<std::mutex> lock(mutex);
+        predictions.clear();
+    }
+};
+
+/**
+ * Inline cache entry for call sites
+ */
+struct InlineCacheEntry {
+    uint32_t call_site;        // Address of call instruction
+    uint32_t target_address;   // Cached target address
+    void* compiled_target;     // Pointer to compiled target code
+    uint32_t hit_count;        // Number of cache hits
+    bool is_valid;             // Whether the cache entry is valid
+    
+    InlineCacheEntry()
+        : call_site(0), target_address(0), compiled_target(nullptr),
+          hit_count(0), is_valid(false) {}
+    
+    InlineCacheEntry(uint32_t site, uint32_t target)
+        : call_site(site), target_address(target), compiled_target(nullptr),
+          hit_count(0), is_valid(true) {}
+};
+
+/**
+ * Inline cache manager for call sites
+ */
+struct InlineCacheManager {
+    std::unordered_map<uint32_t, InlineCacheEntry> cache;
+    std::mutex mutex;
+    size_t max_entries;
+    
+    InlineCacheManager() : max_entries(4096) {}
+    
+    void add_entry(uint32_t call_site, uint32_t target) {
+        std::lock_guard<std::mutex> lock(mutex);
+        
+        // Evict if at capacity
+        if (cache.size() >= max_entries) {
+            // Find entry with lowest hit count
+            uint32_t min_hits = UINT32_MAX;
+            uint32_t evict_addr = 0;
+            for (const auto& pair : cache) {
+                if (pair.second.hit_count < min_hits) {
+                    min_hits = pair.second.hit_count;
+                    evict_addr = pair.first;
+                }
+            }
+            cache.erase(evict_addr);
+        }
+        
+        cache[call_site] = InlineCacheEntry(call_site, target);
+    }
+    
+    InlineCacheEntry* lookup(uint32_t call_site) {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = cache.find(call_site);
+        if (it != cache.end() && it->second.is_valid) {
+            it->second.hit_count++;
+            return &it->second;
+        }
+        return nullptr;
+    }
+    
+    void invalidate(uint32_t target_address) {
+        std::lock_guard<std::mutex> lock(mutex);
+        for (auto& pair : cache) {
+            if (pair.second.target_address == target_address) {
+                pair.second.is_valid = false;
+                pair.second.compiled_target = nullptr;
+            }
+        }
+    }
+    
+    void update_compiled_target(uint32_t target_address, void* compiled) {
+        std::lock_guard<std::mutex> lock(mutex);
+        for (auto& pair : cache) {
+            if (pair.second.target_address == target_address && pair.second.is_valid) {
+                pair.second.compiled_target = compiled;
+            }
+        }
+    }
+    
+    void clear() {
+        std::lock_guard<std::mutex> lock(mutex);
+        cache.clear();
+    }
+};
+
+/**
+ * Register allocation hints
+ */
+enum class RegAllocHint : uint8_t {
+    None = 0,
+    Caller = 1,      // Prefer caller-saved registers
+    Callee = 2,      // Prefer callee-saved registers
+    Float = 3,       // Prefer floating-point registers
+    Vector = 4       // Prefer vector registers
+};
+
+/**
+ * Register liveness information
+ */
+struct RegisterLiveness {
+    uint32_t live_gprs;      // Bitmask of live GPRs
+    uint32_t live_fprs;      // Bitmask of live FPRs
+    uint32_t live_vrs;       // Bitmask of live vector registers
+    uint32_t modified_gprs;  // GPRs modified in this block
+    uint32_t modified_fprs;  // FPRs modified in this block
+    uint32_t modified_vrs;   // VRs modified in this block
+    
+    RegisterLiveness() 
+        : live_gprs(0), live_fprs(0), live_vrs(0),
+          modified_gprs(0), modified_fprs(0), modified_vrs(0) {}
+    
+    void mark_gpr_live(uint8_t reg) { live_gprs |= (1u << reg); }
+    void mark_fpr_live(uint8_t reg) { live_fprs |= (1u << reg); }
+    void mark_vr_live(uint8_t reg) { live_vrs |= (1u << reg); }
+    void mark_gpr_modified(uint8_t reg) { modified_gprs |= (1u << reg); }
+    void mark_fpr_modified(uint8_t reg) { modified_fprs |= (1u << reg); }
+    void mark_vr_modified(uint8_t reg) { modified_vrs |= (1u << reg); }
+    
+    bool is_gpr_live(uint8_t reg) const { return (live_gprs & (1u << reg)) != 0; }
+    bool is_fpr_live(uint8_t reg) const { return (live_fprs & (1u << reg)) != 0; }
+    bool is_vr_live(uint8_t reg) const { return (live_vrs & (1u << reg)) != 0; }
+};
+
+/**
+ * Register allocation optimizer
+ */
+struct RegisterAllocator {
+    std::unordered_map<uint32_t, RegisterLiveness> block_liveness;
+    
+    // Analyze register usage in a basic block
+    void analyze_block(uint32_t address, const std::vector<uint32_t>& instructions) {
+        RegisterLiveness liveness;
+        
+        for (uint32_t instr : instructions) {
+            uint8_t opcode = (instr >> 26) & 0x3F;
+            uint8_t rt = (instr >> 21) & 0x1F;
+            uint8_t ra = (instr >> 16) & 0x1F;
+            uint8_t rb = (instr >> 11) & 0x1F;
+            
+            // Mark source registers as live
+            if (ra != 0) liveness.mark_gpr_live(ra);
+            if (opcode == 31 || opcode == 63) { // Extended opcodes use rb
+                if (rb != 0) liveness.mark_gpr_live(rb);
+            }
+            
+            // Mark destination register as modified
+            if (rt != 0) {
+                liveness.mark_gpr_modified(rt);
+            }
+            
+            // Handle floating-point instructions
+            if (opcode >= 48 && opcode <= 63) {
+                liveness.mark_fpr_live(ra);
+                liveness.mark_fpr_modified(rt);
+            }
+        }
+        
+        block_liveness[address] = liveness;
+    }
+    
+    // Get allocation hints for a register
+    RegAllocHint get_hint(uint32_t address, uint8_t reg) const {
+        auto it = block_liveness.find(address);
+        if (it == block_liveness.end()) {
+            return RegAllocHint::None;
+        }
+        
+        const auto& liveness = it->second;
+        
+        // Prefer callee-saved for long-lived values
+        if (liveness.is_gpr_live(reg) && !liveness.is_gpr_live((reg + 1) % 32)) {
+            return RegAllocHint::Callee;
+        }
+        
+        return RegAllocHint::Caller;
+    }
+    
+    // Get liveness info for a block
+    const RegisterLiveness* get_liveness(uint32_t address) const {
+        auto it = block_liveness.find(address);
+        return (it != block_liveness.end()) ? &it->second : nullptr;
+    }
+    
+    void clear() {
+        block_liveness.clear();
+    }
+};
+
+/**
+ * Lazy compilation state
+ */
+enum class LazyState : uint8_t {
+    NotCompiled = 0,
+    Pending = 1,
+    Compiling = 2,
+    Compiled = 3,
+    Failed = 4
+};
+
+/**
+ * Lazy compilation entry
+ */
+struct LazyCompilationEntry {
+    uint32_t address;
+    const uint8_t* code;
+    size_t size;
+    LazyState state;
+    std::atomic<uint32_t> execution_count;
+    uint32_t threshold;  // Compile after this many executions
+    
+    LazyCompilationEntry()
+        : address(0), code(nullptr), size(0), state(LazyState::NotCompiled),
+          execution_count(0), threshold(10) {}
+    
+    LazyCompilationEntry(uint32_t addr, const uint8_t* c, size_t s, uint32_t thresh = 10)
+        : address(addr), code(c), size(s), state(LazyState::NotCompiled),
+          execution_count(0), threshold(thresh) {}
+    
+    // Move constructor
+    LazyCompilationEntry(LazyCompilationEntry&& other) noexcept
+        : address(other.address), code(other.code), size(other.size),
+          state(other.state), execution_count(other.execution_count.load()),
+          threshold(other.threshold) {}
+    
+    // Move assignment
+    LazyCompilationEntry& operator=(LazyCompilationEntry&& other) noexcept {
+        if (this != &other) {
+            address = other.address;
+            code = other.code;
+            size = other.size;
+            state = other.state;
+            execution_count.store(other.execution_count.load());
+            threshold = other.threshold;
+        }
+        return *this;
+    }
+    
+    // Delete copy operations
+    LazyCompilationEntry(const LazyCompilationEntry&) = delete;
+    LazyCompilationEntry& operator=(const LazyCompilationEntry&) = delete;
+    
+    bool should_compile() {
+        return execution_count.fetch_add(1) + 1 >= threshold;
+    }
+};
+
+/**
+ * Lazy compilation manager
+ */
+struct LazyCompilationManager {
+    std::unordered_map<uint32_t, std::unique_ptr<LazyCompilationEntry>> entries;
+    std::mutex mutex;
+    
+    void register_lazy(uint32_t address, const uint8_t* code, size_t size, uint32_t threshold = 10) {
+        std::lock_guard<std::mutex> lock(mutex);
+        entries[address] = std::make_unique<LazyCompilationEntry>(address, code, size, threshold);
+    }
+    
+    LazyCompilationEntry* get_entry(uint32_t address) {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = entries.find(address);
+        return (it != entries.end()) ? it->second.get() : nullptr;
+    }
+    
+    void mark_compiling(uint32_t address) {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = entries.find(address);
+        if (it != entries.end()) {
+            it->second->state = LazyState::Compiling;
+        }
+    }
+    
+    void mark_compiled(uint32_t address) {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = entries.find(address);
+        if (it != entries.end()) {
+            it->second->state = LazyState::Compiled;
+        }
+    }
+    
+    void mark_failed(uint32_t address) {
+        std::lock_guard<std::mutex> lock(mutex);
+        auto it = entries.find(address);
+        if (it != entries.end()) {
+            it->second->state = LazyState::Failed;
+        }
+    }
+    
+    void clear() {
+        std::lock_guard<std::mutex> lock(mutex);
+        entries.clear();
+    }
+};
+
+/**
+ * Compilation task for multi-threaded compilation
+ */
+struct CompilationTask {
+    uint32_t address;
+    std::vector<uint8_t> code;
+    int priority;  // Higher = more important
+    
+    CompilationTask() : address(0), priority(0) {}
+    CompilationTask(uint32_t addr, const uint8_t* c, size_t size, int prio = 0)
+        : address(addr), code(c, c + size), priority(prio) {}
+    
+    bool operator<(const CompilationTask& other) const {
+        return priority < other.priority;  // Max-heap
+    }
+};
+
+/**
+ * Multi-threaded compilation thread pool
+ */
+struct CompilationThreadPool {
+    std::vector<std::thread> workers;
+    std::priority_queue<CompilationTask> task_queue;
+    std::mutex queue_mutex;
+    std::condition_variable condition;
+    std::atomic<bool> stop_flag;
+    std::atomic<size_t> pending_tasks;
+    std::atomic<size_t> completed_tasks;
+    std::function<void(const CompilationTask&)> compile_func;
+    
+    CompilationThreadPool() : stop_flag(false), pending_tasks(0), completed_tasks(0) {}
+    
+    ~CompilationThreadPool() {
+        shutdown();
+    }
+    
+    void start(size_t num_threads, std::function<void(const CompilationTask&)> func) {
+        compile_func = std::move(func);
+        stop_flag = false;
+        
+        for (size_t i = 0; i < num_threads; ++i) {
+            workers.emplace_back([this] {
+                while (true) {
+                    CompilationTask task;
+                    {
+                        std::unique_lock<std::mutex> lock(queue_mutex);
+                        condition.wait(lock, [this] {
+                            return stop_flag || !task_queue.empty();
+                        });
+                        
+                        if (stop_flag && task_queue.empty()) {
+                            return;
+                        }
+                        
+                        task = task_queue.top();
+                        task_queue.pop();
+                    }
+                    
+                    compile_func(task);
+                    pending_tasks--;
+                    completed_tasks++;
+                }
+            });
+        }
+    }
+    
+    void submit(const CompilationTask& task) {
+        {
+            std::lock_guard<std::mutex> lock(queue_mutex);
+            task_queue.push(task);
+            pending_tasks++;
+        }
+        condition.notify_one();
+    }
+    
+    void shutdown() {
+        stop_flag = true;
+        condition.notify_all();
+        
+        for (auto& worker : workers) {
+            if (worker.joinable()) {
+                worker.join();
+            }
+        }
+        workers.clear();
+    }
+    
+    size_t get_pending_count() const { return pending_tasks; }
+    size_t get_completed_count() const { return completed_tasks; }
+    bool is_running() const { return !workers.empty() && !stop_flag; }
+};
+
+/**
  * PPU JIT compiler structure
  */
 struct oc_ppu_jit_t {
     CodeCache cache;
     BreakpointManager breakpoints;
+    BranchPredictor branch_predictor;
+    InlineCacheManager inline_cache;
+    RegisterAllocator reg_allocator;
+    LazyCompilationManager lazy_manager;
+    CompilationThreadPool thread_pool;
     bool enabled;
+    bool lazy_compilation_enabled;
+    bool multithreaded_enabled;
+    size_t num_compile_threads;
     
 #ifdef HAVE_LLVM
     std::unique_ptr<llvm::LLVMContext> context;
@@ -114,7 +610,8 @@ struct oc_ppu_jit_t {
     llvm::TargetMachine* target_machine;
 #endif
     
-    oc_ppu_jit_t() : enabled(true) {
+    oc_ppu_jit_t() : enabled(true), lazy_compilation_enabled(false), 
+                     multithreaded_enabled(false), num_compile_threads(0) {
 #ifdef HAVE_LLVM
         context = std::make_unique<llvm::LLVMContext>();
         module = std::make_unique<llvm::Module>("ppu_jit", *context);
@@ -625,6 +1122,166 @@ void oc_ppu_jit_remove_breakpoint(oc_ppu_jit_t* jit, uint32_t address) {
 int oc_ppu_jit_has_breakpoint(oc_ppu_jit_t* jit, uint32_t address) {
     if (!jit) return 0;
     return jit->breakpoints.has_breakpoint(address) ? 1 : 0;
+}
+
+// ============================================================================
+// Branch Prediction APIs
+// ============================================================================
+
+void oc_ppu_jit_add_branch_hint(oc_ppu_jit_t* jit, uint32_t address, 
+                                 uint32_t target, int hint) {
+    if (!jit) return;
+    BranchHint h = static_cast<BranchHint>(hint);
+    jit->branch_predictor.add_prediction(address, target, h);
+}
+
+int oc_ppu_jit_predict_branch(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return 0;
+    auto* pred = jit->branch_predictor.get_prediction(address);
+    return pred ? (pred->predict_taken() ? 1 : 0) : 0;
+}
+
+void oc_ppu_jit_update_branch(oc_ppu_jit_t* jit, uint32_t address, int taken) {
+    if (!jit) return;
+    jit->branch_predictor.update_prediction(address, taken != 0);
+}
+
+// ============================================================================
+// Inline Cache APIs
+// ============================================================================
+
+void oc_ppu_jit_add_inline_cache(oc_ppu_jit_t* jit, uint32_t call_site, 
+                                  uint32_t target) {
+    if (!jit) return;
+    jit->inline_cache.add_entry(call_site, target);
+}
+
+void* oc_ppu_jit_lookup_inline_cache(oc_ppu_jit_t* jit, uint32_t call_site) {
+    if (!jit) return nullptr;
+    auto* entry = jit->inline_cache.lookup(call_site);
+    return entry ? entry->compiled_target : nullptr;
+}
+
+void oc_ppu_jit_invalidate_inline_cache(oc_ppu_jit_t* jit, uint32_t target) {
+    if (!jit) return;
+    jit->inline_cache.invalidate(target);
+}
+
+// ============================================================================
+// Register Allocation APIs
+// ============================================================================
+
+void oc_ppu_jit_analyze_registers(oc_ppu_jit_t* jit, uint32_t address,
+                                   const uint32_t* instructions, size_t count) {
+    if (!jit || !instructions) return;
+    std::vector<uint32_t> instrs(instructions, instructions + count);
+    jit->reg_allocator.analyze_block(address, instrs);
+}
+
+int oc_ppu_jit_get_reg_hint(oc_ppu_jit_t* jit, uint32_t address, uint8_t reg) {
+    if (!jit) return 0;
+    return static_cast<int>(jit->reg_allocator.get_hint(address, reg));
+}
+
+uint32_t oc_ppu_jit_get_live_gprs(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return 0;
+    auto* liveness = jit->reg_allocator.get_liveness(address);
+    return liveness ? liveness->live_gprs : 0;
+}
+
+uint32_t oc_ppu_jit_get_modified_gprs(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return 0;
+    auto* liveness = jit->reg_allocator.get_liveness(address);
+    return liveness ? liveness->modified_gprs : 0;
+}
+
+// ============================================================================
+// Lazy Compilation APIs
+// ============================================================================
+
+void oc_ppu_jit_enable_lazy(oc_ppu_jit_t* jit, int enable) {
+    if (!jit) return;
+    jit->lazy_compilation_enabled = (enable != 0);
+}
+
+int oc_ppu_jit_is_lazy_enabled(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->lazy_compilation_enabled ? 1 : 0;
+}
+
+void oc_ppu_jit_register_lazy(oc_ppu_jit_t* jit, uint32_t address,
+                               const uint8_t* code, size_t size, 
+                               uint32_t threshold) {
+    if (!jit || !code) return;
+    jit->lazy_manager.register_lazy(address, code, size, threshold);
+}
+
+int oc_ppu_jit_should_compile_lazy(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return 0;
+    auto* entry = jit->lazy_manager.get_entry(address);
+    if (!entry) return 1; // Not registered, compile immediately
+    if (entry->state == LazyState::Compiled) return 0; // Already compiled
+    return entry->should_compile() ? 1 : 0;
+}
+
+int oc_ppu_jit_get_lazy_state(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return 0;
+    auto* entry = jit->lazy_manager.get_entry(address);
+    return entry ? static_cast<int>(entry->state) : 0;
+}
+
+// ============================================================================
+// Multi-threaded Compilation APIs
+// ============================================================================
+
+void oc_ppu_jit_start_compile_threads(oc_ppu_jit_t* jit, size_t num_threads) {
+    if (!jit || num_threads == 0) return;
+    
+    jit->num_compile_threads = num_threads;
+    jit->multithreaded_enabled = true;
+    
+    jit->thread_pool.start(num_threads, [jit](const CompilationTask& task) {
+        // Compile the task
+        auto block = std::make_unique<BasicBlock>(task.address);
+        identify_basic_block(task.code.data(), task.code.size(), block.get());
+        generate_llvm_ir(block.get());
+        emit_machine_code(block.get());
+        
+        // Insert into cache (thread-safe)
+        std::lock_guard<std::mutex> lock(jit->inline_cache.mutex);
+        jit->cache.insert_block(task.address, std::move(block));
+        
+        // Update lazy state
+        jit->lazy_manager.mark_compiled(task.address);
+    });
+}
+
+void oc_ppu_jit_stop_compile_threads(oc_ppu_jit_t* jit) {
+    if (!jit) return;
+    jit->thread_pool.shutdown();
+    jit->multithreaded_enabled = false;
+}
+
+void oc_ppu_jit_submit_compile_task(oc_ppu_jit_t* jit, uint32_t address,
+                                     const uint8_t* code, size_t size,
+                                     int priority) {
+    if (!jit || !code || !jit->multithreaded_enabled) return;
+    jit->thread_pool.submit(CompilationTask(address, code, size, priority));
+}
+
+size_t oc_ppu_jit_get_pending_tasks(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->thread_pool.get_pending_count();
+}
+
+size_t oc_ppu_jit_get_completed_tasks(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->thread_pool.get_completed_count();
+}
+
+int oc_ppu_jit_is_multithreaded(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->multithreaded_enabled ? 1 : 0;
 }
 
 } // extern "C"
