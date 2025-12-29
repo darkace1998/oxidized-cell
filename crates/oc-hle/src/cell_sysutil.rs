@@ -188,6 +188,212 @@ pub struct DiscInfo {
     pub label: String,
 }
 
+// ============================================================================
+// Trophy System
+// ============================================================================
+
+/// Trophy grade
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TrophyGrade {
+    /// Unknown grade
+    #[default]
+    Unknown = 0,
+    /// Platinum trophy
+    Platinum = 1,
+    /// Gold trophy
+    Gold = 2,
+    /// Silver trophy
+    Silver = 3,
+    /// Bronze trophy
+    Bronze = 4,
+}
+
+/// Trophy state
+#[derive(Debug, Clone)]
+pub struct TrophyInfo {
+    /// Trophy ID
+    pub id: u32,
+    /// Trophy name
+    pub name: String,
+    /// Trophy description
+    pub description: String,
+    /// Trophy grade
+    pub grade: TrophyGrade,
+    /// Whether trophy is unlocked
+    pub unlocked: bool,
+    /// Unlock timestamp (if unlocked)
+    pub unlock_time: u64,
+    /// Whether trophy is hidden until unlocked
+    pub hidden: bool,
+}
+
+impl Default for TrophyInfo {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            name: String::new(),
+            description: String::new(),
+            grade: TrophyGrade::Unknown,
+            unlocked: false,
+            unlock_time: 0,
+            hidden: false,
+        }
+    }
+}
+
+/// Trophy context state
+#[derive(Debug, Clone, Default)]
+pub struct TrophyContext {
+    /// Trophy set initialized
+    pub initialized: bool,
+    /// Communication ID (game ID)
+    pub comm_id: String,
+    /// Trophy count by grade
+    pub trophy_counts: [u32; 5], // Unknown, Platinum, Gold, Silver, Bronze
+    /// Unlocked counts by grade
+    pub unlocked_counts: [u32; 5],
+    /// All trophies
+    pub trophies: Vec<TrophyInfo>,
+}
+
+// ============================================================================
+// Screen Saver Control
+// ============================================================================
+
+/// Screen saver state
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScreenSaverState {
+    /// Screen saver enabled
+    #[default]
+    Enabled = 0,
+    /// Screen saver disabled
+    Disabled = 1,
+}
+
+// ============================================================================
+// Video Settings
+// ============================================================================
+
+/// Video resolution
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoResolution {
+    /// 480i
+    Res480i = 1,
+    /// 480p
+    Res480p = 2,
+    /// 576i
+    Res576i = 3,
+    /// 576p
+    Res576p = 4,
+    /// 720p
+    Res720p = 5,
+    /// 1080i
+    Res1080i = 6,
+    /// 1080p
+    Res1080p = 7,
+}
+
+impl Default for VideoResolution {
+    fn default() -> Self {
+        Self::Res1080p
+    }
+}
+
+/// Video aspect ratio
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoAspect {
+    /// 4:3
+    Aspect4_3 = 0,
+    /// 16:9
+    Aspect16_9 = 1,
+}
+
+impl Default for VideoAspect {
+    fn default() -> Self {
+        Self::Aspect16_9
+    }
+}
+
+/// Video output settings
+#[derive(Debug, Clone, Default)]
+pub struct VideoSettings {
+    /// Current resolution
+    pub resolution: VideoResolution,
+    /// Aspect ratio
+    pub aspect: VideoAspect,
+    /// Color space (0=RGB, 1=YCbCr)
+    pub color_space: u32,
+    /// Deep color mode (0=off, 1=10bit, 2=12bit)
+    pub deep_color: u32,
+    /// 3D enabled
+    pub stereo_3d: bool,
+}
+
+// ============================================================================
+// Audio Settings
+// ============================================================================
+
+/// Audio output mode
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioOutput {
+    /// HDMI
+    Hdmi = 0,
+    /// Optical
+    Optical = 1,
+    /// AV Multi
+    AvMulti = 2,
+}
+
+impl Default for AudioOutput {
+    fn default() -> Self {
+        Self::Hdmi
+    }
+}
+
+/// Audio format
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioFormat {
+    /// Linear PCM 2ch
+    Lpcm2 = 0,
+    /// Linear PCM 5.1ch
+    Lpcm51 = 1,
+    /// Linear PCM 7.1ch
+    Lpcm71 = 2,
+    /// Dolby Digital
+    DolbyDigital = 3,
+    /// DTS
+    Dts = 4,
+    /// AAC
+    Aac = 5,
+}
+
+impl Default for AudioFormat {
+    fn default() -> Self {
+        Self::Lpcm2
+    }
+}
+
+/// Audio output settings
+#[derive(Debug, Clone, Default)]
+pub struct AudioSettings {
+    /// Output device
+    pub output: AudioOutput,
+    /// Audio format
+    pub format: AudioFormat,
+    /// Volume level (0-100)
+    pub volume: u32,
+    /// Muted
+    pub muted: bool,
+    /// Downmix enabled (convert surround to stereo)
+    pub downmix: bool,
+}
+
 /// System utility manager
 pub struct SysutilManager {
     /// Registered callbacks by slot
@@ -206,6 +412,18 @@ pub struct SysutilManager {
     account: AccountInfo,
     /// Disc information
     disc: DiscInfo,
+    /// Trophy context
+    trophy: TrophyContext,
+    /// Screen saver state
+    screen_saver: ScreenSaverState,
+    /// Video settings
+    video: VideoSettings,
+    /// Audio settings
+    audio_settings: AudioSettings,
+    /// Background music enabled
+    bgm_enabled: bool,
+    /// Background music volume (0-100)
+    bgm_volume: u32,
 }
 
 impl SysutilManager {
@@ -223,6 +441,12 @@ impl SysutilManager {
             },
             account: AccountInfo::default(),
             disc: DiscInfo::default(),
+            trophy: TrophyContext::default(),
+            screen_saver: ScreenSaverState::default(),
+            video: VideoSettings::default(),
+            audio_settings: AudioSettings::default(),
+            bgm_enabled: true,
+            bgm_volume: 100,
         };
         
         // Initialize default system parameters
@@ -540,6 +764,278 @@ impl SysutilManager {
     pub fn get_disc_type(&self) -> u32 {
         self.disc.disc_type
     }
+
+    // ========================================================================
+    // Trophy System
+    // ========================================================================
+
+    /// Initialize trophy context
+    pub fn trophy_init(&mut self, comm_id: &str) -> i32 {
+        if self.trophy.initialized {
+            return CELL_SYSUTIL_ERROR_VALUE; // Already initialized
+        }
+
+        debug!("SysutilManager::trophy_init: comm_id={}", comm_id);
+
+        self.trophy.initialized = true;
+        self.trophy.comm_id = comm_id.to_string();
+        self.trophy.trophy_counts = [0; 5];
+        self.trophy.unlocked_counts = [0; 5];
+        self.trophy.trophies.clear();
+
+        0 // CELL_OK
+    }
+
+    /// Terminate trophy context
+    pub fn trophy_term(&mut self) -> i32 {
+        if !self.trophy.initialized {
+            return CELL_SYSUTIL_ERROR_VALUE; // Not initialized
+        }
+
+        debug!("SysutilManager::trophy_term");
+
+        self.trophy = TrophyContext::default();
+
+        0 // CELL_OK
+    }
+
+    /// Register a trophy
+    pub fn trophy_register(&mut self, id: u32, name: &str, description: &str, grade: TrophyGrade, hidden: bool) -> i32 {
+        if !self.trophy.initialized {
+            return CELL_SYSUTIL_ERROR_VALUE;
+        }
+
+        let trophy = TrophyInfo {
+            id,
+            name: name.to_string(),
+            description: description.to_string(),
+            grade,
+            unlocked: false,
+            unlock_time: 0,
+            hidden,
+        };
+
+        // Update counts
+        self.trophy.trophy_counts[grade as usize] += 1;
+
+        self.trophy.trophies.push(trophy);
+
+        debug!("SysutilManager::trophy_register: id={}, name={}, grade={:?}", id, name, grade);
+
+        0 // CELL_OK
+    }
+
+    /// Unlock a trophy
+    pub fn trophy_unlock(&mut self, trophy_id: u32) -> i32 {
+        if !self.trophy.initialized {
+            return CELL_SYSUTIL_ERROR_VALUE;
+        }
+
+        if let Some(trophy) = self.trophy.trophies.iter_mut().find(|t| t.id == trophy_id) {
+            if trophy.unlocked {
+                return CELL_SYSUTIL_ERROR_VALUE; // Already unlocked
+            }
+
+            trophy.unlocked = true;
+            trophy.unlock_time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            // Update unlocked count
+            self.trophy.unlocked_counts[trophy.grade as usize] += 1;
+
+            debug!("SysutilManager::trophy_unlock: id={}, name={}", trophy_id, trophy.name);
+
+            // Queue trophy notification event
+            self.queue_event(0x0301, trophy_id as u64); // Trophy unlocked event
+
+            0 // CELL_OK
+        } else {
+            CELL_SYSUTIL_ERROR_VALUE // Trophy not found
+        }
+    }
+
+    /// Get trophy info
+    pub fn trophy_get_info(&self, trophy_id: u32) -> Option<&TrophyInfo> {
+        if !self.trophy.initialized {
+            return None;
+        }
+
+        self.trophy.trophies.iter().find(|t| t.id == trophy_id)
+    }
+
+    /// Check if trophy is unlocked
+    pub fn trophy_is_unlocked(&self, trophy_id: u32) -> bool {
+        self.trophy_get_info(trophy_id)
+            .map(|t| t.unlocked)
+            .unwrap_or(false)
+    }
+
+    /// Get trophy progress (unlocked / total)
+    pub fn trophy_get_progress(&self) -> (u32, u32) {
+        let total: u32 = self.trophy.trophy_counts.iter().sum();
+        let unlocked: u32 = self.trophy.unlocked_counts.iter().sum();
+        (unlocked, total)
+    }
+
+    /// Check if trophy context is initialized
+    pub fn trophy_is_initialized(&self) -> bool {
+        self.trophy.initialized
+    }
+
+    // ========================================================================
+    // Screen Saver Control
+    // ========================================================================
+
+    /// Get screen saver state
+    pub fn get_screen_saver_state(&self) -> ScreenSaverState {
+        self.screen_saver
+    }
+
+    /// Enable screen saver
+    pub fn enable_screen_saver(&mut self) -> i32 {
+        debug!("SysutilManager::enable_screen_saver");
+        self.screen_saver = ScreenSaverState::Enabled;
+        0 // CELL_OK
+    }
+
+    /// Disable screen saver
+    pub fn disable_screen_saver(&mut self) -> i32 {
+        debug!("SysutilManager::disable_screen_saver");
+        self.screen_saver = ScreenSaverState::Disabled;
+        0 // CELL_OK
+    }
+
+    // ========================================================================
+    // Video Settings
+    // ========================================================================
+
+    /// Get video settings
+    pub fn get_video_settings(&self) -> &VideoSettings {
+        &self.video
+    }
+
+    /// Get current resolution
+    pub fn get_resolution(&self) -> VideoResolution {
+        self.video.resolution
+    }
+
+    /// Set resolution
+    pub fn set_resolution(&mut self, resolution: VideoResolution) -> i32 {
+        debug!("SysutilManager::set_resolution: {:?}", resolution);
+        self.video.resolution = resolution;
+        0 // CELL_OK
+    }
+
+    /// Get aspect ratio
+    pub fn get_aspect_ratio(&self) -> VideoAspect {
+        self.video.aspect
+    }
+
+    /// Set aspect ratio
+    pub fn set_aspect_ratio(&mut self, aspect: VideoAspect) -> i32 {
+        debug!("SysutilManager::set_aspect_ratio: {:?}", aspect);
+        self.video.aspect = aspect;
+        0 // CELL_OK
+    }
+
+    /// Check if 3D output is enabled
+    pub fn is_3d_enabled(&self) -> bool {
+        self.video.stereo_3d
+    }
+
+    /// Enable/disable 3D output
+    pub fn set_3d_enabled(&mut self, enabled: bool) -> i32 {
+        debug!("SysutilManager::set_3d_enabled: {}", enabled);
+        self.video.stereo_3d = enabled;
+        0 // CELL_OK
+    }
+
+    // ========================================================================
+    // Audio Settings
+    // ========================================================================
+
+    /// Get audio settings
+    pub fn get_audio_settings(&self) -> &AudioSettings {
+        &self.audio_settings
+    }
+
+    /// Get audio output device
+    pub fn get_audio_output(&self) -> AudioOutput {
+        self.audio_settings.output
+    }
+
+    /// Set audio output device
+    pub fn set_audio_output(&mut self, output: AudioOutput) -> i32 {
+        debug!("SysutilManager::set_audio_output: {:?}", output);
+        self.audio_settings.output = output;
+        0 // CELL_OK
+    }
+
+    /// Get audio format
+    pub fn get_audio_format(&self) -> AudioFormat {
+        self.audio_settings.format
+    }
+
+    /// Set audio format
+    pub fn set_audio_format(&mut self, format: AudioFormat) -> i32 {
+        debug!("SysutilManager::set_audio_format: {:?}", format);
+        self.audio_settings.format = format;
+        0 // CELL_OK
+    }
+
+    /// Get audio volume
+    pub fn get_audio_volume(&self) -> u32 {
+        self.audio_settings.volume
+    }
+
+    /// Set audio volume (0-100)
+    pub fn set_audio_volume(&mut self, volume: u32) -> i32 {
+        self.audio_settings.volume = volume.min(100);
+        trace!("SysutilManager::set_audio_volume: {}", self.audio_settings.volume);
+        0 // CELL_OK
+    }
+
+    /// Check if audio is muted
+    pub fn is_audio_muted(&self) -> bool {
+        self.audio_settings.muted
+    }
+
+    /// Mute/unmute audio
+    pub fn set_audio_muted(&mut self, muted: bool) -> i32 {
+        debug!("SysutilManager::set_audio_muted: {}", muted);
+        self.audio_settings.muted = muted;
+        0 // CELL_OK
+    }
+
+    // ========================================================================
+    // Background Music Control
+    // ========================================================================
+
+    /// Check if background music playback is enabled
+    pub fn is_bgm_playback_enabled(&self) -> bool {
+        self.bgm_enabled
+    }
+
+    /// Enable/disable background music playback
+    pub fn set_bgm_playback_enabled(&mut self, enabled: bool) -> i32 {
+        debug!("SysutilManager::set_bgm_playback_enabled: {}", enabled);
+        self.bgm_enabled = enabled;
+        0 // CELL_OK
+    }
+
+    /// Get background music volume
+    pub fn get_bgm_volume(&self) -> u32 {
+        self.bgm_volume
+    }
+
+    /// Set background music volume (0-100)
+    pub fn set_bgm_volume(&mut self, volume: u32) -> i32 {
+        self.bgm_volume = volume.min(100);
+        debug!("SysutilManager::set_bgm_volume: {}", self.bgm_volume);
+        0 // CELL_OK
+    }
 }
 
 impl Default for SysutilManager {
@@ -827,6 +1323,366 @@ pub fn cell_sysutil_get_bgm_playback_status(_status_addr: u32) -> i32 {
     trace!("cellSysutilGetBgmPlaybackStatus()");
     
     // TODO: Write status to memory (0 = not playing)
+    0 // CELL_OK
+}
+
+// ============================================================================
+// Screen Saver Control Functions
+// ============================================================================
+
+/// cellSysutilEnableBgmPlayback - Enable background music playback
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_sysutil_enable_bgm_playback() -> i32 {
+    debug!("cellSysutilEnableBgmPlayback()");
+    crate::context::get_hle_context_mut().sysutil.set_bgm_playback_enabled(true)
+}
+
+/// cellSysutilDisableBgmPlayback - Disable background music playback
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_sysutil_disable_bgm_playback() -> i32 {
+    debug!("cellSysutilDisableBgmPlayback()");
+    crate::context::get_hle_context_mut().sysutil.set_bgm_playback_enabled(false)
+}
+
+/// cellSysutilSetBgmPlaybackVolume - Set background music volume
+///
+/// # Arguments
+/// * `volume` - Volume level (0-100)
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_sysutil_set_bgm_playback_volume(volume: u32) -> i32 {
+    debug!("cellSysutilSetBgmPlaybackVolume(volume={})", volume);
+    crate::context::get_hle_context_mut().sysutil.set_bgm_volume(volume)
+}
+
+/// cellScreenSaverEnable - Enable screen saver
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_screen_saver_enable() -> i32 {
+    debug!("cellScreenSaverEnable()");
+    crate::context::get_hle_context_mut().sysutil.enable_screen_saver()
+}
+
+/// cellScreenSaverDisable - Disable screen saver
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_screen_saver_disable() -> i32 {
+    debug!("cellScreenSaverDisable()");
+    crate::context::get_hle_context_mut().sysutil.disable_screen_saver()
+}
+
+// ============================================================================
+// Video Settings Functions
+// ============================================================================
+
+/// cellVideoOutGetResolutionAvailability - Get resolution availability
+///
+/// # Arguments
+/// * `video_out` - Video output type
+/// * `resolution_id` - Resolution ID
+/// * `aspect` - Aspect ratio
+/// * `option` - Option flags
+///
+/// # Returns
+/// * 1 if available, 0 if not
+pub fn cell_video_out_get_resolution_availability(
+    _video_out: u32,
+    resolution_id: u32,
+    _aspect: u32,
+    _option: u32,
+) -> i32 {
+    trace!("cellVideoOutGetResolutionAvailability(resolution_id={})", resolution_id);
+    
+    // For HLE, report common resolutions as available
+    match resolution_id {
+        1 | 2 | 4 | 5 | 6 | 7 => 1, // 480i, 480p, 576p, 720p, 1080i, 1080p
+        _ => 0,
+    }
+}
+
+/// cellVideoOutGetState - Get video output state
+///
+/// # Arguments
+/// * `video_out` - Video output type
+/// * `device_index` - Device index
+/// * `state_addr` - Address to write state
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_video_out_get_state(_video_out: u32, _device_index: u32, _state_addr: u32) -> i32 {
+    trace!("cellVideoOutGetState()");
+    
+    // TODO: Write state to memory
+    0 // CELL_OK
+}
+
+/// cellVideoOutConfigure - Configure video output
+///
+/// # Arguments
+/// * `video_out` - Video output type
+/// * `config_addr` - Configuration address
+/// * `option_addr` - Options address
+/// * `wait` - Wait flag
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_video_out_configure(
+    _video_out: u32,
+    _config_addr: u32,
+    _option_addr: u32,
+    _wait: u32,
+) -> i32 {
+    debug!("cellVideoOutConfigure()");
+    
+    // TODO: Read config from memory and apply
+    0 // CELL_OK
+}
+
+/// cellVideoOutGetConfiguration - Get video output configuration
+///
+/// # Arguments
+/// * `video_out` - Video output type
+/// * `config_addr` - Address to write configuration
+/// * `option_addr` - Address to write options
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_video_out_get_configuration(
+    _video_out: u32,
+    _config_addr: u32,
+    _option_addr: u32,
+) -> i32 {
+    debug!("cellVideoOutGetConfiguration()");
+    
+    // TODO: Write configuration to memory
+    0 // CELL_OK
+}
+
+// ============================================================================
+// Audio Settings Functions
+// ============================================================================
+
+/// cellAudioOutGetState - Get audio output state
+///
+/// # Arguments
+/// * `audio_out` - Audio output type
+/// * `device_index` - Device index
+/// * `state_addr` - Address to write state
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_audio_out_get_state(_audio_out: u32, _device_index: u32, _state_addr: u32) -> i32 {
+    trace!("cellAudioOutGetState()");
+    
+    // TODO: Write state to memory
+    0 // CELL_OK
+}
+
+/// cellAudioOutConfigure - Configure audio output
+///
+/// # Arguments
+/// * `audio_out` - Audio output type
+/// * `config_addr` - Configuration address
+/// * `option_addr` - Options address
+/// * `wait` - Wait flag
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_audio_out_configure(
+    _audio_out: u32,
+    _config_addr: u32,
+    _option_addr: u32,
+    _wait: u32,
+) -> i32 {
+    debug!("cellAudioOutConfigure()");
+    
+    // TODO: Read config from memory and apply
+    0 // CELL_OK
+}
+
+/// cellAudioOutGetConfiguration - Get audio output configuration
+///
+/// # Arguments
+/// * `audio_out` - Audio output type
+/// * `config_addr` - Address to write configuration
+/// * `option_addr` - Address to write options
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_audio_out_get_configuration(
+    _audio_out: u32,
+    _config_addr: u32,
+    _option_addr: u32,
+) -> i32 {
+    debug!("cellAudioOutGetConfiguration()");
+    
+    // TODO: Write configuration to memory
+    0 // CELL_OK
+}
+
+// ============================================================================
+// Trophy Functions
+// ============================================================================
+
+/// cellNpTrophyInit - Initialize trophy system
+///
+/// # Arguments
+/// * `mem_container` - Memory container handle
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_np_trophy_init(_mem_container: u32) -> i32 {
+    debug!("cellNpTrophyInit()");
+    
+    // Trophy initialization is handled per-context
+    0 // CELL_OK
+}
+
+/// cellNpTrophyTerm - Terminate trophy system
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_np_trophy_term() -> i32 {
+    debug!("cellNpTrophyTerm()");
+    crate::context::get_hle_context_mut().sysutil.trophy_term()
+}
+
+/// cellNpTrophyCreateContext - Create trophy context
+///
+/// # Arguments
+/// * `context_addr` - Address to write context handle
+/// * `comm_id` - Communication ID (game ID)
+/// * `comm_sign` - Communication signature
+/// * `options` - Options
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_np_trophy_create_context(
+    _context_addr: u32,
+    _comm_id_addr: u32,
+    _comm_sign_addr: u32,
+    _options: u64,
+) -> i32 {
+    debug!("cellNpTrophyCreateContext()");
+    
+    // Initialize with a default comm_id for HLE
+    crate::context::get_hle_context_mut().sysutil.trophy_init("NPWR00000")
+}
+
+/// cellNpTrophyDestroyContext - Destroy trophy context
+///
+/// # Arguments
+/// * `context` - Context handle
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_np_trophy_destroy_context(_context: u32) -> i32 {
+    debug!("cellNpTrophyDestroyContext()");
+    crate::context::get_hle_context_mut().sysutil.trophy_term()
+}
+
+/// cellNpTrophyRegisterContext - Register trophy context
+///
+/// # Arguments
+/// * `context` - Context handle
+/// * `handle` - Handle
+/// * `callback` - Status callback
+/// * `callback_arg` - Callback argument
+/// * `options` - Options
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_np_trophy_register_context(
+    _context: u32,
+    _handle: u32,
+    _callback: u32,
+    _callback_arg: u32,
+    _options: u64,
+) -> i32 {
+    debug!("cellNpTrophyRegisterContext()");
+    
+    // Context registration is successful for HLE
+    0 // CELL_OK
+}
+
+/// cellNpTrophyUnlockTrophy - Unlock a trophy
+///
+/// # Arguments
+/// * `context` - Context handle
+/// * `handle` - Handle
+/// * `trophy_id` - Trophy ID
+/// * `platinum_id_addr` - Address to write platinum trophy ID (if earned)
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_np_trophy_unlock_trophy(
+    _context: u32,
+    _handle: u32,
+    trophy_id: u32,
+    _platinum_id_addr: u32,
+) -> i32 {
+    debug!("cellNpTrophyUnlockTrophy(trophy_id={})", trophy_id);
+    crate::context::get_hle_context_mut().sysutil.trophy_unlock(trophy_id)
+}
+
+/// cellNpTrophyGetTrophyInfo - Get trophy information
+///
+/// # Arguments
+/// * `context` - Context handle
+/// * `handle` - Handle
+/// * `trophy_id` - Trophy ID
+/// * `details_addr` - Address to write trophy details
+/// * `data_addr` - Address to write trophy data
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_np_trophy_get_trophy_info(
+    _context: u32,
+    _handle: u32,
+    trophy_id: u32,
+    _details_addr: u32,
+    _data_addr: u32,
+) -> i32 {
+    trace!("cellNpTrophyGetTrophyInfo(trophy_id={})", trophy_id);
+    
+    let ctx = crate::context::get_hle_context();
+    if ctx.sysutil.trophy_get_info(trophy_id).is_some() {
+        // TODO: Write trophy info to memory
+        0 // CELL_OK
+    } else {
+        CELL_SYSUTIL_ERROR_VALUE
+    }
+}
+
+/// cellNpTrophyGetGameProgress - Get overall game trophy progress
+///
+/// # Arguments
+/// * `context` - Context handle
+/// * `handle` - Handle
+/// * `percentage_addr` - Address to write percentage
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_np_trophy_get_game_progress(
+    _context: u32,
+    _handle: u32,
+    _percentage_addr: u32,
+) -> i32 {
+    trace!("cellNpTrophyGetGameProgress()");
+    
+    let ctx = crate::context::get_hle_context();
+    let (unlocked, total) = ctx.sysutil.trophy_get_progress();
+    let _percentage = if total > 0 { (unlocked * 100) / total } else { 0 };
+    
+    // TODO: Write percentage to memory
+    
     0 // CELL_OK
 }
 
@@ -1200,5 +2056,206 @@ mod tests {
         assert_eq!(DiscStatus::NoDisc as u32, 0);
         assert_eq!(DiscStatus::Inserted as u32, 1);
         assert_eq!(DiscStatus::Ready as u32, 3);
+    }
+
+    // ========================================================================
+    // Trophy System Tests
+    // ========================================================================
+
+    #[test]
+    fn test_sysutil_trophy_init() {
+        let mut manager = SysutilManager::new();
+        
+        assert!(!manager.trophy_is_initialized());
+        
+        assert_eq!(manager.trophy_init("NPWR12345"), 0);
+        assert!(manager.trophy_is_initialized());
+        
+        // Double init should fail
+        assert!(manager.trophy_init("NPWR12345") != 0);
+        
+        assert_eq!(manager.trophy_term(), 0);
+        assert!(!manager.trophy_is_initialized());
+    }
+
+    #[test]
+    fn test_sysutil_trophy_register_unlock() {
+        let mut manager = SysutilManager::new();
+        manager.trophy_init("NPWR12345");
+        
+        // Register trophies
+        assert_eq!(manager.trophy_register(1, "Bronze Trophy", "Do something", TrophyGrade::Bronze, false), 0);
+        assert_eq!(manager.trophy_register(2, "Silver Trophy", "Do more", TrophyGrade::Silver, false), 0);
+        assert_eq!(manager.trophy_register(3, "Hidden Trophy", "Secret", TrophyGrade::Gold, true), 0);
+        
+        // Check progress
+        let (unlocked, total) = manager.trophy_get_progress();
+        assert_eq!(unlocked, 0);
+        assert_eq!(total, 3);
+        
+        // Unlock trophy
+        assert_eq!(manager.trophy_unlock(1), 0);
+        assert!(manager.trophy_is_unlocked(1));
+        
+        // Double unlock should fail
+        assert!(manager.trophy_unlock(1) != 0);
+        
+        // Check progress after unlock
+        let (unlocked, total) = manager.trophy_get_progress();
+        assert_eq!(unlocked, 1);
+        assert_eq!(total, 3);
+        
+        manager.trophy_term();
+    }
+
+    #[test]
+    fn test_sysutil_trophy_get_info() {
+        let mut manager = SysutilManager::new();
+        manager.trophy_init("NPWR12345");
+        manager.trophy_register(1, "Test Trophy", "Description", TrophyGrade::Bronze, false);
+        
+        let info = manager.trophy_get_info(1);
+        assert!(info.is_some());
+        let info = info.unwrap();
+        assert_eq!(info.id, 1);
+        assert_eq!(info.name, "Test Trophy");
+        assert_eq!(info.grade, TrophyGrade::Bronze);
+        
+        // Invalid ID
+        assert!(manager.trophy_get_info(999).is_none());
+        
+        manager.trophy_term();
+    }
+
+    // ========================================================================
+    // Screen Saver Tests
+    // ========================================================================
+
+    #[test]
+    fn test_sysutil_screen_saver() {
+        let mut manager = SysutilManager::new();
+        
+        // Default state
+        assert_eq!(manager.get_screen_saver_state(), ScreenSaverState::Enabled);
+        
+        // Disable
+        assert_eq!(manager.disable_screen_saver(), 0);
+        assert_eq!(manager.get_screen_saver_state(), ScreenSaverState::Disabled);
+        
+        // Enable
+        assert_eq!(manager.enable_screen_saver(), 0);
+        assert_eq!(manager.get_screen_saver_state(), ScreenSaverState::Enabled);
+    }
+
+    // ========================================================================
+    // Video Settings Tests
+    // ========================================================================
+
+    #[test]
+    fn test_sysutil_video_settings() {
+        let mut manager = SysutilManager::new();
+        
+        // Default resolution
+        assert_eq!(manager.get_resolution(), VideoResolution::Res1080p);
+        
+        // Change resolution
+        assert_eq!(manager.set_resolution(VideoResolution::Res720p), 0);
+        assert_eq!(manager.get_resolution(), VideoResolution::Res720p);
+        
+        // Aspect ratio
+        assert_eq!(manager.get_aspect_ratio(), VideoAspect::Aspect16_9);
+        assert_eq!(manager.set_aspect_ratio(VideoAspect::Aspect4_3), 0);
+        assert_eq!(manager.get_aspect_ratio(), VideoAspect::Aspect4_3);
+        
+        // 3D
+        assert!(!manager.is_3d_enabled());
+        assert_eq!(manager.set_3d_enabled(true), 0);
+        assert!(manager.is_3d_enabled());
+    }
+
+    // ========================================================================
+    // Audio Settings Tests
+    // ========================================================================
+
+    #[test]
+    fn test_sysutil_audio_settings() {
+        let mut manager = SysutilManager::new();
+        
+        // Default output
+        assert_eq!(manager.get_audio_output(), AudioOutput::Hdmi);
+        
+        // Change output
+        assert_eq!(manager.set_audio_output(AudioOutput::Optical), 0);
+        assert_eq!(manager.get_audio_output(), AudioOutput::Optical);
+        
+        // Audio format
+        assert_eq!(manager.get_audio_format(), AudioFormat::Lpcm2);
+        assert_eq!(manager.set_audio_format(AudioFormat::DolbyDigital), 0);
+        assert_eq!(manager.get_audio_format(), AudioFormat::DolbyDigital);
+        
+        // Volume
+        assert_eq!(manager.set_audio_volume(75), 0);
+        assert_eq!(manager.get_audio_volume(), 75);
+        
+        // Volume clamping
+        assert_eq!(manager.set_audio_volume(150), 0);
+        assert_eq!(manager.get_audio_volume(), 100);
+        
+        // Mute
+        assert!(!manager.is_audio_muted());
+        assert_eq!(manager.set_audio_muted(true), 0);
+        assert!(manager.is_audio_muted());
+    }
+
+    // ========================================================================
+    // Background Music Tests
+    // ========================================================================
+
+    #[test]
+    fn test_sysutil_bgm() {
+        let mut manager = SysutilManager::new();
+        
+        // Default - BGM enabled
+        assert!(manager.is_bgm_playback_enabled());
+        assert_eq!(manager.get_bgm_volume(), 100);
+        
+        // Disable
+        assert_eq!(manager.set_bgm_playback_enabled(false), 0);
+        assert!(!manager.is_bgm_playback_enabled());
+        
+        // Volume
+        assert_eq!(manager.set_bgm_volume(50), 0);
+        assert_eq!(manager.get_bgm_volume(), 50);
+        
+        // Volume clamping
+        assert_eq!(manager.set_bgm_volume(200), 0);
+        assert_eq!(manager.get_bgm_volume(), 100);
+    }
+
+    // ========================================================================
+    // Trophy Grade Enum Tests
+    // ========================================================================
+
+    #[test]
+    fn test_trophy_grade_enum() {
+        assert_eq!(TrophyGrade::Unknown as u32, 0);
+        assert_eq!(TrophyGrade::Platinum as u32, 1);
+        assert_eq!(TrophyGrade::Gold as u32, 2);
+        assert_eq!(TrophyGrade::Silver as u32, 3);
+        assert_eq!(TrophyGrade::Bronze as u32, 4);
+    }
+
+    #[test]
+    fn test_video_resolution_enum() {
+        assert_eq!(VideoResolution::Res480i as u32, 1);
+        assert_eq!(VideoResolution::Res720p as u32, 5);
+        assert_eq!(VideoResolution::Res1080p as u32, 7);
+    }
+
+    #[test]
+    fn test_audio_output_enum() {
+        assert_eq!(AudioOutput::Hdmi as u32, 0);
+        assert_eq!(AudioOutput::Optical as u32, 1);
+        assert_eq!(AudioOutput::AvMulti as u32, 2);
     }
 }

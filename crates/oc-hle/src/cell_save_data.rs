@@ -128,6 +128,101 @@ struct SaveDataEntry {
     dir_stat: CellSaveDataDirStat,
     /// Files
     files: Vec<String>,
+    /// Icon data (PNG)
+    icon_data: Option<Vec<u8>>,
+    /// Auto-save enabled
+    auto_save: bool,
+    /// Auto-save interval in seconds (0 = disabled)
+    auto_save_interval: u32,
+    /// Last auto-save timestamp
+    last_auto_save: u64,
+}
+
+impl Default for SaveDataEntry {
+    fn default() -> Self {
+        Self {
+            dir_name: String::new(),
+            dir_stat: CellSaveDataDirStat::default(),
+            files: Vec::new(),
+            icon_data: None,
+            auto_save: false,
+            auto_save_interval: 0,
+            last_auto_save: 0,
+        }
+    }
+}
+
+// ============================================================================
+// Icon and Metadata Types
+// ============================================================================
+
+/// Save icon type
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SaveIconType {
+    /// PNG icon
+    #[default]
+    Png = 0,
+    /// Animated PNG
+    Apng = 1,
+}
+
+/// Save icon information
+#[derive(Debug, Clone, Default)]
+pub struct SaveIconInfo {
+    /// Icon type
+    pub icon_type: SaveIconType,
+    /// Icon file name
+    pub file_name: String,
+    /// Icon data size
+    pub size: u32,
+    /// Icon width
+    pub width: u32,
+    /// Icon height
+    pub height: u32,
+}
+
+/// Save metadata
+#[derive(Debug, Clone, Default)]
+pub struct SaveMetadata {
+    /// Title
+    pub title: String,
+    /// Subtitle
+    pub subtitle: String,
+    /// Detail/description
+    pub detail: String,
+    /// User parameter (game-specific)
+    pub user_param: u32,
+    /// Parental level
+    pub parental_level: u32,
+    /// Creation time (UNIX timestamp)
+    pub created_at: u64,
+    /// Modified time (UNIX timestamp)
+    pub modified_at: u64,
+}
+
+/// Auto-save configuration
+#[derive(Debug, Clone)]
+pub struct AutoSaveConfig {
+    /// Auto-save enabled
+    pub enabled: bool,
+    /// Interval in seconds (0 = manual only)
+    pub interval_secs: u32,
+    /// Show notification when auto-saving
+    pub show_notification: bool,
+    /// Directory name for auto-save
+    pub dir_name: String,
+}
+
+impl Default for AutoSaveConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_secs: 0,
+            show_notification: true,
+            dir_name: String::new(),
+        }
+    }
 }
 
 /// Save data manager
@@ -142,6 +237,8 @@ pub struct SaveDataManager {
     encryption_enabled: bool,
     /// Default encryption key (per-user)
     encryption_key: EncryptionKey,
+    /// Auto-save configuration
+    auto_save_config: AutoSaveConfig,
 }
 
 impl SaveDataManager {
@@ -153,6 +250,7 @@ impl SaveDataManager {
             vfs_backend: None,
             encryption_enabled: true,
             encryption_key: [0u8; 16], // Default key, should be user-specific
+            auto_save_config: AutoSaveConfig::default(),
         }
     }
 
@@ -169,11 +267,8 @@ impl SaveDataManager {
 
         debug!("SaveDataManager::create_directory: {}", dir_name);
 
-        let entry = SaveDataEntry {
-            dir_name: dir_name.to_string(),
-            dir_stat: CellSaveDataDirStat::default(),
-            files: Vec::new(),
-        };
+        let mut entry = SaveDataEntry::default();
+        entry.dir_name = dir_name.to_string();
 
         self.entries.insert(dir_name.to_string(), entry);
 
@@ -401,6 +496,236 @@ impl SaveDataManager {
     pub fn get_encryption_key(&self) -> &EncryptionKey {
         &self.encryption_key
     }
+
+    // ========================================================================
+    // Auto-Save Support
+    // ========================================================================
+
+    /// Configure auto-save
+    pub fn configure_auto_save(&mut self, config: AutoSaveConfig) -> i32 {
+        debug!(
+            "SaveDataManager::configure_auto_save: enabled={}, interval={}s, dir={}",
+            config.enabled, config.interval_secs, config.dir_name
+        );
+
+        self.auto_save_config = config;
+
+        0 // CELL_OK
+    }
+
+    /// Get auto-save configuration
+    pub fn get_auto_save_config(&self) -> &AutoSaveConfig {
+        &self.auto_save_config
+    }
+
+    /// Enable auto-save for a directory
+    pub fn enable_auto_save(&mut self, dir_name: &str, interval_secs: u32) -> i32 {
+        if !self.directory_exists(dir_name) {
+            return CELL_SAVEDATA_ERROR_NODATA;
+        }
+
+        debug!(
+            "SaveDataManager::enable_auto_save: dir={}, interval={}s",
+            dir_name, interval_secs
+        );
+
+        if let Some(entry) = self.entries.get_mut(dir_name) {
+            entry.auto_save = true;
+            entry.auto_save_interval = interval_secs;
+        }
+
+        self.auto_save_config.enabled = true;
+        self.auto_save_config.dir_name = dir_name.to_string();
+        self.auto_save_config.interval_secs = interval_secs;
+
+        0 // CELL_OK
+    }
+
+    /// Disable auto-save for a directory
+    pub fn disable_auto_save(&mut self, dir_name: &str) -> i32 {
+        if let Some(entry) = self.entries.get_mut(dir_name) {
+            entry.auto_save = false;
+            entry.auto_save_interval = 0;
+            debug!("SaveDataManager::disable_auto_save: dir={}", dir_name);
+        }
+
+        if self.auto_save_config.dir_name == dir_name {
+            self.auto_save_config.enabled = false;
+        }
+
+        0 // CELL_OK
+    }
+
+    /// Check if auto-save is enabled for a directory
+    pub fn is_auto_save_enabled(&self, dir_name: &str) -> bool {
+        self.entries.get(dir_name)
+            .map(|e| e.auto_save)
+            .unwrap_or(false)
+    }
+
+    /// Trigger auto-save check (called periodically)
+    /// Returns the directory name if auto-save should be triggered
+    pub fn check_auto_save(&mut self) -> Option<String> {
+        if !self.auto_save_config.enabled {
+            return None;
+        }
+
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let dir_name = self.auto_save_config.dir_name.clone();
+        if let Some(entry) = self.entries.get_mut(&dir_name) {
+            if entry.auto_save && entry.auto_save_interval > 0 {
+                let elapsed = current_time.saturating_sub(entry.last_auto_save);
+                if elapsed >= entry.auto_save_interval as u64 {
+                    entry.last_auto_save = current_time;
+                    return Some(dir_name);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Update last auto-save timestamp
+    pub fn update_auto_save_timestamp(&mut self, dir_name: &str) -> i32 {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        if let Some(entry) = self.entries.get_mut(dir_name) {
+            entry.last_auto_save = current_time;
+            0 // CELL_OK
+        } else {
+            CELL_SAVEDATA_ERROR_NODATA
+        }
+    }
+
+    // ========================================================================
+    // Icon and Metadata Handling
+    // ========================================================================
+
+    /// Set save icon data
+    pub fn set_icon(&mut self, dir_name: &str, icon_data: Vec<u8>) -> i32 {
+        if !self.directory_exists(dir_name) {
+            return CELL_SAVEDATA_ERROR_NODATA;
+        }
+
+        debug!(
+            "SaveDataManager::set_icon: dir={}, size={} bytes",
+            dir_name, icon_data.len()
+        );
+
+        if let Some(entry) = self.entries.get_mut(dir_name) {
+            entry.icon_data = Some(icon_data);
+        }
+
+        0 // CELL_OK
+    }
+
+    /// Get save icon data
+    pub fn get_icon(&self, dir_name: &str) -> Option<&[u8]> {
+        self.entries.get(dir_name)
+            .and_then(|e| e.icon_data.as_ref())
+            .map(|v| v.as_slice())
+    }
+
+    /// Check if save has icon
+    pub fn has_icon(&self, dir_name: &str) -> bool {
+        self.entries.get(dir_name)
+            .and_then(|e| e.icon_data.as_ref())
+            .map(|v| !v.is_empty())
+            .unwrap_or(false)
+    }
+
+    /// Remove save icon
+    pub fn remove_icon(&mut self, dir_name: &str) -> i32 {
+        if let Some(entry) = self.entries.get_mut(dir_name) {
+            entry.icon_data = None;
+            debug!("SaveDataManager::remove_icon: dir={}", dir_name);
+            0 // CELL_OK
+        } else {
+            CELL_SAVEDATA_ERROR_NODATA
+        }
+    }
+
+    /// Set save metadata (title, subtitle, detail)
+    pub fn set_metadata(&mut self, dir_name: &str, metadata: &SaveMetadata) -> i32 {
+        if !self.directory_exists(dir_name) {
+            return CELL_SAVEDATA_ERROR_NODATA;
+        }
+
+        debug!(
+            "SaveDataManager::set_metadata: dir={}, title={}",
+            dir_name, metadata.title
+        );
+
+        if let Some(entry) = self.entries.get_mut(dir_name) {
+            // Copy title
+            let title_bytes = metadata.title.as_bytes();
+            let title_len = title_bytes.len().min(127);
+            entry.dir_stat.title[..title_len].copy_from_slice(&title_bytes[..title_len]);
+
+            // Copy subtitle
+            let subtitle_bytes = metadata.subtitle.as_bytes();
+            let subtitle_len = subtitle_bytes.len().min(127);
+            entry.dir_stat.subtitle[..subtitle_len].copy_from_slice(&subtitle_bytes[..subtitle_len]);
+
+            // Copy detail
+            let detail_bytes = metadata.detail.as_bytes();
+            let detail_len = detail_bytes.len().min(1023);
+            entry.dir_stat.detail[..detail_len].copy_from_slice(&detail_bytes[..detail_len]);
+
+            // Update modified time
+            entry.dir_stat.mtime = metadata.modified_at;
+        }
+
+        0 // CELL_OK
+    }
+
+    /// Get save metadata
+    pub fn get_metadata(&self, dir_name: &str) -> Option<SaveMetadata> {
+        let entry = self.entries.get(dir_name)?;
+
+        // Extract title (find null terminator or use full array)
+        let title = extract_string_from_bytes(&entry.dir_stat.title);
+        let subtitle = extract_string_from_bytes(&entry.dir_stat.subtitle);
+        let detail = extract_string_from_bytes(&entry.dir_stat.detail);
+
+        Some(SaveMetadata {
+            title,
+            subtitle,
+            detail,
+            user_param: 0,
+            parental_level: 0,
+            created_at: entry.dir_stat.mtime,
+            modified_at: entry.dir_stat.mtime,
+        })
+    }
+
+    /// Get save data size in KB
+    pub fn get_save_size_kb(&self, dir_name: &str) -> Option<u64> {
+        self.entries.get(dir_name).map(|e| e.dir_stat.file_size_kb)
+    }
+
+    /// Set save data size in KB
+    pub fn set_save_size_kb(&mut self, dir_name: &str, size_kb: u64) -> i32 {
+        if let Some(entry) = self.entries.get_mut(dir_name) {
+            entry.dir_stat.file_size_kb = size_kb;
+            0 // CELL_OK
+        } else {
+            CELL_SAVEDATA_ERROR_NODATA
+        }
+    }
+}
+
+/// Helper function to extract string from null-terminated byte array
+fn extract_string_from_bytes(bytes: &[u8]) -> String {
+    let null_pos = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    String::from_utf8_lossy(&bytes[..null_pos]).to_string()
 }
 
 impl Default for SaveDataManager {
@@ -859,5 +1184,163 @@ mod tests {
         
         let decrypted = manager.decrypt_data(&encrypted);
         assert_eq!(decrypted.len(), 0);
+    }
+
+    // ========================================================================
+    // Auto-Save Tests
+    // ========================================================================
+
+    #[test]
+    fn test_save_data_manager_auto_save_config() {
+        let mut manager = SaveDataManager::new();
+        
+        // Default config
+        let config = manager.get_auto_save_config();
+        assert!(!config.enabled);
+        assert_eq!(config.interval_secs, 0);
+        
+        // Configure auto-save
+        let new_config = AutoSaveConfig {
+            enabled: true,
+            interval_secs: 300,
+            show_notification: true,
+            dir_name: "AUTOSAVE".to_string(),
+        };
+        
+        assert_eq!(manager.configure_auto_save(new_config), 0);
+        
+        let config = manager.get_auto_save_config();
+        assert!(config.enabled);
+        assert_eq!(config.interval_secs, 300);
+        assert_eq!(config.dir_name, "AUTOSAVE");
+    }
+
+    #[test]
+    fn test_save_data_manager_enable_disable_auto_save() {
+        let mut manager = SaveDataManager::new();
+        manager.create_directory("SAVE0001");
+        
+        // Not enabled initially
+        assert!(!manager.is_auto_save_enabled("SAVE0001"));
+        
+        // Enable auto-save
+        assert_eq!(manager.enable_auto_save("SAVE0001", 60), 0);
+        assert!(manager.is_auto_save_enabled("SAVE0001"));
+        
+        // Disable auto-save
+        assert_eq!(manager.disable_auto_save("SAVE0001"), 0);
+        assert!(!manager.is_auto_save_enabled("SAVE0001"));
+    }
+
+    #[test]
+    fn test_save_data_manager_auto_save_nonexistent() {
+        let mut manager = SaveDataManager::new();
+        
+        // Enable on non-existent directory should fail
+        assert!(manager.enable_auto_save("NONEXISTENT", 60) != 0);
+    }
+
+    #[test]
+    fn test_save_data_manager_update_auto_save_timestamp() {
+        let mut manager = SaveDataManager::new();
+        manager.create_directory("SAVE0001");
+        
+        assert_eq!(manager.update_auto_save_timestamp("SAVE0001"), 0);
+        
+        // Non-existent should fail
+        assert!(manager.update_auto_save_timestamp("NONEXISTENT") != 0);
+    }
+
+    // ========================================================================
+    // Icon and Metadata Tests
+    // ========================================================================
+
+    #[test]
+    fn test_save_data_manager_icon() {
+        let mut manager = SaveDataManager::new();
+        manager.create_directory("SAVE0001");
+        
+        // No icon initially
+        assert!(!manager.has_icon("SAVE0001"));
+        assert!(manager.get_icon("SAVE0001").is_none());
+        
+        // Set icon
+        let icon_data = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]; // PNG header
+        assert_eq!(manager.set_icon("SAVE0001", icon_data.clone()), 0);
+        
+        assert!(manager.has_icon("SAVE0001"));
+        let retrieved = manager.get_icon("SAVE0001");
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap(), icon_data.as_slice());
+        
+        // Remove icon
+        assert_eq!(manager.remove_icon("SAVE0001"), 0);
+        assert!(!manager.has_icon("SAVE0001"));
+    }
+
+    #[test]
+    fn test_save_data_manager_icon_nonexistent() {
+        let mut manager = SaveDataManager::new();
+        
+        // Set on non-existent directory should fail
+        assert!(manager.set_icon("NONEXISTENT", vec![0x00]) != 0);
+        assert!(manager.remove_icon("NONEXISTENT") != 0);
+    }
+
+    #[test]
+    fn test_save_data_manager_metadata() {
+        let mut manager = SaveDataManager::new();
+        manager.create_directory("SAVE0001");
+        
+        let metadata = SaveMetadata {
+            title: "My Save".to_string(),
+            subtitle: "Chapter 5".to_string(),
+            detail: "Level 42, 99% complete".to_string(),
+            user_param: 0,
+            parental_level: 0,
+            created_at: 1700000000,
+            modified_at: 1700001000,
+        };
+        
+        assert_eq!(manager.set_metadata("SAVE0001", &metadata), 0);
+        
+        let retrieved = manager.get_metadata("SAVE0001");
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.title, "My Save");
+        assert_eq!(retrieved.subtitle, "Chapter 5");
+        assert_eq!(retrieved.detail, "Level 42, 99% complete");
+    }
+
+    #[test]
+    fn test_save_data_manager_metadata_nonexistent() {
+        let mut manager = SaveDataManager::new();
+        
+        let metadata = SaveMetadata::default();
+        assert!(manager.set_metadata("NONEXISTENT", &metadata) != 0);
+        assert!(manager.get_metadata("NONEXISTENT").is_none());
+    }
+
+    #[test]
+    fn test_save_data_manager_save_size() {
+        let mut manager = SaveDataManager::new();
+        manager.create_directory("SAVE0001");
+        
+        // Default size
+        assert_eq!(manager.get_save_size_kb("SAVE0001"), Some(0));
+        
+        // Set size
+        assert_eq!(manager.set_save_size_kb("SAVE0001", 1024), 0);
+        assert_eq!(manager.get_save_size_kb("SAVE0001"), Some(1024));
+        
+        // Non-existent
+        assert!(manager.get_save_size_kb("NONEXISTENT").is_none());
+        assert!(manager.set_save_size_kb("NONEXISTENT", 100) != 0);
+    }
+
+    #[test]
+    fn test_save_icon_type_enum() {
+        assert_eq!(SaveIconType::Png as u32, 0);
+        assert_eq!(SaveIconType::Apng as u32, 1);
     }
 }

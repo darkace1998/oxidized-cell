@@ -32,6 +32,7 @@ use crate::cell_resc::RescManager;
 use crate::cell_kb::KbManager;
 use crate::cell_mouse::MouseManager;
 use crate::cell_mic::MicManager;
+use crate::spu_runtime::SpuRuntimeManager;
 
 /// Global HLE context instance
 pub static HLE_CONTEXT: Lazy<Arc<RwLock<HleContext>>> = Lazy::new(|| {
@@ -92,6 +93,8 @@ pub struct HleContext {
     pub mouse: MouseManager,
     /// Microphone input manager
     pub mic: MicManager,
+    /// SPU Runtime manager
+    pub spu_runtime: SpuRuntimeManager,
 }
 
 impl HleContext {
@@ -124,6 +127,7 @@ impl HleContext {
             kb: KbManager::new(),
             mouse: MouseManager::new(),
             mic: MicManager::new(),
+            spu_runtime: SpuRuntimeManager::new(),
         }
     }
 

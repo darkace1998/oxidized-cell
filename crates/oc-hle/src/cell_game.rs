@@ -163,6 +163,77 @@ pub struct GameUpdateInfo {
     pub error_code: i32,
 }
 
+// ============================================================================
+// DLC (Downloadable Content) Handling
+// ============================================================================
+
+/// DLC state
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DlcState {
+    /// Not installed
+    #[default]
+    NotInstalled = 0,
+    /// Installed
+    Installed = 1,
+    /// Downloading
+    Downloading = 2,
+    /// Installing
+    Installing = 3,
+    /// Failed
+    Failed = 4,
+}
+
+/// DLC entry information
+#[derive(Debug, Clone)]
+pub struct DlcEntry {
+    /// DLC content ID
+    pub content_id: String,
+    /// DLC name/title
+    pub name: String,
+    /// DLC description
+    pub description: String,
+    /// DLC version
+    pub version: String,
+    /// DLC size in KB
+    pub size_kb: u64,
+    /// DLC state
+    pub state: DlcState,
+    /// Install path
+    pub install_path: String,
+    /// License valid
+    pub licensed: bool,
+    /// Entitlement ID
+    pub entitlement_id: u64,
+}
+
+impl Default for DlcEntry {
+    fn default() -> Self {
+        Self {
+            content_id: String::new(),
+            name: String::new(),
+            description: String::new(),
+            version: "01.00".to_string(),
+            size_kb: 0,
+            state: DlcState::NotInstalled,
+            install_path: String::new(),
+            licensed: false,
+            entitlement_id: 0,
+        }
+    }
+}
+
+/// DLC manager state
+#[derive(Debug, Clone, Default)]
+pub struct DlcManagerState {
+    /// Registered DLC entries
+    pub entries: Vec<DlcEntry>,
+    /// Currently downloading DLC content ID
+    pub downloading_id: Option<String>,
+    /// Download progress (0-100)
+    pub download_progress: u32,
+}
+
 /// Game manager
 pub struct GameManager {
     /// Current game data type
@@ -191,6 +262,8 @@ pub struct GameManager {
     usrdir_path: String,
     /// Game update info
     update_info: GameUpdateInfo,
+    /// DLC manager state
+    dlc_state: DlcManagerState,
 }
 
 impl GameManager {
@@ -210,6 +283,7 @@ impl GameManager {
             content_info_path: String::new(),
             usrdir_path: String::new(),
             update_info: GameUpdateInfo::default(),
+            dlc_state: DlcManagerState::default(),
         };
         
         // Initialize default parameters
@@ -705,6 +779,204 @@ impl GameManager {
     pub fn reset_update(&mut self) {
         self.update_info = GameUpdateInfo::default();
     }
+
+    // ========================================================================
+    // DLC (Downloadable Content) Handling
+    // ========================================================================
+
+    /// Register a DLC entry
+    pub fn register_dlc(&mut self, content_id: &str, name: &str, size_kb: u64) -> i32 {
+        // Check if already registered
+        if self.dlc_state.entries.iter().any(|e| e.content_id == content_id) {
+            return 0x8002b104u32 as i32; // Already registered
+        }
+
+        debug!(
+            "GameManager::register_dlc: content_id={}, name={}, size={} KB",
+            content_id, name, size_kb
+        );
+
+        let entry = DlcEntry {
+            content_id: content_id.to_string(),
+            name: name.to_string(),
+            size_kb,
+            ..DlcEntry::default()
+        };
+
+        self.dlc_state.entries.push(entry);
+
+        0 // CELL_OK
+    }
+
+    /// Get DLC entry by content ID
+    pub fn get_dlc(&self, content_id: &str) -> Option<&DlcEntry> {
+        self.dlc_state.entries.iter().find(|e| e.content_id == content_id)
+    }
+
+    /// Get mutable DLC entry by content ID
+    pub fn get_dlc_mut(&mut self, content_id: &str) -> Option<&mut DlcEntry> {
+        self.dlc_state.entries.iter_mut().find(|e| e.content_id == content_id)
+    }
+
+    /// List all DLC entries
+    pub fn list_dlc(&self) -> &[DlcEntry] {
+        &self.dlc_state.entries
+    }
+
+    /// Get installed DLC entries
+    pub fn list_installed_dlc(&self) -> Vec<&DlcEntry> {
+        self.dlc_state.entries.iter()
+            .filter(|e| e.state == DlcState::Installed)
+            .collect()
+    }
+
+    /// Get DLC count
+    pub fn dlc_count(&self) -> usize {
+        self.dlc_state.entries.len()
+    }
+
+    /// Get installed DLC count
+    pub fn installed_dlc_count(&self) -> usize {
+        self.dlc_state.entries.iter()
+            .filter(|e| e.state == DlcState::Installed)
+            .count()
+    }
+
+    /// Check if DLC is installed
+    pub fn is_dlc_installed(&self, content_id: &str) -> bool {
+        self.get_dlc(content_id)
+            .map(|e| e.state == DlcState::Installed)
+            .unwrap_or(false)
+    }
+
+    /// Check if DLC is licensed (user owns it)
+    pub fn is_dlc_licensed(&self, content_id: &str) -> bool {
+        self.get_dlc(content_id)
+            .map(|e| e.licensed)
+            .unwrap_or(false)
+    }
+
+    /// Set DLC license status
+    pub fn set_dlc_licensed(&mut self, content_id: &str, licensed: bool) -> i32 {
+        if let Some(entry) = self.get_dlc_mut(content_id) {
+            entry.licensed = licensed;
+            debug!("GameManager::set_dlc_licensed: {} = {}", content_id, licensed);
+            0 // CELL_OK
+        } else {
+            0x8002b101u32 as i32 // Not found
+        }
+    }
+
+    /// Start DLC download
+    pub fn start_dlc_download(&mut self, content_id: &str) -> i32 {
+        if self.dlc_state.downloading_id.is_some() {
+            return 0x8002b104u32 as i32; // Already downloading
+        }
+
+        let entry = match self.get_dlc_mut(content_id) {
+            Some(e) => e,
+            None => return 0x8002b101u32 as i32, // Not found
+        };
+
+        if entry.state == DlcState::Installed {
+            return 0x8002b104u32 as i32; // Already installed
+        }
+
+        debug!("GameManager::start_dlc_download: {}", content_id);
+
+        entry.state = DlcState::Downloading;
+        self.dlc_state.downloading_id = Some(content_id.to_string());
+        self.dlc_state.download_progress = 0;
+
+        0 // CELL_OK
+    }
+
+    /// Update DLC download progress
+    pub fn update_dlc_download_progress(&mut self, progress: u32) -> i32 {
+        if self.dlc_state.downloading_id.is_none() {
+            return 0x8002b101u32 as i32; // Not downloading
+        }
+
+        self.dlc_state.download_progress = progress.min(100);
+        trace!("GameManager: DLC download progress {}%", self.dlc_state.download_progress);
+
+        0 // CELL_OK
+    }
+
+    /// Complete DLC download and install
+    pub fn complete_dlc_download(&mut self) -> i32 {
+        let content_id = match self.dlc_state.downloading_id.take() {
+            Some(id) => id,
+            None => return 0x8002b101u32 as i32, // Not downloading
+        };
+
+        // Clone dir_name to avoid borrow issue
+        let dir_name = self.dir_name.clone();
+        let install_path = format!("/dev_hdd0/game/{}/USRDIR/{}", dir_name, content_id);
+
+        let entry = match self.get_dlc_mut(&content_id) {
+            Some(e) => e,
+            None => return 0x8002b101u32 as i32, // Not found
+        };
+
+        debug!("GameManager::complete_dlc_download: {}", content_id);
+
+        entry.state = DlcState::Installed;
+        entry.install_path = install_path;
+        self.dlc_state.download_progress = 100;
+
+        0 // CELL_OK
+    }
+
+    /// Fail DLC download
+    pub fn fail_dlc_download(&mut self) -> i32 {
+        let content_id = match self.dlc_state.downloading_id.take() {
+            Some(id) => id,
+            None => return 0x8002b101u32 as i32, // Not downloading
+        };
+
+        if let Some(entry) = self.get_dlc_mut(&content_id) {
+            entry.state = DlcState::Failed;
+        }
+
+        debug!("GameManager::fail_dlc_download: {}", content_id);
+
+        0 // CELL_OK
+    }
+
+    /// Remove DLC
+    pub fn remove_dlc(&mut self, content_id: &str) -> i32 {
+        let entry = match self.get_dlc_mut(content_id) {
+            Some(e) => e,
+            None => return 0x8002b101u32 as i32, // Not found
+        };
+
+        if entry.state != DlcState::Installed {
+            return 0x8002b101u32 as i32; // Not installed
+        }
+
+        debug!("GameManager::remove_dlc: {}", content_id);
+
+        entry.state = DlcState::NotInstalled;
+        entry.install_path.clear();
+
+        0 // CELL_OK
+    }
+
+    /// Get DLC download progress
+    pub fn get_dlc_download_progress(&self) -> u32 {
+        self.dlc_state.download_progress
+    }
+
+    /// Check if DLC is downloading
+    pub fn is_dlc_downloading(&self) -> bool {
+        self.dlc_state.downloading_id.is_some()
+    }
+
+    /// Get currently downloading DLC content ID
+    pub fn get_downloading_dlc_id(&self) -> Option<&str> {
+        self.dlc_state.downloading_id.as_deref()
+    }
 }
 
 impl Default for GameManager {
@@ -891,6 +1163,150 @@ pub fn cell_game_get_local_web_content_path(_path_addr: u32) -> i32 {
     // Note: Writing path to memory requires memory subsystem integration
     // Path would be like "/dev_hdd0/game/GAME00000/USRDIR/web"
 
+    0 // CELL_OK
+}
+
+// ============================================================================
+// DLC Functions
+// ============================================================================
+
+/// cellGameGetSizeKB - Get content size in KB
+///
+/// # Arguments
+/// * `size_addr` - Address to write size
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_game_get_size_kb(_size_addr: u32) -> i32 {
+    trace!("cellGameGetSizeKB()");
+    
+    // TODO: Write content size to memory
+    
+    0 // CELL_OK
+}
+
+/// cellGameDiscCheck - Check disc content
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_game_disc_check() -> i32 {
+    debug!("cellGameDiscCheck()");
+    
+    // Verify game manager is initialized
+    if !crate::context::get_hle_context().game.is_initialized() {
+        crate::context::get_hle_context_mut().game.boot_check();
+    }
+    
+    0 // CELL_OK
+}
+
+/// cellGameRegisterDiscChangeCallback - Register disc change callback
+///
+/// # Arguments
+/// * `callback` - Callback function
+/// * `userdata` - User data
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_game_register_disc_change_callback(_callback: u32, _userdata: u32) -> i32 {
+    debug!("cellGameRegisterDiscChangeCallback()");
+    0 // CELL_OK
+}
+
+/// cellGameUnregisterDiscChangeCallback - Unregister disc change callback
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_game_unregister_disc_change_callback() -> i32 {
+    debug!("cellGameUnregisterDiscChangeCallback()");
+    0 // CELL_OK
+}
+
+/// cellGameGetDiscContentInfoUpdatePath - Get disc content info update path
+///
+/// # Arguments
+/// * `path_addr` - Address to write path
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_game_get_disc_content_info_update_path(_path_addr: u32) -> i32 {
+    debug!("cellGameGetDiscContentInfoUpdatePath()");
+    
+    // Note: Path would be like "/dev_hdd0/game/GAME00000"
+    
+    0 // CELL_OK
+}
+
+/// cellNpDrmGetContentKey - Get content key for DRM-protected content
+///
+/// # Arguments
+/// * `content_id_addr` - Address of content ID
+/// * `key_addr` - Address to write key
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_np_drm_get_content_key(_content_id_addr: u32, _key_addr: u32) -> i32 {
+    debug!("cellNpDrmGetContentKey()");
+    
+    // For HLE, we return success without actual DRM processing
+    0 // CELL_OK
+}
+
+/// cellNpDrmIsAvailable - Check if DRM content is available
+///
+/// # Arguments
+/// * `content_id_addr` - Address of content ID
+///
+/// # Returns
+/// * 0 if available, error otherwise
+pub fn cell_np_drm_is_available(_content_id_addr: u32) -> i32 {
+    trace!("cellNpDrmIsAvailable()");
+    
+    // For HLE, all content is considered available
+    0 // CELL_OK
+}
+
+/// cellNpDrmIsAvailable2 - Check if DRM content is available (v2)
+///
+/// # Arguments
+/// * `content_id_addr` - Address of content ID
+///
+/// # Returns
+/// * 0 if available, error otherwise
+pub fn cell_np_drm_is_available2(_content_id_addr: u32) -> i32 {
+    trace!("cellNpDrmIsAvailable2()");
+    
+    // For HLE, all content is considered available
+    0 // CELL_OK
+}
+
+/// cellGameContentGetPath - Get path to additional content
+///
+/// # Arguments
+/// * `content_id_addr` - Address of content ID
+/// * `path_addr` - Address to write path
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_game_content_get_path(_content_id_addr: u32, _path_addr: u32) -> i32 {
+    debug!("cellGameContentGetPath()");
+    
+    // Note: Path would be constructed from content ID
+    
+    0 // CELL_OK
+}
+
+/// cellGameDrmIsAvailable - Check if game DRM content is available
+///
+/// # Arguments
+/// * `content_id_addr` - Address of content ID
+///
+/// # Returns
+/// * 0 if available, error otherwise  
+pub fn cell_game_drm_is_available(_content_id_addr: u32) -> i32 {
+    trace!("cellGameDrmIsAvailable()");
+    
+    // For HLE, all content is considered available
     0 // CELL_OK
 }
 
@@ -1259,5 +1675,160 @@ mod tests {
         assert_eq!(GameUpdateState::Installing as u32, 4);
         assert_eq!(GameUpdateState::Installed as u32, 5);
         assert_eq!(GameUpdateState::Failed as u32, 6);
+    }
+
+    // ========================================================================
+    // DLC Tests
+    // ========================================================================
+
+    #[test]
+    fn test_game_manager_dlc_register() {
+        let mut manager = GameManager::new();
+        
+        // No DLC initially
+        assert_eq!(manager.dlc_count(), 0);
+        
+        // Register DLC
+        assert_eq!(manager.register_dlc("DLC001", "Extra Levels Pack", 102400), 0);
+        assert_eq!(manager.register_dlc("DLC002", "Costume Pack", 51200), 0);
+        
+        assert_eq!(manager.dlc_count(), 2);
+        
+        // Double registration should fail
+        assert!(manager.register_dlc("DLC001", "Duplicate", 1024) != 0);
+    }
+
+    #[test]
+    fn test_game_manager_dlc_get() {
+        let mut manager = GameManager::new();
+        manager.register_dlc("DLC001", "Test DLC", 1024);
+        
+        let dlc = manager.get_dlc("DLC001");
+        assert!(dlc.is_some());
+        let dlc = dlc.unwrap();
+        assert_eq!(dlc.content_id, "DLC001");
+        assert_eq!(dlc.name, "Test DLC");
+        assert_eq!(dlc.size_kb, 1024);
+        assert_eq!(dlc.state, DlcState::NotInstalled);
+        
+        // Non-existent DLC
+        assert!(manager.get_dlc("NONEXISTENT").is_none());
+    }
+
+    #[test]
+    fn test_game_manager_dlc_download_lifecycle() {
+        let mut manager = GameManager::new();
+        manager.boot_check();
+        manager.register_dlc("DLC001", "Test DLC", 102400);
+        
+        // Not downloading initially
+        assert!(!manager.is_dlc_downloading());
+        assert!(!manager.is_dlc_installed("DLC001"));
+        
+        // Start download
+        assert_eq!(manager.start_dlc_download("DLC001"), 0);
+        assert!(manager.is_dlc_downloading());
+        assert_eq!(manager.get_downloading_dlc_id(), Some("DLC001"));
+        
+        // Update progress
+        assert_eq!(manager.update_dlc_download_progress(50), 0);
+        assert_eq!(manager.get_dlc_download_progress(), 50);
+        
+        // Complete download
+        assert_eq!(manager.complete_dlc_download(), 0);
+        assert!(!manager.is_dlc_downloading());
+        assert!(manager.is_dlc_installed("DLC001"));
+        assert_eq!(manager.installed_dlc_count(), 1);
+        
+        // DLC install path should be set
+        let dlc = manager.get_dlc("DLC001").unwrap();
+        assert!(!dlc.install_path.is_empty());
+    }
+
+    #[test]
+    fn test_game_manager_dlc_download_failure() {
+        let mut manager = GameManager::new();
+        manager.register_dlc("DLC001", "Test DLC", 1024);
+        
+        manager.start_dlc_download("DLC001");
+        assert_eq!(manager.fail_dlc_download(), 0);
+        
+        let dlc = manager.get_dlc("DLC001").unwrap();
+        assert_eq!(dlc.state, DlcState::Failed);
+    }
+
+    #[test]
+    fn test_game_manager_dlc_remove() {
+        let mut manager = GameManager::new();
+        manager.boot_check();
+        manager.register_dlc("DLC001", "Test DLC", 1024);
+        manager.start_dlc_download("DLC001");
+        manager.complete_dlc_download();
+        
+        // Remove DLC
+        assert_eq!(manager.remove_dlc("DLC001"), 0);
+        assert!(!manager.is_dlc_installed("DLC001"));
+        
+        // Removing uninstalled DLC should fail
+        assert!(manager.remove_dlc("DLC001") != 0);
+    }
+
+    #[test]
+    fn test_game_manager_dlc_licensing() {
+        let mut manager = GameManager::new();
+        manager.register_dlc("DLC001", "Test DLC", 1024);
+        
+        // Not licensed by default
+        assert!(!manager.is_dlc_licensed("DLC001"));
+        
+        // Set license
+        assert_eq!(manager.set_dlc_licensed("DLC001", true), 0);
+        assert!(manager.is_dlc_licensed("DLC001"));
+        
+        // Revoke license
+        assert_eq!(manager.set_dlc_licensed("DLC001", false), 0);
+        assert!(!manager.is_dlc_licensed("DLC001"));
+    }
+
+    #[test]
+    fn test_game_manager_dlc_list_installed() {
+        let mut manager = GameManager::new();
+        manager.boot_check();
+        manager.register_dlc("DLC001", "DLC 1", 1024);
+        manager.register_dlc("DLC002", "DLC 2", 2048);
+        manager.register_dlc("DLC003", "DLC 3", 3072);
+        
+        // Install some DLCs
+        manager.start_dlc_download("DLC001");
+        manager.complete_dlc_download();
+        
+        manager.start_dlc_download("DLC003");
+        manager.complete_dlc_download();
+        
+        let installed = manager.list_installed_dlc();
+        assert_eq!(installed.len(), 2);
+        assert_eq!(manager.installed_dlc_count(), 2);
+    }
+
+    #[test]
+    fn test_game_manager_dlc_double_download() {
+        let mut manager = GameManager::new();
+        manager.register_dlc("DLC001", "DLC 1", 1024);
+        manager.register_dlc("DLC002", "DLC 2", 2048);
+        
+        // Start first download
+        assert_eq!(manager.start_dlc_download("DLC001"), 0);
+        
+        // Second download should fail
+        assert!(manager.start_dlc_download("DLC002") != 0);
+    }
+
+    #[test]
+    fn test_dlc_state_enum() {
+        assert_eq!(DlcState::NotInstalled as u32, 0);
+        assert_eq!(DlcState::Installed as u32, 1);
+        assert_eq!(DlcState::Downloading as u32, 2);
+        assert_eq!(DlcState::Installing as u32, 3);
+        assert_eq!(DlcState::Failed as u32, 4);
     }
 }
