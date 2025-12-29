@@ -1692,10 +1692,16 @@ pub fn cell_gcm_set_clear_depth_stencil(depth: u32, stencil: u8) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
+///
+/// # Note
+/// This is a stub implementation. Full implementation requires memory subsystem
+/// integration to read the program descriptor from the provided address.
+/// The actual program data would be sent to oc-rsx for compilation.
 pub fn cell_gcm_set_vertex_program(_program_addr: u32) -> i32 {
     debug!("cellGcmSetVertexProgram()");
     
-    // Create a default program descriptor (in real implementation, would read from memory)
+    // TODO: Read CellGcmVertexProgram from memory at _program_addr
+    // For HLE stub, use default descriptor to enable basic functionality
     let program = CellGcmVertexProgram {
         size: 0,
         offset: 0,
@@ -1716,10 +1722,16 @@ pub fn cell_gcm_set_vertex_program(_program_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
+///
+/// # Note
+/// This is a stub implementation. Full implementation requires memory subsystem
+/// integration to read the program descriptor from the provided address.
+/// The actual program data would be sent to oc-rsx for compilation.
 pub fn cell_gcm_set_fragment_program(_program_addr: u32) -> i32 {
     debug!("cellGcmSetFragmentProgram()");
     
-    // Create a default program descriptor (in real implementation, would read from memory)
+    // TODO: Read CellGcmFragmentProgram from memory at _program_addr
+    // For HLE stub, use default descriptor to enable basic functionality
     let program = CellGcmFragmentProgram {
         size: 0,
         offset: 0,
@@ -1861,19 +1873,29 @@ pub fn cell_gcm_set_scissor(x: u16, y: u16, width: u16, height: u16) -> i32 {
 
 /// cellGcmMapMainMemory - Map main memory for RSX access
 ///
+/// Maps a region of main memory so it can be accessed by the RSX.
+/// The resulting offset is written to `offset_addr` and can be used
+/// in RSX commands that reference main memory.
+///
 /// # Arguments
 /// * `address` - Main memory address to map
-/// * `size` - Size to map (bytes)
+/// * `size` - Size to map (bytes, will be aligned to 1MB boundary)
 /// * `offset_addr` - Address to write resulting RSX offset
 ///
 /// # Returns
 /// * 0 on success
+///
+/// # Note
+/// This is a partial implementation. Full implementation requires memory
+/// subsystem integration to write the offset to `offset_addr`. Currently
+/// the mapping is tracked internally but the offset is not written to memory.
 pub fn cell_gcm_map_main_memory(address: u32, size: u32, _offset_addr: u32) -> i32 {
     debug!("cellGcmMapMainMemory(address=0x{:08X}, size=0x{:X})", address, size);
     
     match crate::context::get_hle_context_mut().gcm.map_main_memory(address, size) {
         Ok(_offset) => {
-            // TODO: Write offset to memory at _offset_addr
+            // TODO: Write offset to memory at _offset_addr when memory subsystem is integrated
+            // For now, the offset is tracked internally by GcmManager
             0 // CELL_OK
         }
         Err(e) => e,
