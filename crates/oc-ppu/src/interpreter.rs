@@ -180,11 +180,28 @@ impl PpuInterpreter {
             return Err(PpuError::ThreadExit { exit_code });
         }
         
-        // Check if this is an HLE stub address
+        // Check if this is an HLE stub address (our generated stubs)
         const STUB_REGION_BASE: u32 = 0x2F00_0000;
         const STUB_REGION_END: u32 = 0x3000_0000;
         if pc >= STUB_REGION_BASE && pc < STUB_REGION_END {
             return self.execute_hle_stub(thread, pc);
+        }
+        
+        // Check if this is a PLT stub area (PS3 import trampolines)
+        // PLT stubs are typically in the 0x80XXXX - 0x90XXXX range for this game
+        // When we enter this area via a branch, it's an import call
+        const PLT_STUB_BASE: u32 = 0x0080_0000;
+        const PLT_STUB_END: u32 = 0x0100_0000;
+        if pc >= PLT_STUB_BASE && pc < PLT_STUB_END {
+            // Check if this looks like the start of a PLT stub entry
+            // PLT stubs typically start with: li r12, 0 (38 18 00 00 or 39 80 00 00)
+            let opcode = self.memory.read_be32(pc).unwrap_or(0);
+            // li r12, 0 = addi r12, 0, 0 = 0x39800000
+            // or could be addis r12, 0, high = 0x3d800000 pattern
+            if opcode == 0x39800000 || (opcode & 0xFFE00000) == 0x3d800000 {
+                // This is the start of a PLT stub - intercept as HLE call
+                return self.handle_plt_stub_entry(thread, pc);
+            }
         }
         
         let opcode = self.memory.read_be32(pc).map_err(|_| PpuError::InvalidInstruction {
@@ -264,6 +281,38 @@ impl PpuInterpreter {
                 Ok(())
             }
         }
+    }
+
+    /// Handle entry into a PLT stub area
+    /// 
+    /// When execution enters the PLT stub area (typically 0x80XXXX - 0x90XXXX),
+    /// we intercept it immediately instead of letting the trampoline execute.
+    /// This allows us to handle imports that weren't patched at load time.
+    fn handle_plt_stub_entry(&self, thread: &mut PpuThread, plt_addr: u32) -> Result<(), PpuError> {
+        // The PLT stub loads a descriptor address and calls it
+        // We can parse the PLT stub to find the descriptor address, or just
+        // use the LR (return address) to return cleanly
+        
+        tracing::debug!(
+            "Intercepted PLT stub at 0x{:08x}, LR=0x{:x}, R3=0x{:x}",
+            plt_addr,
+            thread.regs.lr,
+            thread.gpr(3)
+        );
+        
+        // For now, just return success and go back to caller
+        // In the future, we can parse the PLT stub to identify which import
+        // and dispatch to the appropriate HLE handler
+        thread.set_gpr(3, 0);  // Return 0 (success/CELL_OK)
+        
+        let return_addr = (thread.regs.lr & !3) as u32;
+        if return_addr == 0 {
+            tracing::info!("PLT stub has no return address, thread exiting");
+            return Err(PpuError::ThreadExit { exit_code: 0 });
+        }
+        thread.set_pc(return_addr as u64);
+        
+        Ok(())
     }
 
     /// Handle an unresolved import call (bctr to unpatched descriptor)

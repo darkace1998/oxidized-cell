@@ -788,12 +788,16 @@ impl GameLoader {
                     Err(_) => continue,
                 };
                 
-                // This looks like an unresolved import if:
-                // - entry_addr is 0
-                // - TOC is a reasonable address (in user space range)
-                // This helps distinguish from just zero-initialized data
-                let is_likely_import = entry_addr == 0 && 
-                    toc_val >= 0x10000 && toc_val < 0x40000000;
+                // Check if this looks like an import descriptor that needs patching:
+                // 1. entry_addr == 0: Classic unresolved import
+                // 2. entry_addr points to PLT stub area (0x80XXXX - 0x90XXXX range):
+                //    These are trampolines that would branch to the real function,
+                //    but for imports they just contain stub code
+                // 3. TOC must be a reasonable address (in user space range)
+                let is_plt_stub_addr = entry_addr >= 0x800000 && entry_addr < 0x1000000;
+                let has_valid_toc = toc_val >= 0x10000 && toc_val < 0x40000000;
+                
+                let is_likely_import = has_valid_toc && (entry_addr == 0 || is_plt_stub_addr);
                 
                 if is_likely_import {
                     // This is likely an unresolved import - create a stub for it
@@ -811,9 +815,10 @@ impl GameLoader {
                         continue;
                     }
                     
+                    let reason = if entry_addr == 0 { "null" } else { "PLT stub" };
                     debug!(
-                        "Patched import descriptor at 0x{:08x} (toc=0x{:08x}) -> stub at 0x{:08x}",
-                        desc_addr, toc_val, stub_addr
+                        "Patched {} import at 0x{:08x} (was 0x{:08x}, toc=0x{:08x}) -> stub 0x{:08x}",
+                        reason, desc_addr, entry_addr, toc_val, stub_addr
                     );
                     
                     stub_count += 1;
