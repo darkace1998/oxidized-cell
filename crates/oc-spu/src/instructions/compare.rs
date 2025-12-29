@@ -299,7 +299,8 @@ pub fn clgth(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuEr
 /// Compare Logical Greater Than Halfword Immediate - clgthi rt, ra, i10
 pub fn clgthi(thread: &mut SpuThread, i10: i16, ra: u8, rt: u8) -> Result<(), SpuError> {
     let a = thread.regs.read_u32x4(ra as usize);
-    let imm = (i10 as i16) as u16;
+    // For logical comparison, treat the immediate as unsigned (mask to 10 bits)
+    let imm = (i10 & 0x3FF) as u16;
     let mut result = [0u32; 4];
     for i in 0..4 {
         let a_hi = (a[i] >> 16) as u16;

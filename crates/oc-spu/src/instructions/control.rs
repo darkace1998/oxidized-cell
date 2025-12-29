@@ -129,7 +129,8 @@ pub fn hlgt(thread: &mut SpuThread, rb: u8, ra: u8) -> Result<(), SpuError> {
 /// Halt if Logically Greater Than Immediate - hlgti ra, i10
 pub fn hlgti(thread: &mut SpuThread, i10: i16, ra: u8) -> Result<(), SpuError> {
     let a = thread.regs.read_preferred_u32(ra as usize);
-    let imm = (i10 as i32) as u32;
+    // For logical comparison, zero-extend the 10-bit immediate
+    let imm = (i10 & 0x3FF) as u32;
     if a > imm {
         thread.state = SpuThreadState::Halted;
     } else {

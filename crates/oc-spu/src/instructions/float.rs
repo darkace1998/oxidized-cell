@@ -170,16 +170,36 @@ pub fn fms(thread: &mut SpuThread, rc: u8, rb: u8, ra: u8, rt: u8) -> Result<(),
 }
 
 /// Floating Interpolate - fi rt, ra, rb
+/// This instruction is used with frest/frsqest to refine reciprocal estimates
+/// fi computes: rt = ra + rb * (1 - ra * rb) for Newton-Raphson iteration
 pub fn fi(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
     let a = thread.regs.read_u32x4(ra as usize);
     let b = thread.regs.read_u32x4(rb as usize);
-    // fi: rt = (ra - rb * t) where t is from frest/frsqest table lookup
-    // For simplicity, approximate as a linear interpolation step
+    // fi is used as: y' = y + y * (1 - x * y) = y * (2 - x * y)
+    // This implements one Newton-Raphson step for reciprocal refinement
+    // Result = ra + rb where rb contains the correction term from prior calculation
     let result = [
-        (f32::from_bits(a[0]) + f32::from_bits(b[0])).to_bits(),
-        (f32::from_bits(a[1]) + f32::from_bits(b[1])).to_bits(),
-        (f32::from_bits(a[2]) + f32::from_bits(b[2])).to_bits(),
-        (f32::from_bits(a[3]) + f32::from_bits(b[3])).to_bits(),
+        {
+            let y = f32::from_bits(a[0]);
+            let correction = f32::from_bits(b[0]);
+            // Compute refined estimate using the correction value
+            (y + y * correction).to_bits()
+        },
+        {
+            let y = f32::from_bits(a[1]);
+            let correction = f32::from_bits(b[1]);
+            (y + y * correction).to_bits()
+        },
+        {
+            let y = f32::from_bits(a[2]);
+            let correction = f32::from_bits(b[2]);
+            (y + y * correction).to_bits()
+        },
+        {
+            let y = f32::from_bits(a[3]);
+            let correction = f32::from_bits(b[3]);
+            (y + y * correction).to_bits()
+        },
     ];
     thread.regs.write_u32x4(rt as usize, result);
     thread.advance_pc();

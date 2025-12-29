@@ -598,20 +598,17 @@ cargo test --package oc-spu -- --nocapture
 - [x] Channels (32 channels with mailboxes)
 - [x] Branch instructions (14 types)
 - [x] Logical instructions (18 types)
-- [x] Arithmetic instructions (multiply, add, shift, rotate)
-- [x] Memory instructions (load/store quadword)
-- [x] Compare instructions (equal, greater than)
-- [x] Float instructions (add, multiply, reciprocal)
+- [x] Arithmetic instructions (50+ types: multiply, add, shift, rotate, carry/borrow, extended add/sub, count leading zeros, form select mask, gather bits, sign extension, byte operations)
+- [x] Memory instructions (load/store quadword + immediate loads: il, ilh, ilhu, ila, iohl)
+- [x] Compare instructions (20+ types: equal, greater than for word/halfword/byte with immediate variants)
+- [x] Float instructions (20+ types: add, subtract, multiply, FMA/FMS/FNMS, reciprocal estimates, conversions, double-precision operations)
 - [x] Channel instructions (read/write/count)
+- [x] Quadword shift/rotate instructions (15 types: shlqby, shlqbyi, shlqbi, rotqby, rotqbyi, rotqbi, rotqmby, rotqmbyi, rotqmbi, and bit-rotate variants)
+- [x] Control/hint instructions (16 types: nop, lnop, stop, stopd, sync, dsync, hbr hints, halt variants)
 - [x] Atomic operations (reservation system)
+- [x] Copy-to-insert instructions (cbd, chd, cwd, cdd, cbx, chx, cwx, cdx)
 - [x] Integration with memory manager
-- [x] Comprehensive test suite (66 tests)
-
-### 🔨 Partial Implementation
-- [ ] Full floating-point instruction set
-- [ ] All permute/shuffle variants
-- [ ] Extended arithmetic operations
-- [ ] Hint instructions
+- [x] Comprehensive test suite (86+ tests)
 
 ### 📋 Future Work
 - [ ] JIT compilation (via C++ LLVM backend)

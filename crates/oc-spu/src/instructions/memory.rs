@@ -86,6 +86,273 @@ pub fn stqr(thread: &mut SpuThread, i16_val: i16, rt: u8) -> Result<(), SpuError
     Ok(())
 }
 
+/// Immediate Load Word - il rt, i16
+pub fn il(thread: &mut SpuThread, i16_val: i16, rt: u8) -> Result<(), SpuError> {
+    // Sign-extend to 32 bits and replicate across all words
+    let value = i16_val as i32 as u32;
+    thread.regs.write_u32x4(rt as usize, [value, value, value, value]);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Immediate Load Halfword - ilh rt, i16
+pub fn ilh(thread: &mut SpuThread, i16_val: i16, rt: u8) -> Result<(), SpuError> {
+    // Replicate halfword across all halfword positions
+    let hword = i16_val as u16;
+    let value = ((hword as u32) << 16) | (hword as u32);
+    thread.regs.write_u32x4(rt as usize, [value, value, value, value]);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Immediate Load Word Upper - ilhu rt, i16
+pub fn ilhu(thread: &mut SpuThread, i16_val: i16, rt: u8) -> Result<(), SpuError> {
+    // Load immediate into upper 16 bits, lower 16 bits are zero
+    let value = ((i16_val as u16 as u32) << 16) | 0;
+    thread.regs.write_u32x4(rt as usize, [value, value, value, value]);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Immediate Load Address - ila rt, i18
+pub fn ila(thread: &mut SpuThread, i18: i32, rt: u8) -> Result<(), SpuError> {
+    // Zero-extend 18-bit immediate (no sign extension)
+    let value = (i18 & 0x3FFFF) as u32;
+    thread.regs.write_u32x4(rt as usize, [value, value, value, value]);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Immediate Or Halfword Lower - iohl rt, i16
+pub fn iohl(thread: &mut SpuThread, i16_val: i16, rt: u8) -> Result<(), SpuError> {
+    // OR the lower 16 bits with the immediate
+    let a = thread.regs.read_u32x4(rt as usize);
+    let imm = (i16_val as u16) as u32;
+    let result = [
+        a[0] | imm,
+        a[1] | imm,
+        a[2] | imm,
+        a[3] | imm,
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Copy Halfword to Byte Insert - cbd rt, i7(ra)
+pub fn cbd(thread: &mut SpuThread, i7: i8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let base = thread.regs.read_preferred_u32(ra as usize);
+    let addr = ((base as i32).wrapping_add(i7 as i32)) as u32;
+    let byte_index = (addr & 0xF) as usize;
+    
+    // Generate shuffle mask for inserting byte from preferred slot
+    let mut mask = [0u8; 16];
+    for i in 0..16 {
+        mask[i] = if i == byte_index { 0x03 } else { (0x10 + i) as u8 };
+    }
+    
+    let result = [
+        u32::from_be_bytes([mask[0], mask[1], mask[2], mask[3]]),
+        u32::from_be_bytes([mask[4], mask[5], mask[6], mask[7]]),
+        u32::from_be_bytes([mask[8], mask[9], mask[10], mask[11]]),
+        u32::from_be_bytes([mask[12], mask[13], mask[14], mask[15]]),
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Copy Halfword to Halfword Insert - chd rt, i7(ra)
+pub fn chd(thread: &mut SpuThread, i7: i8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let base = thread.regs.read_preferred_u32(ra as usize);
+    let addr = ((base as i32).wrapping_add(i7 as i32)) as u32;
+    let hword_index = ((addr >> 1) & 0x7) as usize;
+    
+    // Generate shuffle mask for inserting halfword from preferred slot
+    let mut mask = [0u8; 16];
+    for i in 0..16 {
+        let hword_pos = i / 2;
+        if hword_pos == hword_index {
+            mask[i] = if i % 2 == 0 { 0x02 } else { 0x03 };
+        } else {
+            mask[i] = (0x10 + i) as u8;
+        }
+    }
+    
+    let result = [
+        u32::from_be_bytes([mask[0], mask[1], mask[2], mask[3]]),
+        u32::from_be_bytes([mask[4], mask[5], mask[6], mask[7]]),
+        u32::from_be_bytes([mask[8], mask[9], mask[10], mask[11]]),
+        u32::from_be_bytes([mask[12], mask[13], mask[14], mask[15]]),
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Copy Halfword to Word Insert - cwd rt, i7(ra)
+pub fn cwd(thread: &mut SpuThread, i7: i8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let base = thread.regs.read_preferred_u32(ra as usize);
+    let addr = ((base as i32).wrapping_add(i7 as i32)) as u32;
+    let word_index = ((addr >> 2) & 0x3) as usize;
+    
+    // Generate shuffle mask for inserting word from preferred slot
+    let mut mask = [0u8; 16];
+    for i in 0..16 {
+        let word_pos = i / 4;
+        if word_pos == word_index {
+            mask[i] = (i % 4) as u8;  // Select bytes 0-3 from ra
+        } else {
+            mask[i] = (0x10 + i) as u8;
+        }
+    }
+    
+    let result = [
+        u32::from_be_bytes([mask[0], mask[1], mask[2], mask[3]]),
+        u32::from_be_bytes([mask[4], mask[5], mask[6], mask[7]]),
+        u32::from_be_bytes([mask[8], mask[9], mask[10], mask[11]]),
+        u32::from_be_bytes([mask[12], mask[13], mask[14], mask[15]]),
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Copy Halfword to Doubleword Insert - cdd rt, i7(ra)
+pub fn cdd(thread: &mut SpuThread, i7: i8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let base = thread.regs.read_preferred_u32(ra as usize);
+    let addr = ((base as i32).wrapping_add(i7 as i32)) as u32;
+    let dword_index = ((addr >> 3) & 0x1) as usize;
+    
+    // Generate shuffle mask for inserting doubleword
+    let mut mask = [0u8; 16];
+    for i in 0..16 {
+        let dword_pos = i / 8;
+        if dword_pos == dword_index {
+            mask[i] = (i % 8) as u8;  // Select bytes 0-7 from ra
+        } else {
+            mask[i] = (0x10 + i) as u8;
+        }
+    }
+    
+    let result = [
+        u32::from_be_bytes([mask[0], mask[1], mask[2], mask[3]]),
+        u32::from_be_bytes([mask[4], mask[5], mask[6], mask[7]]),
+        u32::from_be_bytes([mask[8], mask[9], mask[10], mask[11]]),
+        u32::from_be_bytes([mask[12], mask[13], mask[14], mask[15]]),
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Copy Byte to Byte Insert (x-form) - cbx rt, ra, rb
+pub fn cbx(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_preferred_u32(ra as usize);
+    let b = thread.regs.read_preferred_u32(rb as usize);
+    let addr = a.wrapping_add(b);
+    let byte_index = (addr & 0xF) as usize;
+    
+    let mut mask = [0u8; 16];
+    for i in 0..16 {
+        mask[i] = if i == byte_index { 0x03 } else { (0x10 + i) as u8 };
+    }
+    
+    let result = [
+        u32::from_be_bytes([mask[0], mask[1], mask[2], mask[3]]),
+        u32::from_be_bytes([mask[4], mask[5], mask[6], mask[7]]),
+        u32::from_be_bytes([mask[8], mask[9], mask[10], mask[11]]),
+        u32::from_be_bytes([mask[12], mask[13], mask[14], mask[15]]),
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Copy Halfword to Halfword Insert (x-form) - chx rt, ra, rb
+pub fn chx(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_preferred_u32(ra as usize);
+    let b = thread.regs.read_preferred_u32(rb as usize);
+    let addr = a.wrapping_add(b);
+    let hword_index = ((addr >> 1) & 0x7) as usize;
+    
+    let mut mask = [0u8; 16];
+    for i in 0..16 {
+        let hword_pos = i / 2;
+        if hword_pos == hword_index {
+            mask[i] = if i % 2 == 0 { 0x02 } else { 0x03 };
+        } else {
+            mask[i] = (0x10 + i) as u8;
+        }
+    }
+    
+    let result = [
+        u32::from_be_bytes([mask[0], mask[1], mask[2], mask[3]]),
+        u32::from_be_bytes([mask[4], mask[5], mask[6], mask[7]]),
+        u32::from_be_bytes([mask[8], mask[9], mask[10], mask[11]]),
+        u32::from_be_bytes([mask[12], mask[13], mask[14], mask[15]]),
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Copy Halfword to Word Insert (x-form) - cwx rt, ra, rb
+pub fn cwx(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_preferred_u32(ra as usize);
+    let b = thread.regs.read_preferred_u32(rb as usize);
+    let addr = a.wrapping_add(b);
+    let word_index = ((addr >> 2) & 0x3) as usize;
+    
+    let mut mask = [0u8; 16];
+    for i in 0..16 {
+        let word_pos = i / 4;
+        if word_pos == word_index {
+            mask[i] = (i % 4) as u8;
+        } else {
+            mask[i] = (0x10 + i) as u8;
+        }
+    }
+    
+    let result = [
+        u32::from_be_bytes([mask[0], mask[1], mask[2], mask[3]]),
+        u32::from_be_bytes([mask[4], mask[5], mask[6], mask[7]]),
+        u32::from_be_bytes([mask[8], mask[9], mask[10], mask[11]]),
+        u32::from_be_bytes([mask[12], mask[13], mask[14], mask[15]]),
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Copy Halfword to Doubleword Insert (x-form) - cdx rt, ra, rb
+pub fn cdx(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_preferred_u32(ra as usize);
+    let b = thread.regs.read_preferred_u32(rb as usize);
+    let addr = a.wrapping_add(b);
+    let dword_index = ((addr >> 3) & 0x1) as usize;
+    
+    let mut mask = [0u8; 16];
+    for i in 0..16 {
+        let dword_pos = i / 8;
+        if dword_pos == dword_index {
+            mask[i] = (i % 8) as u8;
+        } else {
+            mask[i] = (0x10 + i) as u8;
+        }
+    }
+    
+    let result = [
+        u32::from_be_bytes([mask[0], mask[1], mask[2], mask[3]]),
+        u32::from_be_bytes([mask[4], mask[5], mask[6], mask[7]]),
+        u32::from_be_bytes([mask[8], mask[9], mask[10], mask[11]]),
+        u32::from_be_bytes([mask[12], mask[13], mask[14], mask[15]]),
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
