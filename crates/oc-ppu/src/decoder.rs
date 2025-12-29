@@ -123,10 +123,16 @@ impl PpuDecoder {
             // M-Form rotate
             20..=23 => (InstructionForm::M, 0),
             
-            // A-Form floating-point
+            // A-Form floating-point and X-form floating-point compare
             59 | 63 => {
-                let xo = ((opcode >> 1) & 0x1F) as u16;
-                (InstructionForm::A, xo)
+                let xo_10bit = ((opcode >> 1) & 0x3FF) as u16;
+                let xo_5bit = ((opcode >> 1) & 0x1F) as u16;
+                // fcmpu (xo=0) and fcmpo (xo=32) are X-form, rest are A-form
+                if op == 63 && (xo_10bit == 0 || xo_10bit == 32) {
+                    (InstructionForm::X, xo_10bit)
+                } else {
+                    (InstructionForm::A, xo_5bit)
+                }
             }
             
             // Vector instructions

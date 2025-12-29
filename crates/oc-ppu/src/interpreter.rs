@@ -668,8 +668,62 @@ impl PpuInterpreter {
     #[inline]
     fn execute_x_form(&self, thread: &mut PpuThread, opcode: u32, xo: u16) -> Result<(), PpuError> {
         let (rt, ra, rb, _, rc) = PpuDecoder::x_form(opcode);
+        let primary = (opcode >> 26) & 0x3F;
 
         match xo {
+            // cmp/fcmpu - Compare (signed integer or floating-point unordered)
+            0 => {
+                if primary == 31 {
+                    // cmp - Integer compare (signed)
+                    let bf = (rt >> 2) & 7;
+                    let l = (rt & 1) != 0;
+                    let a = if l { thread.gpr(ra as usize) as i64 } else { thread.gpr(ra as usize) as i32 as i64 };
+                    let b = if l { thread.gpr(rb as usize) as i64 } else { thread.gpr(rb as usize) as i32 as i64 };
+                    let c = if a < b { 0b1000 } else if a > b { 0b0100 } else { 0b0010 };
+                    let c = c | if thread.get_xer_so() { 1 } else { 0 };
+                    thread.set_cr_field(bf as usize, c);
+                } else if primary == 63 {
+                    // fcmpu - Floating-point compare unordered
+                    let bf = (rt >> 2) & 7;
+                    let fa = thread.fpr(ra as usize);
+                    let fb = thread.fpr(rb as usize);
+                    let result = float::compare_f64(fa, fb);
+                    let c = match result {
+                        float::FpCompareResult::Less => 0b1000,
+                        float::FpCompareResult::Greater => 0b0100,
+                        float::FpCompareResult::Equal => 0b0010,
+                        float::FpCompareResult::Unordered => 0b0001,
+                    };
+                    thread.set_cr_field(bf as usize, c);
+                }
+            }
+            // cmpl/fcmpo - Compare Logical (unsigned integer or floating-point ordered)
+            32 => {
+                if primary == 31 {
+                    // cmpl - Integer compare (unsigned)
+                    let bf = (rt >> 2) & 7;
+                    let l = (rt & 1) != 0;
+                    let a = if l { thread.gpr(ra as usize) } else { thread.gpr(ra as usize) as u32 as u64 };
+                    let b = if l { thread.gpr(rb as usize) } else { thread.gpr(rb as usize) as u32 as u64 };
+                    let c = if a < b { 0b1000 } else if a > b { 0b0100 } else { 0b0010 };
+                    let c = c | if thread.get_xer_so() { 1 } else { 0 };
+                    thread.set_cr_field(bf as usize, c);
+                } else if primary == 63 {
+                    // fcmpo - Floating-point compare ordered
+                    let bf = (rt >> 2) & 7;
+                    let fa = thread.fpr(ra as usize);
+                    let fb = thread.fpr(rb as usize);
+                    let result = float::compare_f64(fa, fb);
+                    let c = match result {
+                        float::FpCompareResult::Less => 0b1000,
+                        float::FpCompareResult::Greater => 0b0100,
+                        float::FpCompareResult::Equal => 0b0010,
+                        float::FpCompareResult::Unordered => 0b0001,
+                    };
+                    thread.set_cr_field(bf as usize, c);
+                    // fcmpo may raise exceptions on unordered (SNaN), but we'll skip that for now
+                }
+            }
             // and - AND
             28 => {
                 let value = thread.gpr(rt as usize) & thread.gpr(rb as usize);
@@ -693,26 +747,6 @@ impl PpuInterpreter {
                 let value = !(thread.gpr(rt as usize) | thread.gpr(rb as usize));
                 thread.set_gpr(ra as usize, value);
                 if rc { self.update_cr0(thread, value); }
-            }
-            // cmp - Compare (signed)
-            0 => {
-                let bf = (rt >> 2) & 7;
-                let l = (rt & 1) != 0;
-                let a = if l { thread.gpr(ra as usize) as i64 } else { thread.gpr(ra as usize) as i32 as i64 };
-                let b = if l { thread.gpr(rb as usize) as i64 } else { thread.gpr(rb as usize) as i32 as i64 };
-                let c = if a < b { 0b1000 } else if a > b { 0b0100 } else { 0b0010 };
-                let c = c | if thread.get_xer_so() { 1 } else { 0 };
-                thread.set_cr_field(bf as usize, c);
-            }
-            // cmpl - Compare Logical (unsigned)
-            32 => {
-                let bf = (rt >> 2) & 7;
-                let l = (rt & 1) != 0;
-                let a = if l { thread.gpr(ra as usize) } else { thread.gpr(ra as usize) as u32 as u64 };
-                let b = if l { thread.gpr(rb as usize) } else { thread.gpr(rb as usize) as u32 as u64 };
-                let c = if a < b { 0b1000 } else if a > b { 0b0100 } else { 0b0010 };
-                let c = c | if thread.get_xer_so() { 1 } else { 0 };
-                thread.set_cr_field(bf as usize, c);
             }
             // lwzx - Load Word and Zero Indexed
             23 => {
@@ -1840,6 +1874,16 @@ impl PpuInterpreter {
             (59, 18) => float::frsp(a / b),
             // fsel - Floating Select
             (63, 23) => float::fsel(a, b, c),
+            // fsqrt - Floating Square Root (uses FRB only)
+            (63, 22) => b.sqrt(),
+            // fsqrts - Floating Square Root Single (uses FRB only)
+            (59, 22) => float::frsp(b.sqrt()),
+            // fre - Floating Reciprocal Estimate (uses FRB only)
+            (59, 24) => float::fre(b),
+            // frsqrte - Floating Reciprocal Square Root Estimate (uses FRB only)
+            (63, 26) => float::frsqrte(b),
+            // frsqrtes - Floating Reciprocal Square Root Estimate Single (uses FRB only)
+            (59, 26) => float::frsp(float::frsqrte(b)),
             _ => {
                 tracing::warn!(
                     "Unimplemented A-form primary={} xo={} at 0x{:08x} (opcode: 0x{:08x}, frt={}, fra={}, frb={}, frc={})",
