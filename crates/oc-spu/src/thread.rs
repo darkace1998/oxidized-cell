@@ -756,4 +756,149 @@ mod tests {
         thread.set_pc(SPU_LS_SIZE as u32 + 0x100);
         assert_eq!(thread.pc(), 0x100);
     }
+    
+    #[test]
+    fn test_spu_priority() {
+        let mem = create_test_memory();
+        let mut thread = SpuThread::new(0, mem);
+        
+        // Default priority
+        assert_eq!(thread.get_priority(), SpuPriority::NORMAL);
+        
+        // Set priority
+        thread.set_priority(SpuPriority::HIGH);
+        assert_eq!(thread.get_priority().value(), SpuPriority::HIGH.value());
+    }
+    
+    #[test]
+    fn test_spu_affinity() {
+        let mem = create_test_memory();
+        let mut thread = SpuThread::new(0, mem);
+        
+        // Default is any SPU
+        assert_eq!(thread.get_affinity(), SpuAffinity::ANY);
+        assert!(thread.can_run_on_spu(0));
+        assert!(thread.can_run_on_spu(5));
+        
+        // Set specific SPU
+        thread.set_affinity(SpuAffinity::specific(2));
+        assert!(!thread.can_run_on_spu(0));
+        assert!(thread.can_run_on_spu(2));
+    }
+    
+    #[test]
+    fn test_spu_exception() {
+        let mem = create_test_memory();
+        let mut thread = SpuThread::new(0, mem);
+        
+        thread.set_pc(0x1000);
+        thread.state = SpuThreadState::Running;
+        
+        // Raise exception
+        thread.raise_exception(SpuExceptionType::InvalidInstruction);
+        assert_eq!(thread.state, SpuThreadState::Exception);
+        assert!(thread.exceptions.has_exception());
+        assert_eq!(thread.exceptions.exception_pc, 0x1000);
+        
+        // Clear exception
+        thread.clear_exception();
+        assert_eq!(thread.state, SpuThreadState::Ready);
+        assert!(!thread.exceptions.has_exception());
+    }
+    
+    #[test]
+    fn test_spu_isolation() {
+        let mem = create_test_memory();
+        let mut thread = SpuThread::new(0, mem);
+        
+        thread.state = SpuThreadState::Running;
+        
+        // Enter isolation mode
+        assert!(!thread.is_isolated());
+        thread.enter_isolation();
+        assert!(thread.is_isolated());
+        assert_eq!(thread.state, SpuThreadState::Isolated);
+        
+        // Exit isolation mode
+        thread.exit_isolation();
+        assert!(!thread.is_isolated());
+        assert_eq!(thread.state, SpuThreadState::Ready);
+    }
+    
+    #[test]
+    fn test_spu_thread_group() {
+        let mut group = SpuThreadGroup::new(1, "test_group", 4, SpuPriority::NORMAL);
+        
+        assert_eq!(group.id, 1);
+        assert_eq!(group.state, SpuGroupState::NotInitialized);
+        
+        // Add threads
+        assert!(group.add_thread(0));
+        assert!(group.add_thread(1));
+        assert_eq!(group.thread_ids.len(), 2);
+        assert_eq!(group.state, SpuGroupState::Initialized);
+        
+        // Start group
+        group.start();
+        assert_eq!(group.state, SpuGroupState::Running);
+        
+        // Suspend
+        group.suspend();
+        assert_eq!(group.state, SpuGroupState::Suspended);
+        
+        // Resume
+        group.resume();
+        assert_eq!(group.state, SpuGroupState::Running);
+        
+        // Stop
+        group.stop();
+        assert_eq!(group.state, SpuGroupState::Stopped);
+        
+        // Remove thread
+        group.remove_thread(0);
+        assert_eq!(group.thread_ids.len(), 1);
+    }
+    
+    #[test]
+    fn test_spu_event_queue() {
+        let mut queue = SpuEventQueue::new(1, 16);
+        
+        assert!(queue.is_empty());
+        
+        // Push event
+        let event = SpuEvent {
+            source: 0,
+            data: 0x42,
+            event_type: SpuEventType::ThreadFinish,
+        };
+        assert!(queue.push(event));
+        assert_eq!(queue.len(), 1);
+        
+        // Pop event
+        let popped = queue.pop().unwrap();
+        assert_eq!(popped.data, 0x42);
+        assert!(queue.is_empty());
+        
+        // Test waiters
+        queue.add_waiter(100);
+        assert_eq!(queue.waiters().len(), 1);
+        queue.remove_waiter(100);
+        assert!(queue.waiters().is_empty());
+    }
+    
+    #[test]
+    fn test_spu_thread_with_config() {
+        let mem = create_test_memory();
+        let thread = SpuThread::new_with_config(
+            0,
+            mem,
+            0x1000,  // entry point
+            0xDEAD,  // argument
+            SpuPriority::HIGH,
+        );
+        
+        assert_eq!(thread.pc(), 0x1000);
+        assert_eq!(thread.arg, 0xDEAD);
+        assert_eq!(thread.priority, SpuPriority::HIGH);
+    }
 }

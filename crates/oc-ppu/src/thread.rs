@@ -942,4 +942,143 @@ mod tests {
         thread.set_cr_field(7, 0b0101);
         assert_eq!(thread.get_cr_field(7), 0b0101);
     }
+    
+    #[test]
+    fn test_thread_priority() {
+        let mem = create_test_memory();
+        let mut thread = PpuThread::new(0, mem);
+        
+        // Default priority
+        assert_eq!(thread.get_scheduling_priority(), ThreadPriority::NORMAL);
+        
+        // Set priority
+        thread.set_scheduling_priority(ThreadPriority::HIGH);
+        assert_eq!(thread.get_scheduling_priority().value(), ThreadPriority::HIGH.value());
+        
+        // Priority comparison
+        assert!(ThreadPriority::HIGH.is_higher_than(&ThreadPriority::NORMAL));
+        assert!(!ThreadPriority::LOW.is_higher_than(&ThreadPriority::NORMAL));
+    }
+    
+    #[test]
+    fn test_thread_affinity() {
+        let mem = create_test_memory();
+        let mut thread = PpuThread::new(0, mem);
+        
+        // Default is any core
+        assert_eq!(thread.get_affinity(), ThreadAffinity::ANY);
+        assert!(thread.can_run_on_core(0));
+        assert!(thread.can_run_on_core(1));
+        
+        // Set specific core
+        thread.set_affinity(ThreadAffinity::PPU0);
+        assert!(thread.can_run_on_core(0));
+        assert!(!thread.can_run_on_core(1));
+        
+        // Affinity modification
+        let mut affinity = ThreadAffinity::PPU0;
+        affinity.set_core(1, true);
+        assert!(affinity.allows_core(0));
+        assert!(affinity.allows_core(1));
+    }
+    
+    #[test]
+    fn test_thread_wait_states() {
+        let mem = create_test_memory();
+        let mut thread = PpuThread::new(0, mem);
+        
+        // Start the thread
+        thread.state = PpuThreadState::Running;
+        
+        // Put thread in waiting state
+        thread.wait(WaitReason::Mutex(42), 1000);
+        assert_eq!(thread.state, PpuThreadState::Waiting);
+        assert!(matches!(thread.sync.wait_reason, Some(WaitReason::Mutex(42))));
+        
+        // Wake the thread
+        thread.wake();
+        assert_eq!(thread.state, PpuThreadState::Ready);
+        assert!(thread.sync.wait_reason.is_none());
+        
+        // Test sleep
+        thread.state = PpuThreadState::Running;
+        thread.sleep(5000);
+        assert_eq!(thread.state, PpuThreadState::Sleeping);
+        assert!(matches!(thread.sync.wait_reason, Some(WaitReason::Sleep(5000))));
+    }
+    
+    #[test]
+    fn test_thread_preemption() {
+        let mem = create_test_memory();
+        let mut thread = PpuThread::new(0, mem);
+        
+        thread.state = PpuThreadState::Running;
+        
+        // Record preemption
+        thread.preempt();
+        assert_eq!(thread.state, PpuThreadState::Ready);
+        assert_eq!(thread.sync.preempt_count, 1);
+        
+        // Yield
+        thread.state = PpuThreadState::Running;
+        thread.yield_thread();
+        assert_eq!(thread.state, PpuThreadState::Ready);
+        assert_eq!(thread.sync.yield_count, 1);
+    }
+    
+    #[test]
+    fn test_thread_lifecycle() {
+        let mem = create_test_memory();
+        let mut thread = PpuThread::new(0, mem);
+        
+        // Thread starts stopped
+        assert_eq!(thread.state, PpuThreadState::Stopped);
+        
+        // Make ready
+        thread.state = PpuThreadState::Running;
+        thread.make_ready();
+        assert_eq!(thread.state, PpuThreadState::Ready);
+        
+        // Suspend
+        thread.suspend();
+        assert_eq!(thread.state, PpuThreadState::Suspended);
+        
+        // Resume
+        thread.resume();
+        assert_eq!(thread.state, PpuThreadState::Ready);
+        
+        // Exit
+        thread.exit(42);
+        assert_eq!(thread.state, PpuThreadState::Stopped);
+        assert_eq!(thread.join_value, 42);
+        
+        // Join
+        let value = thread.join();
+        assert_eq!(value, Some(42));
+        assert!(thread.joined);
+        
+        // Can't join twice
+        assert!(thread.join().is_none());
+    }
+    
+    #[test]
+    fn test_thread_with_config() {
+        let mem = create_test_memory();
+        let thread = PpuThread::new_with_config(
+            1,
+            mem,
+            0x10000,  // entry point
+            0xDEAD,   // argument
+            ThreadPriority::HIGH,
+            0xD000_0000,
+            0x10000,
+        );
+        
+        assert_eq!(thread.id, 1);
+        assert_eq!(thread.pc(), 0x10000);
+        assert_eq!(thread.gpr(3), 0xDEAD);
+        assert_eq!(thread.scheduling_priority, ThreadPriority::HIGH);
+        assert_eq!(thread.stack_addr, 0xD000_0000);
+        assert_eq!(thread.stack_size, 0x10000);
+    }
 }
