@@ -903,7 +903,8 @@ impl SpursManager {
     /// Returns the workload ID with the highest priority that is ready to run.
     /// This is used by the SPURS kernel to schedule workloads on SPUs.
     pub fn get_next_workload(&self, spu_id: u32) -> Option<u32> {
-        if !self.initialized || spu_id >= self.num_spus {
+        // Validate spu_id is within bounds of both num_spus and priorities array
+        if !self.initialized || spu_id >= self.num_spus || spu_id as usize >= CELL_SPURS_MAX_SPU {
             return None;
         }
 

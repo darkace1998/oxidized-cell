@@ -146,7 +146,7 @@ impl SpuRuntimeManager {
     /// Initialize the SPU Runtime
     pub fn init(&mut self, num_spus: u32) -> i32 {
         if self.initialized {
-            return SPU_RUNTIME_ERROR_NOT_INITIALIZED;
+            return SPU_RUNTIME_ERROR_ALREADY_LOADED;
         }
 
         debug!("SpuRuntimeManager::init: num_spus={}", num_spus);
