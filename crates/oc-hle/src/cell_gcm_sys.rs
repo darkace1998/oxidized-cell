@@ -320,6 +320,170 @@ pub struct CellGcmSurface {
 // GCM Manager State
 // ============================================================================
 
+// ============================================================================
+// Shader Program Structures
+// ============================================================================
+
+/// Vertex program descriptor
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CellGcmVertexProgram {
+    /// Program size in bytes
+    pub size: u32,
+    /// Program data offset in memory
+    pub offset: u32,
+    /// Number of instructions
+    pub num_instructions: u16,
+    /// Number of input attributes
+    pub num_inputs: u8,
+    /// Number of output attributes
+    pub num_outputs: u8,
+    /// Input attribute mask
+    pub input_mask: u32,
+    /// Output attribute mask
+    pub output_mask: u32,
+}
+
+/// Fragment program descriptor
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CellGcmFragmentProgram {
+    /// Program size in bytes
+    pub size: u32,
+    /// Program data offset in memory
+    pub offset: u32,
+    /// Number of instructions
+    pub num_instructions: u16,
+    /// Number of texture samplers
+    pub num_samplers: u8,
+    /// Register count
+    pub register_count: u8,
+    /// Control register value
+    pub control: u32,
+}
+
+/// Viewport configuration
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CellGcmViewport {
+    /// X origin
+    pub x: u16,
+    /// Y origin
+    pub y: u16,
+    /// Width
+    pub width: u16,
+    /// Height
+    pub height: u16,
+    /// Minimum depth (0.0 - 1.0 mapped to hardware range)
+    pub z_min: f32,
+    /// Maximum depth (0.0 - 1.0 mapped to hardware range)
+    pub z_max: f32,
+    /// Scale factors
+    pub scale: [f32; 4],
+    /// Offset factors
+    pub offset: [f32; 4],
+}
+
+impl Default for CellGcmViewport {
+    fn default() -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            z_min: 0.0,
+            z_max: 1.0,
+            scale: [1920.0 / 2.0, 1080.0 / 2.0, 0.5, 0.0],
+            offset: [1920.0 / 2.0, 1080.0 / 2.0, 0.5, 0.0],
+        }
+    }
+}
+
+/// Scissor rectangle configuration
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CellGcmScissor {
+    /// X origin
+    pub x: u16,
+    /// Y origin
+    pub y: u16,
+    /// Width
+    pub width: u16,
+    /// Height
+    pub height: u16,
+}
+
+impl Default for CellGcmScissor {
+    fn default() -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width: 4096,
+            height: 4096,
+        }
+    }
+}
+
+/// Main memory mapping entry
+#[derive(Debug, Clone, Copy)]
+struct MemoryMapping {
+    /// Main memory address
+    main_addr: u32,
+    /// Size in bytes
+    size: u32,
+    /// RSX offset
+    offset: u32,
+}
+
+/// Flip status
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CellGcmFlipStatus {
+    /// Flip is not pending
+    #[default]
+    NotPending = 0,
+    /// Flip is pending
+    Pending = 1,
+}
+
+/// Primitive type for draw calls
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CellGcmPrimitive {
+    /// Points
+    Points = 1,
+    /// Lines
+    Lines = 2,
+    /// Line loop
+    LineLoop = 3,
+    /// Line strip
+    LineStrip = 4,
+    /// Triangles
+    #[default]
+    Triangles = 5,
+    /// Triangle strip
+    TriangleStrip = 6,
+    /// Triangle fan
+    TriangleFan = 7,
+    /// Quads
+    Quads = 8,
+    /// Quad strip
+    QuadStrip = 9,
+    /// Polygon
+    Polygon = 10,
+}
+
+/// Index type for indexed draw calls
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CellGcmIndexType {
+    /// 16-bit indices
+    #[default]
+    Index16 = 0,
+    /// 32-bit indices
+    Index32 = 1,
+}
+
 /// GCM manager state
 pub struct GcmManager {
     /// Initialization flag
@@ -348,6 +512,22 @@ pub struct GcmManager {
     texture_id_counter: u32,
     /// Active texture bindings (slot -> texture ID)
     texture_bindings: HashMap<u32, u32>,
+    /// Current vertex program
+    vertex_program: Option<CellGcmVertexProgram>,
+    /// Current fragment program
+    fragment_program: Option<CellGcmFragmentProgram>,
+    /// Current viewport
+    viewport: CellGcmViewport,
+    /// Current scissor rectangle
+    scissor: CellGcmScissor,
+    /// Main memory mappings
+    memory_mappings: Vec<MemoryMapping>,
+    /// Next memory mapping offset
+    next_io_offset: u32,
+    /// Flip status
+    flip_status: CellGcmFlipStatus,
+    /// Draw call counter (for statistics)
+    draw_call_count: u64,
 }
 
 impl GcmManager {
@@ -367,6 +547,14 @@ impl GcmManager {
             render_target: CellGcmSurface::default(),
             texture_id_counter: 0,
             texture_bindings: HashMap::new(),
+            vertex_program: None,
+            fragment_program: None,
+            viewport: CellGcmViewport::default(),
+            scissor: CellGcmScissor::default(),
+            memory_mappings: Vec::new(),
+            next_io_offset: 0,
+            flip_status: CellGcmFlipStatus::default(),
+            draw_call_count: 0,
         }
     }
 
@@ -428,6 +616,7 @@ impl GcmManager {
 
         trace!("GcmManager::set_flip: buffer_id={}", buffer_id);
         self.current_buffer = buffer_id;
+        self.flip_status = CellGcmFlipStatus::Pending;
         
         // Queue flip command to RSX command buffer
         let _ = self.submit_command(0x0001, buffer_id);
@@ -736,6 +925,340 @@ impl GcmManager {
         let _ = self.submit_command(0x0240, pitch);
         
         0 // CELL_OK
+    }
+
+    // ========================================================================
+    // Shader Program Management
+    // ========================================================================
+
+    /// Set vertex program (shader)
+    pub fn set_vertex_program(&mut self, program: CellGcmVertexProgram) -> i32 {
+        if !self.initialized {
+            return 0x80410001u32 as i32; // CELL_GCM_ERROR_FAILURE
+        }
+        
+        debug!(
+            "GcmManager::set_vertex_program: size={}, offset=0x{:X}, instructions={}",
+            program.size, program.offset, program.num_instructions
+        );
+        
+        self.vertex_program = Some(program);
+        
+        // Submit vertex program configuration commands
+        // NV4097_SET_TRANSFORM_PROGRAM_LOAD
+        let _ = self.submit_command(0x1E94, program.offset);
+        let _ = self.submit_command(0x1E98, program.num_instructions as u32);
+        
+        0 // CELL_OK
+    }
+
+    /// Get the current vertex program
+    pub fn get_vertex_program(&self) -> Option<&CellGcmVertexProgram> {
+        self.vertex_program.as_ref()
+    }
+
+    /// Set fragment program (shader)
+    pub fn set_fragment_program(&mut self, program: CellGcmFragmentProgram) -> i32 {
+        if !self.initialized {
+            return 0x80410001u32 as i32; // CELL_GCM_ERROR_FAILURE
+        }
+        
+        debug!(
+            "GcmManager::set_fragment_program: size={}, offset=0x{:X}, instructions={}",
+            program.size, program.offset, program.num_instructions
+        );
+        
+        self.fragment_program = Some(program);
+        
+        // Submit fragment program configuration commands
+        // NV4097_SET_SHADER_PROGRAM
+        let _ = self.submit_command(0x08E4, program.offset);
+        let _ = self.submit_command(0x1D60, program.control);
+        
+        0 // CELL_OK
+    }
+
+    /// Get the current fragment program
+    pub fn get_fragment_program(&self) -> Option<&CellGcmFragmentProgram> {
+        self.fragment_program.as_ref()
+    }
+
+    /// Invalidate current shader programs
+    pub fn invalidate_programs(&mut self) {
+        self.vertex_program = None;
+        self.fragment_program = None;
+    }
+
+    // ========================================================================
+    // Viewport and Scissor
+    // ========================================================================
+
+    /// Set viewport
+    pub fn set_viewport(&mut self, x: u16, y: u16, width: u16, height: u16, z_min: f32, z_max: f32) -> i32 {
+        if !self.initialized {
+            return 0x80410001u32 as i32; // CELL_GCM_ERROR_FAILURE
+        }
+        
+        // Validate dimensions
+        if width == 0 || height == 0 {
+            return 0x80410002u32 as i32; // CELL_GCM_ERROR_INVALID_VALUE
+        }
+        
+        debug!(
+            "GcmManager::set_viewport: x={}, y={}, {}x{}, z={:.2}-{:.2}",
+            x, y, width, height, z_min, z_max
+        );
+        
+        // Calculate scale and offset factors
+        let scale_x = width as f32 / 2.0;
+        let scale_y = height as f32 / 2.0;
+        let scale_z = (z_max - z_min) / 2.0;
+        let offset_x = x as f32 + scale_x;
+        let offset_y = y as f32 + scale_y;
+        let offset_z = (z_max + z_min) / 2.0;
+        
+        self.viewport = CellGcmViewport {
+            x,
+            y,
+            width,
+            height,
+            z_min,
+            z_max,
+            scale: [scale_x, scale_y, scale_z, 0.0],
+            offset: [offset_x, offset_y, offset_z, 0.0],
+        };
+        
+        // Submit viewport commands
+        // NV4097_SET_VIEWPORT_HORIZONTAL
+        let _ = self.submit_command(0x0A00, ((width as u32) << 16) | (x as u32));
+        // NV4097_SET_VIEWPORT_VERTICAL
+        let _ = self.submit_command(0x0A04, ((height as u32) << 16) | (y as u32));
+        
+        // NV4097_SET_VIEWPORT_SCALE (using bit conversion for floats)
+        let _ = self.submit_command(0x0A20, scale_x.to_bits());
+        let _ = self.submit_command(0x0A24, scale_y.to_bits());
+        let _ = self.submit_command(0x0A28, scale_z.to_bits());
+        let _ = self.submit_command(0x0A2C, 0); // w scale
+        
+        // NV4097_SET_VIEWPORT_OFFSET
+        let _ = self.submit_command(0x0A30, offset_x.to_bits());
+        let _ = self.submit_command(0x0A34, offset_y.to_bits());
+        let _ = self.submit_command(0x0A38, offset_z.to_bits());
+        let _ = self.submit_command(0x0A3C, 0); // w offset
+        
+        0 // CELL_OK
+    }
+
+    /// Get the current viewport
+    pub fn get_viewport(&self) -> &CellGcmViewport {
+        &self.viewport
+    }
+
+    /// Set scissor rectangle
+    pub fn set_scissor(&mut self, x: u16, y: u16, width: u16, height: u16) -> i32 {
+        if !self.initialized {
+            return 0x80410001u32 as i32; // CELL_GCM_ERROR_FAILURE
+        }
+        
+        // Validate dimensions
+        if width == 0 || height == 0 {
+            return 0x80410002u32 as i32; // CELL_GCM_ERROR_INVALID_VALUE
+        }
+        
+        trace!(
+            "GcmManager::set_scissor: x={}, y={}, {}x{}",
+            x, y, width, height
+        );
+        
+        self.scissor = CellGcmScissor {
+            x,
+            y,
+            width,
+            height,
+        };
+        
+        // Submit scissor commands
+        // NV4097_SET_SCISSOR_HORIZONTAL
+        let _ = self.submit_command(0x08C0, ((width as u32) << 16) | (x as u32));
+        // NV4097_SET_SCISSOR_VERTICAL
+        let _ = self.submit_command(0x08C4, ((height as u32) << 16) | (y as u32));
+        
+        0 // CELL_OK
+    }
+
+    /// Get the current scissor rectangle
+    pub fn get_scissor(&self) -> &CellGcmScissor {
+        &self.scissor
+    }
+
+    // ========================================================================
+    // Draw Calls
+    // ========================================================================
+
+    /// Draw non-indexed primitives
+    pub fn draw_arrays(&mut self, primitive: CellGcmPrimitive, first: u32, count: u32) -> i32 {
+        if !self.initialized {
+            return 0x80410001u32 as i32; // CELL_GCM_ERROR_FAILURE
+        }
+        
+        if count == 0 {
+            return 0; // Nothing to draw, but not an error
+        }
+        
+        debug!(
+            "GcmManager::draw_arrays: primitive={:?}, first={}, count={}",
+            primitive, first, count
+        );
+        
+        self.draw_call_count += 1;
+        
+        // Submit draw call commands
+        // NV4097_SET_BEGIN_END
+        let _ = self.submit_command(0x1808, primitive as u32);
+        // NV4097_DRAW_ARRAYS
+        let _ = self.submit_command(0x1814, (first << 8) | (count - 1));
+        // NV4097_SET_BEGIN_END (end)
+        let _ = self.submit_command(0x1808, 0);
+        
+        0 // CELL_OK
+    }
+
+    /// Draw indexed primitives
+    pub fn draw_index_array(&mut self, primitive: CellGcmPrimitive, index_offset: u32, count: u32, index_type: CellGcmIndexType, location: u8) -> i32 {
+        if !self.initialized {
+            return 0x80410001u32 as i32; // CELL_GCM_ERROR_FAILURE
+        }
+        
+        if count == 0 {
+            return 0; // Nothing to draw, but not an error
+        }
+        
+        debug!(
+            "GcmManager::draw_index_array: primitive={:?}, offset=0x{:X}, count={}, type={:?}",
+            primitive, index_offset, count, index_type
+        );
+        
+        self.draw_call_count += 1;
+        
+        // Submit indexed draw call commands
+        // NV4097_SET_INDEX_ARRAY_ADDRESS
+        let type_value = match index_type {
+            CellGcmIndexType::Index16 => 0,
+            CellGcmIndexType::Index32 => 1,
+        };
+        let _ = self.submit_command(0x181C, index_offset);
+        let _ = self.submit_command(0x1820, (type_value << 4) | (location as u32));
+        
+        // NV4097_SET_BEGIN_END
+        let _ = self.submit_command(0x1808, primitive as u32);
+        // NV4097_DRAW_INDEX_ARRAY
+        let _ = self.submit_command(0x1824, count - 1);
+        // NV4097_SET_BEGIN_END (end)
+        let _ = self.submit_command(0x1808, 0);
+        
+        0 // CELL_OK
+    }
+
+    /// Get the total draw call count (for statistics)
+    pub fn get_draw_call_count(&self) -> u64 {
+        self.draw_call_count
+    }
+
+    /// Reset draw call counter
+    pub fn reset_draw_call_count(&mut self) {
+        self.draw_call_count = 0;
+    }
+
+    // ========================================================================
+    // Main Memory Mapping
+    // ========================================================================
+
+    /// Map main memory for RSX access
+    pub fn map_main_memory(&mut self, address: u32, size: u32) -> Result<u32, i32> {
+        if !self.initialized {
+            return Err(0x80410001u32 as i32); // CELL_GCM_ERROR_FAILURE
+        }
+        
+        // Validate parameters
+        if size == 0 {
+            return Err(0x80410002u32 as i32); // CELL_GCM_ERROR_INVALID_VALUE
+        }
+        
+        // Align size to 1MB boundary (RSX memory mapping granularity)
+        let aligned_size = (size + 0xFFFFF) & !0xFFFFF;
+        
+        debug!(
+            "GcmManager::map_main_memory: address=0x{:08X}, size=0x{:X} (aligned=0x{:X})",
+            address, size, aligned_size
+        );
+        
+        // Calculate offset in I/O space
+        let offset = self.next_io_offset;
+        self.next_io_offset += aligned_size;
+        
+        // Store mapping
+        self.memory_mappings.push(MemoryMapping {
+            main_addr: address,
+            size: aligned_size,
+            offset,
+        });
+        
+        // Update I/O memory configuration
+        if self.config.io_addr == 0 {
+            self.config.io_addr = address;
+        }
+        self.config.io_size += aligned_size;
+        
+        Ok(offset)
+    }
+
+    /// Unmap main memory from RSX
+    pub fn unmap_main_memory(&mut self, offset: u32) -> i32 {
+        if !self.initialized {
+            return 0x80410001u32 as i32; // CELL_GCM_ERROR_FAILURE
+        }
+        
+        // Find and remove mapping
+        if let Some(pos) = self.memory_mappings.iter().position(|m| m.offset == offset) {
+            let mapping = self.memory_mappings.remove(pos);
+            debug!(
+                "GcmManager::unmap_main_memory: offset=0x{:X}, size=0x{:X}",
+                offset, mapping.size
+            );
+            
+            // Update I/O size
+            self.config.io_size = self.config.io_size.saturating_sub(mapping.size);
+            
+            0 // CELL_OK
+        } else {
+            0x80410002u32 as i32 // CELL_GCM_ERROR_INVALID_VALUE
+        }
+    }
+
+    /// Get the number of memory mappings
+    pub fn get_memory_mapping_count(&self) -> usize {
+        self.memory_mappings.len()
+    }
+
+    // ========================================================================
+    // Flip Status
+    // ========================================================================
+
+    /// Reset flip status to not pending
+    pub fn reset_flip_status(&mut self) -> i32 {
+        if !self.initialized {
+            return 0x80410001u32 as i32; // CELL_GCM_ERROR_FAILURE
+        }
+        
+        trace!("GcmManager::reset_flip_status");
+        self.flip_status = CellGcmFlipStatus::NotPending;
+        
+        0 // CELL_OK
+    }
+
+    /// Get current flip status
+    pub fn get_flip_status(&self) -> CellGcmFlipStatus {
+        self.flip_status
     }
 }
 
@@ -1158,6 +1681,243 @@ pub fn cell_gcm_set_clear_depth_stencil(depth: u32, stencil: u8) -> i32 {
     0 // CELL_OK
 }
 
+// ============================================================================
+// Shader Program Functions
+// ============================================================================
+
+/// cellGcmSetVertexProgram - Set vertex shader program
+///
+/// # Arguments
+/// * `program_addr` - Address of vertex program descriptor
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_gcm_set_vertex_program(_program_addr: u32) -> i32 {
+    debug!("cellGcmSetVertexProgram()");
+    
+    // Create a default program descriptor (in real implementation, would read from memory)
+    let program = CellGcmVertexProgram {
+        size: 0,
+        offset: 0,
+        num_instructions: 0,
+        num_inputs: 0,
+        num_outputs: 0,
+        input_mask: 0xFFFF,
+        output_mask: 0xFFFF,
+    };
+    
+    crate::context::get_hle_context_mut().gcm.set_vertex_program(program)
+}
+
+/// cellGcmSetFragmentProgram - Set fragment shader program
+///
+/// # Arguments
+/// * `program_addr` - Address of fragment program descriptor
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_gcm_set_fragment_program(_program_addr: u32) -> i32 {
+    debug!("cellGcmSetFragmentProgram()");
+    
+    // Create a default program descriptor (in real implementation, would read from memory)
+    let program = CellGcmFragmentProgram {
+        size: 0,
+        offset: 0,
+        num_instructions: 0,
+        num_samplers: 0,
+        register_count: 0,
+        control: 0,
+    };
+    
+    crate::context::get_hle_context_mut().gcm.set_fragment_program(program)
+}
+
+// ============================================================================
+// Draw Call Functions
+// ============================================================================
+
+/// cellGcmSetDrawArrays - Draw non-indexed primitives
+///
+/// # Arguments
+/// * `primitive` - Primitive type
+/// * `first` - First vertex index
+/// * `count` - Number of vertices to draw
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_gcm_set_draw_arrays(primitive: u32, first: u32, count: u32) -> i32 {
+    trace!("cellGcmSetDrawArrays(primitive={}, first={}, count={})", primitive, first, count);
+    
+    // Convert primitive type
+    let prim = match primitive {
+        1 => CellGcmPrimitive::Points,
+        2 => CellGcmPrimitive::Lines,
+        3 => CellGcmPrimitive::LineLoop,
+        4 => CellGcmPrimitive::LineStrip,
+        5 => CellGcmPrimitive::Triangles,
+        6 => CellGcmPrimitive::TriangleStrip,
+        7 => CellGcmPrimitive::TriangleFan,
+        8 => CellGcmPrimitive::Quads,
+        9 => CellGcmPrimitive::QuadStrip,
+        10 => CellGcmPrimitive::Polygon,
+        _ => return 0x80410002u32 as i32, // CELL_GCM_ERROR_INVALID_VALUE
+    };
+    
+    crate::context::get_hle_context_mut().gcm.draw_arrays(prim, first, count)
+}
+
+/// cellGcmSetDrawIndexArray - Draw indexed primitives
+///
+/// # Arguments
+/// * `primitive` - Primitive type
+/// * `count` - Number of indices to draw
+/// * `index_type` - Index type (16-bit or 32-bit)
+/// * `location` - Memory location (local or main)
+/// * `index_offset` - Offset to index data
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_gcm_set_draw_index_array(
+    primitive: u32,
+    count: u32,
+    index_type: u32,
+    location: u8,
+    index_offset: u32,
+) -> i32 {
+    trace!(
+        "cellGcmSetDrawIndexArray(primitive={}, count={}, type={}, location={}, offset=0x{:X})",
+        primitive, count, index_type, location, index_offset
+    );
+    
+    // Convert primitive type
+    let prim = match primitive {
+        1 => CellGcmPrimitive::Points,
+        2 => CellGcmPrimitive::Lines,
+        3 => CellGcmPrimitive::LineLoop,
+        4 => CellGcmPrimitive::LineStrip,
+        5 => CellGcmPrimitive::Triangles,
+        6 => CellGcmPrimitive::TriangleStrip,
+        7 => CellGcmPrimitive::TriangleFan,
+        8 => CellGcmPrimitive::Quads,
+        9 => CellGcmPrimitive::QuadStrip,
+        10 => CellGcmPrimitive::Polygon,
+        _ => return 0x80410002u32 as i32, // CELL_GCM_ERROR_INVALID_VALUE
+    };
+    
+    // Convert index type
+    let idx_type = match index_type {
+        0 => CellGcmIndexType::Index16,
+        1 => CellGcmIndexType::Index32,
+        _ => return 0x80410002u32 as i32, // CELL_GCM_ERROR_INVALID_VALUE
+    };
+    
+    crate::context::get_hle_context_mut().gcm.draw_index_array(prim, index_offset, count, idx_type, location)
+}
+
+// ============================================================================
+// Viewport and Scissor Functions
+// ============================================================================
+
+/// cellGcmSetViewport - Set viewport transformation
+///
+/// # Arguments
+/// * `x` - X origin
+/// * `y` - Y origin
+/// * `width` - Width
+/// * `height` - Height
+/// * `z_min` - Minimum Z value
+/// * `z_max` - Maximum Z value
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_gcm_set_viewport(x: u16, y: u16, width: u16, height: u16, z_min: f32, z_max: f32) -> i32 {
+    debug!(
+        "cellGcmSetViewport(x={}, y={}, {}x{}, z={:.2}-{:.2})",
+        x, y, width, height, z_min, z_max
+    );
+    
+    crate::context::get_hle_context_mut().gcm.set_viewport(x, y, width, height, z_min, z_max)
+}
+
+/// cellGcmSetScissor - Set scissor test rectangle
+///
+/// # Arguments
+/// * `x` - X origin
+/// * `y` - Y origin
+/// * `width` - Width
+/// * `height` - Height
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_gcm_set_scissor(x: u16, y: u16, width: u16, height: u16) -> i32 {
+    trace!("cellGcmSetScissor(x={}, y={}, {}x{})", x, y, width, height);
+    
+    crate::context::get_hle_context_mut().gcm.set_scissor(x, y, width, height)
+}
+
+// ============================================================================
+// Memory Mapping Functions
+// ============================================================================
+
+/// cellGcmMapMainMemory - Map main memory for RSX access
+///
+/// # Arguments
+/// * `address` - Main memory address to map
+/// * `size` - Size to map (bytes)
+/// * `offset_addr` - Address to write resulting RSX offset
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_gcm_map_main_memory(address: u32, size: u32, _offset_addr: u32) -> i32 {
+    debug!("cellGcmMapMainMemory(address=0x{:08X}, size=0x{:X})", address, size);
+    
+    match crate::context::get_hle_context_mut().gcm.map_main_memory(address, size) {
+        Ok(_offset) => {
+            // TODO: Write offset to memory at _offset_addr
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
+}
+
+/// cellGcmUnmapIoAddress - Unmap previously mapped I/O memory
+///
+/// # Arguments
+/// * `offset` - RSX offset to unmap
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_gcm_unmap_io_address(offset: u32) -> i32 {
+    debug!("cellGcmUnmapIoAddress(offset=0x{:X})", offset);
+    
+    crate::context::get_hle_context_mut().gcm.unmap_main_memory(offset)
+}
+
+// ============================================================================
+// Flip Status Functions
+// ============================================================================
+
+/// cellGcmResetFlipStatus - Reset flip status to not pending
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_gcm_reset_flip_status() -> i32 {
+    trace!("cellGcmResetFlipStatus()");
+    
+    crate::context::get_hle_context_mut().gcm.reset_flip_status()
+}
+
+/// cellGcmGetFlipStatus - Get current flip status
+///
+/// # Returns
+/// * 0 if flip is not pending
+/// * 1 if flip is pending
+pub fn cell_gcm_get_flip_status() -> u32 {
+    trace!("cellGcmGetFlipStatus()");
+    
+    crate::context::get_hle_context().gcm.get_flip_status() as u32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1533,5 +2293,370 @@ mod tests {
     fn test_depth_format_enum() {
         assert_eq!(CellGcmDepthFormat::Z16 as u32, 0x00);
         assert_eq!(CellGcmDepthFormat::Z24S8 as u32, 0x01);
+    }
+
+    // ========================================================================
+    // Shader Program Tests
+    // ========================================================================
+
+    #[test]
+    fn test_gcm_manager_vertex_program() {
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 1024 * 1024);
+        
+        let program = CellGcmVertexProgram {
+            size: 256,
+            offset: 0x1000,
+            num_instructions: 32,
+            num_inputs: 4,
+            num_outputs: 4,
+            input_mask: 0x000F,
+            output_mask: 0x000F,
+        };
+        
+        assert_eq!(manager.set_vertex_program(program), 0);
+        
+        let vp = manager.get_vertex_program();
+        assert!(vp.is_some());
+        assert_eq!(vp.unwrap().size, 256);
+        assert_eq!(vp.unwrap().num_instructions, 32);
+    }
+
+    #[test]
+    fn test_gcm_manager_fragment_program() {
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 1024 * 1024);
+        
+        let program = CellGcmFragmentProgram {
+            size: 512,
+            offset: 0x2000,
+            num_instructions: 64,
+            num_samplers: 4,
+            register_count: 16,
+            control: 0x12345678,
+        };
+        
+        assert_eq!(manager.set_fragment_program(program), 0);
+        
+        let fp = manager.get_fragment_program();
+        assert!(fp.is_some());
+        assert_eq!(fp.unwrap().size, 512);
+        assert_eq!(fp.unwrap().num_samplers, 4);
+    }
+
+    #[test]
+    fn test_gcm_manager_invalidate_programs() {
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 1024 * 1024);
+        
+        manager.set_vertex_program(CellGcmVertexProgram::default());
+        manager.set_fragment_program(CellGcmFragmentProgram::default());
+        
+        assert!(manager.get_vertex_program().is_some());
+        assert!(manager.get_fragment_program().is_some());
+        
+        manager.invalidate_programs();
+        
+        assert!(manager.get_vertex_program().is_none());
+        assert!(manager.get_fragment_program().is_none());
+    }
+
+    #[test]
+    fn test_gcm_set_vertex_program_api() {
+        crate::context::reset_hle_context();
+        crate::context::get_hle_context_mut().gcm.init(0x10000000, 1024 * 1024);
+        
+        assert_eq!(cell_gcm_set_vertex_program(0x10000), 0);
+    }
+
+    #[test]
+    fn test_gcm_set_fragment_program_api() {
+        crate::context::reset_hle_context();
+        crate::context::get_hle_context_mut().gcm.init(0x10000000, 1024 * 1024);
+        
+        assert_eq!(cell_gcm_set_fragment_program(0x10000), 0);
+    }
+
+    // ========================================================================
+    // Viewport and Scissor Tests
+    // ========================================================================
+
+    #[test]
+    fn test_gcm_manager_viewport() {
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 1024 * 1024);
+        
+        assert_eq!(manager.set_viewport(0, 0, 1920, 1080, 0.0, 1.0), 0);
+        
+        let vp = manager.get_viewport();
+        assert_eq!(vp.x, 0);
+        assert_eq!(vp.y, 0);
+        assert_eq!(vp.width, 1920);
+        assert_eq!(vp.height, 1080);
+    }
+
+    #[test]
+    fn test_gcm_manager_viewport_validation() {
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 1024 * 1024);
+        
+        // Invalid dimensions
+        assert!(manager.set_viewport(0, 0, 0, 0, 0.0, 1.0) != 0);
+    }
+
+    #[test]
+    fn test_gcm_manager_scissor() {
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 1024 * 1024);
+        
+        assert_eq!(manager.set_scissor(100, 100, 800, 600), 0);
+        
+        let scissor = manager.get_scissor();
+        assert_eq!(scissor.x, 100);
+        assert_eq!(scissor.y, 100);
+        assert_eq!(scissor.width, 800);
+        assert_eq!(scissor.height, 600);
+    }
+
+    #[test]
+    fn test_gcm_manager_scissor_validation() {
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 1024 * 1024);
+        
+        // Invalid dimensions
+        assert!(manager.set_scissor(0, 0, 0, 0) != 0);
+    }
+
+    #[test]
+    fn test_gcm_set_viewport_api() {
+        crate::context::reset_hle_context();
+        crate::context::get_hle_context_mut().gcm.init(0x10000000, 1024 * 1024);
+        
+        assert_eq!(cell_gcm_set_viewport(0, 0, 1920, 1080, 0.0, 1.0), 0);
+    }
+
+    #[test]
+    fn test_gcm_set_scissor_api() {
+        crate::context::reset_hle_context();
+        crate::context::get_hle_context_mut().gcm.init(0x10000000, 1024 * 1024);
+        
+        assert_eq!(cell_gcm_set_scissor(0, 0, 1920, 1080), 0);
+    }
+
+    // ========================================================================
+    // Draw Call Tests
+    // ========================================================================
+
+    #[test]
+    fn test_gcm_manager_draw_arrays() {
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 1024 * 1024);
+        
+        assert_eq!(manager.draw_arrays(CellGcmPrimitive::Triangles, 0, 36), 0);
+        assert_eq!(manager.get_draw_call_count(), 1);
+        
+        // Empty draw is okay
+        assert_eq!(manager.draw_arrays(CellGcmPrimitive::Triangles, 0, 0), 0);
+        assert_eq!(manager.get_draw_call_count(), 1); // Not incremented for empty draw
+    }
+
+    #[test]
+    fn test_gcm_manager_draw_index_array() {
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 1024 * 1024);
+        
+        assert_eq!(manager.draw_index_array(CellGcmPrimitive::Triangles, 0x1000, 36, CellGcmIndexType::Index16, 0), 0);
+        assert_eq!(manager.get_draw_call_count(), 1);
+        
+        assert_eq!(manager.draw_index_array(CellGcmPrimitive::TriangleStrip, 0x2000, 100, CellGcmIndexType::Index32, 0), 0);
+        assert_eq!(manager.get_draw_call_count(), 2);
+    }
+
+    #[test]
+    fn test_gcm_manager_draw_call_count() {
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 1024 * 1024);
+        
+        assert_eq!(manager.get_draw_call_count(), 0);
+        
+        manager.draw_arrays(CellGcmPrimitive::Triangles, 0, 3);
+        manager.draw_arrays(CellGcmPrimitive::Triangles, 3, 3);
+        manager.draw_index_array(CellGcmPrimitive::Lines, 0, 10, CellGcmIndexType::Index16, 0);
+        
+        assert_eq!(manager.get_draw_call_count(), 3);
+        
+        manager.reset_draw_call_count();
+        assert_eq!(manager.get_draw_call_count(), 0);
+    }
+
+    #[test]
+    fn test_gcm_set_draw_arrays_api() {
+        crate::context::reset_hle_context();
+        crate::context::get_hle_context_mut().gcm.init(0x10000000, 1024 * 1024);
+        
+        // Valid primitive types
+        assert_eq!(cell_gcm_set_draw_arrays(5, 0, 36), 0); // Triangles
+        assert_eq!(cell_gcm_set_draw_arrays(6, 0, 4), 0);  // Triangle strip
+        
+        // Invalid primitive type
+        assert!(cell_gcm_set_draw_arrays(0, 0, 36) != 0);
+        assert!(cell_gcm_set_draw_arrays(100, 0, 36) != 0);
+    }
+
+    #[test]
+    fn test_gcm_set_draw_index_array_api() {
+        crate::context::reset_hle_context();
+        crate::context::get_hle_context_mut().gcm.init(0x10000000, 1024 * 1024);
+        
+        // Valid call
+        assert_eq!(cell_gcm_set_draw_index_array(5, 36, 0, 0, 0x1000), 0);
+        
+        // Invalid primitive type
+        assert!(cell_gcm_set_draw_index_array(0, 36, 0, 0, 0x1000) != 0);
+        
+        // Invalid index type
+        assert!(cell_gcm_set_draw_index_array(5, 36, 99, 0, 0x1000) != 0);
+    }
+
+    // ========================================================================
+    // Memory Mapping Tests
+    // ========================================================================
+
+    #[test]
+    fn test_gcm_manager_map_main_memory() {
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 1024 * 1024);
+        
+        // Map memory
+        let result = manager.map_main_memory(0x30000000, 0x100000);
+        assert!(result.is_ok());
+        let offset1 = result.unwrap();
+        
+        // Map more memory
+        let result = manager.map_main_memory(0x30200000, 0x200000);
+        assert!(result.is_ok());
+        let offset2 = result.unwrap();
+        
+        assert_ne!(offset1, offset2);
+        assert_eq!(manager.get_memory_mapping_count(), 2);
+    }
+
+    #[test]
+    fn test_gcm_manager_unmap_main_memory() {
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 1024 * 1024);
+        
+        let offset = manager.map_main_memory(0x30000000, 0x100000).unwrap();
+        assert_eq!(manager.get_memory_mapping_count(), 1);
+        
+        assert_eq!(manager.unmap_main_memory(offset), 0);
+        assert_eq!(manager.get_memory_mapping_count(), 0);
+        
+        // Double unmap should fail
+        assert!(manager.unmap_main_memory(offset) != 0);
+    }
+
+    #[test]
+    fn test_gcm_manager_map_memory_validation() {
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 1024 * 1024);
+        
+        // Zero size should fail
+        assert!(manager.map_main_memory(0x30000000, 0).is_err());
+    }
+
+    #[test]
+    fn test_gcm_map_main_memory_api() {
+        crate::context::reset_hle_context();
+        crate::context::get_hle_context_mut().gcm.init(0x10000000, 1024 * 1024);
+        
+        assert_eq!(cell_gcm_map_main_memory(0x30000000, 0x100000, 0x10000), 0);
+    }
+
+    // ========================================================================
+    // Flip Status Tests
+    // ========================================================================
+
+    #[test]
+    fn test_gcm_manager_flip_status() {
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 1024 * 1024);
+        
+        // Initially not pending
+        assert_eq!(manager.get_flip_status(), CellGcmFlipStatus::NotPending);
+        
+        // After set_flip, should be pending
+        manager.set_display_buffer(0, 0, 1920 * 4, 1920, 1080);
+        manager.set_flip(0);
+        assert_eq!(manager.get_flip_status(), CellGcmFlipStatus::Pending);
+        
+        // After reset, should be not pending
+        manager.reset_flip_status();
+        assert_eq!(manager.get_flip_status(), CellGcmFlipStatus::NotPending);
+    }
+
+    #[test]
+    fn test_gcm_reset_flip_status_api() {
+        crate::context::reset_hle_context();
+        crate::context::get_hle_context_mut().gcm.init(0x10000000, 1024 * 1024);
+        
+        assert_eq!(cell_gcm_reset_flip_status(), 0);
+    }
+
+    #[test]
+    fn test_gcm_get_flip_status_api() {
+        crate::context::reset_hle_context();
+        crate::context::get_hle_context_mut().gcm.init(0x10000000, 1024 * 1024);
+        
+        assert_eq!(cell_gcm_get_flip_status(), 0); // Not pending
+        
+        // Set flip to make it pending
+        crate::context::get_hle_context_mut().gcm.set_display_buffer(0, 0, 1920 * 4, 1920, 1080);
+        crate::context::get_hle_context_mut().gcm.set_flip(0);
+        
+        assert_eq!(cell_gcm_get_flip_status(), 1); // Pending
+    }
+
+    // ========================================================================
+    // Primitive Type Enum Tests
+    // ========================================================================
+
+    #[test]
+    fn test_primitive_type_enum() {
+        assert_eq!(CellGcmPrimitive::Points as u32, 1);
+        assert_eq!(CellGcmPrimitive::Lines as u32, 2);
+        assert_eq!(CellGcmPrimitive::Triangles as u32, 5);
+        assert_eq!(CellGcmPrimitive::TriangleStrip as u32, 6);
+        assert_eq!(CellGcmPrimitive::Quads as u32, 8);
+    }
+
+    #[test]
+    fn test_index_type_enum() {
+        assert_eq!(CellGcmIndexType::Index16 as u32, 0);
+        assert_eq!(CellGcmIndexType::Index32 as u32, 1);
+    }
+
+    #[test]
+    fn test_flip_status_enum() {
+        assert_eq!(CellGcmFlipStatus::NotPending as u32, 0);
+        assert_eq!(CellGcmFlipStatus::Pending as u32, 1);
+    }
+
+    #[test]
+    fn test_viewport_default() {
+        let vp = CellGcmViewport::default();
+        assert_eq!(vp.x, 0);
+        assert_eq!(vp.y, 0);
+        assert_eq!(vp.width, 1920);
+        assert_eq!(vp.height, 1080);
+    }
+
+    #[test]
+    fn test_scissor_default() {
+        let scissor = CellGcmScissor::default();
+        assert_eq!(scissor.x, 0);
+        assert_eq!(scissor.y, 0);
+        assert_eq!(scissor.width, 4096);
+        assert_eq!(scissor.height, 4096);
     }
 }
