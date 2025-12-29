@@ -5,6 +5,7 @@ use crate::pages::PageFlags;
 use crate::reservation::Reservation;
 use oc_core::error::{AccessKind, MemoryError};
 use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Memory region descriptor
@@ -18,6 +19,107 @@ pub struct MemoryRegion {
     pub flags: PageFlags,
     /// Region name
     pub name: &'static str,
+}
+
+/// Memory protection exception type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryException {
+    /// Access violation (attempted access not permitted by page flags)
+    AccessViolation {
+        addr: u32,
+        kind: AccessKind,
+    },
+    /// Page fault (page not committed)
+    PageFault {
+        addr: u32,
+    },
+    /// Alignment fault
+    AlignmentFault {
+        addr: u32,
+        required: u32,
+        actual: u32,
+    },
+    /// Reserved address access (attempting to access reserved memory)
+    ReservedAccess {
+        addr: u32,
+    },
+}
+
+/// Memory exception handler result
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExceptionHandlerResult {
+    /// Exception was handled, continue execution
+    Handled,
+    /// Exception not handled, should be reported as error
+    NotHandled,
+    /// Retry the memory access (e.g., after fixing page tables)
+    Retry,
+}
+
+/// Shared memory region between PPU and SPU
+#[derive(Debug, Clone)]
+pub struct SharedMemoryRegion {
+    /// Region ID
+    pub id: u32,
+    /// Main memory base address
+    pub main_addr: u32,
+    /// Size in bytes
+    pub size: u32,
+    /// Flags
+    pub flags: PageFlags,
+    /// SPU IDs that have access
+    pub spu_access: Vec<u32>,
+    /// Whether PPU has access
+    pub ppu_access: bool,
+    /// Reference count
+    pub ref_count: u32,
+}
+
+impl SharedMemoryRegion {
+    /// Create a new shared memory region
+    pub fn new(id: u32, main_addr: u32, size: u32, flags: PageFlags) -> Self {
+        Self {
+            id,
+            main_addr,
+            size,
+            flags,
+            spu_access: Vec::new(),
+            ppu_access: true,
+            ref_count: 1,
+        }
+    }
+    
+    /// Grant access to an SPU
+    pub fn grant_spu_access(&mut self, spu_id: u32) {
+        if !self.spu_access.contains(&spu_id) {
+            self.spu_access.push(spu_id);
+        }
+    }
+    
+    /// Revoke access from an SPU
+    pub fn revoke_spu_access(&mut self, spu_id: u32) {
+        self.spu_access.retain(|&id| id != spu_id);
+    }
+    
+    /// Check if an SPU has access
+    pub fn has_spu_access(&self, spu_id: u32) -> bool {
+        self.spu_access.contains(&spu_id)
+    }
+}
+
+/// RSX memory mapping entry
+#[derive(Debug, Clone)]
+pub struct RsxMemoryMapping {
+    /// Offset in RSX local memory
+    pub rsx_offset: u32,
+    /// Main memory address
+    pub main_addr: u32,
+    /// Size of the mapping
+    pub size: u32,
+    /// Whether this is a tile mapping
+    pub tiled: bool,
+    /// Tile pitch (for tiled mappings)
+    pub tile_pitch: u32,
 }
 
 /// Main memory manager for the PS3 emulator
@@ -37,6 +139,14 @@ pub struct MemoryManager {
     regions: Vec<MemoryRegion>,
     /// RSX memory (separate allocation for VRAM)
     rsx_mem: *mut u8,
+    /// Shared memory regions
+    shared_regions: RwLock<HashMap<u32, SharedMemoryRegion>>,
+    /// Next shared region ID
+    next_shared_id: RwLock<u32>,
+    /// RSX memory mappings
+    rsx_mappings: RwLock<Vec<RsxMemoryMapping>>,
+    /// Exception handler callback (if set)
+    exception_handler: RwLock<Option<Box<dyn Fn(MemoryException) -> ExceptionHandlerResult + Send + Sync>>>,
 }
 
 // Safety: Memory is accessed through atomic operations and proper synchronization
@@ -96,6 +206,10 @@ impl MemoryManager {
             reservations,
             regions,
             rsx_mem,
+            shared_regions: RwLock::new(HashMap::new()),
+            next_shared_id: RwLock::new(1),
+            rsx_mappings: RwLock::new(Vec::new()),
+            exception_handler: RwLock::new(None),
         };
 
         // Initialize standard regions
@@ -398,6 +512,222 @@ impl MemoryManager {
     #[inline]
     pub fn write_be64(&self, addr: u32, value: u64) -> Result<(), MemoryError> {
         self.write(addr, value.to_be())
+    }
+    
+    // ============ Shared Memory Region Methods ============
+    
+    /// Create a new shared memory region
+    pub fn create_shared_region(&self, addr: u32, size: u32, flags: PageFlags) -> Result<u32, MemoryError> {
+        // Validate the region is allocated
+        self.check_access(addr, size, PageFlags::READ)?;
+        
+        let id = {
+            let mut next_id = self.next_shared_id.write();
+            let id = *next_id;
+            *next_id += 1;
+            id
+        };
+        
+        let region = SharedMemoryRegion::new(id, addr, size, flags);
+        self.shared_regions.write().insert(id, region);
+        
+        Ok(id)
+    }
+    
+    /// Get a shared memory region by ID
+    pub fn get_shared_region(&self, id: u32) -> Option<SharedMemoryRegion> {
+        self.shared_regions.read().get(&id).cloned()
+    }
+    
+    /// Grant SPU access to a shared region
+    pub fn grant_spu_access(&self, region_id: u32, spu_id: u32) -> Result<(), MemoryError> {
+        let mut regions = self.shared_regions.write();
+        if let Some(region) = regions.get_mut(&region_id) {
+            region.grant_spu_access(spu_id);
+            Ok(())
+        } else {
+            Err(MemoryError::InvalidAddress(region_id))
+        }
+    }
+    
+    /// Revoke SPU access from a shared region
+    pub fn revoke_spu_access(&self, region_id: u32, spu_id: u32) -> Result<(), MemoryError> {
+        let mut regions = self.shared_regions.write();
+        if let Some(region) = regions.get_mut(&region_id) {
+            region.revoke_spu_access(spu_id);
+            Ok(())
+        } else {
+            Err(MemoryError::InvalidAddress(region_id))
+        }
+    }
+    
+    /// Check if an SPU has access to a shared region
+    pub fn check_spu_access(&self, region_id: u32, spu_id: u32) -> bool {
+        self.shared_regions.read()
+            .get(&region_id)
+            .map(|r| r.has_spu_access(spu_id))
+            .unwrap_or(false)
+    }
+    
+    /// Destroy a shared memory region
+    pub fn destroy_shared_region(&self, id: u32) -> Result<(), MemoryError> {
+        if self.shared_regions.write().remove(&id).is_some() {
+            Ok(())
+        } else {
+            Err(MemoryError::InvalidAddress(id))
+        }
+    }
+    
+    /// List all shared regions
+    pub fn list_shared_regions(&self) -> Vec<SharedMemoryRegion> {
+        self.shared_regions.read().values().cloned().collect()
+    }
+    
+    // ============ RSX Memory Mapping Methods ============
+    
+    /// Create an RSX memory mapping
+    pub fn map_rsx_memory(&self, rsx_offset: u32, main_addr: u32, size: u32, tiled: bool, tile_pitch: u32) -> Result<(), MemoryError> {
+        // Validate RSX offset
+        if rsx_offset.saturating_add(size) > RSX_MEM_SIZE {
+            return Err(MemoryError::InvalidAddress(rsx_offset));
+        }
+        
+        // Validate main memory address
+        self.check_access(main_addr, size, PageFlags::RW)?;
+        
+        let mapping = RsxMemoryMapping {
+            rsx_offset,
+            main_addr,
+            size,
+            tiled,
+            tile_pitch,
+        };
+        
+        self.rsx_mappings.write().push(mapping);
+        Ok(())
+    }
+    
+    /// Remove an RSX memory mapping
+    pub fn unmap_rsx_memory(&self, rsx_offset: u32) {
+        self.rsx_mappings.write().retain(|m| m.rsx_offset != rsx_offset);
+    }
+    
+    /// Find RSX mapping for a given RSX offset
+    pub fn find_rsx_mapping(&self, rsx_offset: u32) -> Option<RsxMemoryMapping> {
+        self.rsx_mappings.read().iter()
+            .find(|m| rsx_offset >= m.rsx_offset && rsx_offset < m.rsx_offset + m.size)
+            .cloned()
+    }
+    
+    /// Read from RSX local memory
+    pub fn read_rsx(&self, offset: u32, size: u32) -> Result<Vec<u8>, MemoryError> {
+        if offset.saturating_add(size) > RSX_MEM_SIZE {
+            return Err(MemoryError::InvalidAddress(RSX_MEM_BASE + offset));
+        }
+        
+        let mut data = vec![0u8; size as usize];
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.rsx_mem.add(offset as usize),
+                data.as_mut_ptr(),
+                size as usize,
+            );
+        }
+        Ok(data)
+    }
+    
+    /// Write to RSX local memory
+    pub fn write_rsx(&self, offset: u32, data: &[u8]) -> Result<(), MemoryError> {
+        if offset.saturating_add(data.len() as u32) > RSX_MEM_SIZE {
+            return Err(MemoryError::InvalidAddress(RSX_MEM_BASE + offset));
+        }
+        
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data.as_ptr(),
+                self.rsx_mem.add(offset as usize),
+                data.len(),
+            );
+        }
+        Ok(())
+    }
+    
+    /// Get list of RSX mappings
+    pub fn list_rsx_mappings(&self) -> Vec<RsxMemoryMapping> {
+        self.rsx_mappings.read().clone()
+    }
+    
+    // ============ Memory Protection Exception Methods ============
+    
+    /// Set a custom memory exception handler
+    pub fn set_exception_handler<F>(&self, handler: F) 
+    where 
+        F: Fn(MemoryException) -> ExceptionHandlerResult + Send + Sync + 'static 
+    {
+        *self.exception_handler.write() = Some(Box::new(handler));
+    }
+    
+    /// Clear the exception handler
+    pub fn clear_exception_handler(&self) {
+        *self.exception_handler.write() = None;
+    }
+    
+    /// Handle a memory exception
+    pub fn handle_exception(&self, exception: MemoryException) -> ExceptionHandlerResult {
+        if let Some(ref handler) = *self.exception_handler.read() {
+            handler(exception)
+        } else {
+            ExceptionHandlerResult::NotHandled
+        }
+    }
+    
+    /// Check access with exception handling
+    pub fn check_access_with_exception(&self, addr: u32, size: u32, required: PageFlags) -> Result<(), MemoryError> {
+        match self.check_access(addr, size, required) {
+            Ok(()) => Ok(()),
+            Err(MemoryError::AccessViolation { addr, kind }) => {
+                let exception = MemoryException::AccessViolation { addr, kind };
+                match self.handle_exception(exception) {
+                    ExceptionHandlerResult::Handled | ExceptionHandlerResult::Retry => Ok(()),
+                    ExceptionHandlerResult::NotHandled => Err(MemoryError::AccessViolation { addr, kind }),
+                }
+            }
+            Err(MemoryError::InvalidAddress(addr)) => {
+                let exception = MemoryException::PageFault { addr };
+                match self.handle_exception(exception) {
+                    ExceptionHandlerResult::Handled | ExceptionHandlerResult::Retry => Ok(()),
+                    ExceptionHandlerResult::NotHandled => Err(MemoryError::InvalidAddress(addr)),
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+    
+    /// Set page protection flags
+    pub fn set_page_flags(&self, addr: u32, size: u32, flags: PageFlags) -> Result<(), MemoryError> {
+        let start_page = (addr / PAGE_SIZE) as usize;
+        let num_pages = size.div_ceil(PAGE_SIZE) as usize;
+        
+        let mut page_flags = self.page_flags.write();
+        
+        for page in start_page..start_page + num_pages {
+            if page < page_flags.len() {
+                page_flags[page] = flags;
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Get page protection flags
+    pub fn get_page_flags(&self, addr: u32) -> PageFlags {
+        let page = (addr / PAGE_SIZE) as usize;
+        let page_flags = self.page_flags.read();
+        if page < page_flags.len() {
+            page_flags[page]
+        } else {
+            PageFlags::empty()
+        }
     }
 }
 

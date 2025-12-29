@@ -14,6 +14,9 @@ pub use debug::{
     CacheMode, CacheSimulator, CacheStats, MemoryProfiler, SmcDetector,
     Watchpoint, WatchpointCondition, WatchpointManager, WatchpointType,
 };
-pub use manager::MemoryManager;
+pub use manager::{
+    ExceptionHandlerResult, MemoryException, MemoryManager, MemoryRegion,
+    RsxMemoryMapping, SharedMemoryRegion,
+};
 pub use pages::PageFlags;
 pub use reservation::Reservation;
