@@ -1,7 +1,8 @@
 //! JIT interface
 //!
 //! This module provides the FFI interface to the C++ JIT compilers for both PPU and SPU.
-//! It includes support for JIT invocation, code cache management, and breakpoint integration.
+//! It includes support for JIT invocation, code cache management, breakpoint integration,
+//! branch prediction, inline caching, register allocation, lazy compilation, and multi-threaded compilation.
 
 /// Opaque handle to PPU JIT compiler
 #[repr(C)]
@@ -12,6 +13,12 @@ pub struct PpuJit {
 /// Opaque handle to SPU JIT compiler
 #[repr(C)]
 pub struct SpuJit {
+    _private: [u8; 0],
+}
+
+/// Opaque handle to RSX shader compiler
+#[repr(C)]
+pub struct RsxShader {
     _private: [u8; 0],
 }
 
@@ -26,6 +33,37 @@ extern "C" {
     fn oc_ppu_jit_add_breakpoint(jit: *mut PpuJit, address: u32);
     fn oc_ppu_jit_remove_breakpoint(jit: *mut PpuJit, address: u32);
     fn oc_ppu_jit_has_breakpoint(jit: *mut PpuJit, address: u32) -> i32;
+    
+    // Branch prediction APIs
+    fn oc_ppu_jit_add_branch_hint(jit: *mut PpuJit, address: u32, target: u32, hint: i32);
+    fn oc_ppu_jit_predict_branch(jit: *mut PpuJit, address: u32) -> i32;
+    fn oc_ppu_jit_update_branch(jit: *mut PpuJit, address: u32, taken: i32);
+    
+    // Inline cache APIs
+    fn oc_ppu_jit_add_inline_cache(jit: *mut PpuJit, call_site: u32, target: u32);
+    fn oc_ppu_jit_lookup_inline_cache(jit: *mut PpuJit, call_site: u32) -> *mut u8;
+    fn oc_ppu_jit_invalidate_inline_cache(jit: *mut PpuJit, target: u32);
+    
+    // Register allocation APIs
+    fn oc_ppu_jit_analyze_registers(jit: *mut PpuJit, address: u32, instructions: *const u32, count: usize);
+    fn oc_ppu_jit_get_reg_hint(jit: *mut PpuJit, address: u32, reg: u8) -> i32;
+    fn oc_ppu_jit_get_live_gprs(jit: *mut PpuJit, address: u32) -> u32;
+    fn oc_ppu_jit_get_modified_gprs(jit: *mut PpuJit, address: u32) -> u32;
+    
+    // Lazy compilation APIs
+    fn oc_ppu_jit_enable_lazy(jit: *mut PpuJit, enable: i32);
+    fn oc_ppu_jit_is_lazy_enabled(jit: *mut PpuJit) -> i32;
+    fn oc_ppu_jit_register_lazy(jit: *mut PpuJit, address: u32, code: *const u8, size: usize, threshold: u32);
+    fn oc_ppu_jit_should_compile_lazy(jit: *mut PpuJit, address: u32) -> i32;
+    fn oc_ppu_jit_get_lazy_state(jit: *mut PpuJit, address: u32) -> i32;
+    
+    // Multi-threaded compilation APIs
+    fn oc_ppu_jit_start_compile_threads(jit: *mut PpuJit, num_threads: usize);
+    fn oc_ppu_jit_stop_compile_threads(jit: *mut PpuJit);
+    fn oc_ppu_jit_submit_compile_task(jit: *mut PpuJit, address: u32, code: *const u8, size: usize, priority: i32);
+    fn oc_ppu_jit_get_pending_tasks(jit: *mut PpuJit) -> usize;
+    fn oc_ppu_jit_get_completed_tasks(jit: *mut PpuJit) -> usize;
+    fn oc_ppu_jit_is_multithreaded(jit: *mut PpuJit) -> i32;
 }
 
 // FFI declarations for SPU JIT
@@ -39,6 +77,87 @@ extern "C" {
     fn oc_spu_jit_add_breakpoint(jit: *mut SpuJit, address: u32);
     fn oc_spu_jit_remove_breakpoint(jit: *mut SpuJit, address: u32);
     fn oc_spu_jit_has_breakpoint(jit: *mut SpuJit, address: u32) -> i32;
+    
+    // Channel operations APIs
+    fn oc_spu_jit_enable_channel_ops(jit: *mut SpuJit, enable: i32);
+    fn oc_spu_jit_is_channel_ops_enabled(jit: *mut SpuJit) -> i32;
+    fn oc_spu_jit_register_channel_op(jit: *mut SpuJit, channel: u8, is_read: i32, address: u32, reg: u8);
+    fn oc_spu_jit_set_channel_callbacks(jit: *mut SpuJit, read_callback: *mut u8, write_callback: *mut u8);
+    fn oc_spu_jit_get_channel_op_count(jit: *mut SpuJit) -> usize;
+    
+    // MFC DMA APIs
+    fn oc_spu_jit_enable_mfc_dma(jit: *mut SpuJit, enable: i32);
+    fn oc_spu_jit_is_mfc_dma_enabled(jit: *mut SpuJit) -> i32;
+    fn oc_spu_jit_queue_dma(jit: *mut SpuJit, local_addr: u32, ea: u64, size: u32, tag: u16, cmd: u8);
+    fn oc_spu_jit_get_pending_dma_count(jit: *mut SpuJit) -> usize;
+    fn oc_spu_jit_get_pending_dma_for_tag(jit: *mut SpuJit, tag: u16) -> usize;
+    fn oc_spu_jit_complete_dma_tag(jit: *mut SpuJit, tag: u16);
+    fn oc_spu_jit_set_dma_callback(jit: *mut SpuJit, callback: *mut u8);
+    
+    // Loop optimization APIs
+    fn oc_spu_jit_enable_loop_opt(jit: *mut SpuJit, enable: i32);
+    fn oc_spu_jit_is_loop_opt_enabled(jit: *mut SpuJit) -> i32;
+    fn oc_spu_jit_detect_loop(jit: *mut SpuJit, header: u32, back_edge: u32, exit: u32);
+    fn oc_spu_jit_set_loop_count(jit: *mut SpuJit, header: u32, count: u32);
+    fn oc_spu_jit_set_loop_vectorizable(jit: *mut SpuJit, header: u32, vectorizable: i32);
+    fn oc_spu_jit_is_in_loop(jit: *mut SpuJit, address: u32) -> i32;
+    fn oc_spu_jit_get_loop_info(jit: *mut SpuJit, header: u32, back_edge: *mut u32, exit: *mut u32, iteration_count: *mut u32, is_vectorizable: *mut i32) -> i32;
+    
+    // SIMD intrinsics APIs
+    fn oc_spu_jit_enable_simd_intrinsics(jit: *mut SpuJit, enable: i32);
+    fn oc_spu_jit_is_simd_intrinsics_enabled(jit: *mut SpuJit) -> i32;
+    fn oc_spu_jit_get_simd_intrinsic(jit: *mut SpuJit, opcode: u32) -> i32;
+    fn oc_spu_jit_has_simd_intrinsic(jit: *mut SpuJit, opcode: u32) -> i32;
+}
+
+// FFI declarations for RSX Shader Compiler
+extern "C" {
+    fn oc_rsx_shader_create() -> *mut RsxShader;
+    fn oc_rsx_shader_destroy(shader: *mut RsxShader);
+    fn oc_rsx_shader_compile_vertex(shader: *mut RsxShader, code: *const u32, size: usize, out_spirv: *mut *mut u32, out_size: *mut usize) -> i32;
+    fn oc_rsx_shader_compile_fragment(shader: *mut RsxShader, code: *const u32, size: usize, out_spirv: *mut *mut u32, out_size: *mut usize) -> i32;
+    fn oc_rsx_shader_free_spirv(spirv: *mut u32);
+    fn oc_rsx_shader_link(shader: *mut RsxShader, vs_spirv: *const u32, vs_size: usize, fs_spirv: *const u32, fs_size: usize) -> i32;
+    fn oc_rsx_shader_get_linked_count(shader: *mut RsxShader) -> usize;
+    fn oc_rsx_shader_set_pipeline_callbacks(shader: *mut RsxShader, create_callback: *mut u8, destroy_callback: *mut u8);
+    fn oc_rsx_shader_get_pipeline(shader: *mut RsxShader, vs_hash: u64, fs_hash: u64, vertex_mask: u32, cull_mode: u8, blend_enable: u8) -> *mut u8;
+    fn oc_rsx_shader_advance_frame(shader: *mut RsxShader);
+    fn oc_rsx_shader_get_pipeline_count(shader: *mut RsxShader) -> usize;
+    fn oc_rsx_shader_clear_caches(shader: *mut RsxShader);
+    fn oc_rsx_shader_get_vertex_cache_count(shader: *mut RsxShader) -> usize;
+    fn oc_rsx_shader_get_fragment_cache_count(shader: *mut RsxShader) -> usize;
+}
+
+/// Branch prediction hint types
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum BranchHint {
+    None = 0,
+    Likely = 1,
+    Unlikely = 2,
+    Static = 3,
+}
+
+/// Register allocation hint types
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum RegAllocHint {
+    None = 0,
+    Caller = 1,
+    Callee = 2,
+    Float = 3,
+    Vector = 4,
+}
+
+/// Lazy compilation state
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum LazyState {
+    NotCompiled = 0,
+    Pending = 1,
+    Compiling = 2,
+    Compiled = 3,
+    Failed = 4,
 }
 
 /// Safe wrapper for PPU JIT compiler
@@ -113,6 +232,158 @@ impl PpuJitCompiler {
     /// Check if a breakpoint exists at the specified address
     pub fn has_breakpoint(&self, address: u32) -> bool {
         unsafe { oc_ppu_jit_has_breakpoint(self.handle, address) != 0 }
+    }
+    
+    // ========================================================================
+    // Branch Prediction APIs
+    // ========================================================================
+    
+    /// Add a branch prediction hint
+    pub fn add_branch_hint(&mut self, address: u32, target: u32, hint: BranchHint) {
+        unsafe { oc_ppu_jit_add_branch_hint(self.handle, address, target, hint as i32) }
+    }
+    
+    /// Predict branch direction (true = taken, false = not taken)
+    pub fn predict_branch(&self, address: u32) -> bool {
+        unsafe { oc_ppu_jit_predict_branch(self.handle, address) != 0 }
+    }
+    
+    /// Update branch prediction based on actual behavior
+    pub fn update_branch(&mut self, address: u32, taken: bool) {
+        unsafe { oc_ppu_jit_update_branch(self.handle, address, if taken { 1 } else { 0 }) }
+    }
+    
+    // ========================================================================
+    // Inline Cache APIs
+    // ========================================================================
+    
+    /// Add an inline cache entry for a call site
+    pub fn add_inline_cache(&mut self, call_site: u32, target: u32) {
+        unsafe { oc_ppu_jit_add_inline_cache(self.handle, call_site, target) }
+    }
+    
+    /// Lookup cached compiled code for a call site
+    pub fn lookup_inline_cache(&self, call_site: u32) -> Option<*mut u8> {
+        let ptr = unsafe { oc_ppu_jit_lookup_inline_cache(self.handle, call_site) };
+        if ptr.is_null() { None } else { Some(ptr) }
+    }
+    
+    /// Invalidate inline cache entries for a target address
+    pub fn invalidate_inline_cache(&mut self, target: u32) {
+        unsafe { oc_ppu_jit_invalidate_inline_cache(self.handle, target) }
+    }
+    
+    // ========================================================================
+    // Register Allocation APIs
+    // ========================================================================
+    
+    /// Analyze register usage in a basic block
+    pub fn analyze_registers(&mut self, address: u32, instructions: &[u32]) {
+        unsafe {
+            oc_ppu_jit_analyze_registers(
+                self.handle, address, instructions.as_ptr(), instructions.len()
+            )
+        }
+    }
+    
+    /// Get register allocation hint
+    pub fn get_reg_hint(&self, address: u32, reg: u8) -> RegAllocHint {
+        let hint = unsafe { oc_ppu_jit_get_reg_hint(self.handle, address, reg) };
+        match hint {
+            1 => RegAllocHint::Caller,
+            2 => RegAllocHint::Callee,
+            3 => RegAllocHint::Float,
+            4 => RegAllocHint::Vector,
+            _ => RegAllocHint::None,
+        }
+    }
+    
+    /// Get live GPR mask for a block
+    pub fn get_live_gprs(&self, address: u32) -> u32 {
+        unsafe { oc_ppu_jit_get_live_gprs(self.handle, address) }
+    }
+    
+    /// Get modified GPR mask for a block
+    pub fn get_modified_gprs(&self, address: u32) -> u32 {
+        unsafe { oc_ppu_jit_get_modified_gprs(self.handle, address) }
+    }
+    
+    // ========================================================================
+    // Lazy Compilation APIs
+    // ========================================================================
+    
+    /// Enable or disable lazy compilation
+    pub fn enable_lazy(&mut self, enable: bool) {
+        unsafe { oc_ppu_jit_enable_lazy(self.handle, if enable { 1 } else { 0 }) }
+    }
+    
+    /// Check if lazy compilation is enabled
+    pub fn is_lazy_enabled(&self) -> bool {
+        unsafe { oc_ppu_jit_is_lazy_enabled(self.handle) != 0 }
+    }
+    
+    /// Register code for lazy compilation
+    pub fn register_lazy(&mut self, address: u32, code: &[u8], threshold: u32) {
+        unsafe {
+            oc_ppu_jit_register_lazy(
+                self.handle, address, code.as_ptr(), code.len(), threshold
+            )
+        }
+    }
+    
+    /// Check if code should be compiled (based on execution count)
+    pub fn should_compile_lazy(&self, address: u32) -> bool {
+        unsafe { oc_ppu_jit_should_compile_lazy(self.handle, address) != 0 }
+    }
+    
+    /// Get lazy compilation state
+    pub fn get_lazy_state(&self, address: u32) -> LazyState {
+        let state = unsafe { oc_ppu_jit_get_lazy_state(self.handle, address) };
+        match state {
+            1 => LazyState::Pending,
+            2 => LazyState::Compiling,
+            3 => LazyState::Compiled,
+            4 => LazyState::Failed,
+            _ => LazyState::NotCompiled,
+        }
+    }
+    
+    // ========================================================================
+    // Multi-threaded Compilation APIs
+    // ========================================================================
+    
+    /// Start compilation thread pool
+    pub fn start_compile_threads(&mut self, num_threads: usize) {
+        unsafe { oc_ppu_jit_start_compile_threads(self.handle, num_threads) }
+    }
+    
+    /// Stop compilation thread pool
+    pub fn stop_compile_threads(&mut self) {
+        unsafe { oc_ppu_jit_stop_compile_threads(self.handle) }
+    }
+    
+    /// Submit a compilation task
+    pub fn submit_compile_task(&mut self, address: u32, code: &[u8], priority: i32) {
+        unsafe {
+            oc_ppu_jit_submit_compile_task(
+                self.handle, address, code.as_ptr(), code.len(), priority
+            )
+        }
+    }
+    
+    /// Get number of pending compilation tasks
+    pub fn get_pending_tasks(&self) -> usize {
+        unsafe { oc_ppu_jit_get_pending_tasks(self.handle) }
+    }
+    
+    /// Get number of completed compilation tasks
+    pub fn get_completed_tasks(&self) -> usize {
+        unsafe { oc_ppu_jit_get_completed_tasks(self.handle) }
+    }
+    
+    /// Check if multi-threaded compilation is enabled
+    pub fn is_multithreaded(&self) -> bool {
+        unsafe { oc_ppu_jit_is_multithreaded(self.handle) != 0 }
     }
 }
 
@@ -199,6 +470,169 @@ impl SpuJitCompiler {
     pub fn has_breakpoint(&self, address: u32) -> bool {
         unsafe { oc_spu_jit_has_breakpoint(self.handle, address) != 0 }
     }
+    
+    // ========================================================================
+    // Channel Operations APIs
+    // ========================================================================
+    
+    /// Enable or disable channel operations in JIT
+    pub fn enable_channel_ops(&mut self, enable: bool) {
+        unsafe { oc_spu_jit_enable_channel_ops(self.handle, if enable { 1 } else { 0 }) }
+    }
+    
+    /// Check if channel operations are enabled
+    pub fn is_channel_ops_enabled(&self) -> bool {
+        unsafe { oc_spu_jit_is_channel_ops_enabled(self.handle) != 0 }
+    }
+    
+    /// Register a channel operation for JIT compilation
+    pub fn register_channel_op(&mut self, channel: u8, is_read: bool, address: u32, reg: u8) {
+        unsafe {
+            oc_spu_jit_register_channel_op(
+                self.handle, channel, if is_read { 1 } else { 0 }, address, reg
+            )
+        }
+    }
+    
+    /// Get number of registered channel operations
+    pub fn get_channel_op_count(&self) -> usize {
+        unsafe { oc_spu_jit_get_channel_op_count(self.handle) }
+    }
+    
+    // ========================================================================
+    // MFC DMA APIs
+    // ========================================================================
+    
+    /// Enable or disable MFC DMA in JIT
+    pub fn enable_mfc_dma(&mut self, enable: bool) {
+        unsafe { oc_spu_jit_enable_mfc_dma(self.handle, if enable { 1 } else { 0 }) }
+    }
+    
+    /// Check if MFC DMA is enabled
+    pub fn is_mfc_dma_enabled(&self) -> bool {
+        unsafe { oc_spu_jit_is_mfc_dma_enabled(self.handle) != 0 }
+    }
+    
+    /// Queue a DMA operation
+    pub fn queue_dma(&mut self, local_addr: u32, ea: u64, size: u32, tag: u16, cmd: u8) {
+        unsafe { oc_spu_jit_queue_dma(self.handle, local_addr, ea, size, tag, cmd) }
+    }
+    
+    /// Get number of pending DMA operations
+    pub fn get_pending_dma_count(&self) -> usize {
+        unsafe { oc_spu_jit_get_pending_dma_count(self.handle) }
+    }
+    
+    /// Get number of pending DMA operations for a specific tag
+    pub fn get_pending_dma_for_tag(&self, tag: u16) -> usize {
+        unsafe { oc_spu_jit_get_pending_dma_for_tag(self.handle, tag) }
+    }
+    
+    /// Mark all DMA operations for a tag as complete
+    pub fn complete_dma_tag(&mut self, tag: u16) {
+        unsafe { oc_spu_jit_complete_dma_tag(self.handle, tag) }
+    }
+    
+    // ========================================================================
+    // Loop Optimization APIs
+    // ========================================================================
+    
+    /// Enable or disable loop optimization
+    pub fn enable_loop_opt(&mut self, enable: bool) {
+        unsafe { oc_spu_jit_enable_loop_opt(self.handle, if enable { 1 } else { 0 }) }
+    }
+    
+    /// Check if loop optimization is enabled
+    pub fn is_loop_opt_enabled(&self) -> bool {
+        unsafe { oc_spu_jit_is_loop_opt_enabled(self.handle) != 0 }
+    }
+    
+    /// Detect a loop structure
+    pub fn detect_loop(&mut self, header: u32, back_edge: u32, exit: u32) {
+        unsafe { oc_spu_jit_detect_loop(self.handle, header, back_edge, exit) }
+    }
+    
+    /// Set loop iteration count (for counted loops)
+    pub fn set_loop_count(&mut self, header: u32, count: u32) {
+        unsafe { oc_spu_jit_set_loop_count(self.handle, header, count) }
+    }
+    
+    /// Set whether a loop is vectorizable
+    pub fn set_loop_vectorizable(&mut self, header: u32, vectorizable: bool) {
+        unsafe { oc_spu_jit_set_loop_vectorizable(self.handle, header, if vectorizable { 1 } else { 0 }) }
+    }
+    
+    /// Check if an address is inside a known loop
+    pub fn is_in_loop(&self, address: u32) -> bool {
+        unsafe { oc_spu_jit_is_in_loop(self.handle, address) != 0 }
+    }
+    
+    /// Get loop information
+    pub fn get_loop_info(&self, header: u32) -> Option<LoopInfo> {
+        let mut back_edge: u32 = 0;
+        let mut exit: u32 = 0;
+        let mut iteration_count: u32 = 0;
+        let mut is_vectorizable: i32 = 0;
+        
+        let found = unsafe {
+            oc_spu_jit_get_loop_info(
+                self.handle, header,
+                &mut back_edge, &mut exit,
+                &mut iteration_count, &mut is_vectorizable
+            )
+        };
+        
+        if found != 0 {
+            Some(LoopInfo {
+                header,
+                back_edge,
+                exit,
+                iteration_count,
+                is_vectorizable: is_vectorizable != 0,
+            })
+        } else {
+            None
+        }
+    }
+    
+    // ========================================================================
+    // SIMD Intrinsics APIs
+    // ========================================================================
+    
+    /// Enable or disable SIMD intrinsics usage
+    pub fn enable_simd_intrinsics(&mut self, enable: bool) {
+        unsafe { oc_spu_jit_enable_simd_intrinsics(self.handle, if enable { 1 } else { 0 }) }
+    }
+    
+    /// Check if SIMD intrinsics are enabled
+    pub fn is_simd_intrinsics_enabled(&self) -> bool {
+        unsafe { oc_spu_jit_is_simd_intrinsics_enabled(self.handle) != 0 }
+    }
+    
+    /// Get SIMD intrinsic for an opcode
+    pub fn get_simd_intrinsic(&self, opcode: u32) -> i32 {
+        unsafe { oc_spu_jit_get_simd_intrinsic(self.handle, opcode) }
+    }
+    
+    /// Check if opcode has a SIMD intrinsic mapping
+    pub fn has_simd_intrinsic(&self, opcode: u32) -> bool {
+        unsafe { oc_spu_jit_has_simd_intrinsic(self.handle, opcode) != 0 }
+    }
+}
+
+/// Loop information
+#[derive(Debug, Clone)]
+pub struct LoopInfo {
+    /// Header address
+    pub header: u32,
+    /// Back edge address
+    pub back_edge: u32,
+    /// Exit address
+    pub exit: u32,
+    /// Iteration count (0 = unknown)
+    pub iteration_count: u32,
+    /// Whether the loop is vectorizable
+    pub is_vectorizable: bool,
 }
 
 impl Drop for SpuJitCompiler {
@@ -210,6 +644,158 @@ impl Drop for SpuJitCompiler {
 }
 
 unsafe impl Send for SpuJitCompiler {}
+
+// ============================================================================
+// RSX Shader Compiler
+// ============================================================================
+
+/// Safe wrapper for RSX shader compiler
+pub struct RsxShaderCompiler {
+    handle: *mut RsxShader,
+}
+
+impl RsxShaderCompiler {
+    /// Create a new RSX shader compiler
+    pub fn new() -> Option<Self> {
+        let handle = unsafe { oc_rsx_shader_create() };
+        if handle.is_null() {
+            None
+        } else {
+            Some(Self { handle })
+        }
+    }
+    
+    /// Compile RSX vertex program to SPIR-V
+    pub fn compile_vertex(&mut self, code: &[u32]) -> Result<Vec<u32>, JitError> {
+        let mut out_spirv: *mut u32 = std::ptr::null_mut();
+        let mut out_size: usize = 0;
+        
+        let result = unsafe {
+            oc_rsx_shader_compile_vertex(
+                self.handle, code.as_ptr(), code.len(),
+                &mut out_spirv, &mut out_size
+            )
+        };
+        
+        if result != 0 {
+            return Err(JitError::CompilationFailed);
+        }
+        
+        if out_spirv.is_null() || out_size == 0 {
+            return Err(JitError::CompilationFailed);
+        }
+        
+        // Copy to Vec and free the C allocation
+        let spirv = unsafe {
+            let slice = std::slice::from_raw_parts(out_spirv, out_size);
+            let vec = slice.to_vec();
+            oc_rsx_shader_free_spirv(out_spirv);
+            vec
+        };
+        
+        Ok(spirv)
+    }
+    
+    /// Compile RSX fragment program to SPIR-V
+    pub fn compile_fragment(&mut self, code: &[u32]) -> Result<Vec<u32>, JitError> {
+        let mut out_spirv: *mut u32 = std::ptr::null_mut();
+        let mut out_size: usize = 0;
+        
+        let result = unsafe {
+            oc_rsx_shader_compile_fragment(
+                self.handle, code.as_ptr(), code.len(),
+                &mut out_spirv, &mut out_size
+            )
+        };
+        
+        if result != 0 {
+            return Err(JitError::CompilationFailed);
+        }
+        
+        if out_spirv.is_null() || out_size == 0 {
+            return Err(JitError::CompilationFailed);
+        }
+        
+        // Copy to Vec and free the C allocation
+        let spirv = unsafe {
+            let slice = std::slice::from_raw_parts(out_spirv, out_size);
+            let vec = slice.to_vec();
+            oc_rsx_shader_free_spirv(out_spirv);
+            vec
+        };
+        
+        Ok(spirv)
+    }
+    
+    /// Link vertex and fragment shaders
+    pub fn link(&mut self, vs_spirv: &[u32], fs_spirv: &[u32]) -> Result<(), JitError> {
+        let result = unsafe {
+            oc_rsx_shader_link(
+                self.handle,
+                vs_spirv.as_ptr(), vs_spirv.len(),
+                fs_spirv.as_ptr(), fs_spirv.len()
+            )
+        };
+        
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(JitError::CompilationFailed)
+        }
+    }
+    
+    /// Get number of linked shader programs
+    pub fn get_linked_count(&self) -> usize {
+        unsafe { oc_rsx_shader_get_linked_count(self.handle) }
+    }
+    
+    /// Get or create a cached graphics pipeline
+    pub fn get_pipeline(&mut self, vs_hash: u64, fs_hash: u64, vertex_mask: u32, 
+                        cull_mode: u8, blend_enable: bool) -> Option<*mut u8> {
+        let ptr = unsafe {
+            oc_rsx_shader_get_pipeline(
+                self.handle, vs_hash, fs_hash, vertex_mask, cull_mode,
+                if blend_enable { 1 } else { 0 }
+            )
+        };
+        if ptr.is_null() { None } else { Some(ptr) }
+    }
+    
+    /// Advance frame counter for LRU eviction
+    pub fn advance_frame(&mut self) {
+        unsafe { oc_rsx_shader_advance_frame(self.handle) }
+    }
+    
+    /// Get number of cached pipelines
+    pub fn get_pipeline_count(&self) -> usize {
+        unsafe { oc_rsx_shader_get_pipeline_count(self.handle) }
+    }
+    
+    /// Clear all shader caches
+    pub fn clear_caches(&mut self) {
+        unsafe { oc_rsx_shader_clear_caches(self.handle) }
+    }
+    
+    /// Get vertex shader cache count
+    pub fn get_vertex_cache_count(&self) -> usize {
+        unsafe { oc_rsx_shader_get_vertex_cache_count(self.handle) }
+    }
+    
+    /// Get fragment shader cache count
+    pub fn get_fragment_cache_count(&self) -> usize {
+        unsafe { oc_rsx_shader_get_fragment_cache_count(self.handle) }
+    }
+}
+
+impl Drop for RsxShaderCompiler {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe { oc_rsx_shader_destroy(self.handle) }
+        }
+    }
+}
+
+unsafe impl Send for RsxShaderCompiler {}
 
 /// JIT compilation errors
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -489,26 +489,26 @@ These tasks are critical for getting basic game execution working.
 - [x] O2 optimization passes
 - [x] 20+ PowerPC instructions
 - [ ] Complete instruction coverage
-- [ ] Branch prediction hints
-- [ ] Inline caching for calls
-- [ ] Register allocation optimization
-- [ ] Lazy compilation
-- [ ] Multi-threaded compilation
+- [x] Branch prediction hints
+- [x] Inline caching for calls
+- [x] Register allocation optimization
+- [x] Lazy compilation
+- [x] Multi-threaded compilation
 
 ### SPU JIT (LLVM)
 - [x] LLVM IR generation for SPU
 - [x] 15+ SIMD instructions
 - [ ] Complete instruction coverage
-- [ ] Channel operations in JIT
-- [ ] MFC DMA in JIT
-- [ ] Loop optimization
-- [ ] SIMD intrinsics usage
+- [x] Channel operations in JIT
+- [x] MFC DMA in JIT
+- [x] Loop optimization
+- [x] SIMD intrinsics usage
 
 ### RSX Shader Compiler
 - [x] SPIR-V generation
-- [ ] Complete RSX shader ops
-- [ ] Shader linking
-- [ ] Pipeline caching
+- [x] Complete RSX shader ops
+- [x] Shader linking
+- [x] Pipeline caching
 
 ---
 
