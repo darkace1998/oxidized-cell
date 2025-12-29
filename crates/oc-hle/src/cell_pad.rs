@@ -15,6 +15,10 @@ pub const CELL_PAD_MAX_PORT_NUM: usize = 7;
 /// Maximum number of codes (buttons/axes) per controller
 pub const CELL_PAD_MAX_CODES: usize = 64;
 
+/// Pad data length constants
+pub const CELL_PAD_DATA_LEN_STANDARD: i32 = 24;
+pub const CELL_PAD_DATA_LEN_WITH_SENSORS: i32 = 32;
+
 /// Button codes (digital buttons in button[0])
 pub mod button_codes {
     pub const CELL_PAD_CTRL_LEFT: u16 = 0x0080;
@@ -125,10 +129,10 @@ impl Default for CellPadData {
             left_stick_x: 128,  // Center
             left_stick_y: 128,  // Center
             pressure: [0; 12],
-            sensor_x: 512,      // Center (10-bit)
-            sensor_y: 512,      // Center (10-bit)
-            sensor_z: 512,      // Center + gravity (~399 at rest)
-            sensor_g: 512,      // Center (10-bit)
+            sensor_x: 512,      // Center (10-bit, 0-1023 range)
+            sensor_y: 512,      // Center (10-bit, 0-1023 range)
+            sensor_z: 512,      // Center (10-bit, actual rest value depends on orientation)
+            sensor_g: 512,      // Center (10-bit, 0-1023 range)
         }
     }
 }
@@ -237,7 +241,7 @@ impl PadManager {
         self.device_types[0] = CellPadDeviceType::Standard;
         
         // Initialize pad data for the connected controller
-        self.pad_data[0].len = 24; // Standard data length
+        self.pad_data[0].len = CELL_PAD_DATA_LEN_STANDARD;
 
         // TODO: Connect to oc-input subsystem
 
@@ -341,7 +345,7 @@ impl PadManager {
         self.device_types[port as usize] = device_type;
         
         // Initialize pad data for the connected controller
-        self.pad_data[port as usize].len = 24; // Standard data length
+        self.pad_data[port as usize].len = CELL_PAD_DATA_LEN_STANDARD;
         
         debug!("Connected pad on port {} with type {:?}", port, device_type);
         
@@ -377,7 +381,7 @@ impl PadManager {
         }
 
         self.pad_data[port as usize].button = buttons;
-        self.pad_data[port as usize].len = 24;
+        self.pad_data[port as usize].len = CELL_PAD_DATA_LEN_STANDARD;
 
         trace!("Updated pad data for port {}: buttons=[0x{:04X}, 0x{:04X}]", 
             port, buttons[0], buttons[1]);
@@ -461,7 +465,7 @@ impl PadManager {
         data.sensor_g = gyro_z;
         
         // Sensor data extends the data length
-        data.len = 32;
+        data.len = CELL_PAD_DATA_LEN_WITH_SENSORS;
 
         trace!(
             "Updated sensor data for port {}: accel=({}, {}, {}), gyro={}",
@@ -839,7 +843,7 @@ mod tests {
         // Get data from connected port
         let data = manager.get_data(0);
         assert!(data.is_ok());
-        assert_eq!(data.unwrap().len, 24);
+        assert_eq!(data.unwrap().len, CELL_PAD_DATA_LEN_STANDARD);
         
         // Try to get data from disconnected port
         let data = manager.get_data(1);
@@ -1065,7 +1069,7 @@ mod tests {
         assert_eq!(data.sensor_y, 512);
         assert_eq!(data.sensor_z, 600); // Tilted forward
         assert_eq!(data.sensor_g, 512);
-        assert_eq!(data.len, 32); // Sensor data extends length
+        assert_eq!(data.len, CELL_PAD_DATA_LEN_WITH_SENSORS); // Sensor data extends length
 
         manager.end();
     }

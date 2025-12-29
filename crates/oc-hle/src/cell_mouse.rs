@@ -336,15 +336,17 @@ impl MouseManager {
 
         let port_idx = port as usize;
         
-        // Store previous position for delta calculation
+        // Calculate delta from previous position before updating
+        let dx = x - self.positions[port_idx].0;
+        let dy = y - self.positions[port_idx].1;
+        
+        // Store previous position
         self.prev_positions[port_idx] = self.positions[port_idx];
         
         // Update current position
         self.positions[port_idx] = (x, y);
         
-        // Calculate and accumulate movement delta
-        let dx = x - self.prev_positions[port_idx].0;
-        let dy = y - self.prev_positions[port_idx].1;
+        // Accumulate movement delta
         self.movement_delta[port_idx].0 = self.movement_delta[port_idx].0.saturating_add(dx);
         self.movement_delta[port_idx].1 = self.movement_delta[port_idx].1.saturating_add(dy);
 
