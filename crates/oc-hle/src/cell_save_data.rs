@@ -12,6 +12,14 @@ type VfsBackend = Option<()>;
 /// Encryption key type (128-bit AES key)
 type EncryptionKey = [u8; 16];
 
+/// Get current UNIX timestamp
+fn get_current_unix_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 /// Maximum directory name length
 pub const CELL_SAVEDATA_DIRNAME_SIZE: usize = 32;
 
@@ -570,10 +578,7 @@ impl SaveDataManager {
             return None;
         }
 
-        let current_time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let current_time = get_current_unix_timestamp();
 
         let dir_name = self.auto_save_config.dir_name.clone();
         if let Some(entry) = self.entries.get_mut(&dir_name) {
@@ -591,10 +596,7 @@ impl SaveDataManager {
 
     /// Update last auto-save timestamp
     pub fn update_auto_save_timestamp(&mut self, dir_name: &str) -> i32 {
-        let current_time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let current_time = get_current_unix_timestamp();
 
         if let Some(entry) = self.entries.get_mut(dir_name) {
             entry.last_auto_save = current_time;
@@ -664,17 +666,20 @@ impl SaveDataManager {
         );
 
         if let Some(entry) = self.entries.get_mut(dir_name) {
-            // Copy title
+            // Clear arrays and copy title
+            entry.dir_stat.title.fill(0);
             let title_bytes = metadata.title.as_bytes();
             let title_len = title_bytes.len().min(127);
             entry.dir_stat.title[..title_len].copy_from_slice(&title_bytes[..title_len]);
 
-            // Copy subtitle
+            // Clear arrays and copy subtitle
+            entry.dir_stat.subtitle.fill(0);
             let subtitle_bytes = metadata.subtitle.as_bytes();
             let subtitle_len = subtitle_bytes.len().min(127);
             entry.dir_stat.subtitle[..subtitle_len].copy_from_slice(&subtitle_bytes[..subtitle_len]);
 
-            // Copy detail
+            // Clear arrays and copy detail
+            entry.dir_stat.detail.fill(0);
             let detail_bytes = metadata.detail.as_bytes();
             let detail_len = detail_bytes.len().min(1023);
             entry.dir_stat.detail[..detail_len].copy_from_slice(&detail_bytes[..detail_len]);

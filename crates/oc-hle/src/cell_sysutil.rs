@@ -15,6 +15,14 @@ pub const CELL_SYSUTIL_ERROR_VALUE: i32 = 0x80010002u32 as i32;
 /// Error: Dialog already open
 pub const CELL_SYSUTIL_ERROR_DIALOG_ALREADY_OPEN: i32 = 0x80010003u32 as i32;
 
+/// Get current UNIX timestamp
+fn get_current_unix_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 /// System callback function type
 pub type SysutilCallback = fn(status: u64, param: u64, userdata: u64);
 
@@ -837,10 +845,7 @@ impl SysutilManager {
             }
 
             trophy.unlocked = true;
-            trophy.unlock_time = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
+            trophy.unlock_time = get_current_unix_timestamp();
 
             // Update unlocked count
             self.trophy.unlocked_counts[trophy.grade as usize] += 1;
