@@ -20,13 +20,18 @@ pub const CELL_SPURS_ATTRIBUTE_FLAG_SIGNAL_TO_PPU: u32 = 1;
 pub const CELL_SPURS_MAX_PRIORITY: u32 = 16;
 
 /// SPURS workload state
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WorkloadState {
-    Idle,
-    Running,
-    Ready,
-    Waiting,
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WorkloadState {
+    /// Workload is idle
+    #[default]
+    Idle = 0,
+    /// Workload is running
+    Running = 1,
+    /// Workload is ready to run
+    Ready = 2,
+    /// Workload is waiting
+    Waiting = 3,
 }
 
 /// SPURS task queue entry
@@ -888,6 +893,231 @@ impl SpursManager {
     pub fn get_barrier_count(&self) -> usize {
         self.barriers.len()
     }
+
+    // ========================================================================
+    // SPU Workload Scheduling (Stubs)
+    // ========================================================================
+
+    /// Get next ready workload
+    /// 
+    /// Returns the workload ID with the highest priority that is ready to run.
+    /// This is used by the SPURS kernel to schedule workloads on SPUs.
+    pub fn get_next_workload(&self, spu_id: u32) -> Option<u32> {
+        if !self.initialized || spu_id >= self.num_spus {
+            return None;
+        }
+
+        // Find workload with highest priority for this SPU
+        let mut best_wid: Option<u32> = None;
+        let mut best_priority: u8 = u8::MAX;
+
+        for (wid, workload) in &self.workloads {
+            if workload.state == WorkloadState::Ready {
+                let priority = workload.priorities[spu_id as usize];
+                if priority > 0 && priority < best_priority {
+                    best_priority = priority;
+                    best_wid = Some(*wid);
+                }
+            }
+        }
+
+        best_wid
+    }
+
+    /// Mark workload as ready
+    pub fn set_workload_ready(&mut self, wid: u32) -> i32 {
+        if !self.initialized {
+            return 0x80410803u32 as i32; // CELL_SPURS_ERROR_NOT_INITIALIZED
+        }
+
+        if let Some(workload) = self.workloads.get_mut(&wid) {
+            workload.state = WorkloadState::Ready;
+            trace!("SpursManager::set_workload_ready: wid={}", wid);
+            0 // CELL_OK
+        } else {
+            0x80410802u32 as i32 // CELL_SPURS_ERROR_INVALID_ARGUMENT
+        }
+    }
+
+    /// Mark workload as waiting
+    pub fn set_workload_waiting(&mut self, wid: u32) -> i32 {
+        if !self.initialized {
+            return 0x80410803u32 as i32; // CELL_SPURS_ERROR_NOT_INITIALIZED
+        }
+
+        if let Some(workload) = self.workloads.get_mut(&wid) {
+            workload.state = WorkloadState::Waiting;
+            trace!("SpursManager::set_workload_waiting: wid={}", wid);
+            0 // CELL_OK
+        } else {
+            0x80410802u32 as i32 // CELL_SPURS_ERROR_INVALID_ARGUMENT
+        }
+    }
+
+    /// Get workload state
+    pub fn get_workload_state(&self, wid: u32) -> Option<WorkloadState> {
+        self.workloads.get(&wid).map(|w| w.state)
+    }
+
+    /// Check if any SPU is idle
+    pub fn has_idle_spu(&self) -> bool {
+        // For HLE, we assume SPUs are always available
+        self.initialized && self.num_spus > 0
+    }
+
+    // ========================================================================
+    // SPURS Kernel Integration (Stubs)
+    // ========================================================================
+
+    /// Process pending workloads
+    /// 
+    /// This is called by the SPURS kernel to process all pending workloads.
+    /// In a real implementation, this would schedule workloads on actual SPUs.
+    pub fn process_workloads(&mut self) -> u32 {
+        if !self.initialized {
+            return 0;
+        }
+
+        let mut processed = 0u32;
+
+        // Get list of ready workloads
+        let ready_wids: Vec<u32> = self.workloads.iter()
+            .filter(|(_, w)| w.state == WorkloadState::Ready)
+            .map(|(wid, _)| *wid)
+            .collect();
+
+        // "Execute" each workload (simulated)
+        for wid in ready_wids {
+            if let Some(workload) = self.workloads.get_mut(&wid) {
+                // In a real implementation:
+                // 1. Load workload program to SPU
+                // 2. Execute on SPU
+                // 3. Handle completion
+                
+                // For HLE, just mark as running then idle
+                workload.state = WorkloadState::Running;
+                trace!("SpursManager: Processing workload {}", wid);
+                workload.state = WorkloadState::Idle;
+                processed += 1;
+            }
+        }
+
+        processed
+    }
+
+    /// Yield current workload
+    /// 
+    /// Allows the current workload to yield execution to other workloads.
+    pub fn yield_workload(&mut self, wid: u32) -> i32 {
+        if !self.initialized {
+            return 0x80410803u32 as i32; // CELL_SPURS_ERROR_NOT_INITIALIZED
+        }
+
+        if let Some(workload) = self.workloads.get_mut(&wid) {
+            if workload.state == WorkloadState::Running {
+                workload.state = WorkloadState::Ready;
+                trace!("SpursManager::yield_workload: wid={}", wid);
+            }
+            0 // CELL_OK
+        } else {
+            0x80410802u32 as i32 // CELL_SPURS_ERROR_INVALID_ARGUMENT
+        }
+    }
+
+    // ========================================================================
+    // SPURS Handler Implementation (Stubs)
+    // ========================================================================
+
+    /// Register workload handler
+    pub fn register_handler(&mut self, wid: u32, handler_addr: u32) -> i32 {
+        if !self.initialized {
+            return 0x80410803u32 as i32; // CELL_SPURS_ERROR_NOT_INITIALIZED
+        }
+
+        debug!("SpursManager::register_handler: wid={}, handler=0x{:08X}", wid, handler_addr);
+
+        // For HLE, we just acknowledge the registration
+        // Real implementation would store and call the handler
+        
+        if wid >= CELL_SPURS_MAX_WORKLOAD as u32 {
+            return 0x80410802u32 as i32; // CELL_SPURS_ERROR_INVALID_ARGUMENT
+        }
+
+        0 // CELL_OK
+    }
+
+    /// Unregister workload handler
+    pub fn unregister_handler(&mut self, wid: u32) -> i32 {
+        if !self.initialized {
+            return 0x80410803u32 as i32; // CELL_SPURS_ERROR_NOT_INITIALIZED
+        }
+
+        debug!("SpursManager::unregister_handler: wid={}", wid);
+
+        if wid >= CELL_SPURS_MAX_WORKLOAD as u32 {
+            return 0x80410802u32 as i32; // CELL_SPURS_ERROR_INVALID_ARGUMENT
+        }
+
+        0 // CELL_OK
+    }
+
+    // ========================================================================
+    // Trace Buffer Support
+    // ========================================================================
+
+    /// Enable trace buffer
+    /// 
+    /// Allocates and enables a trace buffer for debugging SPURS execution.
+    pub fn enable_trace(&mut self, buffer_addr: u32, buffer_size: u32) -> i32 {
+        if !self.initialized {
+            return 0x80410803u32 as i32; // CELL_SPURS_ERROR_NOT_INITIALIZED
+        }
+
+        debug!(
+            "SpursManager::enable_trace: buffer=0x{:08X}, size={}",
+            buffer_addr, buffer_size
+        );
+
+        // For HLE, we acknowledge but don't actually trace
+        // Real implementation would set up DMA to trace buffer
+        
+        0 // CELL_OK
+    }
+
+    /// Disable trace buffer
+    pub fn disable_trace(&mut self) -> i32 {
+        if !self.initialized {
+            return 0x80410803u32 as i32; // CELL_SPURS_ERROR_NOT_INITIALIZED
+        }
+
+        debug!("SpursManager::disable_trace");
+
+        0 // CELL_OK
+    }
+
+    /// Get trace data
+    /// 
+    /// Returns the current trace buffer contents (for debugging).
+    pub fn get_trace_data(&self) -> Vec<u8> {
+        if !self.initialized {
+            return Vec::new();
+        }
+
+        // For HLE, return empty trace data
+        // Real implementation would return actual trace buffer contents
+        Vec::new()
+    }
+
+    /// Clear trace buffer
+    pub fn clear_trace(&mut self) -> i32 {
+        if !self.initialized {
+            return 0x80410803u32 as i32; // CELL_SPURS_ERROR_NOT_INITIALIZED
+        }
+
+        trace!("SpursManager::clear_trace");
+
+        0 // CELL_OK
+    }
 }
 
 impl Default for SpursManager {
@@ -1224,5 +1454,167 @@ mod tests {
         assert_eq!(CELL_SPURS_ATTRIBUTE_FLAG_NONE, 0);
         assert_eq!(CELL_SPURS_MAX_SPU, 8);
         assert_eq!(CELL_SPURS_MAX_WORKLOAD, 16);
+    }
+
+    // ========================================================================
+    // SPU Workload Scheduling Tests
+    // ========================================================================
+
+    #[test]
+    fn test_spurs_workload_states() {
+        let mut manager = SpursManager::new();
+        manager.initialize(6, 100, 100, false);
+        
+        // Create workload
+        let priorities = [1, 2, 3, 4, 5, 6, 7, 8];
+        manager.set_priorities(0, &priorities);
+        
+        // Initial state is idle
+        assert_eq!(manager.get_workload_state(0), Some(WorkloadState::Idle));
+        
+        // Set to ready
+        assert_eq!(manager.set_workload_ready(0), 0);
+        assert_eq!(manager.get_workload_state(0), Some(WorkloadState::Ready));
+        
+        // Set to waiting
+        assert_eq!(manager.set_workload_waiting(0), 0);
+        assert_eq!(manager.get_workload_state(0), Some(WorkloadState::Waiting));
+        
+        manager.finalize();
+    }
+
+    #[test]
+    fn test_spurs_get_next_workload() {
+        let mut manager = SpursManager::new();
+        manager.initialize(6, 100, 100, false);
+        
+        // No workloads ready
+        assert!(manager.get_next_workload(0).is_none());
+        
+        // Create and set workload ready
+        let priorities = [1, 0, 0, 0, 0, 0, 0, 0]; // Only SPU 0 has priority
+        manager.set_priorities(0, &priorities);
+        manager.set_workload_ready(0);
+        
+        // Should get workload for SPU 0
+        assert_eq!(manager.get_next_workload(0), Some(0));
+        
+        // SPU 1 has no priority for this workload
+        assert!(manager.get_next_workload(1).is_none());
+        
+        manager.finalize();
+    }
+
+    #[test]
+    fn test_spurs_process_workloads() {
+        let mut manager = SpursManager::new();
+        manager.initialize(6, 100, 100, false);
+        
+        // No workloads to process
+        assert_eq!(manager.process_workloads(), 0);
+        
+        // Add ready workloads
+        let priorities = [1; 8];
+        manager.set_priorities(0, &priorities);
+        manager.set_priorities(1, &priorities);
+        manager.set_workload_ready(0);
+        manager.set_workload_ready(1);
+        
+        // Process workloads
+        assert_eq!(manager.process_workloads(), 2);
+        
+        // Workloads should be idle now
+        assert_eq!(manager.get_workload_state(0), Some(WorkloadState::Idle));
+        assert_eq!(manager.get_workload_state(1), Some(WorkloadState::Idle));
+        
+        manager.finalize();
+    }
+
+    #[test]
+    fn test_spurs_yield_workload() {
+        let mut manager = SpursManager::new();
+        manager.initialize(6, 100, 100, false);
+        
+        let priorities = [1; 8];
+        manager.set_priorities(0, &priorities);
+        
+        // Can't yield non-running workload
+        manager.set_workload_ready(0);
+        assert_eq!(manager.yield_workload(0), 0); // Should still succeed but not change
+        
+        manager.finalize();
+    }
+
+    #[test]
+    fn test_spurs_has_idle_spu() {
+        let mut manager = SpursManager::new();
+        
+        // Not initialized
+        assert!(!manager.has_idle_spu());
+        
+        manager.initialize(6, 100, 100, false);
+        assert!(manager.has_idle_spu());
+        
+        manager.finalize();
+    }
+
+    // ========================================================================
+    // SPURS Handler Tests
+    // ========================================================================
+
+    #[test]
+    fn test_spurs_register_handler() {
+        let mut manager = SpursManager::new();
+        manager.initialize(6, 100, 100, false);
+        
+        assert_eq!(manager.register_handler(0, 0x10000000), 0);
+        assert_eq!(manager.unregister_handler(0), 0);
+        
+        // Invalid workload ID
+        assert!(manager.register_handler(100, 0x10000000) != 0);
+        
+        manager.finalize();
+    }
+
+    // ========================================================================
+    // Trace Buffer Tests
+    // ========================================================================
+
+    #[test]
+    fn test_spurs_trace_buffer() {
+        let mut manager = SpursManager::new();
+        manager.initialize(6, 100, 100, false);
+        
+        // Enable trace
+        assert_eq!(manager.enable_trace(0x20000000, 0x10000), 0);
+        
+        // Get trace data (empty for HLE)
+        let trace_data = manager.get_trace_data();
+        assert!(trace_data.is_empty());
+        
+        // Clear trace
+        assert_eq!(manager.clear_trace(), 0);
+        
+        // Disable trace
+        assert_eq!(manager.disable_trace(), 0);
+        
+        manager.finalize();
+    }
+
+    #[test]
+    fn test_spurs_trace_not_initialized() {
+        let mut manager = SpursManager::new();
+        
+        assert!(manager.enable_trace(0x20000000, 0x10000) != 0);
+        assert!(manager.disable_trace() != 0);
+        assert!(manager.clear_trace() != 0);
+    }
+
+    #[test]
+    fn test_workload_state_enum() {
+        assert_eq!(WorkloadState::Idle as u32, 0);
+        assert_eq!(WorkloadState::Running as u32, 1);
+        assert_eq!(WorkloadState::Ready as u32, 2);
+        assert_eq!(WorkloadState::Waiting as u32, 3);
     }
 }

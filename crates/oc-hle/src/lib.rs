@@ -35,6 +35,7 @@ pub mod cell_font_ft;
 pub mod cell_spurs;
 pub mod cell_spurs_jq;
 pub mod libsre;
+pub mod spu_runtime;
 
 // Input Modules
 pub mod cell_pad;
