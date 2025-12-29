@@ -83,14 +83,70 @@ impl Default for CellPadInfo {
 }
 
 /// Pad data structure
+/// 
+/// This structure matches the PS3 cellPad data format with all button, analog, and sensor data.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-#[derive(Default)]
 pub struct CellPadData {
-    /// Length of valid data
+    /// Length of valid data (typically 24 for standard data, or larger with sensor data)
     pub len: i32,
-    /// Digital button data (16 bits)
+    /// Digital button data (16 bits per word)
+    /// button[0]: D-pad and system buttons (SELECT, L3, R3, START, UP, RIGHT, DOWN, LEFT)
+    /// button[1]: Action buttons (SQUARE, CROSS, CIRCLE, TRIANGLE, R1, L1, R2, L2)
     pub button: [u16; 2],
+    /// Right analog stick X axis (0-255, 128 = center)
+    pub right_stick_x: u8,
+    /// Right analog stick Y axis (0-255, 128 = center)
+    pub right_stick_y: u8,
+    /// Left analog stick X axis (0-255, 128 = center)
+    pub left_stick_x: u8,
+    /// Left analog stick Y axis (0-255, 128 = center)
+    pub left_stick_y: u8,
+    /// Pressure sensitivity for D-pad and action buttons (0-255)
+    /// Order: RIGHT, LEFT, UP, DOWN, TRIANGLE, CIRCLE, CROSS, SQUARE, L1, R1, L2, R2
+    pub pressure: [u8; 12],
+    /// Sixaxis accelerometer X axis (10-bit value)
+    pub sensor_x: u16,
+    /// Sixaxis accelerometer Y axis (10-bit value)
+    pub sensor_y: u16,
+    /// Sixaxis accelerometer Z axis (10-bit value)
+    pub sensor_z: u16,
+    /// Sixaxis gyroscope Z axis (10-bit value)
+    pub sensor_g: u16,
+}
+
+impl Default for CellPadData {
+    fn default() -> Self {
+        Self {
+            len: 0,
+            button: [0; 2],
+            right_stick_x: 128, // Center
+            right_stick_y: 128, // Center
+            left_stick_x: 128,  // Center
+            left_stick_y: 128,  // Center
+            pressure: [0; 12],
+            sensor_x: 512,      // Center (10-bit)
+            sensor_y: 512,      // Center (10-bit)
+            sensor_z: 512,      // Center + gravity (~399 at rest)
+            sensor_g: 512,      // Center (10-bit)
+        }
+    }
+}
+
+/// Pressure sensitivity indices
+pub mod pressure_index {
+    pub const DPAD_RIGHT: usize = 0;
+    pub const DPAD_LEFT: usize = 1;
+    pub const DPAD_UP: usize = 2;
+    pub const DPAD_DOWN: usize = 3;
+    pub const TRIANGLE: usize = 4;
+    pub const CIRCLE: usize = 5;
+    pub const CROSS: usize = 6;
+    pub const SQUARE: usize = 7;
+    pub const L1: usize = 8;
+    pub const R1: usize = 9;
+    pub const L2: usize = 10;
+    pub const R2: usize = 11;
 }
 
 
@@ -325,6 +381,113 @@ impl PadManager {
 
         trace!("Updated pad data for port {}: buttons=[0x{:04X}, 0x{:04X}]", 
             port, buttons[0], buttons[1]);
+
+        0 // CELL_OK
+    }
+
+    /// Update analog stick data for a controller
+    /// 
+    /// # Arguments
+    /// * `port` - Controller port number
+    /// * `left_x` - Left stick X axis (0-255, 128 = center)
+    /// * `left_y` - Left stick Y axis (0-255, 128 = center)
+    /// * `right_x` - Right stick X axis (0-255, 128 = center)
+    /// * `right_y` - Right stick Y axis (0-255, 128 = center)
+    pub fn update_analog_sticks(&mut self, port: u32, left_x: u8, left_y: u8, right_x: u8, right_y: u8) -> i32 {
+        if port >= CELL_PAD_MAX_PORT_NUM as u32 {
+            return 0x80121104u32 as i32; // CELL_PAD_ERROR_INVALID_PARAMETER
+        }
+
+        if (self.connected_pads & (1 << port)) == 0 {
+            return 0x80121102u32 as i32; // CELL_PAD_ERROR_NO_DEVICE
+        }
+
+        let data = &mut self.pad_data[port as usize];
+        data.left_stick_x = left_x;
+        data.left_stick_y = left_y;
+        data.right_stick_x = right_x;
+        data.right_stick_y = right_y;
+
+        trace!(
+            "Updated analog sticks for port {}: L=({}, {}), R=({}, {})",
+            port, left_x, left_y, right_x, right_y
+        );
+
+        0 // CELL_OK
+    }
+
+    /// Update pressure sensitivity data for buttons
+    /// 
+    /// # Arguments
+    /// * `port` - Controller port number
+    /// * `pressure` - Array of 12 pressure values (0-255)
+    pub fn update_pressure_data(&mut self, port: u32, pressure: [u8; 12]) -> i32 {
+        if port >= CELL_PAD_MAX_PORT_NUM as u32 {
+            return 0x80121104u32 as i32; // CELL_PAD_ERROR_INVALID_PARAMETER
+        }
+
+        if (self.connected_pads & (1 << port)) == 0 {
+            return 0x80121102u32 as i32; // CELL_PAD_ERROR_NO_DEVICE
+        }
+
+        self.pad_data[port as usize].pressure = pressure;
+
+        trace!("Updated pressure data for port {}", port);
+
+        0 // CELL_OK
+    }
+
+    /// Update sixaxis sensor data
+    /// 
+    /// # Arguments
+    /// * `port` - Controller port number
+    /// * `accel_x` - Accelerometer X axis (10-bit value, 0-1023)
+    /// * `accel_y` - Accelerometer Y axis (10-bit value, 0-1023)
+    /// * `accel_z` - Accelerometer Z axis (10-bit value, 0-1023)
+    /// * `gyro_z` - Gyroscope Z axis (10-bit value, 0-1023)
+    pub fn update_sensor_data(&mut self, port: u32, accel_x: u16, accel_y: u16, accel_z: u16, gyro_z: u16) -> i32 {
+        if port >= CELL_PAD_MAX_PORT_NUM as u32 {
+            return 0x80121104u32 as i32; // CELL_PAD_ERROR_INVALID_PARAMETER
+        }
+
+        if (self.connected_pads & (1 << port)) == 0 {
+            return 0x80121102u32 as i32; // CELL_PAD_ERROR_NO_DEVICE
+        }
+
+        let data = &mut self.pad_data[port as usize];
+        data.sensor_x = accel_x;
+        data.sensor_y = accel_y;
+        data.sensor_z = accel_z;
+        data.sensor_g = gyro_z;
+        
+        // Sensor data extends the data length
+        data.len = 32;
+
+        trace!(
+            "Updated sensor data for port {}: accel=({}, {}, {}), gyro={}",
+            port, accel_x, accel_y, accel_z, gyro_z
+        );
+
+        0 // CELL_OK
+    }
+
+    /// Update complete pad state (buttons, analogs, pressure, sensors)
+    /// 
+    /// # Arguments
+    /// * `port` - Controller port number
+    /// * `data` - Complete pad data structure
+    pub fn update_complete_pad_data(&mut self, port: u32, data: CellPadData) -> i32 {
+        if port >= CELL_PAD_MAX_PORT_NUM as u32 {
+            return 0x80121104u32 as i32; // CELL_PAD_ERROR_INVALID_PARAMETER
+        }
+
+        if (self.connected_pads & (1 << port)) == 0 {
+            return 0x80121102u32 as i32; // CELL_PAD_ERROR_NO_DEVICE
+        }
+
+        self.pad_data[port as usize] = data;
+
+        trace!("Updated complete pad data for port {}", port);
 
         0 // CELL_OK
     }
@@ -842,5 +1005,137 @@ mod tests {
         assert_eq!(PadManager::convert_axis(-1.0), 0);
         assert_eq!(PadManager::convert_axis(0.0), 127);
         assert_eq!(PadManager::convert_axis(1.0), 255);
+    }
+
+    #[test]
+    fn test_analog_stick_reading() {
+        let mut manager = PadManager::new();
+        manager.init(7);
+
+        // Update analog sticks
+        assert_eq!(manager.update_analog_sticks(0, 100, 150, 200, 50), 0);
+
+        let data = manager.get_data(0).unwrap();
+        assert_eq!(data.left_stick_x, 100);
+        assert_eq!(data.left_stick_y, 150);
+        assert_eq!(data.right_stick_x, 200);
+        assert_eq!(data.right_stick_y, 50);
+
+        // Test on disconnected port
+        assert_eq!(manager.update_analog_sticks(1, 128, 128, 128, 128), 0x80121102u32 as i32);
+
+        manager.end();
+    }
+
+    #[test]
+    fn test_pressure_sensitivity() {
+        let mut manager = PadManager::new();
+        manager.init(7);
+
+        // Create pressure data with some buttons pressed
+        let mut pressure = [0u8; 12];
+        pressure[pressure_index::CROSS] = 255;    // Full press
+        pressure[pressure_index::CIRCLE] = 128;   // Half press
+        pressure[pressure_index::L2] = 200;       // Strong L2
+        pressure[pressure_index::R2] = 100;       // Light R2
+
+        assert_eq!(manager.update_pressure_data(0, pressure), 0);
+
+        let data = manager.get_data(0).unwrap();
+        assert_eq!(data.pressure[pressure_index::CROSS], 255);
+        assert_eq!(data.pressure[pressure_index::CIRCLE], 128);
+        assert_eq!(data.pressure[pressure_index::L2], 200);
+        assert_eq!(data.pressure[pressure_index::R2], 100);
+        assert_eq!(data.pressure[pressure_index::TRIANGLE], 0);
+
+        manager.end();
+    }
+
+    #[test]
+    fn test_sixaxis_sensor_data() {
+        let mut manager = PadManager::new();
+        manager.init(7);
+
+        // Update sensor data (accelerometer + gyroscope)
+        // Values are 10-bit (0-1023), 512 is center
+        assert_eq!(manager.update_sensor_data(0, 512, 512, 600, 512), 0);
+
+        let data = manager.get_data(0).unwrap();
+        assert_eq!(data.sensor_x, 512);
+        assert_eq!(data.sensor_y, 512);
+        assert_eq!(data.sensor_z, 600); // Tilted forward
+        assert_eq!(data.sensor_g, 512);
+        assert_eq!(data.len, 32); // Sensor data extends length
+
+        manager.end();
+    }
+
+    #[test]
+    fn test_complete_pad_data_update() {
+        let mut manager = PadManager::new();
+        manager.init(7);
+
+        // Create complete pad data
+        let complete_data = CellPadData {
+            len: 32,
+            button: [0x00FF, 0xFF00],
+            left_stick_x: 64,
+            left_stick_y: 192,
+            right_stick_x: 200,
+            right_stick_y: 56,
+            pressure: [255, 200, 150, 100, 50, 25, 10, 5, 2, 1, 0, 255],
+            sensor_x: 400,
+            sensor_y: 500,
+            sensor_z: 600,
+            sensor_g: 700,
+        };
+
+        assert_eq!(manager.update_complete_pad_data(0, complete_data), 0);
+
+        let data = manager.get_data(0).unwrap();
+        assert_eq!(data.button[0], 0x00FF);
+        assert_eq!(data.button[1], 0xFF00);
+        assert_eq!(data.left_stick_x, 64);
+        assert_eq!(data.left_stick_y, 192);
+        assert_eq!(data.sensor_x, 400);
+
+        manager.end();
+    }
+
+    #[test]
+    fn test_pad_data_default_values() {
+        let data = CellPadData::default();
+        
+        // Analog sticks should be centered
+        assert_eq!(data.left_stick_x, 128);
+        assert_eq!(data.left_stick_y, 128);
+        assert_eq!(data.right_stick_x, 128);
+        assert_eq!(data.right_stick_y, 128);
+        
+        // Sensors should be centered
+        assert_eq!(data.sensor_x, 512);
+        assert_eq!(data.sensor_y, 512);
+        assert_eq!(data.sensor_z, 512);
+        assert_eq!(data.sensor_g, 512);
+        
+        // Pressure should be zero
+        assert_eq!(data.pressure, [0; 12]);
+    }
+
+    #[test]
+    fn test_pressure_index_values() {
+        // Verify pressure indices are correct
+        assert_eq!(pressure_index::DPAD_RIGHT, 0);
+        assert_eq!(pressure_index::DPAD_LEFT, 1);
+        assert_eq!(pressure_index::DPAD_UP, 2);
+        assert_eq!(pressure_index::DPAD_DOWN, 3);
+        assert_eq!(pressure_index::TRIANGLE, 4);
+        assert_eq!(pressure_index::CIRCLE, 5);
+        assert_eq!(pressure_index::CROSS, 6);
+        assert_eq!(pressure_index::SQUARE, 7);
+        assert_eq!(pressure_index::L1, 8);
+        assert_eq!(pressure_index::R1, 9);
+        assert_eq!(pressure_index::L2, 10);
+        assert_eq!(pressure_index::R2, 11);
     }
 }

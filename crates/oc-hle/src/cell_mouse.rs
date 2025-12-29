@@ -127,10 +127,16 @@ pub struct MouseManager {
     connected_mice: u8,
     /// Current mouse positions
     positions: [(i32, i32); CELL_MOUSE_MAX_MICE],
+    /// Previous mouse positions (for delta calculation)
+    prev_positions: [(i32, i32); CELL_MOUSE_MAX_MICE],
     /// Current button states
     button_states: [u32; CELL_MOUSE_MAX_MICE],
     /// Cached mouse data
     mouse_data: [CellMouseData; CELL_MOUSE_MAX_MICE],
+    /// Movement delta since last read
+    movement_delta: [(i32, i32); CELL_MOUSE_MAX_MICE],
+    /// Wheel delta since last read
+    wheel_delta: [i32; CELL_MOUSE_MAX_MICE],
     /// OC-Input backend placeholder
     input_backend: Option<()>,
 }
@@ -142,8 +148,11 @@ impl MouseManager {
             initialized: false,
             connected_mice: 0,
             positions: [(0, 0); CELL_MOUSE_MAX_MICE],
+            prev_positions: [(0, 0); CELL_MOUSE_MAX_MICE],
             button_states: [0; CELL_MOUSE_MAX_MICE],
             mouse_data: [CellMouseData::default(); CELL_MOUSE_MAX_MICE],
+            movement_delta: [(0, 0); CELL_MOUSE_MAX_MICE],
+            wheel_delta: [0; CELL_MOUSE_MAX_MICE],
             input_backend: None,
         }
     }
@@ -174,6 +183,10 @@ impl MouseManager {
 
         self.initialized = false;
         self.connected_mice = 0;
+        self.positions = [(0, 0); CELL_MOUSE_MAX_MICE];
+        self.prev_positions = [(0, 0); CELL_MOUSE_MAX_MICE];
+        self.movement_delta = [(0, 0); CELL_MOUSE_MAX_MICE];
+        self.wheel_delta = [0; CELL_MOUSE_MAX_MICE];
 
         0 // CELL_OK
     }
@@ -265,9 +278,48 @@ impl MouseManager {
 
         trace!("MouseManager::get_raw_data: port={}", port);
 
-        // TODO: Get raw mouse data from oc-input subsystem
+        let port_idx = port as usize;
         let mut raw = CellMouseRawData::default();
-        raw.buttons = self.button_states[port as usize] as u8;
+        raw.buttons = self.button_states[port_idx] as u8;
+        
+        // Clamp delta to i8 range for raw data
+        raw.x_axis = self.movement_delta[port_idx].0.clamp(-128, 127) as i8;
+        raw.y_axis = self.movement_delta[port_idx].1.clamp(-128, 127) as i8;
+        raw.wheel = self.wheel_delta[port_idx].clamp(-128, 127) as i8;
+
+        Ok(raw)
+    }
+
+    /// Get raw data and clear deltas
+    /// 
+    /// Returns raw mouse data and resets the accumulated deltas.
+    pub fn get_raw_data_and_clear(&mut self, port: u32) -> Result<CellMouseRawData, i32> {
+        if !self.initialized {
+            return Err(CELL_MOUSE_ERROR_NOT_INITIALIZED);
+        }
+
+        if port >= CELL_MOUSE_MAX_MICE as u32 {
+            return Err(CELL_MOUSE_ERROR_INVALID_PARAMETER);
+        }
+
+        if (self.connected_mice & (1 << port)) == 0 {
+            return Err(CELL_MOUSE_ERROR_NO_DEVICE);
+        }
+
+        trace!("MouseManager::get_raw_data_and_clear: port={}", port);
+
+        let port_idx = port as usize;
+        let mut raw = CellMouseRawData::default();
+        raw.buttons = self.button_states[port_idx] as u8;
+        
+        // Clamp delta to i8 range for raw data
+        raw.x_axis = self.movement_delta[port_idx].0.clamp(-128, 127) as i8;
+        raw.y_axis = self.movement_delta[port_idx].1.clamp(-128, 127) as i8;
+        raw.wheel = self.wheel_delta[port_idx].clamp(-128, 127) as i8;
+        
+        // Clear deltas after reading
+        self.movement_delta[port_idx] = (0, 0);
+        self.wheel_delta[port_idx] = 0;
 
         Ok(raw)
     }
@@ -282,9 +334,125 @@ impl MouseManager {
             return CELL_MOUSE_ERROR_INVALID_PARAMETER;
         }
 
-        self.positions[port as usize] = (x, y);
+        let port_idx = port as usize;
+        
+        // Store previous position for delta calculation
+        self.prev_positions[port_idx] = self.positions[port_idx];
+        
+        // Update current position
+        self.positions[port_idx] = (x, y);
+        
+        // Calculate and accumulate movement delta
+        let dx = x - self.prev_positions[port_idx].0;
+        let dy = y - self.prev_positions[port_idx].1;
+        self.movement_delta[port_idx].0 = self.movement_delta[port_idx].0.saturating_add(dx);
+        self.movement_delta[port_idx].1 = self.movement_delta[port_idx].1.saturating_add(dy);
 
         0 // CELL_OK
+    }
+
+    /// Update movement with delta values directly
+    /// 
+    /// Use this for relative mouse motion (e.g., in FPS games)
+    /// 
+    /// # Arguments
+    /// * `port` - Mouse port number
+    /// * `dx` - X axis movement delta
+    /// * `dy` - Y axis movement delta
+    pub fn update_delta(&mut self, port: u32, dx: i32, dy: i32) -> i32 {
+        if !self.initialized {
+            return CELL_MOUSE_ERROR_NOT_INITIALIZED;
+        }
+
+        if port >= CELL_MOUSE_MAX_MICE as u32 {
+            return CELL_MOUSE_ERROR_INVALID_PARAMETER;
+        }
+
+        let port_idx = port as usize;
+        
+        // Accumulate delta
+        self.movement_delta[port_idx].0 = self.movement_delta[port_idx].0.saturating_add(dx);
+        self.movement_delta[port_idx].1 = self.movement_delta[port_idx].1.saturating_add(dy);
+        
+        // Update absolute position as well
+        self.positions[port_idx].0 = self.positions[port_idx].0.saturating_add(dx);
+        self.positions[port_idx].1 = self.positions[port_idx].1.saturating_add(dy);
+
+        trace!("MouseManager::update_delta: port={}, dx={}, dy={}", port, dx, dy);
+
+        0 // CELL_OK
+    }
+
+    /// Update wheel delta
+    /// 
+    /// # Arguments
+    /// * `port` - Mouse port number
+    /// * `delta` - Wheel scroll delta
+    pub fn update_wheel(&mut self, port: u32, delta: i32) -> i32 {
+        if !self.initialized {
+            return CELL_MOUSE_ERROR_NOT_INITIALIZED;
+        }
+
+        if port >= CELL_MOUSE_MAX_MICE as u32 {
+            return CELL_MOUSE_ERROR_INVALID_PARAMETER;
+        }
+
+        let port_idx = port as usize;
+        self.wheel_delta[port_idx] = self.wheel_delta[port_idx].saturating_add(delta);
+
+        trace!("MouseManager::update_wheel: port={}, delta={}", port, delta);
+
+        0 // CELL_OK
+    }
+
+    /// Get and clear movement delta
+    /// 
+    /// Returns the accumulated movement delta since the last call and resets it.
+    /// 
+    /// # Arguments
+    /// * `port` - Mouse port number
+    /// 
+    /// # Returns
+    /// * (dx, dy) movement delta
+    pub fn get_and_clear_delta(&mut self, port: u32) -> Result<(i32, i32), i32> {
+        if !self.initialized {
+            return Err(CELL_MOUSE_ERROR_NOT_INITIALIZED);
+        }
+
+        if port >= CELL_MOUSE_MAX_MICE as u32 {
+            return Err(CELL_MOUSE_ERROR_INVALID_PARAMETER);
+        }
+
+        let port_idx = port as usize;
+        let delta = self.movement_delta[port_idx];
+        self.movement_delta[port_idx] = (0, 0);
+
+        Ok(delta)
+    }
+
+    /// Get and clear wheel delta
+    /// 
+    /// Returns the accumulated wheel delta since the last call and resets it.
+    /// 
+    /// # Arguments
+    /// * `port` - Mouse port number
+    /// 
+    /// # Returns
+    /// * Wheel scroll delta
+    pub fn get_and_clear_wheel(&mut self, port: u32) -> Result<i32, i32> {
+        if !self.initialized {
+            return Err(CELL_MOUSE_ERROR_NOT_INITIALIZED);
+        }
+
+        if port >= CELL_MOUSE_MAX_MICE as u32 {
+            return Err(CELL_MOUSE_ERROR_INVALID_PARAMETER);
+        }
+
+        let port_idx = port as usize;
+        let delta = self.wheel_delta[port_idx];
+        self.wheel_delta[port_idx] = 0;
+
+        Ok(delta)
     }
 
     /// Set button state (for testing/simulation)
@@ -314,7 +482,10 @@ impl MouseManager {
 
         trace!("MouseManager::clear_buf: port={}", port);
 
-        // TODO: Clear actual input buffer
+        // Clear delta and wheel buffers
+        let port_idx = port as usize;
+        self.movement_delta[port_idx] = (0, 0);
+        self.wheel_delta[port_idx] = 0;
 
         0 // CELL_OK
     }
@@ -664,5 +835,117 @@ mod tests {
         assert_eq!(data.buttons, 0);
         assert_eq!(data.x_pos, 0);
         assert_eq!(data.y_pos, 0);
+    }
+
+    #[test]
+    fn test_mouse_movement_delta() {
+        let mut manager = MouseManager::new();
+        manager.init(2);
+        
+        // Update delta directly
+        assert_eq!(manager.update_delta(0, 10, -5), 0);
+        assert_eq!(manager.update_delta(0, 5, 3), 0);
+        
+        // Delta should be accumulated
+        let delta = manager.get_and_clear_delta(0).unwrap();
+        assert_eq!(delta, (15, -2));
+        
+        // After clearing, delta should be zero
+        let delta = manager.get_and_clear_delta(0).unwrap();
+        assert_eq!(delta, (0, 0));
+        
+        manager.end();
+    }
+
+    #[test]
+    fn test_mouse_wheel_delta() {
+        let mut manager = MouseManager::new();
+        manager.init(2);
+        
+        // Update wheel
+        assert_eq!(manager.update_wheel(0, 3), 0);
+        assert_eq!(manager.update_wheel(0, -1), 0);
+        
+        // Wheel delta should be accumulated
+        let wheel = manager.get_and_clear_wheel(0).unwrap();
+        assert_eq!(wheel, 2);
+        
+        // After clearing, wheel delta should be zero
+        let wheel = manager.get_and_clear_wheel(0).unwrap();
+        assert_eq!(wheel, 0);
+        
+        manager.end();
+    }
+
+    #[test]
+    fn test_mouse_raw_data_with_delta() {
+        let mut manager = MouseManager::new();
+        manager.init(2);
+        
+        // Set some delta and buttons
+        manager.update_delta(0, 50, -25);
+        manager.update_wheel(0, 2);
+        manager.set_buttons(0, CELL_MOUSE_BUTTON_LEFT);
+        
+        // Get raw data
+        let raw = manager.get_raw_data(0).unwrap();
+        assert_eq!(raw.x_axis, 50);
+        assert_eq!(raw.y_axis, -25);
+        assert_eq!(raw.wheel, 2);
+        assert_eq!(raw.buttons, CELL_MOUSE_BUTTON_LEFT as u8);
+        
+        // Get raw data and clear should reset deltas
+        let raw = manager.get_raw_data_and_clear(0).unwrap();
+        assert_eq!(raw.x_axis, 50);
+        
+        // After clearing, deltas should be zero
+        let raw = manager.get_raw_data(0).unwrap();
+        assert_eq!(raw.x_axis, 0);
+        assert_eq!(raw.y_axis, 0);
+        assert_eq!(raw.wheel, 0);
+        
+        manager.end();
+    }
+
+    #[test]
+    fn test_mouse_position_tracks_delta() {
+        let mut manager = MouseManager::new();
+        manager.init(2);
+        
+        // Set initial position (this creates delta from 0,0 to 100,100)
+        manager.set_position(0, 100, 100);
+        
+        // Clear the initial delta
+        let _ = manager.get_and_clear_delta(0);
+        
+        // Move to new position
+        manager.set_position(0, 150, 90);
+        
+        // Delta should reflect only the second movement
+        let delta = manager.get_and_clear_delta(0).unwrap();
+        assert_eq!(delta, (50, -10));
+        
+        manager.end();
+    }
+
+    #[test]
+    fn test_mouse_clear_buf_resets_delta() {
+        let mut manager = MouseManager::new();
+        manager.init(2);
+        
+        manager.update_delta(0, 100, 100);
+        manager.update_wheel(0, 10);
+        
+        // Clear buffer
+        manager.clear_buf(0);
+        
+        // Deltas should be reset
+        let delta = manager.get_and_clear_delta(0).unwrap();
+        assert_eq!(delta, (0, 0));
+        
+        let wheel = manager.get_and_clear_wheel(0).unwrap();
+        assert_eq!(wheel, 0);
+        
+        manager.end();
     }
 }
