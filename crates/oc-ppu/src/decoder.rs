@@ -99,16 +99,54 @@ impl PpuDecoder {
                 // Differentiate between X-form and XO-form based on extended opcode
                 // XO-form arithmetic instructions have specific xo values
                 match xo {
-                    // XO-form: Integer arithmetic with OE bit
-                    8 | 10 | 40 | 73 | 75 | 104 | 136 | 138 | 200 | 202 | 232 | 233 | 234 | 235 | 
-                    266 | 457 | 459 | 489 | 491 | // divw, divwu, divd, divdu
-                    9 | 11 => { // mulhdu, mulhwu
-                        // XO-form uses a 9-bit xo field (bits 22-30)
-                        let xo_9bit = ((opcode >> 1) & 0x1FF) as u16;
-                        (InstructionForm::XO, xo_9bit)
-                    }
+                    // XO-form: Integer arithmetic with OE bit (9-bit xo in bits 22-30)
+                    // Arithmetic operations
+                    8 =>   // subfc - Subtract From Carrying
+                    { let xo_9bit = ((opcode >> 1) & 0x1FF) as u16; (InstructionForm::XO, xo_9bit) }
+                    10 =>  // addc - Add Carrying
+                    { let xo_9bit = ((opcode >> 1) & 0x1FF) as u16; (InstructionForm::XO, xo_9bit) }
+                    40 =>  // subf - Subtract From
+                    { let xo_9bit = ((opcode >> 1) & 0x1FF) as u16; (InstructionForm::XO, xo_9bit) }
+                    104 => // neg - Negate
+                    { let xo_9bit = ((opcode >> 1) & 0x1FF) as u16; (InstructionForm::XO, xo_9bit) }
+                    136 => // subfe - Subtract From Extended
+                    { let xo_9bit = ((opcode >> 1) & 0x1FF) as u16; (InstructionForm::XO, xo_9bit) }
+                    138 => // adde - Add Extended
+                    { let xo_9bit = ((opcode >> 1) & 0x1FF) as u16; (InstructionForm::XO, xo_9bit) }
+                    200 => // subfze - Subtract From Zero Extended
+                    { let xo_9bit = ((opcode >> 1) & 0x1FF) as u16; (InstructionForm::XO, xo_9bit) }
+                    202 => // addze - Add to Zero Extended
+                    { let xo_9bit = ((opcode >> 1) & 0x1FF) as u16; (InstructionForm::XO, xo_9bit) }
+                    232 => // subfme - Subtract From Minus One Extended
+                    { let xo_9bit = ((opcode >> 1) & 0x1FF) as u16; (InstructionForm::XO, xo_9bit) }
+                    234 => // addme - Add to Minus One Extended
+                    { let xo_9bit = ((opcode >> 1) & 0x1FF) as u16; (InstructionForm::XO, xo_9bit) }
+                    266 => // add - Add
+                    { let xo_9bit = ((opcode >> 1) & 0x1FF) as u16; (InstructionForm::XO, xo_9bit) }
+                    // Multiply operations
+                    9 =>   // mulhdu - Multiply High Doubleword Unsigned
+                    { let xo_9bit = ((opcode >> 1) & 0x1FF) as u16; (InstructionForm::XO, xo_9bit) }
+                    11 =>  // mulhwu - Multiply High Word Unsigned
+                    { let xo_9bit = ((opcode >> 1) & 0x1FF) as u16; (InstructionForm::XO, xo_9bit) }
+                    73 =>  // mulhd - Multiply High Doubleword
+                    { let xo_9bit = ((opcode >> 1) & 0x1FF) as u16; (InstructionForm::XO, xo_9bit) }
+                    75 =>  // mulhw - Multiply High Word
+                    { let xo_9bit = ((opcode >> 1) & 0x1FF) as u16; (InstructionForm::XO, xo_9bit) }
+                    233 => // mulld - Multiply Low Doubleword
+                    { let xo_9bit = ((opcode >> 1) & 0x1FF) as u16; (InstructionForm::XO, xo_9bit) }
+                    235 => // mullw - Multiply Low Word
+                    { let xo_9bit = ((opcode >> 1) & 0x1FF) as u16; (InstructionForm::XO, xo_9bit) }
+                    // Division operations
+                    457 => // divdu - Divide Doubleword Unsigned
+                    { let xo_9bit = ((opcode >> 1) & 0x1FF) as u16; (InstructionForm::XO, xo_9bit) }
+                    459 => // divwu - Divide Word Unsigned
+                    { let xo_9bit = ((opcode >> 1) & 0x1FF) as u16; (InstructionForm::XO, xo_9bit) }
+                    489 => // divd - Divide Doubleword
+                    { let xo_9bit = ((opcode >> 1) & 0x1FF) as u16; (InstructionForm::XO, xo_9bit) }
+                    491 => // divw - Divide Word
+                    { let xo_9bit = ((opcode >> 1) & 0x1FF) as u16; (InstructionForm::XO, xo_9bit) }
                     _ => {
-                        // X-form and other variants
+                        // X-form and other variants (10-bit xo)
                         (InstructionForm::X, xo)
                     }
                 }
