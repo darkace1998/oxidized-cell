@@ -7,3 +7,5 @@ pub mod compare;
 pub mod branch;
 pub mod float;
 pub mod channel;
+pub mod quadword;
+pub mod control;

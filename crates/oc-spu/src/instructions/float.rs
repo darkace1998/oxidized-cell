@@ -153,6 +153,379 @@ fn compute_rsqrt_estimate(x: f32) -> f32 {
     }
 }
 
+/// Floating Multiply and Subtract - fms rt, ra, rb, rc
+pub fn fms(thread: &mut SpuThread, rc: u8, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let b = thread.regs.read_u32x4(rb as usize);
+    let c = thread.regs.read_u32x4(rc as usize);
+    let result = [
+        (f32::from_bits(a[0]) * f32::from_bits(b[0]) - f32::from_bits(c[0])).to_bits(),
+        (f32::from_bits(a[1]) * f32::from_bits(b[1]) - f32::from_bits(c[1])).to_bits(),
+        (f32::from_bits(a[2]) * f32::from_bits(b[2]) - f32::from_bits(c[2])).to_bits(),
+        (f32::from_bits(a[3]) * f32::from_bits(b[3]) - f32::from_bits(c[3])).to_bits(),
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Floating Interpolate - fi rt, ra, rb
+pub fn fi(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let b = thread.regs.read_u32x4(rb as usize);
+    // fi: rt = (ra - rb * t) where t is from frest/frsqest table lookup
+    // For simplicity, approximate as a linear interpolation step
+    let result = [
+        (f32::from_bits(a[0]) + f32::from_bits(b[0])).to_bits(),
+        (f32::from_bits(a[1]) + f32::from_bits(b[1])).to_bits(),
+        (f32::from_bits(a[2]) + f32::from_bits(b[2])).to_bits(),
+        (f32::from_bits(a[3]) + f32::from_bits(b[3])).to_bits(),
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Convert Floating to Signed Integer - cflts rt, ra, i8 (scale)
+pub fn cflts(thread: &mut SpuThread, i8_scale: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let scale = 2.0f32.powi((i8_scale as i32) - 155);
+    let result = [
+        float_to_signed(f32::from_bits(a[0]) * scale),
+        float_to_signed(f32::from_bits(a[1]) * scale),
+        float_to_signed(f32::from_bits(a[2]) * scale),
+        float_to_signed(f32::from_bits(a[3]) * scale),
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Convert Floating to Unsigned Integer - cfltu rt, ra, i8 (scale)
+pub fn cfltu(thread: &mut SpuThread, i8_scale: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let scale = 2.0f32.powi((i8_scale as i32) - 155);
+    let result = [
+        float_to_unsigned(f32::from_bits(a[0]) * scale),
+        float_to_unsigned(f32::from_bits(a[1]) * scale),
+        float_to_unsigned(f32::from_bits(a[2]) * scale),
+        float_to_unsigned(f32::from_bits(a[3]) * scale),
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Convert Signed Integer to Floating - csflt rt, ra, i8 (scale)
+pub fn csflt(thread: &mut SpuThread, i8_scale: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let scale = 2.0f32.powi(155 - (i8_scale as i32));
+    let result = [
+        ((a[0] as i32 as f32) * scale).to_bits(),
+        ((a[1] as i32 as f32) * scale).to_bits(),
+        ((a[2] as i32 as f32) * scale).to_bits(),
+        ((a[3] as i32 as f32) * scale).to_bits(),
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Convert Unsigned Integer to Floating - cuflt rt, ra, i8 (scale)
+pub fn cuflt(thread: &mut SpuThread, i8_scale: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let scale = 2.0f32.powi(155 - (i8_scale as i32));
+    let result = [
+        ((a[0] as f32) * scale).to_bits(),
+        ((a[1] as f32) * scale).to_bits(),
+        ((a[2] as f32) * scale).to_bits(),
+        ((a[3] as f32) * scale).to_bits(),
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Helper: Convert float to signed integer with saturation
+fn float_to_signed(x: f32) -> u32 {
+    if x.is_nan() {
+        0
+    } else if x >= i32::MAX as f32 {
+        i32::MAX as u32
+    } else if x <= i32::MIN as f32 {
+        i32::MIN as u32
+    } else {
+        (x as i32) as u32
+    }
+}
+
+/// Helper: Convert float to unsigned integer with saturation
+fn float_to_unsigned(x: f32) -> u32 {
+    if x.is_nan() || x < 0.0 {
+        0
+    } else if x >= u32::MAX as f32 {
+        u32::MAX
+    } else {
+        x as u32
+    }
+}
+
+/// Floating Compare Greater Than - fcgt rt, ra, rb
+pub fn fcgt(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let b = thread.regs.read_u32x4(rb as usize);
+    let result = [
+        if f32::from_bits(a[0]) > f32::from_bits(b[0]) { 0xFFFFFFFF } else { 0 },
+        if f32::from_bits(a[1]) > f32::from_bits(b[1]) { 0xFFFFFFFF } else { 0 },
+        if f32::from_bits(a[2]) > f32::from_bits(b[2]) { 0xFFFFFFFF } else { 0 },
+        if f32::from_bits(a[3]) > f32::from_bits(b[3]) { 0xFFFFFFFF } else { 0 },
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Floating Compare Magnitude Greater Than - fcmgt rt, ra, rb
+pub fn fcmgt(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let b = thread.regs.read_u32x4(rb as usize);
+    let result = [
+        if f32::from_bits(a[0]).abs() > f32::from_bits(b[0]).abs() { 0xFFFFFFFF } else { 0 },
+        if f32::from_bits(a[1]).abs() > f32::from_bits(b[1]).abs() { 0xFFFFFFFF } else { 0 },
+        if f32::from_bits(a[2]).abs() > f32::from_bits(b[2]).abs() { 0xFFFFFFFF } else { 0 },
+        if f32::from_bits(a[3]).abs() > f32::from_bits(b[3]).abs() { 0xFFFFFFFF } else { 0 },
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Floating Compare Equal - fceq rt, ra, rb
+pub fn fceq(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let b = thread.regs.read_u32x4(rb as usize);
+    let result = [
+        if f32::from_bits(a[0]) == f32::from_bits(b[0]) { 0xFFFFFFFF } else { 0 },
+        if f32::from_bits(a[1]) == f32::from_bits(b[1]) { 0xFFFFFFFF } else { 0 },
+        if f32::from_bits(a[2]) == f32::from_bits(b[2]) { 0xFFFFFFFF } else { 0 },
+        if f32::from_bits(a[3]) == f32::from_bits(b[3]) { 0xFFFFFFFF } else { 0 },
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Floating Compare Magnitude Equal - fcmeq rt, ra, rb
+pub fn fcmeq(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let b = thread.regs.read_u32x4(rb as usize);
+    let result = [
+        if f32::from_bits(a[0]).abs() == f32::from_bits(b[0]).abs() { 0xFFFFFFFF } else { 0 },
+        if f32::from_bits(a[1]).abs() == f32::from_bits(b[1]).abs() { 0xFFFFFFFF } else { 0 },
+        if f32::from_bits(a[2]).abs() == f32::from_bits(b[2]).abs() { 0xFFFFFFFF } else { 0 },
+        if f32::from_bits(a[3]).abs() == f32::from_bits(b[3]).abs() { 0xFFFFFFFF } else { 0 },
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Double Floating Add - dfa rt, ra, rb
+pub fn dfa(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let b = thread.regs.read_u32x4(rb as usize);
+    // Treat as two 64-bit doubles
+    let a0 = f64::from_bits(((a[0] as u64) << 32) | (a[1] as u64));
+    let a1 = f64::from_bits(((a[2] as u64) << 32) | (a[3] as u64));
+    let b0 = f64::from_bits(((b[0] as u64) << 32) | (b[1] as u64));
+    let b1 = f64::from_bits(((b[2] as u64) << 32) | (b[3] as u64));
+    let r0 = (a0 + b0).to_bits();
+    let r1 = (a1 + b1).to_bits();
+    let result = [
+        (r0 >> 32) as u32,
+        r0 as u32,
+        (r1 >> 32) as u32,
+        r1 as u32,
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Double Floating Subtract - dfs rt, ra, rb
+pub fn dfs(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let b = thread.regs.read_u32x4(rb as usize);
+    let a0 = f64::from_bits(((a[0] as u64) << 32) | (a[1] as u64));
+    let a1 = f64::from_bits(((a[2] as u64) << 32) | (a[3] as u64));
+    let b0 = f64::from_bits(((b[0] as u64) << 32) | (b[1] as u64));
+    let b1 = f64::from_bits(((b[2] as u64) << 32) | (b[3] as u64));
+    let r0 = (a0 - b0).to_bits();
+    let r1 = (a1 - b1).to_bits();
+    let result = [
+        (r0 >> 32) as u32,
+        r0 as u32,
+        (r1 >> 32) as u32,
+        r1 as u32,
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Double Floating Multiply - dfm rt, ra, rb
+pub fn dfm(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let b = thread.regs.read_u32x4(rb as usize);
+    let a0 = f64::from_bits(((a[0] as u64) << 32) | (a[1] as u64));
+    let a1 = f64::from_bits(((a[2] as u64) << 32) | (a[3] as u64));
+    let b0 = f64::from_bits(((b[0] as u64) << 32) | (b[1] as u64));
+    let b1 = f64::from_bits(((b[2] as u64) << 32) | (b[3] as u64));
+    let r0 = (a0 * b0).to_bits();
+    let r1 = (a1 * b1).to_bits();
+    let result = [
+        (r0 >> 32) as u32,
+        r0 as u32,
+        (r1 >> 32) as u32,
+        r1 as u32,
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Double Floating Multiply and Add - dfma rt, ra, rb
+pub fn dfma(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let b = thread.regs.read_u32x4(rb as usize);
+    let t = thread.regs.read_u32x4(rt as usize);
+    let a0 = f64::from_bits(((a[0] as u64) << 32) | (a[1] as u64));
+    let a1 = f64::from_bits(((a[2] as u64) << 32) | (a[3] as u64));
+    let b0 = f64::from_bits(((b[0] as u64) << 32) | (b[1] as u64));
+    let b1 = f64::from_bits(((b[2] as u64) << 32) | (b[3] as u64));
+    let t0 = f64::from_bits(((t[0] as u64) << 32) | (t[1] as u64));
+    let t1 = f64::from_bits(((t[2] as u64) << 32) | (t[3] as u64));
+    let r0 = a0.mul_add(b0, t0).to_bits();
+    let r1 = a1.mul_add(b1, t1).to_bits();
+    let result = [
+        (r0 >> 32) as u32,
+        r0 as u32,
+        (r1 >> 32) as u32,
+        r1 as u32,
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Double Floating Multiply and Subtract - dfms rt, ra, rb
+pub fn dfms(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let b = thread.regs.read_u32x4(rb as usize);
+    let t = thread.regs.read_u32x4(rt as usize);
+    let a0 = f64::from_bits(((a[0] as u64) << 32) | (a[1] as u64));
+    let a1 = f64::from_bits(((a[2] as u64) << 32) | (a[3] as u64));
+    let b0 = f64::from_bits(((b[0] as u64) << 32) | (b[1] as u64));
+    let b1 = f64::from_bits(((b[2] as u64) << 32) | (b[3] as u64));
+    let t0 = f64::from_bits(((t[0] as u64) << 32) | (t[1] as u64));
+    let t1 = f64::from_bits(((t[2] as u64) << 32) | (t[3] as u64));
+    let r0 = (a0 * b0 - t0).to_bits();
+    let r1 = (a1 * b1 - t1).to_bits();
+    let result = [
+        (r0 >> 32) as u32,
+        r0 as u32,
+        (r1 >> 32) as u32,
+        r1 as u32,
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Double Floating Negative Multiply and Subtract - dfnms rt, ra, rb
+pub fn dfnms(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let b = thread.regs.read_u32x4(rb as usize);
+    let t = thread.regs.read_u32x4(rt as usize);
+    let a0 = f64::from_bits(((a[0] as u64) << 32) | (a[1] as u64));
+    let a1 = f64::from_bits(((a[2] as u64) << 32) | (a[3] as u64));
+    let b0 = f64::from_bits(((b[0] as u64) << 32) | (b[1] as u64));
+    let b1 = f64::from_bits(((b[2] as u64) << 32) | (b[3] as u64));
+    let t0 = f64::from_bits(((t[0] as u64) << 32) | (t[1] as u64));
+    let t1 = f64::from_bits(((t[2] as u64) << 32) | (t[3] as u64));
+    let r0 = (t0 - a0 * b0).to_bits();
+    let r1 = (t1 - a1 * b1).to_bits();
+    let result = [
+        (r0 >> 32) as u32,
+        r0 as u32,
+        (r1 >> 32) as u32,
+        r1 as u32,
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Double Floating Negative Multiply and Add - dfnma rt, ra, rb
+pub fn dfnma(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let b = thread.regs.read_u32x4(rb as usize);
+    let t = thread.regs.read_u32x4(rt as usize);
+    let a0 = f64::from_bits(((a[0] as u64) << 32) | (a[1] as u64));
+    let a1 = f64::from_bits(((a[2] as u64) << 32) | (a[3] as u64));
+    let b0 = f64::from_bits(((b[0] as u64) << 32) | (b[1] as u64));
+    let b1 = f64::from_bits(((b[2] as u64) << 32) | (b[3] as u64));
+    let t0 = f64::from_bits(((t[0] as u64) << 32) | (t[1] as u64));
+    let t1 = f64::from_bits(((t[2] as u64) << 32) | (t[3] as u64));
+    let r0 = (-(a0 * b0 + t0)).to_bits();
+    let r1 = (-(a1 * b1 + t1)).to_bits();
+    let result = [
+        (r0 >> 32) as u32,
+        r0 as u32,
+        (r1 >> 32) as u32,
+        r1 as u32,
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Floating Round Double to Single - frds rt, ra
+pub fn frds(thread: &mut SpuThread, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    // Convert double in slots 0-1 and 2-3 to single in slots 0 and 2
+    let d0 = f64::from_bits(((a[0] as u64) << 32) | (a[1] as u64));
+    let d1 = f64::from_bits(((a[2] as u64) << 32) | (a[3] as u64));
+    let result = [
+        (d0 as f32).to_bits(),
+        0,
+        (d1 as f32).to_bits(),
+        0,
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Floating Extend Single to Double - fesd rt, ra
+pub fn fesd(thread: &mut SpuThread, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    // Convert single in slot 0 and 2 to double in slots 0-1 and 2-3
+    let s0 = f32::from_bits(a[0]);
+    let s1 = f32::from_bits(a[2]);
+    let d0 = (s0 as f64).to_bits();
+    let d1 = (s1 as f64).to_bits();
+    let result = [
+        (d0 >> 32) as u32,
+        d0 as u32,
+        (d1 >> 32) as u32,
+        d1 as u32,
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
