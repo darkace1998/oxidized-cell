@@ -3196,6 +3196,7 @@ dependencies = [
  "bitflags 2.10.0",
  "bytemuck",
  "oc-core",
+ "oc-hle",
  "oc-memory",
  "parking_lot",
  "tracing",

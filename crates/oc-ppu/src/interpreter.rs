@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use parking_lot::RwLock;
 use oc_memory::MemoryManager;
 use oc_core::error::PpuError;
+use oc_hle::dispatch_hle_call;
 use crate::decoder::{PpuDecoder, InstructionForm};
 use crate::thread::PpuThread;
 use crate::instructions::{float, system, vector};
@@ -161,10 +162,31 @@ impl PpuInterpreter {
         }
 
         // Increment instruction count for conditional breakpoints
-        *self.instruction_count.lock() += 1;
+        let inst_count = {
+            let mut count = self.instruction_count.lock();
+            *count += 1;
+            *count
+        };
 
         // Fetch instruction
         let pc = thread.pc() as u32;
+        
+        // Check for thread exit condition (PC at 0 typically means the main function returned)
+        // This happens when blr is executed with LR=0
+        if pc == 0 {
+            tracing::info!("PPU thread exiting after {} instructions: returned to address 0 (normal exit)", inst_count);
+            // Return value is in R3 per PPC64 ABI
+            let exit_code = thread.gpr(3);
+            return Err(PpuError::ThreadExit { exit_code });
+        }
+        
+        // Check if this is an HLE stub address
+        const STUB_REGION_BASE: u32 = 0x2F00_0000;
+        const STUB_REGION_END: u32 = 0x3000_0000;
+        if pc >= STUB_REGION_BASE && pc < STUB_REGION_END {
+            return self.execute_hle_stub(thread, pc);
+        }
+        
         let opcode = self.memory.read_be32(pc).map_err(|_| PpuError::InvalidInstruction {
             addr: pc,
             opcode: 0,
@@ -172,6 +194,15 @@ impl PpuInterpreter {
 
         // Decode instruction
         let decoded = PpuDecoder::decode(opcode);
+        
+        // Trace instruction execution (log first 50 instructions at INFO level for debugging)
+        if inst_count <= 50 {
+            let mnemonic = PpuDecoder::get_mnemonic(opcode);
+            tracing::info!(
+                "[{}] 0x{:08x}: {:08x} {} (form={:?})",
+                inst_count, pc, opcode, mnemonic, decoded.form
+            );
+        }
 
         // Execute instruction
         self.execute(thread, opcode, decoded)?;
@@ -194,12 +225,15 @@ impl PpuInterpreter {
     fn execute(&self, thread: &mut PpuThread, opcode: u32, decoded: crate::decoder::DecodedInstruction) -> Result<(), PpuError> {
         match decoded.form {
             InstructionForm::D => self.execute_d_form(thread, opcode, decoded.op),
+            InstructionForm::DS => self.execute_ds_form(thread, opcode, decoded.op),
             InstructionForm::I => self.execute_i_form(thread, opcode),
             InstructionForm::B => self.execute_b_form(thread, opcode),
             InstructionForm::X => self.execute_x_form(thread, opcode, decoded.xo),
             InstructionForm::XO => self.execute_xo_form(thread, opcode, decoded.xo),
             InstructionForm::XL => self.execute_xl_form(thread, opcode, decoded.xo),
             InstructionForm::M => self.execute_m_form(thread, opcode, decoded.op),
+            InstructionForm::MD => self.execute_md_form(thread, opcode),
+            InstructionForm::MDS => self.execute_mds_form(thread, opcode),
             InstructionForm::A => self.execute_a_form(thread, opcode, decoded.xo),
             InstructionForm::VA => self.execute_va_form(thread, opcode),
             InstructionForm::SC => self.execute_sc(thread, opcode),
@@ -230,6 +264,90 @@ impl PpuInterpreter {
                 Ok(())
             }
         }
+    }
+
+    /// Handle an unresolved import call (bctr to unpatched descriptor)
+    /// 
+    /// This handles cases where the import descriptor wasn't patched (e.g., 
+    /// the descriptor had a non-zero address pointing to stub code).
+    fn handle_unresolved_import(&self, thread: &mut PpuThread) -> Result<(), PpuError> {
+        let r12 = thread.gpr(12);
+        
+        tracing::warn!(
+            "Unresolved import call at PC=0x{:08x}: returning stub value 0",
+            thread.pc()
+        );
+        tracing::warn!(
+            "  LR=0x{:x}, R2(TOC)=0x{:x}, R3(arg0)=0x{:x}, R12(descriptor)=0x{:x}",
+            thread.regs.lr,
+            thread.gpr(2),
+            thread.gpr(3),
+            r12
+        );
+        
+        // Stub behavior: set R3 to 0 (success) and return to caller
+        thread.set_gpr(3, 0);  // Return 0 (success/CELL_OK)
+        
+        // Return to caller (jump to LR)
+        let return_addr = thread.regs.lr & !3;
+        if return_addr == 0 {
+            // No valid return address - thread exit
+            tracing::info!("No return address for stub call, thread exiting");
+            return Err(PpuError::ThreadExit { exit_code: 0 });
+        }
+        thread.set_pc(return_addr);
+        
+        Ok(())
+    }
+
+    /// Execute an HLE stub function
+    /// 
+    /// When execution reaches an address in the HLE stub region, this function
+    /// is called to dispatch to the appropriate HLE handler.
+    fn execute_hle_stub(&self, thread: &mut PpuThread, stub_addr: u32) -> Result<(), PpuError> {
+        // Gather arguments from registers (R3-R10 per PPC64 ABI)
+        let args = [
+            thread.gpr(3),
+            thread.gpr(4),
+            thread.gpr(5),
+            thread.gpr(6),
+            thread.gpr(7),
+            thread.gpr(8),
+            thread.gpr(9),
+            thread.gpr(10),
+        ];
+        let toc = thread.gpr(2);
+        let lr = thread.regs.lr;
+        
+        // Try to dispatch through the HLE system
+        if let Some(result) = dispatch_hle_call(stub_addr, &args, toc, lr) {
+            // Set return value in R3
+            thread.set_gpr(3, result as u64);
+            
+            // Return to caller (branch to LR)
+            let return_addr = (thread.regs.lr & !3) as u32;
+            if return_addr == 0 {
+                // No valid return address - thread exit
+                tracing::info!("HLE function returned but no valid LR, thread exiting");
+                return Err(PpuError::ThreadExit { exit_code: result as u64 });
+            }
+            thread.set_pc(return_addr as u64);
+        } else {
+            // Unknown HLE stub - fall back to default behavior (return 0)
+            tracing::warn!(
+                "Unknown HLE stub at 0x{:08x}, LR=0x{:x}, returning 0",
+                stub_addr, lr
+            );
+            thread.set_gpr(3, 0);
+            
+            let return_addr = (thread.regs.lr & !3) as u32;
+            if return_addr == 0 {
+                return Err(PpuError::ThreadExit { exit_code: 0 });
+            }
+            thread.set_pc(return_addr as u64);
+        }
+        
+        Ok(())
     }
 
     /// Execute D-form instructions (most common form - optimized hot path)
@@ -526,26 +644,6 @@ impl PpuInterpreter {
                     opcode,
                 })?;
                 thread.set_gpr(ra as usize, ea);
-            }
-            // ld - Load Doubleword (DS-form, but handled here with d & ~3)
-            58 => {
-                let ds = (d as i16) & !3;
-                let ea = if ra == 0 { ds as u64 } else { thread.gpr(ra as usize).wrapping_add(ds as i64 as u64) };
-                let value = self.memory.read_be64(ea as u32).map_err(|_| PpuError::InvalidInstruction {
-                    addr: thread.pc() as u32,
-                    opcode,
-                })?;
-                thread.set_gpr(rt as usize, value);
-            }
-            // std - Store Doubleword (DS-form, but handled here with d & ~3)
-            62 => {
-                let ds = (d as i16) & !3;
-                let ea = if ra == 0 { ds as u64 } else { thread.gpr(ra as usize).wrapping_add(ds as i64 as u64) };
-                let value = thread.gpr(rt as usize);
-                self.memory.write_be64(ea as u32, value).map_err(|_| PpuError::InvalidInstruction {
-                    addr: thread.pc() as u32,
-                    opcode,
-                })?;
             }
             // xori - XOR Immediate
             26 => {
@@ -1668,10 +1766,52 @@ impl PpuInterpreter {
 
                 if cond_ok {
                     let target = thread.regs.ctr & !3;
-                    if lk {
-                        thread.regs.lr = thread.pc() + 4;
+                    
+                    // Check if target is in the HLE stub region
+                    const STUB_REGION_BASE: u64 = 0x2F00_0000;
+                    const STUB_REGION_END: u64 = 0x3000_0000;
+                    
+                    if target >= STUB_REGION_BASE && target < STUB_REGION_END {
+                        // This is an HLE stub call - dispatch via the stub handler
+                        if lk {
+                            thread.regs.lr = thread.pc() + 4;
+                        }
+                        // Set PC to stub address, step_once will handle it on next iteration
+                        thread.set_pc(target);
+                    } else if target == 0 {
+                        // Unresolved import (descriptor not patched) - handle as stub
+                        self.handle_unresolved_import(thread)?;
+                    } else {
+                        // Check if this looks like a PS3 import trampoline
+                        // R12 typically contains the descriptor address for import calls
+                        let r12 = thread.gpr(12);
+                        
+                        // If the target is in a "trampoline" area (typically near descriptors)
+                        // and we have a valid descriptor pointer in R12, try to handle as import
+                        if r12 >= 0x10000 && r12 < 0x1000000 {
+                            // Check if target contains stub-like code (li r3,0; blr pattern)
+                            let target_code = self.memory.read_be32(target as u32).unwrap_or(0);
+                            
+                            // li r3, imm pattern: 0x3860XXXX (addi r3, 0, imm)
+                            // or it might be a simple blr: 0x4E800020
+                            if target_code == 0x4e800020 || (target_code & 0xFFFF0000) == 0x38600000 {
+                                // This looks like an uninitialized/stub trampoline
+                                self.handle_unresolved_import(thread)?;
+                            } else {
+                                // Normal branch
+                                if lk {
+                                    thread.regs.lr = thread.pc() + 4;
+                                }
+                                thread.set_pc(target);
+                            }
+                        } else {
+                            // Normal branch to CTR
+                            if lk {
+                                thread.regs.lr = thread.pc() + 4;
+                            }
+                            thread.set_pc(target);
+                        }
                     }
-                    thread.set_pc(target);
                 } else {
                     thread.advance_pc();
                 }
@@ -1792,6 +1932,245 @@ impl PpuInterpreter {
 
         thread.advance_pc();
         Ok(())
+    }
+
+    /// Execute DS-form instructions (64-bit load/store with displacement)
+    /// Opcode 58: ld (xo=0), ldu (xo=1), lwa (xo=2)
+    /// Opcode 62: std (xo=0), stdu (xo=1)
+    fn execute_ds_form(&self, thread: &mut PpuThread, opcode: u32, op: u8) -> Result<(), PpuError> {
+        let (rt, ra, ds, xo) = PpuDecoder::ds_form(opcode);
+        
+        match op {
+            // ld/ldu/lwa - Load Doubleword / Load Doubleword with Update / Load Word Algebraic
+            58 => {
+                match xo {
+                    // ld - Load Doubleword
+                    0 => {
+                        let ea = if ra == 0 {
+                            ds as i64 as u64
+                        } else {
+                            thread.gpr(ra as usize).wrapping_add(ds as i64 as u64)
+                        };
+                        let value = self.memory.read_be64(ea as u32).map_err(|_| PpuError::InvalidInstruction {
+                            addr: thread.pc() as u32,
+                            opcode,
+                        })?;
+                        thread.set_gpr(rt as usize, value);
+                    }
+                    // ldu - Load Doubleword with Update
+                    1 => {
+                        if ra == 0 || ra == rt {
+                            return Err(PpuError::InvalidInstruction {
+                                addr: thread.pc() as u32,
+                                opcode,
+                            });
+                        }
+                        let ea = thread.gpr(ra as usize).wrapping_add(ds as i64 as u64);
+                        let value = self.memory.read_be64(ea as u32).map_err(|_| PpuError::InvalidInstruction {
+                            addr: thread.pc() as u32,
+                            opcode,
+                        })?;
+                        thread.set_gpr(rt as usize, value);
+                        thread.set_gpr(ra as usize, ea);
+                    }
+                    // lwa - Load Word Algebraic
+                    2 => {
+                        let ea = if ra == 0 {
+                            ds as i64 as u64
+                        } else {
+                            thread.gpr(ra as usize).wrapping_add(ds as i64 as u64)
+                        };
+                        let value = self.memory.read_be32(ea as u32).map_err(|_| PpuError::InvalidInstruction {
+                            addr: thread.pc() as u32,
+                            opcode,
+                        })? as i32 as i64 as u64; // Sign extend
+                        thread.set_gpr(rt as usize, value);
+                    }
+                    _ => {
+                        tracing::warn!(
+                            "Invalid DS-form xo {} at 0x{:08x} (opcode: 0x{:08x})",
+                            xo, thread.pc(), opcode
+                        );
+                        return Err(PpuError::InvalidInstruction {
+                            addr: thread.pc() as u32,
+                            opcode,
+                        });
+                    }
+                }
+            }
+            // std/stdu - Store Doubleword / Store Doubleword with Update
+            62 => {
+                match xo {
+                    // std - Store Doubleword
+                    0 => {
+                        let ea = if ra == 0 {
+                            ds as i64 as u64
+                        } else {
+                            thread.gpr(ra as usize).wrapping_add(ds as i64 as u64)
+                        };
+                        let value = thread.gpr(rt as usize);
+                        self.memory.write_be64(ea as u32, value).map_err(|_| PpuError::InvalidInstruction {
+                            addr: thread.pc() as u32,
+                            opcode,
+                        })?;
+                    }
+                    // stdu - Store Doubleword with Update
+                    1 => {
+                        if ra == 0 {
+                            return Err(PpuError::InvalidInstruction {
+                                addr: thread.pc() as u32,
+                                opcode,
+                            });
+                        }
+                        let ea = thread.gpr(ra as usize).wrapping_add(ds as i64 as u64);
+                        let value = thread.gpr(rt as usize);
+                        self.memory.write_be64(ea as u32, value).map_err(|_| PpuError::InvalidInstruction {
+                            addr: thread.pc() as u32,
+                            opcode,
+                        })?;
+                        thread.set_gpr(ra as usize, ea);
+                    }
+                    _ => {
+                        tracing::warn!(
+                            "Invalid DS-form xo {} at 0x{:08x} (opcode: 0x{:08x})",
+                            xo, thread.pc(), opcode
+                        );
+                        return Err(PpuError::InvalidInstruction {
+                            addr: thread.pc() as u32,
+                            opcode,
+                        });
+                    }
+                }
+            }
+            _ => {
+                tracing::warn!(
+                    "Unimplemented DS-form op {} at 0x{:08x} (opcode: 0x{:08x})",
+                    op, thread.pc(), opcode
+                );
+                return Err(PpuError::InvalidInstruction {
+                    addr: thread.pc() as u32,
+                    opcode,
+                });
+            }
+        }
+
+        thread.advance_pc();
+        Ok(())
+    }
+
+    /// Execute MD-form instructions (64-bit rotate)
+    /// rldicl (xo=0), rldicr (xo=1), rldic (xo=2), rldimi (xo=3)
+    fn execute_md_form(&self, thread: &mut PpuThread, opcode: u32) -> Result<(), PpuError> {
+        let (rs, ra, sh, mb, xo, rc) = PpuDecoder::md_form(opcode);
+        let value = thread.gpr(rs as usize);
+        let rotated = value.rotate_left(sh as u32);
+
+        let result = match xo {
+            // rldicl - Rotate Left Doubleword Immediate then Clear Left
+            0 => {
+                // Mask from mb to 63
+                let mask = Self::generate_mask_64(mb, 63);
+                rotated & mask
+            }
+            // rldicr - Rotate Left Doubleword Immediate then Clear Right
+            1 => {
+                // mb is actually 'me' for rldicr
+                // Mask from 0 to me (which is stored in mb field)
+                let me = mb;
+                let mask = Self::generate_mask_64(0, me);
+                rotated & mask
+            }
+            // rldic - Rotate Left Doubleword Immediate then Clear
+            2 => {
+                // Mask from mb to 63-sh
+                let me = (63u8).wrapping_sub(sh);
+                let mask = Self::generate_mask_64(mb, me);
+                rotated & mask
+            }
+            // rldimi - Rotate Left Doubleword Immediate then Mask Insert
+            3 => {
+                // Insert rotated bits into ra using mask
+                let me = (63u8).wrapping_sub(sh);
+                let mask = Self::generate_mask_64(mb, me);
+                (rotated & mask) | (thread.gpr(ra as usize) & !mask)
+            }
+            _ => {
+                tracing::warn!(
+                    "Unimplemented MD-form xo {} at 0x{:08x} (opcode: 0x{:08x})",
+                    xo, thread.pc(), opcode
+                );
+                return Err(PpuError::InvalidInstruction {
+                    addr: thread.pc() as u32,
+                    opcode,
+                });
+            }
+        };
+
+        thread.set_gpr(ra as usize, result);
+        if rc {
+            self.update_cr0(thread, result);
+        }
+
+        thread.advance_pc();
+        Ok(())
+    }
+
+    /// Execute MDS-form instructions (64-bit rotate with register shift)
+    /// rldcl (xo=8), rldcr (xo=9)
+    fn execute_mds_form(&self, thread: &mut PpuThread, opcode: u32) -> Result<(), PpuError> {
+        let (rs, ra, rb, mb, xo, rc) = PpuDecoder::mds_form(opcode);
+        let value = thread.gpr(rs as usize);
+        let sh = (thread.gpr(rb as usize) & 0x3F) as u32; // 6-bit shift from register
+        let rotated = value.rotate_left(sh);
+
+        let result = match xo {
+            // rldcl - Rotate Left Doubleword then Clear Left
+            8 => {
+                // Mask from mb to 63
+                let mask = Self::generate_mask_64(mb, 63);
+                rotated & mask
+            }
+            // rldcr - Rotate Left Doubleword then Clear Right
+            9 => {
+                // mb is actually 'me' for rldcr
+                let me = mb;
+                let mask = Self::generate_mask_64(0, me);
+                rotated & mask
+            }
+            _ => {
+                tracing::warn!(
+                    "Unimplemented MDS-form xo {} at 0x{:08x} (opcode: 0x{:08x})",
+                    xo, thread.pc(), opcode
+                );
+                return Err(PpuError::InvalidInstruction {
+                    addr: thread.pc() as u32,
+                    opcode,
+                });
+            }
+        };
+
+        thread.set_gpr(ra as usize, result);
+        if rc {
+            self.update_cr0(thread, result);
+        }
+
+        thread.advance_pc();
+        Ok(())
+    }
+
+    /// Generate 64-bit mask for rotate instructions
+    /// Creates a mask with 1s from bit mb to bit me (inclusive)
+    #[inline]
+    fn generate_mask_64(mb: u8, me: u8) -> u64 {
+        let mb = mb as u64;
+        let me = me as u64;
+        if mb <= me {
+            // Normal case: mask from mb to me
+            (u64::MAX >> mb) & (u64::MAX << (63 - me))
+        } else {
+            // Wrap-around case: mask from 0 to me AND from mb to 63
+            (u64::MAX >> mb) | (u64::MAX << (63 - me))
+        }
     }
 
     /// Execute system call

@@ -82,6 +82,9 @@ pub enum PpuError {
     #[error("Breakpoint hit at 0x{addr:08x}")]
     Breakpoint { addr: u64 },
 
+    #[error("Thread exit with code {exit_code}")]
+    ThreadExit { exit_code: u64 },
+
     #[error("Exception {exception:?} at 0x{addr:08x}")]
     Exception { addr: u32, exception: PpuExceptionType },
 

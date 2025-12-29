@@ -1,7 +1,7 @@
 [package]
 name = "oxidized-cell"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 description = "PS3 Emulator written in Rust"
 license = "GPL-3.0"
 repository = "https://github.com/darkace1998/-oxidized-cell-"

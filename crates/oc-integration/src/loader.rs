@@ -4,14 +4,15 @@
 //! ELF/SELF files into emulator memory and setting up the initial
 //! PPU thread state.
 
-use oc_core::error::{EmulatorError, LoaderError};
+use oc_core::error::{EmulatorError, LoaderError, MemoryError};
 use oc_core::Result;
+use oc_hle::{init_hle_dispatcher, get_dispatcher_mut};
 use oc_loader::elf::{pt, sht};
 use oc_loader::{ElfLoader, PrxLoader, SelfLoader};
 use oc_memory::MemoryManager;
 use oc_vfs::IsoReader;
 use std::fs::File;
-use std::io::{BufReader, Cursor, Read};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, info, warn, error};
@@ -40,6 +41,53 @@ const TLS_BASE_ADDR: u32 = 0x2800_0000;  // In user memory region
 
 /// Default TLS size (64KB)
 const DEFAULT_TLS_SIZE: u32 = 0x10000;
+
+/// Dynamic section tag constants
+mod dt {
+    pub const NULL: i64 = 0;
+    pub const PLTGOT: i64 = 3;
+    pub const JMPREL: i64 = 23;
+    pub const PLTRELSZ: i64 = 2;
+}
+
+/// HLE stub generator for unresolved imports
+///
+/// Creates PowerPC stub functions in memory that return 0 (success)
+/// and properly handle the PPC64 calling convention.
+struct HleStubGenerator<'a> {
+    base_addr: u32,
+    memory: &'a Arc<MemoryManager>,
+}
+
+impl<'a> HleStubGenerator<'a> {
+    fn new(base_addr: u32, memory: &'a Arc<MemoryManager>) -> Self {
+        Self { base_addr, memory }
+    }
+    
+    /// Create an HLE stub function at the given index
+    /// 
+    /// Each stub is 16 bytes (4 instructions):
+    ///   li r3, 0       ; Return 0 (CELL_OK/success)
+    ///   blr            ; Return to caller
+    ///   nop            ; Padding
+    ///   nop            ; Padding
+    fn create_stub(&self, index: u32) -> std::result::Result<u32, MemoryError> {
+        const STUB_SIZE: u32 = 16;
+        let stub_addr = self.base_addr + index * STUB_SIZE;
+        
+        // li r3, 0 (addi r3, r0, 0) = 0x38600000
+        self.memory.write_be32(stub_addr, 0x38600000)?;
+        
+        // blr (branch to link register) = 0x4E800020
+        self.memory.write_be32(stub_addr + 4, 0x4E800020)?;
+        
+        // nop = 0x60000000
+        self.memory.write_be32(stub_addr + 8, 0x60000000)?;
+        self.memory.write_be32(stub_addr + 12, 0x60000000)?;
+        
+        Ok(stub_addr)
+    }
+}
 
 /// Loaded game information
 #[derive(Debug, Clone)]
@@ -603,6 +651,12 @@ impl GameLoader {
         // Validate that the entry point contains valid code
         self.validate_entry_point(entry_point, &path, is_self)?;
 
+        // Parse and setup import stubs from the ELF
+        let stubs_installed = self.setup_import_stubs(&mut cursor, base_addr)?;
+        if stubs_installed > 0 {
+            info!("Installed {} HLE import stubs", stubs_installed);
+        }
+
         Ok(LoadedGame {
             entry_point,
             base_addr,
@@ -648,6 +702,309 @@ impl GameLoader {
 
         // Fallback: TOC is typically entry_point + TOC_OFFSET for PPC64 ABI
         elf.entry_point.saturating_add(TOC_OFFSET)
+    }
+
+    /// Set up import stubs by scanning the ELF for PLT/GOT entries and patching them
+    ///
+    /// PS3 executables typically use a PLT (Procedure Linkage Table) where each entry
+    /// loads a function descriptor (OPD) and branches to it. We need to:
+    /// 1. Find the PLT/GOT sections
+    /// 2. Identify unresolved import entries (containing zeros or invalid addresses)
+    /// 3. Create HLE stub functions in memory
+    /// 4. Patch the function descriptors to point to our stubs
+    fn setup_import_stubs<R: Read + Seek>(
+        &self,
+        reader: &mut R,
+        base_addr: u32,
+    ) -> Result<usize> {
+        info!("Setting up HLE import stubs...");
+        
+        // Initialize the HLE dispatcher with all known functions
+        init_hle_dispatcher();
+        
+        // Re-parse the ELF to get section info
+        reader.seek(SeekFrom::Start(0)).map_err(|e| {
+            EmulatorError::Loader(LoaderError::InvalidElf(format!("Failed to seek: {}", e)))
+        })?;
+        
+        let elf = ElfLoader::new(reader).map_err(EmulatorError::Loader)?;
+        
+        // Allocate a region for HLE stubs
+        // Each stub is 16 bytes (4 instructions)
+        // Using high end of USER_MEM region (0x2000_0000 - 0x3000_0000)
+        const STUB_REGION_BASE: u32 = 0x2F00_0000;
+        const MAX_STUBS: u32 = 0x10000;  // 64K stubs max (1MB total)
+        
+        // Write pre-registered HLE function stubs to memory
+        let pre_registered = self.write_hle_stubs_to_memory(STUB_REGION_BASE)?;
+        info!("Wrote {} pre-registered HLE function stubs", pre_registered);
+        
+        let mut stub_count: u32 = pre_registered as u32;
+        let mut descriptors_patched = 0;
+        
+        // Create the HLE stub code generator for additional stubs
+        let stub_generator = HleStubGenerator::new(STUB_REGION_BASE, &self.memory);
+        
+        // Find segments that contain loaded data and scan for zero descriptors
+        // PS3 uses 8-byte function descriptors: [code_addr(4), toc(4)]
+        for phdr in &elf.phdrs {
+            if phdr.p_type != pt::LOAD {
+                continue;
+            }
+            
+            // Only scan writable data segments (not code segments)
+            // PF_W = 2, PF_R = 4
+            let is_data = (phdr.p_flags & 0x1) == 0;  // Not executable
+            if !is_data {
+                continue;
+            }
+            
+            let seg_start = phdr.p_vaddr as u32;
+            let seg_size = phdr.p_memsz as u32;
+            
+            if seg_size == 0 || seg_start == 0 {
+                continue;
+            }
+            
+            debug!("Scanning segment at 0x{:08x} (size 0x{:x}) for unresolved imports", seg_start, seg_size);
+            
+            // Scan for 8-byte aligned entries that look like unresolved descriptors
+            // An unresolved descriptor has code_addr = 0 and may have toc = 0 or non-zero
+            const DESCRIPTOR_SIZE: u32 = 8;
+            let num_entries = seg_size / DESCRIPTOR_SIZE;
+            
+            for i in 0..num_entries.min(MAX_STUBS) {
+                let desc_addr = seg_start + i * DESCRIPTOR_SIZE;
+                
+                // Read the function entry address from the descriptor
+                let entry_addr = match self.memory.read_be32(desc_addr) {
+                    Ok(addr) => addr,
+                    Err(_) => continue,
+                };
+                
+                // Also read the TOC value to distinguish from zero-initialized data
+                let toc_val = match self.memory.read_be32(desc_addr + 4) {
+                    Ok(toc) => toc,
+                    Err(_) => continue,
+                };
+                
+                // This looks like an unresolved import if:
+                // - entry_addr is 0
+                // - TOC is a reasonable address (in user space range)
+                // This helps distinguish from just zero-initialized data
+                let is_likely_import = entry_addr == 0 && 
+                    toc_val >= 0x10000 && toc_val < 0x40000000;
+                
+                if is_likely_import {
+                    // This is likely an unresolved import - create a stub for it
+                    let stub_addr = match stub_generator.create_stub(stub_count) {
+                        Ok(addr) => addr,
+                        Err(e) => {
+                            warn!("Failed to create stub {}: {}", stub_count, e);
+                            continue;
+                        }
+                    };
+                    
+                    // Patch the descriptor to point to our stub
+                    if let Err(e) = self.memory.write_be32(desc_addr, stub_addr) {
+                        warn!("Failed to patch descriptor at 0x{:08x}: {}", desc_addr, e);
+                        continue;
+                    }
+                    
+                    debug!(
+                        "Patched import descriptor at 0x{:08x} (toc=0x{:08x}) -> stub at 0x{:08x}",
+                        desc_addr, toc_val, stub_addr
+                    );
+                    
+                    stub_count += 1;
+                    descriptors_patched += 1;
+                    
+                    if stub_count >= MAX_STUBS {
+                        warn!("Maximum stub count reached");
+                        break;
+                    }
+                }
+            }
+        }
+        
+        // Also scan the GOT (Global Offset Table) if present
+        // Find PT_DYNAMIC to locate GOT
+        for phdr in &elf.phdrs {
+            if phdr.p_type == pt::DYNAMIC {
+                // Parse dynamic section to find PLTGOT
+                let dyn_addr = phdr.p_vaddr as u32 + base_addr;
+                let dyn_size = phdr.p_filesz as usize;
+                
+                let patched = self.scan_and_patch_got(dyn_addr, dyn_size, &stub_generator, &mut stub_count)?;
+                descriptors_patched += patched;
+            }
+        }
+        
+        if descriptors_patched > 0 {
+            info!(
+                "Created {} HLE stubs at 0x{:08x}, patched {} descriptors",
+                stub_count, STUB_REGION_BASE, descriptors_patched
+            );
+        } else {
+            debug!("No unresolved import descriptors found (imports may be resolved or game doesn't use standard linking)");
+        }
+        
+        Ok(descriptors_patched)
+    }
+    
+    /// Scan GOT/PLT and patch unresolved entries
+    fn scan_and_patch_got(
+        &self,
+        dyn_addr: u32,
+        dyn_size: usize,
+        stub_generator: &HleStubGenerator,
+        stub_count: &mut u32,
+    ) -> Result<usize> {
+        let mut patched = 0;
+        let mut got_addr: Option<u32> = None;
+        let mut jmprel_addr: Option<u32> = None;
+        let mut jmprel_size: Option<usize> = None;
+        
+        // Parse dynamic entries to find GOT and JMPREL
+        let num_entries = dyn_size / 16;  // Each Elf64_Dyn is 16 bytes
+        
+        for i in 0..num_entries {
+            let entry_addr = dyn_addr + (i * 16) as u32;
+            
+            let d_tag = match self.memory.read_be64(entry_addr) {
+                Ok(tag) => tag as i64,
+                Err(_) => continue,
+            };
+            
+            let d_val = match self.memory.read_be64(entry_addr + 8) {
+                Ok(val) => val as u32,
+                Err(_) => continue,
+            };
+            
+            match d_tag {
+                dt::NULL => break,  // End of dynamic section
+                dt::PLTGOT => got_addr = Some(d_val),
+                dt::JMPREL => jmprel_addr = Some(d_val),
+                dt::PLTRELSZ => jmprel_size = Some(d_val as usize),
+                _ => {}
+            }
+        }
+        
+        // Patch GOT entries that point to 0
+        if let Some(got) = got_addr {
+            // GOT typically has reserved entries at the start, then function pointers
+            // First 3 entries are reserved on most platforms
+            const GOT_RESERVED_ENTRIES: u32 = 3;
+            const GOT_ENTRY_SIZE: u32 = 8;
+            const MAX_GOT_ENTRIES: u32 = 1024;
+            
+            for i in GOT_RESERVED_ENTRIES..MAX_GOT_ENTRIES {
+                let entry_addr = got + i * GOT_ENTRY_SIZE;
+                
+                let entry_val = match self.memory.read_be64(entry_addr) {
+                    Ok(val) => val,
+                    Err(_) => break,  // End of accessible GOT
+                };
+                
+                if entry_val == 0 {
+                    // Unresolved entry - patch with stub
+                    let stub_addr = match stub_generator.create_stub(*stub_count) {
+                        Ok(addr) => addr,
+                        Err(_) => continue,
+                    };
+                    
+                    if let Err(e) = self.memory.write_be64(entry_addr, stub_addr as u64) {
+                        warn!("Failed to patch GOT entry at 0x{:08x}: {}", entry_addr, e);
+                        continue;
+                    }
+                    
+                    debug!("Patched GOT[{}] at 0x{:08x} -> stub 0x{:08x}", i, entry_addr, stub_addr);
+                    *stub_count += 1;
+                    patched += 1;
+                }
+            }
+        }
+        
+        // Also patch JMPREL (PLT relocations) if present
+        if let (Some(jmprel), Some(size)) = (jmprel_addr, jmprel_size) {
+            let rela_entry_size = 24;  // sizeof(Elf64_Rela)
+            let num_relas = size / rela_entry_size;
+            
+            for i in 0..num_relas {
+                let rela_addr = jmprel + (i * rela_entry_size) as u32;
+                
+                let r_offset = match self.memory.read_be64(rela_addr) {
+                    Ok(off) => off as u32,
+                    Err(_) => continue,
+                };
+                
+                // Check if the relocation target contains 0
+                let target_val = match self.memory.read_be64(r_offset) {
+                    Ok(val) => val,
+                    Err(_) => continue,
+                };
+                
+                if target_val == 0 {
+                    let stub_addr = match stub_generator.create_stub(*stub_count) {
+                        Ok(addr) => addr,
+                        Err(_) => continue,
+                    };
+                    
+                    if let Err(e) = self.memory.write_be64(r_offset, stub_addr as u64) {
+                        warn!("Failed to patch relocation target at 0x{:08x}: {}", r_offset, e);
+                        continue;
+                    }
+                    
+                    debug!("Patched JMPREL target at 0x{:08x} -> stub 0x{:08x}", r_offset, stub_addr);
+                    *stub_count += 1;
+                    patched += 1;
+                }
+            }
+        }
+        
+        Ok(patched)
+    }
+
+    /// Write pre-registered HLE function stubs to memory
+    /// 
+    /// This writes the actual PPC64 stub code for all functions registered
+    /// in the HLE dispatcher. Each stub is 16 bytes.
+    fn write_hle_stubs_to_memory(&self, stub_base: u32) -> Result<usize> {
+        let dispatcher = get_dispatcher_mut();
+        let mut count = 0;
+        
+        // Write stub code for each registered function
+        for (&stub_addr, info) in dispatcher.iter_stubs() {
+            // Verify the stub address is in our expected range
+            if stub_addr < stub_base {
+                continue;
+            }
+            
+            // Write the stub code:
+            // li r3, 0       ; Return 0 (CELL_OK/success) - 0x38600000
+            // blr            ; Return to caller - 0x4E800020
+            // nop            ; Padding - 0x60000000
+            // nop            ; Padding - 0x60000000
+            if let Err(e) = self.memory.write_be32(stub_addr, 0x38600000) {
+                warn!("Failed to write stub for {}::{} at 0x{:08x}: {}", 
+                      info.module, info.name, stub_addr, e);
+                continue;
+            }
+            if let Err(_e) = self.memory.write_be32(stub_addr + 4, 0x4E800020) {
+                continue;
+            }
+            if let Err(_e) = self.memory.write_be32(stub_addr + 8, 0x60000000) {
+                continue;
+            }
+            if let Err(_e) = self.memory.write_be32(stub_addr + 12, 0x60000000) {
+                continue;
+            }
+            
+            debug!("Wrote HLE stub for {}::{} at 0x{:08x}", info.module, info.name, stub_addr);
+            count += 1;
+        }
+        
+        Ok(count)
     }
 
     /// Set up Thread-Local Storage (TLS)

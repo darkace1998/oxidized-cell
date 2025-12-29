@@ -510,6 +510,24 @@ impl EmulatorRunner {
         // Execute one instruction normally
         match self.ppu_interpreter.step(&mut thread) {
             Ok(()) => Ok(()),
+            Err(oc_core::error::PpuError::ThreadExit { exit_code }) => {
+                tracing::info!("PPU thread {} exited normally with code {}", thread_id, exit_code);
+                thread.stop();
+                self.scheduler.write().set_thread_state(
+                    ThreadId::Ppu(thread_id),
+                    ThreadState::Stopped
+                );
+                Ok(()) // Thread exit is not an error
+            }
+            Err(oc_core::error::PpuError::Breakpoint { addr }) => {
+                tracing::debug!("PPU thread {} hit breakpoint at 0x{:08x}", thread_id, addr);
+                thread.stop();
+                self.scheduler.write().set_thread_state(
+                    ThreadId::Ppu(thread_id),
+                    ThreadState::Waiting
+                );
+                Ok(()) // Breakpoint is not an error, just pauses execution
+            }
             Err(e) => {
                 tracing::error!("PPU thread {} error: {}", thread_id, e);
                 thread.stop();

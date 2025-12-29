@@ -4,6 +4,7 @@
 
 pub mod module;
 pub mod context;
+pub mod dispatcher;
 
 // Graphics Modules
 pub mod cell_gcm_sys;
@@ -47,3 +48,7 @@ pub mod cell_fs;
 
 pub use module::ModuleRegistry;
 pub use context::{HleContext, HLE_CONTEXT, get_hle_context, get_hle_context_mut, reset_hle_context};
+pub use dispatcher::{
+    HleDispatcher, HleCallContext, HleFunctionInfo, HleFn, HLE_DISPATCHER,
+    get_dispatcher, get_dispatcher_mut, init_hle_dispatcher, dispatch_hle_call,
+};

@@ -9,6 +9,7 @@ description = "PPU (PowerPC) emulation for oxidized-cell PS3 emulator"
 [dependencies]
 oc-core.workspace = true
 oc-memory.workspace = true
+oc-hle.workspace = true
 tracing.workspace = true
 bitflags.workspace = true
 bytemuck.workspace = true

@@ -82,11 +82,10 @@ impl PpuDecoder {
             8..=13 | // subfic, cmpli, cmpi, addic, addic., mulli
             24..=29 | // ori, oris, xori, xoris, andi., andis.
             2 | 3 | // tdi, twi
-            7 | // mulli
-            58 => (InstructionForm::D, 0),
+            7 => (InstructionForm::D, 0), // mulli
             
-            // DS-Form
-            62 => (InstructionForm::DS, 0),
+            // DS-Form (64-bit load/store)
+            58 | 62 => (InstructionForm::DS, 0),
             
             // Special opcode groups
             19 => {
@@ -289,6 +288,59 @@ impl PpuDecoder {
         let me = ((opcode >> 1) & 0x1F) as u8;
         let rc = (opcode & 1) != 0;
         (rs, ra, rb, mb, me, rc)
+    }
+    
+    /// Extract DS-form fields (ld/ldu/lwa, std/stdu)
+    /// Returns (rt/rs, ra, ds, xo)
+    /// ds is the 14-bit signed displacement (already shifted left by 2)
+    /// xo is the 2-bit extended opcode (bits 30-31)
+    #[inline]
+    pub fn ds_form(opcode: u32) -> (u8, u8, i16, u8) {
+        let rt = ((opcode >> 21) & 0x1F) as u8;
+        let ra = ((opcode >> 16) & 0x1F) as u8;
+        // DS field is bits 16-29, but we need to clear the bottom 2 bits
+        // and sign-extend from 16 bits
+        let ds_raw = (opcode & 0xFFFC) as i16;
+        let xo = (opcode & 0x3) as u8;
+        (rt, ra, ds_raw, xo)
+    }
+    
+    /// Extract MD-form fields (64-bit rotate)
+    /// Returns (rs, ra, sh, mb, xo, rc)
+    /// sh is 6-bit (sh[0:4] from bits 16-20, sh[5] from bit 30)
+    /// mb is 6-bit (mb[0:4] from bits 21-25, mb[5] from bit 26)
+    /// xo is 3-bit from bits 27-29
+    #[inline]
+    pub fn md_form(opcode: u32) -> (u8, u8, u8, u8, u8, bool) {
+        let rs = ((opcode >> 21) & 0x1F) as u8;
+        let ra = ((opcode >> 16) & 0x1F) as u8;
+        let sh_lo = ((opcode >> 11) & 0x1F) as u8;
+        let sh_hi = ((opcode >> 1) & 0x1) as u8;
+        let sh = sh_lo | (sh_hi << 5);
+        let mb_lo = ((opcode >> 6) & 0x1F) as u8;
+        let mb_hi = ((opcode >> 5) & 0x1) as u8;
+        let mb = mb_lo | (mb_hi << 5);
+        let xo = ((opcode >> 2) & 0x7) as u8;
+        let rc = (opcode & 1) != 0;
+        (rs, ra, sh, mb, xo, rc)
+    }
+    
+    /// Extract MDS-form fields (64-bit rotate with register shift)
+    /// Returns (rs, ra, rb, mb, xo, rc)
+    /// rb is the shift amount register (bits 11-15)
+    /// mb is 6-bit (mb[0:4] from bits 21-25, mb[5] from bit 26)
+    /// xo is 4-bit from bits 27-30
+    #[inline]
+    pub fn mds_form(opcode: u32) -> (u8, u8, u8, u8, u8, bool) {
+        let rs = ((opcode >> 21) & 0x1F) as u8;
+        let ra = ((opcode >> 16) & 0x1F) as u8;
+        let rb = ((opcode >> 11) & 0x1F) as u8;
+        let mb_lo = ((opcode >> 6) & 0x1F) as u8;
+        let mb_hi = ((opcode >> 5) & 0x1) as u8;
+        let mb = mb_lo | (mb_hi << 5);
+        let xo = ((opcode >> 1) & 0xF) as u8;
+        let rc = (opcode & 1) != 0;
+        (rs, ra, rb, mb, xo, rc)
     }
     
     /// Get a human-readable mnemonic for the instruction (best effort)
