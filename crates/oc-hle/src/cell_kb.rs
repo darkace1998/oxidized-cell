@@ -87,6 +87,133 @@ pub const CELL_KB_LED_SCROLL_LOCK: u32 = 0x04;
 pub const CELL_KB_LED_COMPOSE: u32 = 0x08;
 pub const CELL_KB_LED_KANA: u32 = 0x10;
 
+/// Special key codes (USB HID usage codes)
+pub mod key_codes {
+    // Letters (0x04-0x1D)
+    pub const KEY_A: u16 = 0x04;
+    pub const KEY_B: u16 = 0x05;
+    pub const KEY_C: u16 = 0x06;
+    pub const KEY_D: u16 = 0x07;
+    pub const KEY_E: u16 = 0x08;
+    pub const KEY_F: u16 = 0x09;
+    pub const KEY_G: u16 = 0x0A;
+    pub const KEY_H: u16 = 0x0B;
+    pub const KEY_I: u16 = 0x0C;
+    pub const KEY_J: u16 = 0x0D;
+    pub const KEY_K: u16 = 0x0E;
+    pub const KEY_L: u16 = 0x0F;
+    pub const KEY_M: u16 = 0x10;
+    pub const KEY_N: u16 = 0x11;
+    pub const KEY_O: u16 = 0x12;
+    pub const KEY_P: u16 = 0x13;
+    pub const KEY_Q: u16 = 0x14;
+    pub const KEY_R: u16 = 0x15;
+    pub const KEY_S: u16 = 0x16;
+    pub const KEY_T: u16 = 0x17;
+    pub const KEY_U: u16 = 0x18;
+    pub const KEY_V: u16 = 0x19;
+    pub const KEY_W: u16 = 0x1A;
+    pub const KEY_X: u16 = 0x1B;
+    pub const KEY_Y: u16 = 0x1C;
+    pub const KEY_Z: u16 = 0x1D;
+    
+    // Numbers (0x1E-0x27)
+    pub const KEY_1: u16 = 0x1E;
+    pub const KEY_2: u16 = 0x1F;
+    pub const KEY_3: u16 = 0x20;
+    pub const KEY_4: u16 = 0x21;
+    pub const KEY_5: u16 = 0x22;
+    pub const KEY_6: u16 = 0x23;
+    pub const KEY_7: u16 = 0x24;
+    pub const KEY_8: u16 = 0x25;
+    pub const KEY_9: u16 = 0x26;
+    pub const KEY_0: u16 = 0x27;
+    
+    // Special keys
+    pub const KEY_ENTER: u16 = 0x28;
+    pub const KEY_ESCAPE: u16 = 0x29;
+    pub const KEY_BACKSPACE: u16 = 0x2A;
+    pub const KEY_TAB: u16 = 0x2B;
+    pub const KEY_SPACE: u16 = 0x2C;
+    pub const KEY_MINUS: u16 = 0x2D;
+    pub const KEY_EQUAL: u16 = 0x2E;
+    pub const KEY_LEFT_BRACKET: u16 = 0x2F;
+    pub const KEY_RIGHT_BRACKET: u16 = 0x30;
+    pub const KEY_BACKSLASH: u16 = 0x31;
+    pub const KEY_SEMICOLON: u16 = 0x33;
+    pub const KEY_APOSTROPHE: u16 = 0x34;
+    pub const KEY_GRAVE: u16 = 0x35;
+    pub const KEY_COMMA: u16 = 0x36;
+    pub const KEY_PERIOD: u16 = 0x37;
+    pub const KEY_SLASH: u16 = 0x38;
+    pub const KEY_CAPS_LOCK: u16 = 0x39;
+    
+    // Function keys (0x3A-0x45)
+    pub const KEY_F1: u16 = 0x3A;
+    pub const KEY_F2: u16 = 0x3B;
+    pub const KEY_F3: u16 = 0x3C;
+    pub const KEY_F4: u16 = 0x3D;
+    pub const KEY_F5: u16 = 0x3E;
+    pub const KEY_F6: u16 = 0x3F;
+    pub const KEY_F7: u16 = 0x40;
+    pub const KEY_F8: u16 = 0x41;
+    pub const KEY_F9: u16 = 0x42;
+    pub const KEY_F10: u16 = 0x43;
+    pub const KEY_F11: u16 = 0x44;
+    pub const KEY_F12: u16 = 0x45;
+    
+    // Special function keys
+    pub const KEY_PRINT_SCREEN: u16 = 0x46;
+    pub const KEY_SCROLL_LOCK: u16 = 0x47;
+    pub const KEY_PAUSE: u16 = 0x48;
+    pub const KEY_INSERT: u16 = 0x49;
+    pub const KEY_HOME: u16 = 0x4A;
+    pub const KEY_PAGE_UP: u16 = 0x4B;
+    pub const KEY_DELETE: u16 = 0x4C;
+    pub const KEY_END: u16 = 0x4D;
+    pub const KEY_PAGE_DOWN: u16 = 0x4E;
+    
+    // Arrow keys
+    pub const KEY_RIGHT_ARROW: u16 = 0x4F;
+    pub const KEY_LEFT_ARROW: u16 = 0x50;
+    pub const KEY_DOWN_ARROW: u16 = 0x51;
+    pub const KEY_UP_ARROW: u16 = 0x52;
+    
+    // Numpad keys
+    pub const KEY_NUM_LOCK: u16 = 0x53;
+    pub const KEY_KP_DIVIDE: u16 = 0x54;
+    pub const KEY_KP_MULTIPLY: u16 = 0x55;
+    pub const KEY_KP_MINUS: u16 = 0x56;
+    pub const KEY_KP_PLUS: u16 = 0x57;
+    pub const KEY_KP_ENTER: u16 = 0x58;
+    pub const KEY_KP_1: u16 = 0x59;
+    pub const KEY_KP_2: u16 = 0x5A;
+    pub const KEY_KP_3: u16 = 0x5B;
+    pub const KEY_KP_4: u16 = 0x5C;
+    pub const KEY_KP_5: u16 = 0x5D;
+    pub const KEY_KP_6: u16 = 0x5E;
+    pub const KEY_KP_7: u16 = 0x5F;
+    pub const KEY_KP_8: u16 = 0x60;
+    pub const KEY_KP_9: u16 = 0x61;
+    pub const KEY_KP_0: u16 = 0x62;
+    pub const KEY_KP_PERIOD: u16 = 0x63;
+    
+    // Modifier keys (left side)
+    pub const KEY_LEFT_CTRL: u16 = 0xE0;
+    pub const KEY_LEFT_SHIFT: u16 = 0xE1;
+    pub const KEY_LEFT_ALT: u16 = 0xE2;
+    pub const KEY_LEFT_GUI: u16 = 0xE3;  // Windows/Super key
+    
+    // Modifier keys (right side)
+    pub const KEY_RIGHT_CTRL: u16 = 0xE4;
+    pub const KEY_RIGHT_SHIFT: u16 = 0xE5;
+    pub const KEY_RIGHT_ALT: u16 = 0xE6;
+    pub const KEY_RIGHT_GUI: u16 = 0xE7;  // Windows/Super key
+    
+    // Application key (context menu)
+    pub const KEY_APPLICATION: u16 = 0x65;
+}
+
 /// Keyboard info structure
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -699,5 +826,66 @@ mod tests {
         assert_eq!(CELL_KB_LED_NUM_LOCK, 0x01);
         assert_eq!(CELL_KB_LED_CAPS_LOCK, 0x02);
         assert_eq!(CELL_KB_LED_SCROLL_LOCK, 0x04);
+    }
+
+    #[test]
+    fn test_special_key_codes() {
+        use key_codes::*;
+        
+        // Letters
+        assert_eq!(KEY_A, 0x04);
+        assert_eq!(KEY_Z, 0x1D);
+        
+        // Numbers
+        assert_eq!(KEY_1, 0x1E);
+        assert_eq!(KEY_0, 0x27);
+        
+        // Special keys
+        assert_eq!(KEY_ENTER, 0x28);
+        assert_eq!(KEY_ESCAPE, 0x29);
+        assert_eq!(KEY_BACKSPACE, 0x2A);
+        assert_eq!(KEY_TAB, 0x2B);
+        assert_eq!(KEY_SPACE, 0x2C);
+        
+        // Function keys
+        assert_eq!(KEY_F1, 0x3A);
+        assert_eq!(KEY_F12, 0x45);
+        
+        // Arrow keys
+        assert_eq!(KEY_UP_ARROW, 0x52);
+        assert_eq!(KEY_DOWN_ARROW, 0x51);
+        assert_eq!(KEY_LEFT_ARROW, 0x50);
+        assert_eq!(KEY_RIGHT_ARROW, 0x4F);
+        
+        // Modifier keys
+        assert_eq!(KEY_LEFT_CTRL, 0xE0);
+        assert_eq!(KEY_LEFT_SHIFT, 0xE1);
+        assert_eq!(KEY_LEFT_ALT, 0xE2);
+        assert_eq!(KEY_RIGHT_CTRL, 0xE4);
+    }
+
+    #[test]
+    fn test_kb_keyboard_data_update() {
+        let mut manager = KbManager::new();
+        manager.init(2);
+        
+        // Update keyboard data with some keys
+        let keycodes = [
+            key_codes::KEY_A, 
+            key_codes::KEY_ENTER,
+            key_codes::KEY_LEFT_SHIFT
+        ];
+        let modifiers = CELL_KB_MKEY_L_SHIFT;
+        
+        assert_eq!(manager.update_keyboard_data(0, &keycodes, modifiers), 0);
+        
+        let data = manager.read(0).unwrap();
+        assert_eq!(data.len, 3);
+        assert_eq!(data.keycodes[0], key_codes::KEY_A);
+        assert_eq!(data.keycodes[1], key_codes::KEY_ENTER);
+        assert_eq!(data.keycodes[2], key_codes::KEY_LEFT_SHIFT);
+        assert_eq!(data.mkey, CELL_KB_MKEY_L_SHIFT);
+        
+        manager.end();
     }
 }
