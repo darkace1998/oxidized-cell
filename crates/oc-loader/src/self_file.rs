@@ -701,6 +701,16 @@ impl SelfLoader {
             
             // Check if section is encrypted
             let decrypted_section = if section_hdr.encrypted == 3 {
+                // IMPORTANT: Check if this "encrypted" section already contains decrypted data.
+                // This can happen with pre-decrypted ISOs where the SELF structure is preserved
+                // but the data has already been decrypted. Applying decryption again would corrupt it.
+                
+                // Heuristic 1: If section 0 starts with ELF magic, it's already decrypted
+                if i == 0 && encrypted_section.len() >= 4 && encrypted_section[0..4] == [0x7F, b'E', b'L', b'F'] {
+                    info!("Section 0 already contains ELF magic - data is NOT encrypted, skipping decryption");
+                    return self.extract_from_fake_encrypted_self(data, &header, &section_headers, &program_headers, e_entry);
+                }
+                
                 // Get the key and IV for this section - direct indices into flat data_keys array
                 // RPCS3: memcpy(data_key, data_keys.get() + meta_shdr[i].key_idx * 0x10, 0x10);
                 // RPCS3: memcpy(data_iv, data_keys.get() + meta_shdr[i].iv_idx * 0x10, 0x10);
@@ -717,11 +727,10 @@ impl SelfLoader {
                     info!("Section {} encrypted size: {} bytes, offset in file: 0x{:x}, dest offset: 0x{:x}", 
                         i, encrypted_section.len(), section_offset, dest_p_offset);
                     
-                    // Use decrypt_aes_ctr_with_offset to properly handle sections that share
-                    // the same key/IV but are placed at different offsets in the destination ELF.
-                    // In CTR mode, the counter must be adjusted based on the destination offset
-                    // so that each section gets the correct keystream.
-                    let result = self.crypto.decrypt_aes_ctr_with_offset(encrypted_section, key, iv, dest_p_offset)
+                    // Each section is decrypted independently with its own key/IV, starting from counter 0.
+                    // RPCS3 does NOT adjust the counter based on destination offset - each section 
+                    // has its own key/IV pair from data_keys and decryption always starts at counter 0.
+                    let result = self.crypto.decrypt_aes_ctr(encrypted_section, key, iv)
                         .unwrap_or_else(|e| {
                             warn!("Section {} AES-CTR decryption failed: {:?}", i, e);
                             encrypted_section.to_vec()
@@ -912,6 +921,91 @@ impl SelfLoader {
         
         self.crypto.decrypt_aes(encrypted_data, key, iv)
             .map_err(|e| LoaderError::DecryptionFailed(format!("MetaLV2 decryption failed: {}", e)))
+    }
+
+    /// Extract ELF from a "fake encrypted" SELF - where the SELF structure exists
+    /// but the section data is already decrypted. This happens with pre-decrypted ISOs.
+    fn extract_from_fake_encrypted_self(
+        &self,
+        data: &[u8],
+        _header: &SelfHeader,
+        section_headers: &[MetadataSectionHeader],
+        program_headers: &[(u32, u64, u64, u64, u64)],
+        _e_entry: u64,
+    ) -> Result<Vec<u8>, LoaderError> {
+        info!("Extracting ELF from pre-decrypted SELF file (fake encrypted)");
+        
+        // Build the ELF by copying sections WITHOUT decryption
+        let mut elf_data = Vec::new();
+        let mut sections_written = 0;
+        
+        for (i, section_hdr) in section_headers.iter().enumerate() {
+            // Only process type 2 (PHDR-backed sections)
+            if section_hdr.section_type != 2 {
+                continue;
+            }
+            
+            let section_offset = section_hdr.data_offset as usize;
+            let section_size = section_hdr.data_size as usize;
+            
+            if section_offset + section_size > data.len() {
+                warn!("Section {} data range exceeds file size", i);
+                continue;
+            }
+            
+            let section_data = &data[section_offset..section_offset + section_size];
+            
+            // Decompress if needed
+            let final_section = if section_hdr.compressed == 2 {
+                let mut decoder = ZlibDecoder::new(&section_data[..]);
+                let mut decompressed = Vec::new();
+                if decoder.read_to_end(&mut decompressed).is_ok() {
+                    decompressed
+                } else {
+                    section_data.to_vec()
+                }
+            } else {
+                section_data.to_vec()
+            };
+            
+            // Find destination offset from program header
+            let section_idx = section_hdr.section_index as usize;
+            if section_idx >= program_headers.len() {
+                continue;
+            }
+            
+            let (_p_type, p_offset, _p_vaddr, _p_filesz, _) = program_headers[section_idx];
+            let dest_offset = p_offset as usize;
+            
+            info!("Section {} (pre-decrypted): {} bytes -> offset 0x{:x}", 
+                i, final_section.len(), dest_offset);
+            
+            // Write to ELF buffer
+            if final_section.len() >= 4 && final_section[0..4] == [0x7F, b'E', b'L', b'F'] && dest_offset == 0 {
+                if final_section.len() > elf_data.len() {
+                    elf_data.resize(final_section.len(), 0);
+                }
+                elf_data[0..final_section.len()].copy_from_slice(&final_section);
+            } else {
+                if elf_data.len() < dest_offset + final_section.len() {
+                    elf_data.resize(dest_offset + final_section.len(), 0);
+                }
+                elf_data[dest_offset..dest_offset + final_section.len()].copy_from_slice(&final_section);
+            }
+            
+            sections_written += 1;
+        }
+        
+        info!("Extracted {} sections from pre-decrypted SELF", sections_written);
+        
+        // Verify we got valid ELF
+        if elf_data.len() < 4 || elf_data[0..4] != [0x7F, b'E', b'L', b'F'] {
+            return Err(LoaderError::DecryptionFailed(
+                "Failed to extract valid ELF from pre-decrypted SELF".to_string()
+            ));
+        }
+        
+        Ok(elf_data)
     }
 }
 

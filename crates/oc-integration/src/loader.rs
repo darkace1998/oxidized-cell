@@ -703,10 +703,13 @@ impl GameLoader {
     /// - Failed SELF decryption (encrypted data)
     /// - Incorrect entry point
     /// - Corrupted executable
+    ///
+    /// Note: PS3 executables may use OPD (function descriptors) where the entry point
+    /// contains a pointer to the real code, not an instruction directly.
     fn validate_entry_point(&self, entry_point: u64, path: &str, is_self: bool) -> Result<()> {
-        // Read the first instruction at the entry point
+        // Read the first two words at the entry point
         let entry_addr = entry_point as u32;
-        let opcode = match self.memory.read_be32(entry_addr) {
+        let first_word = match self.memory.read_be32(entry_addr) {
             Ok(op) => op,
             Err(e) => {
                 return Err(EmulatorError::Loader(LoaderError::InvalidElf(
@@ -719,8 +722,68 @@ impl GameLoader {
                 )));
             }
         };
+        
+        let second_word = self.memory.read_be32(entry_addr + 4).unwrap_or(0);
 
-        // Check if the primary opcode is valid (not reserved)
+        // Check if this might be an OPD (function descriptor) rather than direct code
+        // OPD format: [code_address: u32, toc_pointer: u32]
+        // Valid code addresses are typically in range 0x10000 - 0x40000000 and 4-byte aligned
+        let is_valid_code_addr = first_word >= 0x10000 
+            && first_word < 0x40000000 
+            && (first_word & 3) == 0;
+        let is_valid_toc = second_word >= 0x10000 && second_word < 0x40000000;
+        
+        if is_valid_code_addr && is_valid_toc {
+            // This looks like an OPD - validate the actual code at the pointed address
+            debug!(
+                "Entry point 0x{:08x} appears to be OPD: code_addr=0x{:08x}, toc=0x{:08x}",
+                entry_point, first_word, second_word
+            );
+            
+            // Read and validate the actual instruction at the code address
+            let real_entry = first_word;
+            let real_opcode = match self.memory.read_be32(real_entry) {
+                Ok(op) => op,
+                Err(e) => {
+                    return Err(EmulatorError::Loader(LoaderError::InvalidElf(
+                        format!(
+                            "OPD code address 0x{:08x} is not accessible in memory: {}\n\
+                             Entry point 0x{:08x} contains OPD pointing to invalid address.\n\
+                             File: {}",
+                            real_entry, e, entry_point, path
+                        )
+                    )));
+                }
+            };
+            
+            let primary_op = (real_opcode >> 26) & 0x3F;
+            if primary_op == 0 || primary_op == 1 || primary_op == 5 || primary_op == 6 {
+                let bytes = [
+                    (real_opcode >> 24) & 0xFF,
+                    (real_opcode >> 16) & 0xFF,
+                    (real_opcode >> 8) & 0xFF,
+                    real_opcode & 0xFF,
+                ];
+                return Err(EmulatorError::Loader(LoaderError::InvalidElf(
+                    format!(
+                        "Invalid instruction at real entry 0x{:08x}: 0x{:08x} ({:02x} {:02x} {:02x} {:02x})\n\
+                         OPD at 0x{:08x} points to code with invalid primary opcode {}.\n\
+                         File: {}",
+                        real_entry, real_opcode, bytes[0], bytes[1], bytes[2], bytes[3],
+                        entry_point, primary_op, path
+                    )
+                )));
+            }
+            
+            debug!(
+                "OPD validation passed: real entry 0x{:08x} contains opcode 0x{:08x} (primary_op={})",
+                real_entry, real_opcode, primary_op
+            );
+            return Ok(());
+        }
+
+        // Not an OPD - check if the first word is a valid instruction
+        let opcode = first_word;
         let primary_op = (opcode >> 26) & 0x3F;
         
         // Primary opcodes 0, 1, 5, 6 are reserved/invalid on PowerPC
