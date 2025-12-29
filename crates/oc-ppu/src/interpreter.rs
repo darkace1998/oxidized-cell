@@ -671,7 +671,8 @@ impl PpuInterpreter {
         let primary = (opcode >> 26) & 0x3F;
 
         match xo {
-            // cmp/fcmpu - Compare (signed integer or floating-point unordered)
+            // xo=0 is shared by both integer cmp (primary 31) and FP fcmpu (primary 63)
+            // This is valid because they have different primary opcodes
             0 => {
                 if primary == 31 {
                     // cmp - Integer compare (signed)
@@ -697,7 +698,8 @@ impl PpuInterpreter {
                     thread.set_cr_field(bf as usize, c);
                 }
             }
-            // cmpl/fcmpo - Compare Logical (unsigned integer or floating-point ordered)
+            // xo=32 is shared by both integer cmpl (primary 31) and FP fcmpo (primary 63)
+            // This is valid because they have different primary opcodes
             32 => {
                 if primary == 31 {
                     // cmpl - Integer compare (unsigned)
@@ -1995,7 +1997,7 @@ impl PpuInterpreter {
                 0x440 => vector::vsubuhm(a, b),
                 // vsubuwm - Vector Subtract Unsigned Word Modulo
                 0x480 => vector::vsubuwm(a, b),
-                // vsubuws - Vector Subtract Unsigned Word Saturate
+                // vsubuws - Vector Subtract Unsigned Word Saturate (corrected opcode from 0x480 to 0x580)
                 0x580 => vector::vsubuws(a, b),
                 // vsubsbs - Vector Subtract Signed Byte Saturate
                 0x700 => vector::vsubsbs(a, b),
