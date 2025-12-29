@@ -1505,7 +1505,8 @@ impl PpuInterpreter {
                         thread.set_xer_ov(false);
                     }
                 } else {
-                    thread.set_gpr(rt as usize, if b == 0 { 0 } else { 0x8000_0000 });
+                    // On overflow or divide by zero, result is 0
+                    thread.set_gpr(rt as usize, 0);
                     if oe {
                         thread.set_xer_ov(true);
                         thread.set_xer_so(true);
@@ -1543,7 +1544,8 @@ impl PpuInterpreter {
                         thread.set_xer_ov(false);
                     }
                 } else {
-                    thread.set_gpr(rt as usize, if b == 0 { 0 } else { 0x8000_0000_0000_0000 });
+                    // On overflow or divide by zero, result is 0
+                    thread.set_gpr(rt as usize, 0);
                     if oe {
                         thread.set_xer_ov(true);
                         thread.set_xer_so(true);
@@ -1913,6 +1915,12 @@ impl PpuInterpreter {
             let uimm = vrc as u8; // For immediate instructions
 
             let result = match xo_11bit {
+                // vaddubm - Vector Add Unsigned Byte Modulo
+                0x000 => vector::vaddubm(a, b),
+                // vadduhm - Vector Add Unsigned Halfword Modulo
+                0x040 => vector::vadduhm(a, b),
+                // vadduwm - Vector Add Unsigned Word Modulo
+                0x080 => vector::vadduwm(a, b),
                 // vaddsws - Vector Add Signed Word Saturate
                 0x180 => vector::vaddsws(a, b),
                 // vaddubs - Vector Add Unsigned Byte Saturate
@@ -1931,10 +1939,24 @@ impl PpuInterpreter {
                 }
                 // vadduws - Vector Add Unsigned Word Saturate
                 0x280 => vector::vadduws(a, b),
+                // vaddsbs - Vector Add Signed Byte Saturate
+                0x300 => vector::vaddsbs(a, b),
+                // vaddshs - Vector Add Signed Halfword Saturate
+                0x340 => vector::vaddshs(a, b),
                 // vsubsws - Vector Subtract Signed Word Saturate
                 0x380 => vector::vsubsws(a, b),
+                // vsububm - Vector Subtract Unsigned Byte Modulo
+                0x400 => vector::vsububm(a, b),
+                // vsubuhm - Vector Subtract Unsigned Halfword Modulo
+                0x440 => vector::vsubuhm(a, b),
+                // vsubuwm - Vector Subtract Unsigned Word Modulo
+                0x480 => vector::vsubuwm(a, b),
                 // vsubuws - Vector Subtract Unsigned Word Saturate
-                0x480 => vector::vsubuws(a, b),
+                0x580 => vector::vsubuws(a, b),
+                // vsubsbs - Vector Subtract Signed Byte Saturate
+                0x700 => vector::vsubsbs(a, b),
+                // vsubshs - Vector Subtract Signed Halfword Saturate
+                0x740 => vector::vsubshs(a, b),
                 // vand - Vector AND
                 0x404 => vector::vand(a, b),
                 // vandc - Vector AND with Complement
@@ -1963,6 +1985,8 @@ impl PpuInterpreter {
                 0x082 => vector::vmaxuw(a, b),
                 // vmulwlw - Vector Multiply Low Word
                 0x089 => vector::vmulwlw(a, b),
+                // vmulouw - Vector Multiply Odd Unsigned Word
+                0x088 => vector::vmulouw(a, b),
                 // vcmpequw - Vector Compare Equal Unsigned Word
                 0x086 => {
                     let (result, all_true) = vector::vcmpequw(a, b);
@@ -2046,6 +2070,24 @@ impl PpuInterpreter {
                 0x10C => vector::vmrglw(a, b),
                 // vpkuwus - Vector Pack Unsigned Word Unsigned Saturate
                 0x0CE => vector::vpkuwus(a, b),
+                // vmuleuw - Vector Multiply Even Unsigned Word
+                0x288 => vector::vmuleuw(a, b),
+                // vmulhuw - Vector Multiply High Unsigned Word
+                0x48A => vector::vmulhuw(a, b),
+                // vpkshss - Vector Pack Signed Halfword to Signed Byte Saturate
+                0x18E => vector::vpkshss(a, b),
+                // vpkswss - Vector Pack Signed Word to Signed Halfword Saturate
+                0x1CE => vector::vpkswss(a, b),
+                // vupkhsb - Vector Unpack High Signed Byte
+                0x20E => vector::vupkhsb(a),
+                // vupklsb - Vector Unpack Low Signed Byte
+                0x28E => vector::vupklsb(a),
+                // vmaxfp - Vector Maximum Floating-Point
+                0x40A => vector::vmaxfp(a, b),
+                // vminfp - Vector Minimum Floating-Point
+                0x44A => vector::vminfp(a, b),
+                // vsum4ubs - Vector Sum Across Quarter Unsigned Byte Saturate
+                0x608 => vector::vsum4ubs(a, b),
                 // lvx - Load Vector Indexed (handled specially with memory)
                 0x007 => {
                     // This shouldn't be in VA-form dispatch, but handle it anyway
