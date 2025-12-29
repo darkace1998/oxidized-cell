@@ -132,6 +132,187 @@ pub fn cgth(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuErr
     Ok(())
 }
 
+/// Compare Equal Byte - ceqb rt, ra, rb
+pub fn ceqb(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let b = thread.regs.read_u32x4(rb as usize);
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_bytes = a[i].to_be_bytes();
+        let b_bytes = b[i].to_be_bytes();
+        let r0 = if a_bytes[0] == b_bytes[0] { 0xFF } else { 0x00 };
+        let r1 = if a_bytes[1] == b_bytes[1] { 0xFF } else { 0x00 };
+        let r2 = if a_bytes[2] == b_bytes[2] { 0xFF } else { 0x00 };
+        let r3 = if a_bytes[3] == b_bytes[3] { 0xFF } else { 0x00 };
+        result[i] = u32::from_be_bytes([r0, r1, r2, r3]);
+    }
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Compare Equal Byte Immediate - ceqbi rt, ra, i10
+pub fn ceqbi(thread: &mut SpuThread, i10: i16, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let imm = (i10 & 0xFF) as u8;
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_bytes = a[i].to_be_bytes();
+        let r0 = if a_bytes[0] == imm { 0xFF } else { 0x00 };
+        let r1 = if a_bytes[1] == imm { 0xFF } else { 0x00 };
+        let r2 = if a_bytes[2] == imm { 0xFF } else { 0x00 };
+        let r3 = if a_bytes[3] == imm { 0xFF } else { 0x00 };
+        result[i] = u32::from_be_bytes([r0, r1, r2, r3]);
+    }
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Compare Equal Halfword Immediate - ceqhi rt, ra, i10
+pub fn ceqhi(thread: &mut SpuThread, i10: i16, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let imm = i10 as u16;
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_hi = (a[i] >> 16) as u16;
+        let a_lo = (a[i] & 0xFFFF) as u16;
+        let hi = if a_hi == imm { 0xFFFF } else { 0 };
+        let lo = if a_lo == imm { 0xFFFF } else { 0 };
+        result[i] = ((hi as u32) << 16) | (lo as u32);
+    }
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Compare Greater Than Byte - cgtb rt, ra, rb
+pub fn cgtb(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let b = thread.regs.read_u32x4(rb as usize);
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_bytes = a[i].to_be_bytes();
+        let b_bytes = b[i].to_be_bytes();
+        let r0 = if (a_bytes[0] as i8) > (b_bytes[0] as i8) { 0xFF } else { 0x00 };
+        let r1 = if (a_bytes[1] as i8) > (b_bytes[1] as i8) { 0xFF } else { 0x00 };
+        let r2 = if (a_bytes[2] as i8) > (b_bytes[2] as i8) { 0xFF } else { 0x00 };
+        let r3 = if (a_bytes[3] as i8) > (b_bytes[3] as i8) { 0xFF } else { 0x00 };
+        result[i] = u32::from_be_bytes([r0, r1, r2, r3]);
+    }
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Compare Greater Than Byte Immediate - cgtbi rt, ra, i10
+pub fn cgtbi(thread: &mut SpuThread, i10: i16, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let imm = (i10 & 0xFF) as i8;
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_bytes = a[i].to_be_bytes();
+        let r0 = if (a_bytes[0] as i8) > imm { 0xFF } else { 0x00 };
+        let r1 = if (a_bytes[1] as i8) > imm { 0xFF } else { 0x00 };
+        let r2 = if (a_bytes[2] as i8) > imm { 0xFF } else { 0x00 };
+        let r3 = if (a_bytes[3] as i8) > imm { 0xFF } else { 0x00 };
+        result[i] = u32::from_be_bytes([r0, r1, r2, r3]);
+    }
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Compare Greater Than Halfword Immediate - cgthi rt, ra, i10
+pub fn cgthi(thread: &mut SpuThread, i10: i16, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let imm = i10;
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_hi = (a[i] >> 16) as i16;
+        let a_lo = (a[i] & 0xFFFF) as i16;
+        let hi = if a_hi > imm { 0xFFFF } else { 0 };
+        let lo = if a_lo > imm { 0xFFFF } else { 0 };
+        result[i] = ((hi as u32) << 16) | (lo as u32);
+    }
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Compare Logical Greater Than Byte - clgtb rt, ra, rb
+pub fn clgtb(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let b = thread.regs.read_u32x4(rb as usize);
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_bytes = a[i].to_be_bytes();
+        let b_bytes = b[i].to_be_bytes();
+        let r0 = if a_bytes[0] > b_bytes[0] { 0xFF } else { 0x00 };
+        let r1 = if a_bytes[1] > b_bytes[1] { 0xFF } else { 0x00 };
+        let r2 = if a_bytes[2] > b_bytes[2] { 0xFF } else { 0x00 };
+        let r3 = if a_bytes[3] > b_bytes[3] { 0xFF } else { 0x00 };
+        result[i] = u32::from_be_bytes([r0, r1, r2, r3]);
+    }
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Compare Logical Greater Than Byte Immediate - clgtbi rt, ra, i10
+pub fn clgtbi(thread: &mut SpuThread, i10: i16, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let imm = (i10 & 0xFF) as u8;
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_bytes = a[i].to_be_bytes();
+        let r0 = if a_bytes[0] > imm { 0xFF } else { 0x00 };
+        let r1 = if a_bytes[1] > imm { 0xFF } else { 0x00 };
+        let r2 = if a_bytes[2] > imm { 0xFF } else { 0x00 };
+        let r3 = if a_bytes[3] > imm { 0xFF } else { 0x00 };
+        result[i] = u32::from_be_bytes([r0, r1, r2, r3]);
+    }
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Compare Logical Greater Than Halfword - clgth rt, ra, rb
+pub fn clgth(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let b = thread.regs.read_u32x4(rb as usize);
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_hi = (a[i] >> 16) as u16;
+        let a_lo = (a[i] & 0xFFFF) as u16;
+        let b_hi = (b[i] >> 16) as u16;
+        let b_lo = (b[i] & 0xFFFF) as u16;
+        let hi = if a_hi > b_hi { 0xFFFF } else { 0 };
+        let lo = if a_lo > b_lo { 0xFFFF } else { 0 };
+        result[i] = ((hi as u32) << 16) | (lo as u32);
+    }
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Compare Logical Greater Than Halfword Immediate - clgthi rt, ra, i10
+pub fn clgthi(thread: &mut SpuThread, i10: i16, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let imm = (i10 as i16) as u16;
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_hi = (a[i] >> 16) as u16;
+        let a_lo = (a[i] & 0xFFFF) as u16;
+        let hi = if a_hi > imm { 0xFFFF } else { 0 };
+        let lo = if a_lo > imm { 0xFFFF } else { 0 };
+        result[i] = ((hi as u32) << 16) | (lo as u32);
+    }
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
