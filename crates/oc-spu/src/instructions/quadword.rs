@@ -286,7 +286,7 @@ pub fn rotqmbii(thread: &mut SpuThread, i7: i8, ra: u8, rt: u8) -> Result<(), Sp
 pub fn rotqmbybi(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
     let a = thread.regs.read_u32x4(ra as usize);
     let b = thread.regs.read_preferred_u32(rb as usize);
-    let shift = ((0u32.wrapping_sub(b)) >> 3 & 0x1F) as usize;
+    let shift = (((0u32.wrapping_sub(b)) >> 3) & 0x1F) as usize;
     
     let bytes = u32x4_to_bytes(a);
     let mut result_bytes = [0u8; 16];

@@ -503,10 +503,10 @@ pub fn mpyi(thread: &mut SpuThread, i10: i16, ra: u8, rt: u8) -> Result<(), SpuE
     let a = thread.regs.read_u32x4(ra as usize);
     let imm = i10 as i32;
     let result = [
-        ((a[0] as i16 as i32).wrapping_mul(imm)) as u32,
-        ((a[1] as i16 as i32).wrapping_mul(imm)) as u32,
-        ((a[2] as i16 as i32).wrapping_mul(imm)) as u32,
-        ((a[3] as i16 as i32).wrapping_mul(imm)) as u32,
+        (((a[0] & 0xFFFF) as i16 as i32).wrapping_mul(imm)) as u32,
+        (((a[1] & 0xFFFF) as i16 as i32).wrapping_mul(imm)) as u32,
+        (((a[2] & 0xFFFF) as i16 as i32).wrapping_mul(imm)) as u32,
+        (((a[3] & 0xFFFF) as i16 as i32).wrapping_mul(imm)) as u32,
     ];
     thread.regs.write_u32x4(rt as usize, result);
     thread.advance_pc();
@@ -564,10 +564,10 @@ pub fn mpya(thread: &mut SpuThread, rc: u8, rb: u8, ra: u8, rt: u8) -> Result<()
     let b = thread.regs.read_u32x4(rb as usize);
     let c = thread.regs.read_u32x4(rc as usize);
     let result = [
-        (((a[0] as i16 as i32) * (b[0] as i16 as i32)) + (c[0] as i32)) as u32,
-        (((a[1] as i16 as i32) * (b[1] as i16 as i32)) + (c[1] as i32)) as u32,
-        (((a[2] as i16 as i32) * (b[2] as i16 as i32)) + (c[2] as i32)) as u32,
-        (((a[3] as i16 as i32) * (b[3] as i16 as i32)) + (c[3] as i32)) as u32,
+        ((((a[0] & 0xFFFF) as i16 as i32) * ((b[0] & 0xFFFF) as i16 as i32)) + (c[0] as i32)) as u32,
+        ((((a[1] & 0xFFFF) as i16 as i32) * ((b[1] & 0xFFFF) as i16 as i32)) + (c[1] as i32)) as u32,
+        ((((a[2] & 0xFFFF) as i16 as i32) * ((b[2] & 0xFFFF) as i16 as i32)) + (c[2] as i32)) as u32,
+        ((((a[3] & 0xFFFF) as i16 as i32) * ((b[3] & 0xFFFF) as i16 as i32)) + (c[3] as i32)) as u32,
     ];
     thread.regs.write_u32x4(rt as usize, result);
     thread.advance_pc();
@@ -611,10 +611,10 @@ pub fn mpys(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuErr
     let a = thread.regs.read_u32x4(ra as usize);
     let b = thread.regs.read_u32x4(rb as usize);
     let result = [
-        ((((a[0] as i16 as i32) * (b[0] as i16 as i32)) >> 16) as i16 as i32) as u32,
-        ((((a[1] as i16 as i32) * (b[1] as i16 as i32)) >> 16) as i16 as i32) as u32,
-        ((((a[2] as i16 as i32) * (b[2] as i16 as i32)) >> 16) as i16 as i32) as u32,
-        ((((a[3] as i16 as i32) * (b[3] as i16 as i32)) >> 16) as i16 as i32) as u32,
+        (((((a[0] & 0xFFFF) as i16 as i32) * ((b[0] & 0xFFFF) as i16 as i32)) >> 16) as i16 as i32) as u32,
+        (((((a[1] & 0xFFFF) as i16 as i32) * ((b[1] & 0xFFFF) as i16 as i32)) >> 16) as i16 as i32) as u32,
+        (((((a[2] & 0xFFFF) as i16 as i32) * ((b[2] & 0xFFFF) as i16 as i32)) >> 16) as i16 as i32) as u32,
+        (((((a[3] & 0xFFFF) as i16 as i32) * ((b[3] & 0xFFFF) as i16 as i32)) >> 16) as i16 as i32) as u32,
     ];
     thread.regs.write_u32x4(rt as usize, result);
     thread.advance_pc();
