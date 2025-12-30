@@ -127,12 +127,28 @@ pub fn write_bytes(addr: u32, data: &[u8]) -> Result<(), i32> {
 }
 
 /// Write a null-terminated string to guest memory
+/// 
+/// # Arguments
+/// * `addr` - Memory address to write string to
+/// * `s` - String to write
+/// * `max_len` - Maximum buffer size (must be at least 1 for null terminator)
+///
+/// # Returns
+/// * Ok(()) on success
+/// * Err with error code on failure (invalid params or memory access error)
 pub fn write_string(addr: u32, s: &str, max_len: u32) -> Result<(), i32> {
-    let bytes = s.as_bytes();
-    let write_len = std::cmp::min(bytes.len(), max_len.saturating_sub(1) as usize);
+    // Buffer must have room for at least the null terminator
+    if max_len == 0 {
+        return Err(ERROR_INVALID_ADDRESS);
+    }
     
-    // Write string bytes
-    write_bytes(addr, &bytes[..write_len])?;
+    let bytes = s.as_bytes();
+    let write_len = std::cmp::min(bytes.len(), (max_len - 1) as usize);
+    
+    // Write string bytes (if any)
+    if write_len > 0 {
+        write_bytes(addr, &bytes[..write_len])?;
+    }
     
     // Write null terminator
     write_u8(addr + write_len as u32, 0)?;
@@ -259,6 +275,14 @@ mod tests {
         write_string(addr + 0x200, "Test String", 32).unwrap();
         let read_str = read_string(addr + 0x200, 32).unwrap();
         assert_eq!(read_str, "Test String");
+        
+        // Test write_string with zero max_len should fail
+        assert!(write_string(addr + 0x300, "Test", 0).is_err());
+        
+        // Test write_string with max_len = 1 (only room for null terminator)
+        write_string(addr + 0x400, "Test", 1).unwrap();
+        let read_empty = read_string(addr + 0x400, 10).unwrap();
+        assert_eq!(read_empty, "");
         
         // Clean up
         clear_hle_memory();
