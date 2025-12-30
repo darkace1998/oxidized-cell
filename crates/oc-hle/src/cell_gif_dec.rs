@@ -1,9 +1,10 @@
 //! cellGifDec HLE - GIF image decoding module
 //!
 //! This module provides HLE implementations for the PS3's GIF decoding library.
+//! Implements GIF header parsing and LZW decompression.
 
 use std::collections::HashMap;
-use tracing::trace;
+use tracing::{trace, debug};
 
 // Error codes
 pub const CELL_GIFDEC_ERROR_FATAL: i32 = 0x80611200u32 as i32;
@@ -85,21 +86,26 @@ pub enum GifDisposalMethod {
 }
 
 /// GIF frame information
+/// GIF frame data with animation support
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct GifFrame {
+    /// X offset
+    x: u32,
+    /// Y offset
+    y: u32,
+    /// Frame width
+    width: u32,
+    /// Frame height
+    height: u32,
     /// Frame delay in centiseconds (1/100s)
     delay: u16,
-    /// X offset
-    x_offset: u16,
-    /// Y offset
-    y_offset: u16,
-    /// Frame width
-    width: u16,
-    /// Frame height
-    height: u16,
     /// Disposal method
-    disposal_method: GifDisposalMethod,
+    disposal: GifDisposalMethod,
+    /// Transparent color index (if any)
+    transparent_index: Option<u8>,
+    /// Local color palette (if different from global)
+    local_palette: Option<Vec<u8>>,
     /// Frame data (indices into palette)
     data: Vec<u8>,
 }
@@ -138,59 +144,404 @@ impl GifDecoder {
         }
     }
 
-    /// Parse GIF header
+    /// Parse GIF header and all blocks
     fn parse_header(&mut self, data: &[u8]) -> Result<(), i32> {
-        // GIF signature: "GIF87a" or "GIF89a"
-        if data.len() < 6 {
+        // GIF header: "GIF87a" or "GIF89a" (6 bytes)
+        if data.len() < 13 {
             return Err(CELL_GIFDEC_ERROR_ARG);
         }
 
+        // Check signature
         let signature = &data[0..3];
-        if signature != b"GIF" {
-            trace!("GifDecoder::parse_header: invalid GIF signature");
-            // Be lenient for HLE
+        let version = &data[3..6];
+        if signature != b"GIF" || (version != b"87a" && version != b"89a") {
+            debug!("GifDecoder::parse_header: invalid GIF signature");
+            return Err(CELL_GIFDEC_ERROR_ARG);
         }
 
-        // In a real implementation:
-        // 1. Parse logical screen descriptor (width, height, global color table flag)
-        // 2. Parse global color table if present
-        // 3. Parse image descriptor and local color table for each frame
-        // 4. Parse graphic control extension for animation timing and disposal
-        // 5. Decompress LZW-compressed image data
-
-        // Use placeholder values
-        self.width = 640;
-        self.height = 480;
+        // Logical Screen Descriptor (7 bytes at offset 6)
+        self.width = u16::from_le_bytes([data[6], data[7]]) as u32;
+        self.height = u16::from_le_bytes([data[8], data[9]]) as u32;
         
-        // Create a simple palette
-        self.global_palette = vec![0u8; 768]; // 256 colors * 3 (RGB)
-        for i in 0..256 {
-            self.global_palette[i * 3] = i as u8;
-            self.global_palette[i * 3 + 1] = i as u8;
-            self.global_palette[i * 3 + 2] = i as u8;
+        let packed = data[10];
+        let has_global_color_table = (packed & 0x80) != 0;
+        let color_resolution = ((packed >> 4) & 0x07) + 1;
+        let global_color_table_size = 1 << ((packed & 0x07) + 1);
+        
+        self.background_color = data[11];
+        let _pixel_aspect_ratio = data[12];
+        
+        debug!("GIF header: {}x{}, global_ct={}, color_res={}, ct_size={}", 
+               self.width, self.height, has_global_color_table, color_resolution, global_color_table_size);
+        
+        let mut offset = 13;
+        
+        // Parse Global Color Table if present
+        if has_global_color_table {
+            let table_bytes = global_color_table_size * 3;
+            if offset + table_bytes > data.len() {
+                return Err(CELL_GIFDEC_ERROR_ARG);
+            }
+            self.global_palette = data[offset..offset + table_bytes].to_vec();
+            offset += table_bytes;
+            debug!("GIF: parsed global color table with {} colors", global_color_table_size);
         }
         
-        trace!("GifDecoder::parse_header: {}x{}", self.width, self.height);
+        // Parse blocks
+        while offset < data.len() {
+            let block_type = data[offset];
+            offset += 1;
+            
+            match block_type {
+                0x21 => {
+                    // Extension block
+                    if offset >= data.len() {
+                        break;
+                    }
+                    let ext_type = data[offset];
+                    offset += 1;
+                    
+                    match ext_type {
+                        0xF9 => {
+                            // Graphics Control Extension
+                            offset = self.parse_graphics_control(&data, offset)?;
+                        }
+                        0xFF => {
+                            // Application Extension (e.g., NETSCAPE for loops)
+                            offset = self.parse_application_extension(&data, offset)?;
+                        }
+                        0xFE => {
+                            // Comment Extension - skip
+                            offset = self.skip_sub_blocks(&data, offset)?;
+                        }
+                        0x01 => {
+                            // Plain Text Extension - skip
+                            offset = self.skip_sub_blocks(&data, offset)?;
+                        }
+                        _ => {
+                            // Unknown extension - skip
+                            offset = self.skip_sub_blocks(&data, offset)?;
+                        }
+                    }
+                }
+                0x2C => {
+                    // Image Descriptor
+                    offset = self.parse_image_descriptor(&data, offset)?;
+                }
+                0x3B => {
+                    // Trailer - end of GIF
+                    break;
+                }
+                _ => {
+                    // Unknown block type
+                    trace!("GIF: unknown block type 0x{:02X} at offset {}", block_type, offset - 1);
+                    break;
+                }
+            }
+        }
+        
+        debug!("GifDecoder::parse_header: {}x{}, {} frames", self.width, self.height, self.frames.len());
         
         Ok(())
     }
 
+    /// Parse Graphics Control Extension
+    fn parse_graphics_control(&mut self, data: &[u8], mut offset: usize) -> Result<usize, i32> {
+        if offset + 5 > data.len() {
+            return Err(CELL_GIFDEC_ERROR_ARG);
+        }
+        
+        let block_size = data[offset];
+        if block_size != 4 {
+            return Err(CELL_GIFDEC_ERROR_ARG);
+        }
+        offset += 1;
+        
+        let packed = data[offset];
+        let disposal = (packed >> 2) & 0x07;
+        let _user_input = (packed & 0x02) != 0;
+        let transparent_flag = (packed & 0x01) != 0;
+        
+        let delay = u16::from_le_bytes([data[offset + 1], data[offset + 2]]);
+        let transparent_index = if transparent_flag { Some(data[offset + 3]) } else { None };
+        
+        trace!("GIF GCE: disposal={}, delay={}cs, transparent={:?}", 
+               disposal, delay, transparent_index);
+        
+        // Store for next frame
+        self.frames.push(GifFrame {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            delay,
+            disposal: match disposal {
+                1 => GifDisposalMethod::DoNotDispose,
+                2 => GifDisposalMethod::RestoreBackground,
+                3 => GifDisposalMethod::RestorePrevious,
+                _ => GifDisposalMethod::None,
+            },
+            transparent_index,
+            local_palette: None,
+            data: Vec::new(),
+        });
+        
+        offset += 4;
+        
+        // Block terminator
+        if offset < data.len() && data[offset] == 0 {
+            offset += 1;
+        }
+        
+        Ok(offset)
+    }
+
+    /// Parse Application Extension
+    fn parse_application_extension(&mut self, data: &[u8], mut offset: usize) -> Result<usize, i32> {
+        if offset >= data.len() {
+            return Err(CELL_GIFDEC_ERROR_ARG);
+        }
+        
+        let block_size = data[offset] as usize;
+        offset += 1;
+        
+        if offset + block_size > data.len() {
+            return Err(CELL_GIFDEC_ERROR_ARG);
+        }
+        
+        // Check for NETSCAPE extension
+        if block_size == 11 && offset + 11 <= data.len() {
+            let app_id = &data[offset..offset + 8];
+            if app_id == b"NETSCAPE" {
+                offset += block_size;
+                
+                // Parse NETSCAPE loop count
+                while offset < data.len() && data[offset] != 0 {
+                    let sub_block_size = data[offset] as usize;
+                    offset += 1;
+                    
+                    if sub_block_size >= 3 && offset + 2 < data.len() && data[offset] == 1 {
+                        self.loop_count = u16::from_le_bytes([data[offset + 1], data[offset + 2]]);
+                        debug!("GIF NETSCAPE: loop_count={}", self.loop_count);
+                    }
+                    
+                    offset += sub_block_size;
+                }
+                
+                if offset < data.len() && data[offset] == 0 {
+                    offset += 1;
+                }
+                
+                return Ok(offset);
+            }
+        }
+        
+        offset += block_size;
+        offset = self.skip_sub_blocks(data, offset)?;
+        
+        Ok(offset)
+    }
+
+    /// Parse Image Descriptor
+    fn parse_image_descriptor(&mut self, data: &[u8], mut offset: usize) -> Result<usize, i32> {
+        if offset + 9 > data.len() {
+            return Err(CELL_GIFDEC_ERROR_ARG);
+        }
+        
+        let x = u16::from_le_bytes([data[offset], data[offset + 1]]) as u32;
+        let y = u16::from_le_bytes([data[offset + 2], data[offset + 3]]) as u32;
+        let width = u16::from_le_bytes([data[offset + 4], data[offset + 5]]) as u32;
+        let height = u16::from_le_bytes([data[offset + 6], data[offset + 7]]) as u32;
+        let packed = data[offset + 8];
+        
+        let has_local_color_table = (packed & 0x80) != 0;
+        let _interlaced = (packed & 0x40) != 0;
+        let local_color_table_size = if has_local_color_table { 1 << ((packed & 0x07) + 1) } else { 0 };
+        
+        offset += 9;
+        
+        trace!("GIF Image: {}x{} at ({}, {}), local_ct={}", width, height, x, y, has_local_color_table);
+        
+        // Parse Local Color Table if present
+        let local_palette = if has_local_color_table {
+            let table_bytes = local_color_table_size * 3;
+            if offset + table_bytes > data.len() {
+                return Err(CELL_GIFDEC_ERROR_ARG);
+            }
+            let palette = data[offset..offset + table_bytes].to_vec();
+            offset += table_bytes;
+            Some(palette)
+        } else {
+            None
+        };
+        
+        // LZW minimum code size
+        if offset >= data.len() {
+            return Err(CELL_GIFDEC_ERROR_ARG);
+        }
+        let min_code_size = data[offset];
+        offset += 1;
+        
+        // Read LZW compressed data from sub-blocks
+        let mut compressed_data = Vec::new();
+        while offset < data.len() && data[offset] != 0 {
+            let sub_block_size = data[offset] as usize;
+            offset += 1;
+            
+            if offset + sub_block_size > data.len() {
+                break;
+            }
+            
+            compressed_data.extend_from_slice(&data[offset..offset + sub_block_size]);
+            offset += sub_block_size;
+        }
+        
+        // Skip block terminator
+        if offset < data.len() && data[offset] == 0 {
+            offset += 1;
+        }
+        
+        // Decompress the image data
+        let decompressed = self.decompress_lzw(&compressed_data, min_code_size);
+        
+        // Update or add frame
+        if let Some(frame) = self.frames.last_mut() {
+            frame.x = x;
+            frame.y = y;
+            frame.width = width;
+            frame.height = height;
+            frame.local_palette = local_palette;
+            frame.data = decompressed;
+        } else {
+            // No GCE was parsed, create a simple frame
+            self.frames.push(GifFrame {
+                x,
+                y,
+                width,
+                height,
+                delay: 0,
+                disposal: GifDisposalMethod::None,
+                transparent_index: None,
+                local_palette,
+                data: decompressed,
+            });
+        }
+        
+        Ok(offset)
+    }
+
+    /// Skip sub-blocks
+    fn skip_sub_blocks(&self, data: &[u8], mut offset: usize) -> Result<usize, i32> {
+        while offset < data.len() && data[offset] != 0 {
+            let sub_block_size = data[offset] as usize;
+            offset += 1 + sub_block_size;
+        }
+        if offset < data.len() && data[offset] == 0 {
+            offset += 1;
+        }
+        Ok(offset)
+    }
+
     /// Decompress LZW-compressed data
     fn decompress_lzw(&self, compressed: &[u8], min_code_size: u8) -> Vec<u8> {
-        trace!("GifDecoder::decompress_lzw: {} bytes, min_code_size={}", compressed.len(), min_code_size);
+        if compressed.is_empty() || min_code_size > 11 {
+            // Return placeholder data if compressed data is invalid
+            let pixel_count = (self.width * self.height) as usize;
+            return vec![0u8; pixel_count];
+        }
         
-        // In a real implementation:
-        // 1. Initialize code table with min_code_size
-        // 2. Read variable-length codes from bit stream
-        // 3. Build dictionary on-the-fly
-        // 4. Output decompressed pixel indices
+        // LZW decompression
+        let clear_code = 1u32 << min_code_size;
+        let end_code = clear_code + 1;
         
-        // Simulate decompressed data
-        let pixel_count = (self.width * self.height) as usize;
-        let mut output = vec![0u8; pixel_count];
+        let mut code_size = min_code_size as u32 + 1;
+        let mut code_mask = (1u32 << code_size) - 1;
+        let mut next_code = end_code + 1;
         
-        for i in 0..pixel_count {
-            output[i] = ((i * 255) / pixel_count) as u8;
+        // Code table: entries are (prefix_code, suffix_byte) or direct values
+        let mut table: Vec<Vec<u8>> = Vec::with_capacity(4096);
+        
+        // Initialize table with single-byte codes
+        for i in 0..clear_code {
+            table.push(vec![i as u8]);
+        }
+        // Add clear and end codes
+        table.push(Vec::new()); // clear_code
+        table.push(Vec::new()); // end_code
+        
+        let mut output = Vec::new();
+        let mut bit_buffer = 0u32;
+        let mut bits_in_buffer = 0u32;
+        let mut byte_index = 0;
+        
+        // Helper function to get next code
+        let mut prev_code: Option<u32> = None;
+        
+        while byte_index < compressed.len() || bits_in_buffer >= code_size {
+            // Read more bytes into bit buffer
+            while bits_in_buffer < code_size && byte_index < compressed.len() {
+                bit_buffer |= (compressed[byte_index] as u32) << bits_in_buffer;
+                bits_in_buffer += 8;
+                byte_index += 1;
+            }
+            
+            if bits_in_buffer < code_size {
+                break;
+            }
+            
+            let code = bit_buffer & code_mask;
+            bit_buffer >>= code_size;
+            bits_in_buffer -= code_size;
+            
+            if code == clear_code {
+                // Reset table
+                code_size = min_code_size as u32 + 1;
+                code_mask = (1u32 << code_size) - 1;
+                next_code = end_code + 1;
+                table.truncate((clear_code + 2) as usize);
+                prev_code = None;
+                continue;
+            }
+            
+            if code == end_code {
+                break;
+            }
+            
+            let entry = if (code as usize) < table.len() {
+                table[code as usize].clone()
+            } else if code == next_code {
+                // Special case: code is next_code
+                if let Some(prev) = prev_code {
+                    let mut entry = table[prev as usize].clone();
+                    entry.push(entry[0]);
+                    entry
+                } else {
+                    break;
+                }
+            } else {
+                // Invalid code
+                break;
+            };
+            
+            output.extend_from_slice(&entry);
+            
+            // Add new entry to table
+            if let Some(prev) = prev_code {
+                if next_code < 4096 {
+                    let mut new_entry = table[prev as usize].clone();
+                    new_entry.push(entry[0]);
+                    table.push(new_entry);
+                    next_code += 1;
+                    
+                    // Increase code size if needed
+                    if next_code > code_mask && code_size < 12 {
+                        code_size += 1;
+                        code_mask = (1u32 << code_size) - 1;
+                    }
+                }
+            }
+            
+            prev_code = Some(code);
         }
         
         output
@@ -204,12 +555,14 @@ impl GifDecoder {
         let decompressed = self.decompress_lzw(frame_data, 8);
         
         let frame = GifFrame {
+            x: 0,
+            y: 0,
+            width: self.width,
+            height: self.height,
             delay,
-            x_offset: 0,
-            y_offset: 0,
-            width: self.width as u16,
-            height: self.height as u16,
-            disposal_method: disposal,
+            disposal,
+            transparent_index: None,
+            local_palette: None,
             data: decompressed,
         };
         

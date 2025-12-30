@@ -15,5 +15,6 @@ tracing.workspace = true
 once_cell.workspace = true
 parking_lot.workspace = true
 regex = "1.10"
+miniz_oxide = "0.8"
 
 [dev-dependencies]
