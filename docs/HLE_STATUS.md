@@ -155,10 +155,52 @@ This document tracks the implementation status of High Level Emulation (HLE) mod
 
 | Module | Status | Notes |
 |--------|--------|-------|
-| cellPad | 🟡 Partial | Controller input with button/analog mapping |
-| cellKb | 🟡 Partial | Keyboard input handling |
-| cellMouse | 🟡 Partial | Mouse input handling |
-| cellMic | 🔴 Stub | Microphone input (basic structure) |
+| cellPad | 🟡 Partial | DualShock3 with full oc-input integration, sixaxis, rumble |
+| cellKb | 🟡 Partial | Keyboard input with oc-input integration, USB HID codes |
+| cellMouse | 🟡 Partial | Mouse input with oc-input integration, button/position/wheel |
+| cellMic | 🟡 Partial | Microphone with oc-input integration, audio capture |
+
+### cellPad Details
+- ✅ Full DualShock 3 support (all buttons, sticks, pressure)
+- ✅ Sixaxis motion sensors (accelerometer, gyroscope)
+- ✅ Rumble/vibration support (small and large motors)
+- ✅ Multiple controller support (up to 7 ports)
+- ✅ OC-Input backend integration
+- ✅ Button to PS3 format conversion
+- ✅ Analog stick normalization
+- ✅ Pressure-sensitive button data
+- ⏳ Guitar/Drum controller support
+
+### cellKb Details
+- ✅ Multi-keyboard support (up to 2)
+- ✅ USB HID key code handling
+- ✅ Modifier key tracking (Ctrl, Shift, Alt, Win)
+- ✅ LED state management (Num/Caps/Scroll Lock)
+- ✅ Multiple keyboard layouts (US, UK, Japanese, German, etc.)
+- ✅ Read mode configuration (character/raw)
+- ✅ OC-Input keyboard backend integration
+- ✅ Key event to PS3 format conversion
+
+### cellMouse Details
+- ✅ Multi-mouse support (up to 2)
+- ✅ Position tracking (absolute and delta)
+- ✅ Button state handling (left, right, middle, button4, button5)
+- ✅ Wheel scroll delta tracking
+- ✅ Raw data retrieval
+- ✅ OC-Input mouse backend integration
+- ✅ Button flag conversion
+- ⏳ Tablet mode support
+
+### cellMic Details
+- ✅ Multi-device support (up to 4 microphones)
+- ✅ Device enumeration from oc-input backend
+- ✅ Audio capture with configurable parameters
+- ✅ Sample rate configuration (16K, 24K, 32K, 48K)
+- ✅ Audio level monitoring (RMS levels)
+- ✅ OC-Input microphone backend integration
+- ✅ Audio buffer reading
+- ⏳ Echo cancellation
+- ⏳ Noise reduction
 
 ---
 

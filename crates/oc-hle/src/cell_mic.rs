@@ -1,9 +1,14 @@
 //! cellMic HLE - Microphone Input
 //!
 //! This module provides HLE implementations for PS3 microphone audio capture.
-//! It supports device enumeration and audio capture.
+//! It supports device enumeration and audio capture with full oc-input integration.
 
+use std::sync::{Arc, RwLock};
 use tracing::{debug, trace};
+use oc_input::microphone::{Microphone, MicrophoneManager, MicrophoneState, AudioBuffer};
+
+/// OC-Input microphone backend reference
+pub type MicrophoneBackend = Option<Arc<RwLock<MicrophoneManager>>>;
 
 /// Error codes
 pub const CELL_MIC_ERROR_NOT_INITIALIZED: i32 = 0x80140101u32 as i32;
@@ -124,8 +129,12 @@ pub struct MicManager {
     devices: [Option<DeviceEntry>; CELL_MIC_MAX_DEVICES],
     /// Number of connected devices
     num_devices: u32,
-    /// Audio capture backend placeholder
-    capture_backend: Option<()>,
+    /// OC-Input microphone backend
+    capture_backend: MicrophoneBackend,
+    /// Audio buffers for each device
+    audio_buffers: [Vec<i16>; CELL_MIC_MAX_DEVICES],
+    /// Buffer read positions
+    buffer_positions: [usize; CELL_MIC_MAX_DEVICES],
 }
 
 impl MicManager {
@@ -136,6 +145,8 @@ impl MicManager {
             devices: [None, None, None, None],
             num_devices: 0,
             capture_backend: None,
+            audio_buffers: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            buffer_positions: [0; CELL_MIC_MAX_DEVICES],
         }
     }
 
@@ -382,26 +393,26 @@ impl MicManager {
     // Audio Capture Backend Integration
     // ========================================================================
 
-    /// Connect to audio capture backend
+    /// Set the oc-input microphone backend
     /// 
-    /// Integrates with an audio capture backend for actual microphone input.
-    pub fn connect_capture_backend(&mut self, _backend: Option<()>) -> i32 {
-        debug!("MicManager::connect_capture_backend");
-        
-        // In a real implementation:
-        // 1. Store the audio capture backend reference
-        // 2. Query available audio capture devices
-        // 3. Populate devices array with actual hardware
-        // 4. Set up audio capture callbacks
-        
-        self.capture_backend = None; // Would store actual backend
-        
-        0 // CELL_OK
+    /// Connects the MicManager to the oc-input microphone system,
+    /// enabling actual audio capture.
+    /// 
+    /// # Arguments
+    /// * `backend` - Shared reference to MicrophoneManager
+    pub fn set_capture_backend(&mut self, backend: Arc<RwLock<MicrophoneManager>>) {
+        debug!("MicManager::set_capture_backend - connecting to oc-input");
+        self.capture_backend = Some(backend);
     }
 
-    /// Enumerate audio capture devices
+    /// Check if the capture backend is connected
+    pub fn has_capture_backend(&self) -> bool {
+        self.capture_backend.is_some()
+    }
+
+    /// Enumerate audio capture devices from backend
     /// 
-    /// Queries the backend for available microphone devices.
+    /// Queries the oc-input backend for available microphone devices.
     pub fn enumerate_devices(&mut self) -> i32 {
         if !self.initialized {
             return CELL_MIC_ERROR_NOT_INITIALIZED;
@@ -409,46 +420,114 @@ impl MicManager {
 
         debug!("MicManager::enumerate_devices");
 
-        // In a real implementation:
-        // 1. Query audio capture backend for devices
-        // 2. Create DeviceEntry for each device
-        // 3. Update num_devices
-        // 4. Populate device info (name, type, capabilities)
+        // Get backend or use simulated device
+        let backend = match &self.capture_backend {
+            Some(b) => b.clone(),
+            None => {
+                // No backend, keep simulated device
+                return 0;
+            }
+        };
 
-        // For now, we keep the simulated device
+        // Lock backend for reading
+        let manager = match backend.read() {
+            Ok(m) => m,
+            Err(e) => {
+                debug!("MicManager::enumerate_devices - failed to lock backend: {}", e);
+                return 0;
+            }
+        };
+
+        // Clear existing devices (except the simulated one if no real devices)
+        self.num_devices = 0;
+
+        // Enumerate devices from backend using list_registered
+        for (index, name) in manager.list_registered() {
+            if self.num_devices >= CELL_MIC_MAX_DEVICES as u32 {
+                break;
+            }
+
+            // Get the microphone to access its config
+            if let Some(mic) = manager.get(index) {
+                let mut info = CellMicDeviceInfo::default();
+                info.device_id = index as u32;
+                info.device_type = CellMicDeviceType::Usb as u32;
+                info.num_channels = mic.config.channels as u32;
+                info.sample_rate = mic.config.sample_rate.hz();
+                info.state = match mic.state() {
+                    MicrophoneState::Closed => CellMicDeviceState::Closed as u32,
+                    MicrophoneState::Open => CellMicDeviceState::Open as u32,
+                    MicrophoneState::Recording => CellMicDeviceState::Capturing as u32,
+                    MicrophoneState::Error => CellMicDeviceState::Closed as u32,
+                };
+
+                // Copy device name
+                let name_bytes = name.as_bytes();
+                let copy_len = name_bytes.len().min(63);
+                info.name[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
+
+                let device_idx = self.num_devices as usize;
+                self.devices[device_idx] = Some(DeviceEntry {
+                    info,
+                    state: CellMicDeviceState::Closed,
+                    params: CellMicCaptureParam::default(),
+                });
+                self.num_devices += 1;
+            }
+        }
+
+        debug!("MicManager::enumerate_devices - found {} devices", self.num_devices);
 
         0 // CELL_OK
     }
 
     /// Start audio capture on backend
-    /// 
-    /// # Arguments
-    /// * `device_id` - Device ID
-    #[allow(dead_code)]
     fn backend_start_capture(&mut self, device_id: u32) -> i32 {
         trace!("MicManager::backend_start_capture: device_id={}", device_id);
 
-        // In a real implementation:
-        // 1. Get device parameters (sample rate, channels, buffer size)
-        // 2. Configure audio capture device on backend
-        // 3. Start audio capture stream
-        // 4. Set up capture callback to fill buffer
+        let backend = match &self.capture_backend {
+            Some(b) => b.clone(),
+            None => return 0, // No backend, stub mode
+        };
+
+        let mut manager = match backend.write() {
+            Ok(m) => m,
+            Err(e) => {
+                debug!("MicManager::backend_start_capture - failed to lock backend: {}", e);
+                return CELL_MIC_ERROR_DEVICE_BUSY;
+            }
+        };
+
+        if let Some(mic) = manager.get_mut(device_id as u8) {
+            if let Err(e) = mic.start_recording() {
+                debug!("MicManager::backend_start_capture - failed to start: {:?}", e);
+                return CELL_MIC_ERROR_DEVICE_BUSY;
+            }
+        }
 
         0 // CELL_OK
     }
 
     /// Stop audio capture on backend
-    /// 
-    /// # Arguments
-    /// * `device_id` - Device ID
-    #[allow(dead_code)]
     fn backend_stop_capture(&mut self, device_id: u32) -> i32 {
         trace!("MicManager::backend_stop_capture: device_id={}", device_id);
 
-        // In a real implementation:
-        // 1. Stop audio capture stream
-        // 2. Release audio capture device resources
-        // 3. Clear capture buffer
+        let backend = match &self.capture_backend {
+            Some(b) => b.clone(),
+            None => return 0, // No backend, stub mode
+        };
+
+        let mut manager = match backend.write() {
+            Ok(m) => m,
+            Err(e) => {
+                debug!("MicManager::backend_stop_capture - failed to lock backend: {}", e);
+                return CELL_MIC_ERROR_DEVICE_BUSY;
+            }
+        };
+
+        if let Some(mic) = manager.get_mut(device_id as u8) {
+            let _ = mic.stop_recording();
+        }
 
         0 // CELL_OK
     }
@@ -458,17 +537,72 @@ impl MicManager {
     /// # Arguments
     /// * `device_id` - Device ID
     /// * `buffer` - Buffer to fill with captured audio
-    #[allow(dead_code)]
-    fn backend_read_data(&self, device_id: u32, _buffer: &mut [u8]) -> Result<u32, i32> {
+    pub fn backend_read_data(&mut self, device_id: u32, buffer: &mut [u8]) -> Result<u32, i32> {
         trace!("MicManager::backend_read_data: device_id={}", device_id);
 
-        // In a real implementation:
-        // 1. Check if data is available in capture buffer
-        // 2. Copy captured samples to output buffer
-        // 3. Apply any format conversion if needed
-        // 4. Return number of bytes read
+        let backend = match &self.capture_backend {
+            Some(b) => b.clone(),
+            None => return Ok(0), // No backend, no data
+        };
 
-        Ok(0) // No data in stub
+        let mut manager = match backend.write() {
+            Ok(m) => m,
+            Err(_) => return Ok(0),
+        };
+
+        if let Some(mic) = manager.get_mut(device_id as u8) {
+            if let Some(audio_buffer) = mic.read_audio() {
+                // Convert and copy audio data
+                let samples: Vec<i16> = audio_buffer.as_i16_samples();
+                let device_idx = device_id as usize;
+
+                // Store in our buffer
+                self.audio_buffers[device_idx].extend_from_slice(&samples);
+
+                // Copy to output buffer
+                let available = self.audio_buffers[device_idx].len() * 2; // bytes
+                let to_copy = available.min(buffer.len());
+
+                for (i, sample) in self.audio_buffers[device_idx].drain(..(to_copy / 2)).enumerate() {
+                    let bytes = sample.to_le_bytes();
+                    buffer[i * 2] = bytes[0];
+                    buffer[i * 2 + 1] = bytes[1];
+                }
+
+                return Ok(to_copy as u32);
+            }
+        }
+
+        Ok(0) // No data available
+    }
+
+    /// Get audio level from backend
+    /// 
+    /// Returns the current audio input level (0.0 - 1.0)
+    pub fn get_audio_level(&self, device_id: u32) -> Result<f32, i32> {
+        if !self.initialized {
+            return Err(CELL_MIC_ERROR_NOT_INITIALIZED);
+        }
+
+        if device_id >= CELL_MIC_MAX_DEVICES as u32 {
+            return Err(CELL_MIC_ERROR_INVALID_PARAMETER);
+        }
+
+        let backend = match &self.capture_backend {
+            Some(b) => b.clone(),
+            None => return Ok(0.0), // No backend, no level
+        };
+
+        let manager = match backend.read() {
+            Ok(m) => m,
+            Err(_) => return Ok(0.0),
+        };
+
+        if let Some(mic) = manager.get(device_id as u8) {
+            return Ok(mic.levels().rms);
+        }
+
+        Ok(0.0)
     }
 
     /// Check if backend is connected
