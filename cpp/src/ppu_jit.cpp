@@ -1068,8 +1068,8 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             uint8_t ds_xo = instr & 0x3;
             int16_t ds = (int16_t)(instr & 0xFFFC);
             llvm::Value* ra_val = (ra == 0) ? 
-                llvm::ConstantInt::get(i64_ty, 0) :
-                builder.CreateLoad(i64_ty, gprs[ra]);
+                static_cast<llvm::Value*>(llvm::ConstantInt::get(i64_ty, 0)) :
+                static_cast<llvm::Value*>(builder.CreateLoad(i64_ty, gprs[ra]));
             llvm::Value* addr = builder.CreateAdd(ra_val,
                 llvm::ConstantInt::get(i64_ty, (int64_t)ds));
             llvm::Value* ptr = builder.CreateGEP(i8_ty, memory_base, addr);
@@ -1097,8 +1097,8 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             int16_t ds = (int16_t)(instr & 0xFFFC);
             llvm::Value* rs_val = builder.CreateLoad(i64_ty, gprs[rt]);
             llvm::Value* ra_val = (ra == 0) ?
-                llvm::ConstantInt::get(i64_ty, 0) :
-                builder.CreateLoad(i64_ty, gprs[ra]);
+                static_cast<llvm::Value*>(llvm::ConstantInt::get(i64_ty, 0)) :
+                static_cast<llvm::Value*>(builder.CreateLoad(i64_ty, gprs[ra]));
             llvm::Value* addr = builder.CreateAdd(ra_val,
                 llvm::ConstantInt::get(i64_ty, (int64_t)ds));
             llvm::Value* ptr = builder.CreateGEP(i8_ty, memory_base, addr);
@@ -1711,8 +1711,8 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                 // Indexed load/store instructions
                 case 23: { // lwzx rt, ra, rb - Load Word and Zero Indexed
                     llvm::Value* ra_val = (ra == 0) ? 
-                        llvm::ConstantInt::get(i64_ty, 0) :
-                        builder.CreateLoad(i64_ty, gprs[ra]);
+                        static_cast<llvm::Value*>(llvm::ConstantInt::get(i64_ty, 0)) :
+                        static_cast<llvm::Value*>(builder.CreateLoad(i64_ty, gprs[ra]));
                     llvm::Value* rb_val = builder.CreateLoad(i64_ty, gprs[rb]);
                     llvm::Value* addr = builder.CreateAdd(ra_val, rb_val);
                     llvm::Value* ptr = builder.CreateGEP(i8_ty, memory_base, addr);
@@ -1727,8 +1727,8 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                     llvm::Value* rs_val = builder.CreateLoad(i64_ty, gprs[rt]);
                     llvm::Value* truncated = builder.CreateTrunc(rs_val, i32_ty);
                     llvm::Value* ra_val = (ra == 0) ?
-                        llvm::ConstantInt::get(i64_ty, 0) :
-                        builder.CreateLoad(i64_ty, gprs[ra]);
+                        static_cast<llvm::Value*>(llvm::ConstantInt::get(i64_ty, 0)) :
+                        static_cast<llvm::Value*>(builder.CreateLoad(i64_ty, gprs[ra]));
                     llvm::Value* rb_val = builder.CreateLoad(i64_ty, gprs[rb]);
                     llvm::Value* addr = builder.CreateAdd(ra_val, rb_val);
                     llvm::Value* ptr = builder.CreateGEP(i8_ty, memory_base, addr);
@@ -1739,8 +1739,8 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                 }
                 case 87: { // lbzx rt, ra, rb - Load Byte and Zero Indexed
                     llvm::Value* ra_val = (ra == 0) ?
-                        llvm::ConstantInt::get(i64_ty, 0) :
-                        builder.CreateLoad(i64_ty, gprs[ra]);
+                        static_cast<llvm::Value*>(llvm::ConstantInt::get(i64_ty, 0)) :
+                        static_cast<llvm::Value*>(builder.CreateLoad(i64_ty, gprs[ra]));
                     llvm::Value* rb_val = builder.CreateLoad(i64_ty, gprs[rb]);
                     llvm::Value* addr = builder.CreateAdd(ra_val, rb_val);
                     llvm::Value* ptr = builder.CreateGEP(i8_ty, memory_base, addr);
@@ -1753,8 +1753,8 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                     llvm::Value* rs_val = builder.CreateLoad(i64_ty, gprs[rt]);
                     llvm::Value* truncated = builder.CreateTrunc(rs_val, i8_ty);
                     llvm::Value* ra_val = (ra == 0) ?
-                        llvm::ConstantInt::get(i64_ty, 0) :
-                        builder.CreateLoad(i64_ty, gprs[ra]);
+                        static_cast<llvm::Value*>(llvm::ConstantInt::get(i64_ty, 0)) :
+                        static_cast<llvm::Value*>(builder.CreateLoad(i64_ty, gprs[ra]));
                     llvm::Value* rb_val = builder.CreateLoad(i64_ty, gprs[rb]);
                     llvm::Value* addr = builder.CreateAdd(ra_val, rb_val);
                     llvm::Value* ptr = builder.CreateGEP(i8_ty, memory_base, addr);
@@ -1763,8 +1763,8 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                 }
                 case 279: { // lhzx rt, ra, rb - Load Halfword and Zero Indexed
                     llvm::Value* ra_val = (ra == 0) ?
-                        llvm::ConstantInt::get(i64_ty, 0) :
-                        builder.CreateLoad(i64_ty, gprs[ra]);
+                        static_cast<llvm::Value*>(llvm::ConstantInt::get(i64_ty, 0)) :
+                        static_cast<llvm::Value*>(builder.CreateLoad(i64_ty, gprs[ra]));
                     llvm::Value* rb_val = builder.CreateLoad(i64_ty, gprs[rb]);
                     llvm::Value* addr = builder.CreateAdd(ra_val, rb_val);
                     llvm::Value* ptr = builder.CreateGEP(i8_ty, memory_base, addr);
@@ -1779,8 +1779,8 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                     llvm::Value* rs_val = builder.CreateLoad(i64_ty, gprs[rt]);
                     llvm::Value* truncated = builder.CreateTrunc(rs_val, i16_ty);
                     llvm::Value* ra_val = (ra == 0) ?
-                        llvm::ConstantInt::get(i64_ty, 0) :
-                        builder.CreateLoad(i64_ty, gprs[ra]);
+                        static_cast<llvm::Value*>(llvm::ConstantInt::get(i64_ty, 0)) :
+                        static_cast<llvm::Value*>(builder.CreateLoad(i64_ty, gprs[ra]));
                     llvm::Value* rb_val = builder.CreateLoad(i64_ty, gprs[rb]);
                     llvm::Value* addr = builder.CreateAdd(ra_val, rb_val);
                     llvm::Value* ptr = builder.CreateGEP(i8_ty, memory_base, addr);
@@ -1791,8 +1791,8 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                 }
                 case 21: { // ldx rt, ra, rb - Load Doubleword Indexed
                     llvm::Value* ra_val = (ra == 0) ?
-                        llvm::ConstantInt::get(i64_ty, 0) :
-                        builder.CreateLoad(i64_ty, gprs[ra]);
+                        static_cast<llvm::Value*>(llvm::ConstantInt::get(i64_ty, 0)) :
+                        static_cast<llvm::Value*>(builder.CreateLoad(i64_ty, gprs[ra]));
                     llvm::Value* rb_val = builder.CreateLoad(i64_ty, gprs[rb]);
                     llvm::Value* addr = builder.CreateAdd(ra_val, rb_val);
                     llvm::Value* ptr = builder.CreateGEP(i8_ty, memory_base, addr);
@@ -1805,8 +1805,8 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                 case 149: { // stdx rs, ra, rb - Store Doubleword Indexed
                     llvm::Value* rs_val = builder.CreateLoad(i64_ty, gprs[rt]);
                     llvm::Value* ra_val = (ra == 0) ?
-                        llvm::ConstantInt::get(i64_ty, 0) :
-                        builder.CreateLoad(i64_ty, gprs[ra]);
+                        static_cast<llvm::Value*>(llvm::ConstantInt::get(i64_ty, 0)) :
+                        static_cast<llvm::Value*>(builder.CreateLoad(i64_ty, gprs[ra]));
                     llvm::Value* rb_val = builder.CreateLoad(i64_ty, gprs[rb]);
                     llvm::Value* addr = builder.CreateAdd(ra_val, rb_val);
                     llvm::Value* ptr = builder.CreateGEP(i8_ty, memory_base, addr);

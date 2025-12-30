@@ -1,0 +1,2 @@
+/usr/bin/ar qc liboc_cpp.a CMakeFiles/oc_cpp.dir/src/ffi.cpp.o CMakeFiles/oc_cpp.dir/src/ppu_jit.cpp.o CMakeFiles/oc_cpp.dir/src/spu_jit.cpp.o CMakeFiles/oc_cpp.dir/src/rsx_shaders.cpp.o CMakeFiles/oc_cpp.dir/src/atomics.cpp.o CMakeFiles/oc_cpp.dir/src/dma.cpp.o CMakeFiles/oc_cpp.dir/src/simd_avx.cpp.o
+/usr/bin/ranlib liboc_cpp.a

@@ -1,0 +1,11 @@
+/home/runner/work/oxidized-cell/oxidized-cell/cpp/build/CMakeFiles/intrinsics_gen.dir
+/home/runner/work/oxidized-cell/oxidized-cell/cpp/build/CMakeFiles/omp_gen.dir
+/home/runner/work/oxidized-cell/oxidized-cell/cpp/build/CMakeFiles/acc_gen.dir
+/home/runner/work/oxidized-cell/oxidized-cell/cpp/build/CMakeFiles/RISCVTargetParserTableGen.dir
+/home/runner/work/oxidized-cell/oxidized-cell/cpp/build/CMakeFiles/oc_cpp.dir
+/home/runner/work/oxidized-cell/oxidized-cell/cpp/build/CMakeFiles/edit_cache.dir
+/home/runner/work/oxidized-cell/oxidized-cell/cpp/build/CMakeFiles/rebuild_cache.dir
+/home/runner/work/oxidized-cell/oxidized-cell/cpp/build/CMakeFiles/list_install_components.dir
+/home/runner/work/oxidized-cell/oxidized-cell/cpp/build/CMakeFiles/install.dir
+/home/runner/work/oxidized-cell/oxidized-cell/cpp/build/CMakeFiles/install/local.dir
+/home/runner/work/oxidized-cell/oxidized-cell/cpp/build/CMakeFiles/install/strip.dir
