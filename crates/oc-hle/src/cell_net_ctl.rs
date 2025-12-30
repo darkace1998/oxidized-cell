@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use tracing::{debug, trace};
+use crate::memory::{write_be32, write_string};
 
 // Error codes
 pub const CELL_NET_CTL_ERROR_NOT_INITIALIZED: i32 = 0x80130101u32 as i32;
@@ -586,12 +587,15 @@ pub fn cell_net_ctl_term() -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_net_ctl_get_state(_state_addr: u32) -> i32 {
-    trace!("cellNetCtlGetState()");
+pub fn cell_net_ctl_get_state(state_addr: u32) -> i32 {
+    trace!("cellNetCtlGetState(state_addr=0x{:08X})", state_addr);
 
     match crate::context::get_hle_context().net_ctl.get_state() {
-        Ok(_state) => {
-            // TODO: Write state to memory at _state_addr
+        Ok(state) => {
+            // Write state to memory
+            if let Err(e) = write_be32(state_addr, state as u32) {
+                return e;
+            }
             0 // CELL_OK
         }
         Err(e) => e,
@@ -606,18 +610,73 @@ pub fn cell_net_ctl_get_state(_state_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_net_ctl_get_info(code: u32, _info_addr: u32) -> i32 {
-    trace!("cellNetCtlGetInfo(code={})", code);
+pub fn cell_net_ctl_get_info(code: u32, info_addr: u32) -> i32 {
+    trace!("cellNetCtlGetInfo(code={}, info_addr=0x{:08X})", code, info_addr);
 
-    // Try to convert code to an info code enum and get the info
     let ctx = crate::context::get_hle_context();
-    match ctx.net_ctl.get_info(CellNetCtlInfoCode::Device) {
-        Ok(_info) => {
-            // TODO: Write info to memory at _info_addr based on code
-            0 // CELL_OK
+    let info = match ctx.net_ctl.get_info(CellNetCtlInfoCode::Device) {
+        Ok(i) => i,
+        Err(e) => return e,
+    };
+    
+    // Write info based on code
+    // Each code corresponds to a specific field in CellNetCtlInfo
+    match code {
+        1 => { // CELL_NET_CTL_INFO_DEVICE
+            if let Err(e) = write_be32(info_addr, info.device) { return e; }
         }
-        Err(e) => e,
+        2 => { // CELL_NET_CTL_INFO_ETHER_ADDR
+            if let Err(e) = crate::memory::write_bytes(info_addr, &info.ether_addr) { return e; }
+        }
+        3 => { // CELL_NET_CTL_INFO_MTU
+            if let Err(e) = write_be32(info_addr, info.mtu) { return e; }
+        }
+        4 => { // CELL_NET_CTL_INFO_LINK
+            if let Err(e) = write_be32(info_addr, info.link) { return e; }
+        }
+        5 => { // CELL_NET_CTL_INFO_LINK_TYPE
+            if let Err(e) = write_be32(info_addr, info.link_type) { return e; }
+        }
+        6 => { // CELL_NET_CTL_INFO_BSSID
+            if let Err(e) = crate::memory::write_bytes(info_addr, &info.bssid) { return e; }
+        }
+        7 => { // CELL_NET_CTL_INFO_SSID
+            if let Err(e) = crate::memory::write_bytes(info_addr, &info.ssid) { return e; }
+        }
+        8 => { // CELL_NET_CTL_INFO_WLAN_SECURITY
+            if let Err(e) = write_be32(info_addr, info.wlan_security) { return e; }
+        }
+        9 => { // CELL_NET_CTL_INFO_RXQ_LINK_QUALITY (rssi_dbm)
+            if let Err(e) = crate::memory::write_u8(info_addr, info.rssi_dbm as u8) { return e; }
+        }
+        10 => { // CELL_NET_CTL_INFO_IP_ADDRESS
+            if let Err(e) = crate::memory::write_bytes(info_addr, &info.ip_address) { return e; }
+        }
+        11 => { // CELL_NET_CTL_INFO_NETMASK
+            if let Err(e) = crate::memory::write_bytes(info_addr, &info.netmask) { return e; }
+        }
+        12 => { // CELL_NET_CTL_INFO_DEFAULT_ROUTE
+            if let Err(e) = crate::memory::write_bytes(info_addr, &info.default_route) { return e; }
+        }
+        13 => { // CELL_NET_CTL_INFO_PRIMARY_DNS
+            if let Err(e) = crate::memory::write_bytes(info_addr, &info.primary_dns) { return e; }
+        }
+        14 => { // CELL_NET_CTL_INFO_SECONDARY_DNS
+            if let Err(e) = crate::memory::write_bytes(info_addr, &info.secondary_dns) { return e; }
+        }
+        15 => { // CELL_NET_CTL_INFO_HTTP_PROXY_CONFIG
+            if let Err(e) = write_be32(info_addr, info.http_proxy_config) { return e; }
+        }
+        16 => { // CELL_NET_CTL_INFO_HTTP_PROXY_SERVER
+            if let Err(e) = crate::memory::write_bytes(info_addr, &info.http_proxy_server) { return e; }
+        }
+        17 => { // CELL_NET_CTL_INFO_HTTP_PROXY_PORT
+            if let Err(e) = crate::memory::write_be16(info_addr, info.http_proxy_port) { return e; }
+        }
+        _ => return CELL_NET_CTL_ERROR_INVALID_CODE,
     }
+    
+    0 // CELL_OK
 }
 
 /// cellNetCtlNetStartDialogLoadAsync - Start network configuration dialog
@@ -659,12 +718,17 @@ pub fn cell_net_ctl_net_start_dialog_unload_async(_result_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_net_ctl_get_nat_info(_nat_info_addr: u32) -> i32 {
-    trace!("cellNetCtlGetNatInfo()");
+pub fn cell_net_ctl_get_nat_info(nat_info_addr: u32) -> i32 {
+    trace!("cellNetCtlGetNatInfo(nat_info_addr=0x{:08X})", nat_info_addr);
 
     match crate::context::get_hle_context().net_ctl.get_nat_info() {
-        Ok(_nat_info) => {
-            // TODO: Write NAT info to memory at _nat_info_addr
+        Ok(nat_info) => {
+            // Write NAT info to memory (CellNetCtlNatInfo structure)
+            // size(4) + nat_type(4) + stun_status(4) + upnp_status(4)
+            if let Err(e) = write_be32(nat_info_addr, nat_info.size) { return e; }
+            if let Err(e) = write_be32(nat_info_addr + 4, nat_info.nat_type) { return e; }
+            if let Err(e) = write_be32(nat_info_addr + 8, nat_info.stun_status) { return e; }
+            if let Err(e) = write_be32(nat_info_addr + 12, nat_info.upnp_status) { return e; }
             0 // CELL_OK
         }
         Err(e) => e,
@@ -680,12 +744,15 @@ pub fn cell_net_ctl_get_nat_info(_nat_info_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_net_ctl_add_handler(handler: u32, arg: u32, _hid_addr: u32) -> i32 {
-    debug!("cellNetCtlAddHandler(handler={}, arg={})", handler, arg);
+pub fn cell_net_ctl_add_handler(handler: u32, arg: u32, hid_addr: u32) -> i32 {
+    debug!("cellNetCtlAddHandler(handler=0x{:08X}, arg=0x{:08X}, hid_addr=0x{:08X})", handler, arg, hid_addr);
 
     match crate::context::get_hle_context_mut().net_ctl.add_handler(handler, arg) {
-        Ok(_hid) => {
-            // TODO: Write handler ID to memory at _hid_addr
+        Ok(hid) => {
+            // Write handler ID to memory
+            if let Err(e) = write_be32(hid_addr, hid) {
+                return e;
+            }
             0 // CELL_OK
         }
         Err(e) => e,
