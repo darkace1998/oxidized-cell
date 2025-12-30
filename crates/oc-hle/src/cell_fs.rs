@@ -9,6 +9,7 @@ use std::io::{Read, Write, Seek, SeekFrom};
 use std::sync::Arc;
 use oc_vfs::VirtualFileSystem;
 use tracing::{debug, trace, warn};
+use crate::memory::{read_string, write_be32, write_be64, write_bytes, read_bytes};
 
 /// Maximum path length
 pub const CELL_FS_MAX_PATH_LENGTH: usize = 1024;
@@ -1028,17 +1029,33 @@ impl Default for FsManager {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_fs_open(path_addr: u32, flags: u32, _fd_addr: u32, mode: u32) -> i32 {
+pub fn cell_fs_open(path_addr: u32, flags: u32, fd_addr: u32, mode: u32) -> i32 {
+    // Read path from memory
+    let path = match read_string(path_addr, CELL_FS_MAX_PATH_LENGTH as u32) {
+        Ok(p) => p,
+        Err(e) => {
+            debug!("cellFsOpen: failed to read path from memory");
+            return e;
+        }
+    };
+    
     debug!(
-        "cellFsOpen(path=0x{:08X}, flags=0x{:X}, mode=0x{:X})",
-        path_addr, flags, mode
+        "cellFsOpen(path='{}', flags=0x{:X}, mode=0x{:X})",
+        path, flags, mode
     );
 
-    // TODO: Read path from memory
-    // TODO: Open file through global fs manager
-    // TODO: Write fd to memory
-
-    0 // CELL_OK
+    // Open file through global fs manager
+    let mut ctx = crate::context::get_hle_context_mut();
+    match ctx.fs.open(&path, flags, mode) {
+        Ok(fd) => {
+            // Write fd to memory
+            if let Err(e) = write_be32(fd_addr, fd as u32) {
+                return e;
+            }
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
 }
 
 /// cellFsClose - Close a file
@@ -1064,14 +1081,30 @@ pub fn cell_fs_close(fd: i32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_fs_read(fd: i32, _buf_addr: u32, nbytes: u64, _nread_addr: u32) -> i32 {
-    trace!("cellFsRead(fd={}, nbytes={})", fd, nbytes);
+pub fn cell_fs_read(fd: i32, buf_addr: u32, nbytes: u64, nread_addr: u32) -> i32 {
+    trace!("cellFsRead(fd={}, buf=0x{:08X}, nbytes={})", fd, buf_addr, nbytes);
 
-    // TODO: Read from file through global fs manager
-    // TODO: Write data to buffer
-    // TODO: Write number of bytes read
-
-    0 // CELL_OK
+    // Create buffer for reading
+    let mut buffer = vec![0u8; nbytes as usize];
+    
+    // Read from file through global fs manager
+    let mut ctx = crate::context::get_hle_context_mut();
+    match ctx.fs.read(fd, &mut buffer) {
+        Ok(bytes_read) => {
+            // Write data to guest buffer
+            if bytes_read > 0 {
+                if let Err(e) = write_bytes(buf_addr, &buffer[..bytes_read as usize]) {
+                    return e;
+                }
+            }
+            // Write number of bytes read
+            if let Err(e) = write_be64(nread_addr, bytes_read) {
+                return e;
+            }
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
 }
 
 /// cellFsWrite - Write to file
@@ -1084,14 +1117,27 @@ pub fn cell_fs_read(fd: i32, _buf_addr: u32, nbytes: u64, _nread_addr: u32) -> i
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_fs_write(fd: i32, _buf_addr: u32, nbytes: u64, _nwrite_addr: u32) -> i32 {
-    trace!("cellFsWrite(fd={}, nbytes={})", fd, nbytes);
+pub fn cell_fs_write(fd: i32, buf_addr: u32, nbytes: u64, nwrite_addr: u32) -> i32 {
+    trace!("cellFsWrite(fd={}, buf=0x{:08X}, nbytes={})", fd, buf_addr, nbytes);
 
-    // TODO: Write to file through global fs manager
-    // TODO: Read data from buffer
-    // TODO: Write number of bytes written
-
-    0 // CELL_OK
+    // Read data from guest buffer
+    let data = match read_bytes(buf_addr, nbytes as u32) {
+        Ok(d) => d,
+        Err(e) => return e,
+    };
+    
+    // Write to file through global fs manager
+    let mut ctx = crate::context::get_hle_context_mut();
+    match ctx.fs.write(fd, &data) {
+        Ok(written) => {
+            // Write number of bytes written
+            if let Err(e) = write_be64(nwrite_addr, written) {
+                return e;
+            }
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
 }
 
 /// cellFsLseek - Seek in file
@@ -1104,13 +1150,21 @@ pub fn cell_fs_write(fd: i32, _buf_addr: u32, nbytes: u64, _nwrite_addr: u32) ->
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_fs_lseek(fd: i32, offset: i64, whence: u32, _pos_addr: u32) -> i32 {
+pub fn cell_fs_lseek(fd: i32, offset: i64, whence: u32, pos_addr: u32) -> i32 {
     trace!("cellFsLseek(fd={}, offset={}, whence={})", fd, offset, whence);
 
-    // TODO: Seek in file through global fs manager
-    // TODO: Write new position
-
-    0 // CELL_OK
+    // Seek in file through global fs manager
+    let mut ctx = crate::context::get_hle_context_mut();
+    match ctx.fs.lseek(fd, offset, whence) {
+        Ok(new_pos) => {
+            // Write new position
+            if let Err(e) = write_be64(pos_addr, new_pos) {
+                return e;
+            }
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
 }
 
 /// cellFsFstat - Get file status
@@ -1121,13 +1175,27 @@ pub fn cell_fs_lseek(fd: i32, offset: i64, whence: u32, _pos_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_fs_fstat(fd: i32, _stat_addr: u32) -> i32 {
-    trace!("cellFsFstat(fd={})", fd);
+pub fn cell_fs_fstat(fd: i32, stat_addr: u32) -> i32 {
+    trace!("cellFsFstat(fd={}, stat_addr=0x{:08X})", fd, stat_addr);
 
-    // TODO: Get file status through global fs manager
-    // TODO: Write stat structure to memory
-
-    0 // CELL_OK
+    // Get file status through global fs manager
+    let ctx = crate::context::get_hle_context();
+    match ctx.fs.fstat(fd) {
+        Ok(stat) => {
+            // Write stat structure to memory (CellFsStat layout)
+            // mode(4) + uid(4) + gid(4) + atime(8) + mtime(8) + ctime(8) + size(8) + blksize(8)
+            if let Err(e) = write_be32(stat_addr, stat.mode) { return e; }
+            if let Err(e) = write_be32(stat_addr + 4, stat.uid) { return e; }
+            if let Err(e) = write_be32(stat_addr + 8, stat.gid) { return e; }
+            if let Err(e) = write_be64(stat_addr + 12, stat.atime) { return e; }
+            if let Err(e) = write_be64(stat_addr + 20, stat.mtime) { return e; }
+            if let Err(e) = write_be64(stat_addr + 28, stat.ctime) { return e; }
+            if let Err(e) = write_be64(stat_addr + 36, stat.size) { return e; }
+            if let Err(e) = write_be64(stat_addr + 44, stat.blksize) { return e; }
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
 }
 
 /// cellFsStat - Get file status by path
@@ -1138,14 +1206,32 @@ pub fn cell_fs_fstat(fd: i32, _stat_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_fs_stat(path_addr: u32, _stat_addr: u32) -> i32 {
-    debug!("cellFsStat(path=0x{:08X})", path_addr);
+pub fn cell_fs_stat(path_addr: u32, stat_addr: u32) -> i32 {
+    // Read path from memory
+    let path = match read_string(path_addr, CELL_FS_MAX_PATH_LENGTH as u32) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    
+    debug!("cellFsStat(path='{}', stat_addr=0x{:08X})", path, stat_addr);
 
-    // TODO: Read path from memory
-    // TODO: Get file status through global fs manager
-    // TODO: Write stat structure to memory
-
-    0 // CELL_OK
+    // Get file status through global fs manager
+    let ctx = crate::context::get_hle_context();
+    match ctx.fs.stat(&path) {
+        Ok(stat) => {
+            // Write stat structure to memory (CellFsStat layout)
+            if let Err(e) = write_be32(stat_addr, stat.mode) { return e; }
+            if let Err(e) = write_be32(stat_addr + 4, stat.uid) { return e; }
+            if let Err(e) = write_be32(stat_addr + 8, stat.gid) { return e; }
+            if let Err(e) = write_be64(stat_addr + 12, stat.atime) { return e; }
+            if let Err(e) = write_be64(stat_addr + 20, stat.mtime) { return e; }
+            if let Err(e) = write_be64(stat_addr + 28, stat.ctime) { return e; }
+            if let Err(e) = write_be64(stat_addr + 36, stat.size) { return e; }
+            if let Err(e) = write_be64(stat_addr + 44, stat.blksize) { return e; }
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
 }
 
 /// cellFsOpendir - Open a directory
@@ -1156,14 +1242,27 @@ pub fn cell_fs_stat(path_addr: u32, _stat_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_fs_opendir(path_addr: u32, _fd_addr: u32) -> i32 {
-    debug!("cellFsOpendir(path=0x{:08X})", path_addr);
+pub fn cell_fs_opendir(path_addr: u32, fd_addr: u32) -> i32 {
+    // Read path from memory
+    let path = match read_string(path_addr, CELL_FS_MAX_PATH_LENGTH as u32) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    
+    debug!("cellFsOpendir(path='{}')", path);
 
-    // TODO: Read path from memory
-    // TODO: Open directory through global fs manager
-    // TODO: Write fd to memory
-
-    0 // CELL_OK
+    // Open directory through global fs manager
+    let mut ctx = crate::context::get_hle_context_mut();
+    match ctx.fs.opendir(&path) {
+        Ok(fd) => {
+            // Write fd to memory
+            if let Err(e) = write_be32(fd_addr, fd as u32) {
+                return e;
+            }
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
 }
 
 /// cellFsReaddir - Read directory entry
@@ -1175,13 +1274,30 @@ pub fn cell_fs_opendir(path_addr: u32, _fd_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_fs_readdir(fd: i32, _dir_addr: u32, _nread_addr: u32) -> i32 {
-    trace!("cellFsReaddir(fd={})", fd);
+pub fn cell_fs_readdir(fd: i32, dir_addr: u32, nread_addr: u32) -> i32 {
+    trace!("cellFsReaddir(fd={}, dir_addr=0x{:08X})", fd, dir_addr);
 
-    // TODO: Read directory entry through global fs manager
-    // TODO: Write entry to memory
-
-    0 // CELL_OK
+    // Read directory entry through global fs manager
+    let mut ctx = crate::context::get_hle_context_mut();
+    match ctx.fs.readdir(fd) {
+        Ok(Some(entry)) => {
+            // Write directory entry to memory (CellFsDirent layout)
+            // d_type(1) + d_namlen(1) + d_name[256]
+            if let Err(e) = crate::memory::write_u8(dir_addr, entry.d_type) { return e; }
+            if let Err(e) = crate::memory::write_u8(dir_addr + 1, entry.d_namlen) { return e; }
+            // Write d_name bytes directly
+            if let Err(e) = write_bytes(dir_addr + 2, &entry.d_name) { return e; }
+            // Write number of entries read (1)
+            if let Err(e) = write_be64(nread_addr, 1) { return e; }
+            0 // CELL_OK
+        }
+        Ok(None) => {
+            // End of directory - write 0 entries read
+            if let Err(e) = write_be64(nread_addr, 0) { return e; }
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
 }
 
 /// cellFsClosedir - Close a directory

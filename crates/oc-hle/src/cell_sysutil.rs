@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use tracing::{debug, trace};
+use crate::memory::{write_be32, write_be64, write_string};
 
 /// Maximum number of callback slots
 pub const CELL_SYSUTIL_MAX_CALLBACK_SLOTS: usize = 4;
@@ -1381,11 +1382,22 @@ pub fn cell_user_info_get_stat(_id: u32, _stat_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_user_info_get_list(_list_num_addr: u32, _list_addr: u32, _current_user_addr: u32) -> i32 {
-    debug!("cellUserInfoGetList()");
+pub fn cell_user_info_get_list(list_num_addr: u32, _list_addr: u32, current_user_addr: u32) -> i32 {
+    debug!("cellUserInfoGetList(list_num={:08X}, current_user={:08X})", list_num_addr, current_user_addr);
     
-    // TODO: Write user list to memory
-    // For now, return 1 user
+    // Write user count = 1
+    if list_num_addr != 0 {
+        if let Err(e) = write_be32(list_num_addr, 1) {
+            return e;
+        }
+    }
+    
+    // Write current user ID = 0
+    if current_user_addr != 0 {
+        if let Err(e) = write_be32(current_user_addr, 0) {
+            return e;
+        }
+    }
     
     0 // CELL_OK
 }
@@ -1438,10 +1450,15 @@ pub fn cell_disc_game_register_disc_change_callback(_callback: u32, _userdata: u
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_sysutil_get_bgm_playback_status(_status_addr: u32) -> i32 {
-    trace!("cellSysutilGetBgmPlaybackStatus()");
+pub fn cell_sysutil_get_bgm_playback_status(status_addr: u32) -> i32 {
+    trace!("cellSysutilGetBgmPlaybackStatus(status_addr=0x{:08X})", status_addr);
     
-    // TODO: Write status to memory (0 = not playing)
+    // Write status = 0 (not playing)
+    if status_addr != 0 {
+        if let Err(e) = write_be32(status_addr, 0) {
+            return e;
+        }
+    }
     0 // CELL_OK
 }
 
@@ -1535,10 +1552,21 @@ pub fn cell_video_out_get_resolution_availability(
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_video_out_get_state(_video_out: u32, _device_index: u32, _state_addr: u32) -> i32 {
-    trace!("cellVideoOutGetState()");
+pub fn cell_video_out_get_state(_video_out: u32, _device_index: u32, state_addr: u32) -> i32 {
+    trace!("cellVideoOutGetState(state_addr=0x{:08X})", state_addr);
     
-    // TODO: Write state to memory
+    // Write video output state structure
+    // struct CellVideoOutState { state: u8, colorSpace: u8, reserved[6], displayMode: CellVideoOutDisplayMode }
+    if state_addr != 0 {
+        // state = 2 (CELL_VIDEO_OUT_OUTPUT_STATE_ENABLED)
+        if let Err(e) = write_be32(state_addr, 0x02000000) {
+            return e;
+        }
+        // displayMode: resolutionId=2 (720p), scanMode=0, conversion=0, aspect=0, reserved, refreshRate
+        if let Err(e) = write_be32(state_addr + 8, 0x02000000) {
+            return e;
+        }
+    }
     0 // CELL_OK
 }
 
@@ -1597,10 +1625,28 @@ pub fn cell_video_out_get_configuration(
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_audio_out_get_state(_audio_out: u32, _device_index: u32, _state_addr: u32) -> i32 {
-    trace!("cellAudioOutGetState()");
+pub fn cell_audio_out_get_state(_audio_out: u32, _device_index: u32, state_addr: u32) -> i32 {
+    trace!("cellAudioOutGetState(state_addr=0x{:08X})", state_addr);
     
-    // TODO: Write state to memory
+    // Write audio output state structure
+    // struct CellAudioOutState { state: u8, encoder: u8, reserved[6], downMixer: u32, soundMode: CellAudioOutSoundMode }
+    if state_addr != 0 {
+        // state = 2 (enabled), encoder = 0 (LPCM)
+        if let Err(e) = write_be32(state_addr, 0x02000000) {
+            return e;
+        }
+        // downMixer = 0 (none)
+        if let Err(e) = write_be32(state_addr + 8, 0) {
+            return e;
+        }
+        // soundMode: type=0, channel=2, fs=48000, bitDepth=16
+        if let Err(e) = write_be32(state_addr + 12, 0x0002BB80) {
+            return e;
+        }
+        if let Err(e) = write_be32(state_addr + 16, 0x00100000) {
+            return e;
+        }
+    }
     0 // CELL_OK
 }
 

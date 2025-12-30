@@ -6,6 +6,7 @@
 use std::sync::{Arc, RwLock};
 use tracing::{debug, trace};
 use oc_input::{DualShock3Manager, dualshock3::PadData as OcInputPadData, pad::PadButtons};
+use crate::memory::{write_be32, write_be16, write_u8, read_u8, ToGuestMemory, FromGuestMemory};
 
 /// OC-Input backend reference
 /// Holds a shared reference to the oc-input DualShock3Manager for controller polling
@@ -88,6 +89,44 @@ impl Default for CellPadInfo {
     }
 }
 
+impl ToGuestMemory for CellPadInfo {
+    fn to_guest_memory(&self, addr: u32) -> Result<(), i32> {
+        let mut offset = 0u32;
+        
+        // Write max (4 bytes)
+        write_be32(addr + offset, self.max)?;
+        offset += 4;
+        
+        // Write now_connect (4 bytes)
+        write_be32(addr + offset, self.now_connect)?;
+        offset += 4;
+        
+        // Write system_info (4 bytes)
+        write_be32(addr + offset, self.system_info)?;
+        offset += 4;
+        
+        // Write port_status array (7 * 4 bytes)
+        for status in &self.port_status {
+            write_be32(addr + offset, *status)?;
+            offset += 4;
+        }
+        
+        // Write device_capability array (7 * 4 bytes)
+        for cap in &self.device_capability {
+            write_be32(addr + offset, *cap)?;
+            offset += 4;
+        }
+        
+        // Write device_type array (7 * 4 bytes)
+        for dtype in &self.device_type {
+            write_be32(addr + offset, *dtype)?;
+            offset += 4;
+        }
+        
+        Ok(())
+    }
+}
+
 /// Pad data structure
 /// 
 /// This structure matches the PS3 cellPad data format with all button, analog, and sensor data.
@@ -136,6 +175,59 @@ impl Default for CellPadData {
             sensor_z: 512,      // Center (10-bit, actual rest value depends on orientation)
             sensor_g: 512,      // Center (10-bit, 0-1023 range)
         }
+    }
+}
+
+impl ToGuestMemory for CellPadData {
+    fn to_guest_memory(&self, addr: u32) -> Result<(), i32> {
+        let mut offset = 0u32;
+        
+        // Write len (4 bytes, signed but write as unsigned for memory)
+        write_be32(addr + offset, self.len as u32)?;
+        offset += 4;
+        
+        // Write button[0] and button[1] (2 * 2 bytes)
+        write_be16(addr + offset, self.button[0])?;
+        offset += 2;
+        write_be16(addr + offset, self.button[1])?;
+        offset += 2;
+        
+        // Write analog stick values (4 bytes)
+        write_u8(addr + offset, self.right_stick_x)?;
+        offset += 1;
+        write_u8(addr + offset, self.right_stick_y)?;
+        offset += 1;
+        write_u8(addr + offset, self.left_stick_x)?;
+        offset += 1;
+        write_u8(addr + offset, self.left_stick_y)?;
+        offset += 1;
+        
+        // Write pressure sensitivity values (12 bytes)
+        for p in &self.pressure {
+            write_u8(addr + offset, *p)?;
+            offset += 1;
+        }
+        
+        // Write sensor values (4 * 2 bytes)
+        write_be16(addr + offset, self.sensor_x)?;
+        offset += 2;
+        write_be16(addr + offset, self.sensor_y)?;
+        offset += 2;
+        write_be16(addr + offset, self.sensor_z)?;
+        offset += 2;
+        write_be16(addr + offset, self.sensor_g)?;
+        
+        Ok(())
+    }
+}
+
+impl FromGuestMemory for CellPadActParam {
+    fn from_guest_memory(addr: u32) -> Result<Self, i32> {
+        Ok(Self {
+            motor_small: read_u8(addr)?,
+            motor_large: read_u8(addr + 1)?,
+            reserved: [0; 6],
+        })
     }
 }
 
@@ -196,6 +288,15 @@ impl Default for CellPadCapabilityInfo {
         Self {
             info: [0; CELL_PAD_MAX_CODES],
         }
+    }
+}
+
+impl ToGuestMemory for CellPadCapabilityInfo {
+    fn to_guest_memory(&self, addr: u32) -> Result<(), i32> {
+        for (i, val) in self.info.iter().enumerate() {
+            write_be32(addr + (i as u32 * 4), *val)?;
+        }
+        Ok(())
     }
 }
 
@@ -859,11 +960,15 @@ pub fn cell_pad_end() -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_pad_get_info(_info_addr: u32) -> i32 {
-    trace!("cellPadGetInfo()");
+pub fn cell_pad_get_info(info_addr: u32) -> i32 {
+    trace!("cellPadGetInfo(info_addr=0x{:08X})", info_addr);
 
-    let _info = crate::context::get_hle_context().pad.get_info();
-    // TODO: Write info to memory at _info_addr
+    let info = crate::context::get_hle_context().pad.get_info();
+    
+    // Write info to memory
+    if let Err(e) = info.to_guest_memory(info_addr) {
+        return e;
+    }
 
     0 // CELL_OK
 }
@@ -875,11 +980,15 @@ pub fn cell_pad_get_info(_info_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_pad_get_info2(_info_addr: u32) -> i32 {
-    trace!("cellPadGetInfo2()");
+pub fn cell_pad_get_info2(info_addr: u32) -> i32 {
+    trace!("cellPadGetInfo2(info_addr=0x{:08X})", info_addr);
 
-    let _info = crate::context::get_hle_context().pad.get_info();
-    // TODO: Write info to memory at _info_addr
+    let info = crate::context::get_hle_context().pad.get_info();
+    
+    // Write info to memory (same structure as GetInfo)
+    if let Err(e) = info.to_guest_memory(info_addr) {
+        return e;
+    }
 
     0 // CELL_OK
 }
@@ -892,12 +1001,15 @@ pub fn cell_pad_get_info2(_info_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_pad_get_data(port: u32, _data_addr: u32) -> i32 {
-    trace!("cellPadGetData(port={})", port);
+pub fn cell_pad_get_data(port: u32, data_addr: u32) -> i32 {
+    trace!("cellPadGetData(port={}, data_addr=0x{:08X})", port, data_addr);
 
     match crate::context::get_hle_context().pad.get_data(port) {
-        Ok(_data) => {
-            // TODO: Write data to memory at _data_addr
+        Ok(data) => {
+            // Write data to memory
+            if let Err(e) = data.to_guest_memory(data_addr) {
+                return e;
+            }
             0 // CELL_OK
         }
         Err(e) => e,
@@ -912,12 +1024,15 @@ pub fn cell_pad_get_data(port: u32, _data_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_pad_get_capability_info(port: u32, _info_addr: u32) -> i32 {
-    trace!("cellPadGetCapabilityInfo(port={})", port);
+pub fn cell_pad_get_capability_info(port: u32, info_addr: u32) -> i32 {
+    trace!("cellPadGetCapabilityInfo(port={}, info_addr=0x{:08X})", port, info_addr);
 
     match crate::context::get_hle_context().pad.get_capability_info(port) {
-        Ok(_info) => {
-            // TODO: Write capability info to memory at _info_addr
+        Ok(info) => {
+            // Write capability info to memory
+            if let Err(e) = info.to_guest_memory(info_addr) {
+                return e;
+            }
             0 // CELL_OK
         }
         Err(e) => e,
@@ -932,11 +1047,14 @@ pub fn cell_pad_get_capability_info(port: u32, _info_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_pad_set_act_param(port: u32, _param_addr: u32) -> i32 {
-    debug!("cellPadSetActParam(port={})", port);
+pub fn cell_pad_set_act_param(port: u32, param_addr: u32) -> i32 {
+    debug!("cellPadSetActParam(port={}, param_addr=0x{:08X})", port, param_addr);
 
-    // TODO: Read param from memory at _param_addr
-    let param = CellPadActParam::default();
+    // Read param from memory
+    let param = match CellPadActParam::from_guest_memory(param_addr) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
     
     crate::context::get_hle_context_mut().pad.set_actuator(port, &param)
 }
