@@ -54,6 +54,12 @@ mod dt {
 ///
 /// Creates PowerPC stub functions in memory that return 0 (success)
 /// and properly handle the PPC64 calling convention.
+/// 
+/// Each stub includes a proper PPC64 function descriptor followed by the code:
+///   [0-3]:  code_addr    - Points to the actual code at stub+8
+///   [4-7]:  toc          - Set to 0 (stub doesn't need TOC)
+///   [8-11]: li r3, 0     - Return 0 (CELL_OK/success)
+///   [12-15]: blr         - Return to caller
 struct HleStubGenerator<'a> {
     base_addr: u32,
     memory: &'a Arc<MemoryManager>,
@@ -66,24 +72,29 @@ impl<'a> HleStubGenerator<'a> {
     
     /// Create an HLE stub function at the given index
     /// 
-    /// Each stub is 16 bytes (4 instructions):
-    ///   li r3, 0       ; Return 0 (CELL_OK/success)
-    ///   blr            ; Return to caller
-    ///   nop            ; Padding
-    ///   nop            ; Padding
+    /// Each stub is 16 bytes with a function descriptor format:
+    ///   [0-3]:  code_addr = stub + 8  (points to actual code)
+    ///   [4-7]:  toc = 0               (stub doesn't use TOC)
+    ///   [8-11]: li r3, 0              (return value = 0)
+    ///   [12-15]: blr                  (return to caller)
+    ///
+    /// The descriptor format is required because PS3 PLT trampolines
+    /// load both the function pointer and TOC from the target address.
     fn create_stub(&self, index: u32) -> std::result::Result<u32, MemoryError> {
         const STUB_SIZE: u32 = 16;
         let stub_addr = self.base_addr + index * STUB_SIZE;
+        let code_addr = stub_addr + 8;  // Code starts after the descriptor
         
+        // Function descriptor: [code_addr, toc=0]
+        self.memory.write_be32(stub_addr, code_addr)?;     // Code address
+        self.memory.write_be32(stub_addr + 4, 0)?;         // TOC = 0 (not used)
+        
+        // Actual stub code at stub_addr + 8:
         // li r3, 0 (addi r3, r0, 0) = 0x38600000
-        self.memory.write_be32(stub_addr, 0x38600000)?;
+        self.memory.write_be32(stub_addr + 8, 0x38600000)?;
         
         // blr (branch to link register) = 0x4E800020
-        self.memory.write_be32(stub_addr + 4, 0x4E800020)?;
-        
-        // nop = 0x60000000
-        self.memory.write_be32(stub_addr + 8, 0x60000000)?;
-        self.memory.write_be32(stub_addr + 12, 0x60000000)?;
+        self.memory.write_be32(stub_addr + 12, 0x4E800020)?;
         
         Ok(stub_addr)
     }
@@ -973,7 +984,7 @@ impl GameLoader {
     /// Write pre-registered HLE function stubs to memory
     /// 
     /// This writes the actual PPC64 stub code for all functions registered
-    /// in the HLE dispatcher. Each stub is 16 bytes.
+    /// in the HLE dispatcher. Each stub is 16 bytes with a function descriptor.
     fn write_hle_stubs_to_memory(&self, stub_base: u32) -> Result<usize> {
         let dispatcher = get_dispatcher_mut();
         let mut count = 0;
@@ -985,27 +996,32 @@ impl GameLoader {
                 continue;
             }
             
-            // Write the stub code:
-            // li r3, 0       ; Return 0 (CELL_OK/success) - 0x38600000
-            // blr            ; Return to caller - 0x4E800020
-            // nop            ; Padding - 0x60000000
-            // nop            ; Padding - 0x60000000
-            if let Err(e) = self.memory.write_be32(stub_addr, 0x38600000) {
+            let code_addr = stub_addr + 8;  // Code starts after descriptor
+            
+            // Write the function descriptor:
+            // [0-3]: code_addr (points to stub + 8)
+            // [4-7]: toc = 0 (stub doesn't use TOC)
+            if let Err(e) = self.memory.write_be32(stub_addr, code_addr) {
                 warn!("Failed to write stub for {}::{} at 0x{:08x}: {}", 
                       info.module, info.name, stub_addr, e);
                 continue;
             }
-            if let Err(_e) = self.memory.write_be32(stub_addr + 4, 0x4E800020) {
-                continue;
-            }
-            if let Err(_e) = self.memory.write_be32(stub_addr + 8, 0x60000000) {
-                continue;
-            }
-            if let Err(_e) = self.memory.write_be32(stub_addr + 12, 0x60000000) {
+            if let Err(_e) = self.memory.write_be32(stub_addr + 4, 0) {
                 continue;
             }
             
-            debug!("Wrote HLE stub for {}::{} at 0x{:08x}", info.module, info.name, stub_addr);
+            // Write the stub code at stub_addr + 8:
+            // li r3, 0       ; Return 0 (CELL_OK/success) - 0x38600000
+            // blr            ; Return to caller - 0x4E800020
+            if let Err(_e) = self.memory.write_be32(stub_addr + 8, 0x38600000) {
+                continue;
+            }
+            if let Err(_e) = self.memory.write_be32(stub_addr + 12, 0x4E800020) {
+                continue;
+            }
+            
+            debug!("Wrote HLE stub for {}::{} at 0x{:08x} (code at 0x{:08x})", 
+                   info.module, info.name, stub_addr, code_addr);
             count += 1;
         }
         

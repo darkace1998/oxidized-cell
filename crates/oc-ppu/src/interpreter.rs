@@ -546,22 +546,12 @@ impl PpuInterpreter {
             return self.execute_hle_stub(thread, pc);
         }
         
-        // Check if this is a PLT stub area (PS3 import trampolines)
-        // PLT stubs are typically in the 0x80XXXX - 0x90XXXX range for this game
-        // When we enter this area via a branch, it's an import call
-        const PLT_STUB_BASE: u32 = 0x0080_0000;
-        const PLT_STUB_END: u32 = 0x0100_0000;
-        if pc >= PLT_STUB_BASE && pc < PLT_STUB_END {
-            // Check if this looks like the start of a PLT stub entry
-            // PLT stubs typically start with: li r12, 0 (38 18 00 00 or 39 80 00 00)
-            let opcode = self.memory.read_be32(pc).unwrap_or(0);
-            // li r12, 0 = addi r12, 0, 0 = 0x39800000
-            // or could be addis r12, 0, high = 0x3d800000 pattern
-            if opcode == 0x39800000 || (opcode & 0xFFE00000) == 0x3d800000 {
-                // This is the start of a PLT stub - intercept as HLE call
-                return self.handle_plt_stub_entry(thread, pc);
-            }
-        }
+        // NOTE: We used to have PLT stub detection here that would intercept
+        // function calls in the 0x800000-0x1000000 range if they started with
+        // certain patterns (li r12, 0). This was removed because it incorrectly
+        // intercepted legitimate game code functions that happened to start with
+        // the same instruction patterns. The proper HLE import stubs at 0x2F000000
+        // are handled above and are the correct mechanism for import handling.
         
         let opcode = self.memory.read_be32(pc).map_err(|_| PpuError::InvalidInstruction {
             addr: pc,
@@ -647,6 +637,10 @@ impl PpuInterpreter {
     /// When execution enters the PLT stub area (typically 0x80XXXX - 0x90XXXX),
     /// we intercept it immediately instead of letting the trampoline execute.
     /// This allows us to handle imports that weren't patched at load time.
+    /// 
+    /// NOTE: Currently unused because the PLT stub detection was causing false
+    /// positives with legitimate game code. Kept for potential future use.
+    #[allow(dead_code)]
     fn handle_plt_stub_entry(&self, thread: &mut PpuThread, plt_addr: u32) -> Result<(), PpuError> {
         // The PLT stub loads a descriptor address and calls it
         // We can parse the PLT stub to find the descriptor address, or just
@@ -712,7 +706,32 @@ impl PpuInterpreter {
     /// 
     /// When execution reaches an address in the HLE stub region, this function
     /// is called to dispatch to the appropriate HLE handler.
-    fn execute_hle_stub(&self, thread: &mut PpuThread, stub_addr: u32) -> Result<(), PpuError> {
+    /// 
+    /// HLE stubs use a function descriptor format:
+    ///   [stub_addr + 0]: code_addr (points to stub + 8)
+    ///   [stub_addr + 4]: toc (0 for HLE stubs)
+    ///   [stub_addr + 8]: li r3, 0
+    ///   [stub_addr + 12]: blr
+    /// 
+    /// When called via PLT, the PC will be at stub_addr + 8 (the code_addr).
+    /// We need to convert back to the descriptor address for dispatch lookup.
+    fn execute_hle_stub(&self, thread: &mut PpuThread, code_addr: u32) -> Result<(), PpuError> {
+        // Convert code address to descriptor address
+        // HLE stubs are 16 bytes aligned, with code at offset 8
+        // If code_addr is aligned to 16 + 8, then descriptor is at code_addr - 8
+        const STUB_SIZE: u32 = 16;
+        let offset_in_stub = code_addr % STUB_SIZE;
+        let stub_addr = if offset_in_stub == 8 {
+            // PC is at the code section (offset 8 in stub)
+            code_addr - 8
+        } else if offset_in_stub == 0 {
+            // PC is at the descriptor (old format or direct call)
+            code_addr
+        } else {
+            // Unexpected offset, use as-is
+            code_addr
+        };
+        
         // Gather arguments from registers (R3-R10 per PPC64 ABI)
         let args = [
             thread.gpr(3),
@@ -786,9 +805,10 @@ impl PpuInterpreter {
             // lwz - Load Word and Zero
             32 => {
                 let ea = if ra == 0 { d as u64 } else { thread.gpr(ra as usize).wrapping_add(d as u64) };
-                let value = self.memory.read_be32(ea as u32).map_err(|_| PpuError::InvalidInstruction {
-                    addr: thread.pc() as u32,
-                    opcode,
+                let value = self.memory.read_be32(ea as u32).map_err(|e| PpuError::MemoryError {
+                    addr: ea as u32,
+                    message: format!("lwz failed at PC=0x{:08x}: {} (r{}={:#x}, d={})", 
+                        thread.pc(), e, ra, thread.gpr(ra as usize), d as i16),
                 })?;
                 thread.set_gpr(rt as usize, value as u64);
             }

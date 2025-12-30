@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, RwLock};
 use tracing::{debug, trace};
-use oc_input::microphone::{Microphone, MicrophoneManager, MicrophoneState, AudioBuffer};
+use oc_input::microphone::{MicrophoneManager, MicrophoneState};
 
 /// OC-Input microphone backend reference
 pub type MicrophoneBackend = Option<Arc<RwLock<MicrophoneManager>>>;
@@ -134,6 +134,7 @@ pub struct MicManager {
     /// Audio buffers for each device
     audio_buffers: [Vec<i16>; CELL_MIC_MAX_DEVICES],
     /// Buffer read positions
+    #[allow(dead_code)]
     buffer_positions: [usize; CELL_MIC_MAX_DEVICES],
 }
 
@@ -483,6 +484,7 @@ impl MicManager {
     }
 
     /// Start audio capture on backend
+    #[allow(dead_code)]
     fn backend_start_capture(&mut self, device_id: u32) -> i32 {
         trace!("MicManager::backend_start_capture: device_id={}", device_id);
 
@@ -510,6 +512,7 @@ impl MicManager {
     }
 
     /// Stop audio capture on backend
+    #[allow(dead_code)]
     fn backend_stop_capture(&mut self, device_id: u32) -> i32 {
         trace!("MicManager::backend_stop_capture: device_id={}", device_id);
 

@@ -60,6 +60,7 @@ struct JpegDecoder {
 }
 
 /// Huffman table for JPEG decoding
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct HuffmanTable {
     /// Bit lengths for each code
@@ -69,6 +70,7 @@ struct HuffmanTable {
 }
 
 /// JPEG component info
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 struct JpegComponent {
     /// Component ID
@@ -181,10 +183,10 @@ impl JpegDecoder {
                 }
                 0xDA => {
                     // SOS - Start of Scan
-                    // Skip the SOS header
+                    // Skip the SOS header - offset not used after break but kept for clarity
                     if offset + 1 < data.len() {
                         let length = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
-                        offset += length;
+                        let _ = length; // Silence unused assignment warning before break
                     }
                     // After SOS, entropy-coded data follows until next marker
                     break;
