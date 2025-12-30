@@ -130,14 +130,75 @@ This document tracks the implementation status of High Level Emulation (HLE) mod
 
 ---
 
+## Audio Modules
+
+| Module | Status | Notes |
+|--------|--------|-------|
+| cellAudio | 🟡 Partial | Audio ports, HLE mixer, multi-channel support |
+
+### cellAudio Details
+- ✅ Multi-port audio (up to 8 ports)
+- ✅ Channel configuration (mono, stereo, 5.1, 7.1)
+- ✅ Per-port volume control
+- ✅ Master volume control
+- ✅ HLE audio mixer with source management
+- ✅ Audio sample submission
+- ✅ Mix output with clipping prevention
+- ✅ Block-based audio timing
+- ⏳ Full oc-audio backend integration
+
+---
+
 ## Multimedia Modules
 
 | Module | Status | Notes |
 |--------|--------|-------|
-| cellDmux | 🟡 Partial | Demultiplexer for ES extraction from streams |
-| cellVdec | 🟡 Partial | Video decoder with H.264/MPEG2/MPEG4 codec stubs |
-| cellAdec | 🟡 Partial | Audio decoder with AAC/MP3/AT3 codec stubs |
-| cellVpost | 🟡 Partial | Video post-processing with format conversion |
+| cellDmux | 🟡 Partial | Demultiplexer with PAMF/MPEG-PS/MPEG-TS parsing |
+| cellVdec | 🟡 Partial | Video decoder with H.264/MPEG-2/DivX backend |
+| cellAdec | 🟡 Partial | Audio decoder with AAC/MP3/ATRAC3+/AC3/WMA backend |
+| cellVpost | 🟡 Partial | Video post-processing with scaling and color conversion |
+
+### cellDmux Details
+- ✅ Multiple demuxer handles
+- ✅ Elementary stream management
+- ✅ PAMF container parsing
+- ✅ MPEG-2 Program Stream parsing (start codes, PES)
+- ✅ MPEG-2 Transport Stream parsing (sync, PIDs, PAT/PMT)
+- ✅ Access Unit extraction and queuing
+- ✅ PTS/DTS timestamp handling
+- ⏳ Full container structure parsing
+
+### cellVdec Details
+- ✅ Multiple decoder handles
+- ✅ H.264/AVC codec support (Baseline to High 4:4:4)
+- ✅ MPEG-2 codec support (Simple, Main, High profiles)
+- ✅ DivX codec support
+- ✅ Profile/level validation
+- ✅ Decoded picture queue management
+- ✅ Access unit decoding pipeline
+- ⏳ Actual entropy decoding
+- ⏳ Motion compensation
+- ⏳ Deblocking filter
+
+### cellAdec Details
+- ✅ Multiple decoder handles
+- ✅ AAC codec support (48kHz stereo, 1024 samples/frame)
+- ✅ MP3 codec support (44.1kHz stereo, 1152 samples/frame)
+- ✅ ATRAC3+ codec support (48kHz stereo, 2048 samples/frame)
+- ✅ AC3 codec support (48kHz 5.1)
+- ✅ WMA codec support
+- ✅ LPCM passthrough
+- ✅ PCM output queue management
+- ✅ PCM format information
+- ⏳ Actual codec decoding
+
+### cellVpost Details
+- ✅ Multiple processor handles
+- ✅ Scaling algorithms (nearest, bilinear, bicubic)
+- ✅ Color conversion (YUV420, YUV422, RGBA, ARGB)
+- ✅ BT.601/BT.709 color matrix support
+- ✅ Picture format configuration
+- ⏳ Deinterlacing
 
 ---
 
