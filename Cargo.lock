@@ -3114,6 +3114,7 @@ dependencies = [
  "oc-core",
  "oc-memory",
  "once_cell",
+ "parking_lot",
  "regex",
  "tracing",
 ]
