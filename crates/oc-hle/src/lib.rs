@@ -5,6 +5,7 @@
 pub mod module;
 pub mod context;
 pub mod dispatcher;
+pub mod memory;
 
 // Graphics Modules
 pub mod cell_gcm_sys;
@@ -52,4 +53,11 @@ pub use context::{HleContext, HLE_CONTEXT, get_hle_context, get_hle_context_mut,
 pub use dispatcher::{
     HleDispatcher, HleCallContext, HleFunctionInfo, HleFn, HLE_DISPATCHER,
     get_dispatcher, get_dispatcher_mut, init_hle_dispatcher, dispatch_hle_call,
+};
+pub use memory::{
+    init_hle_memory, clear_hle_memory, is_hle_memory_initialized, get_memory_manager,
+    read_u8, read_be16, read_be32, read_be64, write_u8, write_be16, write_be32, write_be64, 
+    read_bytes, write_bytes, read_string, write_string, 
+    is_readable, is_writable, is_valid_pointer,
+    FromGuestMemory, ToGuestMemory,
 };

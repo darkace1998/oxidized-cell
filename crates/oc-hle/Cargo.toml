@@ -11,6 +11,7 @@ oc-core.workspace = true
 oc-memory.workspace = true
 tracing.workspace = true
 once_cell.workspace = true
+parking_lot.workspace = true
 regex = "1.10"
 
 [dev-dependencies]

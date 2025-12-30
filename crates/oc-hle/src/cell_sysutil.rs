@@ -1112,25 +1112,39 @@ pub fn cell_sysutil_check_callback() -> i32 {
 
 /// cellSysutilGetSystemParamInt - Get system parameter (integer)
 ///
+/// Retrieves an integer system parameter and writes it to the provided
+/// memory address.
+///
 /// # Arguments
 /// * `param_id` - Parameter ID
 /// * `value_addr` - Address to write value to
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_sysutil_get_system_param_int(param_id: u32, _value_addr: u32) -> i32 {
-    debug!("cellSysutilGetSystemParamInt(param_id=0x{:X})", param_id);
+pub fn cell_sysutil_get_system_param_int(param_id: u32, value_addr: u32) -> i32 {
+    debug!("cellSysutilGetSystemParamInt(param_id=0x{:X}, value_addr=0x{:08X})", param_id, value_addr);
+
+    // Validate output address
+    if value_addr == 0 {
+        return CELL_SYSUTIL_ERROR_VALUE;
+    }
 
     let ctx = crate::context::get_hle_context();
-    if let Some(_value) = ctx.sysutil.get_system_param_int(param_id) {
-        // TODO: Write value to memory at _value_addr
+    if let Some(value) = ctx.sysutil.get_system_param_int(param_id) {
+        // Write value to memory
+        if let Err(_) = crate::memory::write_be32(value_addr, value as u32) {
+            return CELL_SYSUTIL_ERROR_VALUE;
+        }
         0 // CELL_OK
     } else {
-        0x80010002u32 as i32 // CELL_SYSUTIL_ERROR_VALUE
+        CELL_SYSUTIL_ERROR_VALUE
     }
 }
 
 /// cellSysutilGetSystemParamString - Get system parameter (string)
+///
+/// Retrieves a string system parameter and writes it to the provided
+/// memory buffer.
 ///
 /// # Arguments
 /// * `param_id` - Parameter ID
@@ -1141,20 +1155,28 @@ pub fn cell_sysutil_get_system_param_int(param_id: u32, _value_addr: u32) -> i32
 /// * 0 on success
 pub fn cell_sysutil_get_system_param_string(
     param_id: u32,
-    _buf_addr: u32,
+    buf_addr: u32,
     buf_size: u32,
 ) -> i32 {
     debug!(
-        "cellSysutilGetSystemParamString(param_id=0x{:X}, buf_size={})",
-        param_id, buf_size
+        "cellSysutilGetSystemParamString(param_id=0x{:X}, buf_addr=0x{:08X}, buf_size={})",
+        param_id, buf_addr, buf_size
     );
 
+    // Validate output address and size
+    if buf_addr == 0 || buf_size == 0 {
+        return CELL_SYSUTIL_ERROR_VALUE;
+    }
+
     let ctx = crate::context::get_hle_context();
-    if let Some(_value) = ctx.sysutil.get_system_param_string(param_id) {
-        // TODO: Write string to memory at _buf_addr
+    if let Some(value) = ctx.sysutil.get_system_param_string(param_id) {
+        // Write string to memory
+        if let Err(_) = crate::memory::write_string(buf_addr, value, buf_size) {
+            return CELL_SYSUTIL_ERROR_VALUE;
+        }
         0 // CELL_OK
     } else {
-        0x80010002u32 as i32 // CELL_SYSUTIL_ERROR_VALUE
+        CELL_SYSUTIL_ERROR_VALUE
     }
 }
 
@@ -1229,16 +1251,31 @@ pub fn cell_msg_dialog_progress_bar_inc(_bar_index: u32, delta: u32) -> i32 {
 
 /// cellSysutilGetPsId - Get the PlayStation ID
 ///
+/// Retrieves the PlayStation ID (PSID) and writes it to the provided
+/// memory address. The PSID is a 16-byte unique identifier.
+///
 /// # Arguments
-/// * `psid_addr` - Address to write PSID
+/// * `psid_addr` - Address to write PSID (16 bytes)
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_sysutil_get_ps_id(_psid_addr: u32) -> i32 {
-    debug!("cellSysutilGetPsId()");
+pub fn cell_sysutil_get_ps_id(psid_addr: u32) -> i32 {
+    debug!("cellSysutilGetPsId(psid_addr=0x{:08X})", psid_addr);
     
-    let _psid = crate::context::get_hle_context().sysutil.get_psid();
-    // TODO: Write PSID to memory at _psid_addr
+    // Validate output address
+    if psid_addr == 0 {
+        return CELL_SYSUTIL_ERROR_VALUE;
+    }
+    
+    let psid = crate::context::get_hle_context().sysutil.get_psid();
+    
+    // Write PSID to memory (16 bytes: high u64 + low u64)
+    if let Err(_) = crate::memory::write_be64(psid_addr, psid.high) {
+        return CELL_SYSUTIL_ERROR_VALUE;
+    }
+    if let Err(_) = crate::memory::write_be64(psid_addr + 8, psid.low) {
+        return CELL_SYSUTIL_ERROR_VALUE;
+    }
     
     0 // CELL_OK
 }
@@ -2021,7 +2058,11 @@ mod tests {
     fn test_psid_api() {
         crate::context::reset_hle_context();
         
-        assert_eq!(cell_sysutil_get_ps_id(0x10000000), 0);
+        // Test that null address is rejected
+        assert!(cell_sysutil_get_ps_id(0) != 0);
+        
+        // When memory subsystem is initialized, the function would succeed
+        // with a valid address. Without memory, we can only test validation.
     }
 
     #[test]

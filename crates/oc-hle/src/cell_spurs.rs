@@ -1278,32 +1278,53 @@ const DEFAULT_SPU_PRIORITY: u8 = 1;
 
 /// cellSpursSetPriorities - Set workload priorities
 ///
+/// Reads the priority array from memory and sets priorities for each SPU
+/// for the specified workload.
+///
 /// # Arguments
 /// * `spurs` - SPURS instance address
 /// * `wid` - Workload ID
-/// * `priorities` - Priority array
+/// * `priorities` - Priority array address (8 bytes, one per SPU)
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_spurs_set_priorities(_spurs_addr: u32, wid: u32, _priorities_addr: u32) -> i32 {
-    trace!("cellSpursSetPriorities(wid={})", wid);
+pub fn cell_spurs_set_priorities(_spurs_addr: u32, wid: u32, priorities_addr: u32) -> i32 {
+    trace!("cellSpursSetPriorities(wid={}, priorities_addr=0x{:08X})", wid, priorities_addr);
 
     // Validate workload ID
     if wid >= CELL_SPURS_MAX_WORKLOAD as u32 {
         return 0x80410802u32 as i32; // CELL_SPURS_ERROR_INVALID_ARGUMENT
     }
 
-    // Use default priorities when memory read is not yet implemented
-    // TODO: Read priorities from memory at _priorities_addr
-    let default_priorities = [DEFAULT_SPU_PRIORITY; CELL_SPURS_MAX_SPU];
-    crate::context::get_hle_context_mut().spurs.set_priorities(wid, &default_priorities)
+    // Read priorities from memory (8 bytes, one per SPU)
+    let priorities: [u8; CELL_SPURS_MAX_SPU] = if priorities_addr != 0 && crate::memory::is_hle_memory_initialized() {
+        if let Ok(bytes) = crate::memory::read_bytes(priorities_addr, CELL_SPURS_MAX_SPU as u32) {
+            let mut arr = [DEFAULT_SPU_PRIORITY; CELL_SPURS_MAX_SPU];
+            for (i, &b) in bytes.iter().enumerate() {
+                if i < CELL_SPURS_MAX_SPU {
+                    arr[i] = b;
+                }
+            }
+            arr
+        } else {
+            [DEFAULT_SPU_PRIORITY; CELL_SPURS_MAX_SPU]
+        }
+    } else {
+        // Use default priorities when memory not available
+        [DEFAULT_SPU_PRIORITY; CELL_SPURS_MAX_SPU]
+    };
+    
+    crate::context::get_hle_context_mut().spurs.set_priorities(wid, &priorities)
 }
 
 /// cellSpursGetSpuThreadId - Get SPU thread ID
 ///
+/// Retrieves the SPU thread ID for the specified thread index and writes it
+/// to the provided memory address.
+///
 /// # Arguments
 /// * `spurs` - SPURS instance address
-/// * `thread` - Thread number
+/// * `thread` - Thread number (0-7)
 /// * `threadId_addr` - Address to write thread ID to
 ///
 /// # Returns
@@ -1311,18 +1332,26 @@ pub fn cell_spurs_set_priorities(_spurs_addr: u32, wid: u32, _priorities_addr: u
 pub fn cell_spurs_get_spu_thread_id(
     _spurs_addr: u32,
     thread: u32,
-    _thread_id_addr: u32,
+    thread_id_addr: u32,
 ) -> i32 {
-    trace!("cellSpursGetSpuThreadId(thread={})", thread);
+    trace!("cellSpursGetSpuThreadId(thread={}, thread_id_addr=0x{:08X})", thread, thread_id_addr);
 
     // Validate thread number
     if thread >= CELL_SPURS_MAX_SPU as u32 {
         return 0x80410802u32 as i32; // CELL_SPURS_ERROR_INVALID_ARGUMENT
     }
+    
+    // Validate output address
+    if thread_id_addr == 0 {
+        return 0x80410802u32 as i32; // CELL_SPURS_ERROR_INVALID_ARGUMENT
+    }
 
     match crate::context::get_hle_context().spurs.get_spu_thread_id(thread) {
-        Ok(_thread_id) => {
-            // TODO: Write thread ID to memory at _thread_id_addr
+        Ok(thread_id) => {
+            // Write thread ID to memory
+            if let Err(_) = crate::memory::write_be32(thread_id_addr, thread_id) {
+                return 0x80410801u32 as i32; // CELL_SPURS_ERROR_STAT
+            }
             0 // CELL_OK
         }
         Err(e) => e,
