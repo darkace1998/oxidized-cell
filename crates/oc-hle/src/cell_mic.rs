@@ -140,12 +140,13 @@ pub struct MicManager {
 impl MicManager {
     /// Create a new microphone manager
     pub fn new() -> Self {
+        const EMPTY_VEC: Vec<i16> = Vec::new();
         Self {
             initialized: false,
             devices: [None, None, None, None],
             num_devices: 0,
             capture_backend: None,
-            audio_buffers: [Vec::new(), Vec::new(), Vec::new(), Vec::new()],
+            audio_buffers: [EMPTY_VEC; CELL_MIC_MAX_DEVICES],
             buffer_positions: [0; CELL_MIC_MAX_DEVICES],
         }
     }
@@ -559,17 +560,23 @@ impl MicManager {
                 // Store in our buffer
                 self.audio_buffers[device_idx].extend_from_slice(&samples);
 
-                // Copy to output buffer
-                let available = self.audio_buffers[device_idx].len() * 2; // bytes
-                let to_copy = available.min(buffer.len());
+                // Calculate how many samples we can copy
+                let available_samples = self.audio_buffers[device_idx].len();
+                let max_samples = buffer.len() / 2; // 2 bytes per i16 sample
+                let samples_to_copy = available_samples.min(max_samples);
+                let bytes_to_copy = samples_to_copy * 2;
 
-                for (i, sample) in self.audio_buffers[device_idx].drain(..(to_copy / 2)).enumerate() {
+                // Copy samples efficiently using slice operations
+                for (i, sample) in self.audio_buffers[device_idx][..samples_to_copy].iter().enumerate() {
                     let bytes = sample.to_le_bytes();
                     buffer[i * 2] = bytes[0];
                     buffer[i * 2 + 1] = bytes[1];
                 }
 
-                return Ok(to_copy as u32);
+                // Remove copied samples from buffer
+                self.audio_buffers[device_idx].drain(..samples_to_copy);
+
+                return Ok(bytes_to_copy as u32);
             }
         }
 
