@@ -1734,8 +1734,14 @@ pub fn cell_gcm_set_clear_depth_stencil(depth: u32, stencil: u8) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
+/// * Error code on failure
 pub fn cell_gcm_set_vertex_program(program_addr: u32) -> i32 {
     debug!("cellGcmSetVertexProgram(program_addr=0x{:08X})", program_addr);
+    
+    // Validate address
+    if program_addr == 0 {
+        return 0x80410002u32 as i32; // CELL_GCM_ERROR_INVALID_VALUE
+    }
     
     // Read CellGcmVertexProgram from memory
     // Structure layout:
@@ -1746,14 +1752,36 @@ pub fn cell_gcm_set_vertex_program(program_addr: u32) -> i32 {
     //   num_outputs: u8 (offset 11)
     //   input_mask: u32 (offset 12)
     //   output_mask: u32 (offset 16)
-    let program = if program_addr != 0 && crate::memory::is_hle_memory_initialized() {
-        let size = crate::memory::read_be32(program_addr).unwrap_or(0);
-        let offset = crate::memory::read_be32(program_addr + 4).unwrap_or(0);
-        let num_instructions = crate::memory::read_be16(program_addr + 8).unwrap_or(0);
-        let num_inputs = crate::memory::read_u8(program_addr + 10).unwrap_or(0);
-        let num_outputs = crate::memory::read_u8(program_addr + 11).unwrap_or(0);
-        let input_mask = crate::memory::read_be32(program_addr + 12).unwrap_or(0xFFFF);
-        let output_mask = crate::memory::read_be32(program_addr + 16).unwrap_or(0xFFFF);
+    let program = if crate::memory::is_hle_memory_initialized() {
+        // Read all fields - log warnings on failure but continue with defaults
+        let size = crate::memory::read_be32(program_addr).unwrap_or_else(|_| {
+            trace!("cellGcmSetVertexProgram: Failed to read size at 0x{:08X}", program_addr);
+            0
+        });
+        let offset = crate::memory::read_be32(program_addr + 4).unwrap_or_else(|_| {
+            trace!("cellGcmSetVertexProgram: Failed to read offset at 0x{:08X}", program_addr + 4);
+            0
+        });
+        let num_instructions = crate::memory::read_be16(program_addr + 8).unwrap_or_else(|_| {
+            trace!("cellGcmSetVertexProgram: Failed to read num_instructions at 0x{:08X}", program_addr + 8);
+            0
+        });
+        let num_inputs = crate::memory::read_u8(program_addr + 10).unwrap_or_else(|_| {
+            trace!("cellGcmSetVertexProgram: Failed to read num_inputs at 0x{:08X}", program_addr + 10);
+            0
+        });
+        let num_outputs = crate::memory::read_u8(program_addr + 11).unwrap_or_else(|_| {
+            trace!("cellGcmSetVertexProgram: Failed to read num_outputs at 0x{:08X}", program_addr + 11);
+            0
+        });
+        let input_mask = crate::memory::read_be32(program_addr + 12).unwrap_or_else(|_| {
+            trace!("cellGcmSetVertexProgram: Failed to read input_mask at 0x{:08X}", program_addr + 12);
+            0xFFFF
+        });
+        let output_mask = crate::memory::read_be32(program_addr + 16).unwrap_or_else(|_| {
+            trace!("cellGcmSetVertexProgram: Failed to read output_mask at 0x{:08X}", program_addr + 16);
+            0xFFFF
+        });
         
         CellGcmVertexProgram {
             size,
@@ -1765,7 +1793,8 @@ pub fn cell_gcm_set_vertex_program(program_addr: u32) -> i32 {
             output_mask,
         }
     } else {
-        // Fallback to default when memory not available (for testing/HLE stub mode)
+        // Memory subsystem not initialized - use stub mode with defaults
+        trace!("cellGcmSetVertexProgram: Memory not initialized, using defaults");
         CellGcmVertexProgram {
             size: 0,
             offset: 0,
@@ -1790,8 +1819,14 @@ pub fn cell_gcm_set_vertex_program(program_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
+/// * Error code on failure
 pub fn cell_gcm_set_fragment_program(program_addr: u32) -> i32 {
     debug!("cellGcmSetFragmentProgram(program_addr=0x{:08X})", program_addr);
+    
+    // Validate address
+    if program_addr == 0 {
+        return 0x80410002u32 as i32; // CELL_GCM_ERROR_INVALID_VALUE
+    }
     
     // Read CellGcmFragmentProgram from memory
     // Structure layout:
@@ -1801,13 +1836,32 @@ pub fn cell_gcm_set_fragment_program(program_addr: u32) -> i32 {
     //   num_samplers: u8 (offset 10)
     //   register_count: u8 (offset 11)
     //   control: u32 (offset 12)
-    let program = if program_addr != 0 && crate::memory::is_hle_memory_initialized() {
-        let size = crate::memory::read_be32(program_addr).unwrap_or(0);
-        let offset = crate::memory::read_be32(program_addr + 4).unwrap_or(0);
-        let num_instructions = crate::memory::read_be16(program_addr + 8).unwrap_or(0);
-        let num_samplers = crate::memory::read_u8(program_addr + 10).unwrap_or(0);
-        let register_count = crate::memory::read_u8(program_addr + 11).unwrap_or(0);
-        let control = crate::memory::read_be32(program_addr + 12).unwrap_or(0);
+    let program = if crate::memory::is_hle_memory_initialized() {
+        // Read all fields - log warnings on failure but continue with defaults
+        let size = crate::memory::read_be32(program_addr).unwrap_or_else(|_| {
+            trace!("cellGcmSetFragmentProgram: Failed to read size at 0x{:08X}", program_addr);
+            0
+        });
+        let offset = crate::memory::read_be32(program_addr + 4).unwrap_or_else(|_| {
+            trace!("cellGcmSetFragmentProgram: Failed to read offset at 0x{:08X}", program_addr + 4);
+            0
+        });
+        let num_instructions = crate::memory::read_be16(program_addr + 8).unwrap_or_else(|_| {
+            trace!("cellGcmSetFragmentProgram: Failed to read num_instructions at 0x{:08X}", program_addr + 8);
+            0
+        });
+        let num_samplers = crate::memory::read_u8(program_addr + 10).unwrap_or_else(|_| {
+            trace!("cellGcmSetFragmentProgram: Failed to read num_samplers at 0x{:08X}", program_addr + 10);
+            0
+        });
+        let register_count = crate::memory::read_u8(program_addr + 11).unwrap_or_else(|_| {
+            trace!("cellGcmSetFragmentProgram: Failed to read register_count at 0x{:08X}", program_addr + 11);
+            0
+        });
+        let control = crate::memory::read_be32(program_addr + 12).unwrap_or_else(|_| {
+            trace!("cellGcmSetFragmentProgram: Failed to read control at 0x{:08X}", program_addr + 12);
+            0
+        });
         
         CellGcmFragmentProgram {
             size,
@@ -1818,7 +1872,8 @@ pub fn cell_gcm_set_fragment_program(program_addr: u32) -> i32 {
             control,
         }
     } else {
-        // Fallback to default when memory not available (for testing/HLE stub mode)
+        // Memory subsystem not initialized - use stub mode with defaults
+        trace!("cellGcmSetFragmentProgram: Memory not initialized, using defaults");
         CellGcmFragmentProgram {
             size: 0,
             offset: 0,
@@ -2478,6 +2533,10 @@ mod tests {
         crate::context::reset_hle_context();
         crate::context::get_hle_context_mut().gcm.init(0x10000000, 1024 * 1024);
         
+        // Test that null address is rejected
+        assert!(cell_gcm_set_vertex_program(0) != 0);
+        
+        // Non-zero address succeeds (uses stub mode when memory not initialized)
         assert_eq!(cell_gcm_set_vertex_program(0x10000), 0);
     }
 
@@ -2486,6 +2545,10 @@ mod tests {
         crate::context::reset_hle_context();
         crate::context::get_hle_context_mut().gcm.init(0x10000000, 1024 * 1024);
         
+        // Test that null address is rejected
+        assert!(cell_gcm_set_fragment_program(0) != 0);
+        
+        // Non-zero address succeeds (uses stub mode when memory not initialized)
         assert_eq!(cell_gcm_set_fragment_program(0x10000), 0);
     }
 
