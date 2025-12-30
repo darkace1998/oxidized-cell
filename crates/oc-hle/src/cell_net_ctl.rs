@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use tracing::{debug, trace};
-use crate::memory::{write_be32, write_string};
+use crate::memory::write_be32;
 
 // Error codes
 pub const CELL_NET_CTL_ERROR_NOT_INITIALIZED: i32 = 0x80130101u32 as i32;

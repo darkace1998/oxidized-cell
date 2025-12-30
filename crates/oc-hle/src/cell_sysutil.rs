@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use tracing::{debug, trace};
-use crate::memory::{write_be32, write_be64, write_string};
+use crate::memory::write_be32;
 
 /// Maximum number of callback slots
 pub const CELL_SYSUTIL_MAX_CALLBACK_SLOTS: usize = 4;
