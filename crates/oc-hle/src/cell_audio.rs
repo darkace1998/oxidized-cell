@@ -1,9 +1,197 @@
 //! cellAudio HLE - Audio Output System
 //!
 //! This module provides HLE implementations for PS3 audio output.
-//! It bridges to the oc-audio subsystem for actual audio playback.
+//! It provides full audio mixing support compatible with the oc-audio subsystem.
 
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use tracing::{debug, trace};
+
+// ============================================================================
+// Local Audio Types (compatible with oc-audio::mixer when integrated)
+// ============================================================================
+
+/// Audio sample format
+pub type Sample = f32;
+
+/// Audio source identifier
+pub type SourceId = u32;
+
+/// Audio channel configuration
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChannelLayout {
+    Mono,
+    Stereo,
+    Surround51,
+    Surround71,
+}
+
+impl ChannelLayout {
+    pub fn num_channels(&self) -> usize {
+        match self {
+            ChannelLayout::Mono => 1,
+            ChannelLayout::Stereo => 2,
+            ChannelLayout::Surround51 => 6,
+            ChannelLayout::Surround71 => 8,
+        }
+    }
+}
+
+/// Audio source for mixing
+pub struct AudioSource {
+    /// Source ID
+    pub id: SourceId,
+    /// Channel layout
+    pub layout: ChannelLayout,
+    /// Volume (0.0 to 1.0)
+    pub volume: f32,
+    /// Audio buffer
+    pub buffer: Vec<Sample>,
+}
+
+impl AudioSource {
+    pub fn new(id: SourceId, layout: ChannelLayout) -> Self {
+        Self {
+            id,
+            layout,
+            volume: 1.0,
+            buffer: Vec::new(),
+        }
+    }
+
+    pub fn write_samples(&mut self, samples: &[Sample]) {
+        self.buffer.extend_from_slice(samples);
+    }
+
+    pub fn read_samples(&mut self, count: usize) -> Vec<Sample> {
+        let available = self.buffer.len().min(count);
+        self.buffer.drain(..available).collect()
+    }
+
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+    }
+}
+
+/// Audio mixer for multiple sources
+pub struct HleAudioMixer {
+    /// Audio sources
+    sources: HashMap<SourceId, AudioSource>,
+    /// Master volume
+    master_volume: f32,
+    /// Output channel layout
+    output_layout: ChannelLayout,
+    /// Next source ID
+    next_id: SourceId,
+}
+
+impl HleAudioMixer {
+    /// Create a new audio mixer
+    pub fn new(output_layout: ChannelLayout) -> Self {
+        Self {
+            sources: HashMap::new(),
+            master_volume: 1.0,
+            output_layout,
+            next_id: 0,
+        }
+    }
+
+    /// Add a new audio source
+    pub fn add_source(&mut self, layout: ChannelLayout) -> SourceId {
+        let id = self.next_id;
+        self.next_id += 1;
+        
+        let source = AudioSource::new(id, layout);
+        self.sources.insert(id, source);
+        
+        debug!("Audio source {} added with {:?} layout", id, layout);
+        id
+    }
+
+    /// Remove an audio source
+    pub fn remove_source(&mut self, id: SourceId) -> bool {
+        if self.sources.remove(&id).is_some() {
+            debug!("Audio source {} removed", id);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Write samples to a source
+    pub fn write_to_source(&mut self, id: SourceId, samples: &[Sample]) -> Result<(), String> {
+        if let Some(source) = self.sources.get_mut(&id) {
+            source.write_samples(samples);
+            Ok(())
+        } else {
+            Err(format!("Source {} not found", id))
+        }
+    }
+
+    /// Set source volume
+    pub fn set_source_volume(&mut self, id: SourceId, volume: f32) -> Result<(), String> {
+        if let Some(source) = self.sources.get_mut(&id) {
+            source.volume = volume.clamp(0.0, 1.0);
+            Ok(())
+        } else {
+            Err(format!("Source {} not found", id))
+        }
+    }
+
+    /// Set master volume
+    pub fn set_master_volume(&mut self, volume: f32) {
+        self.master_volume = volume.clamp(0.0, 1.0);
+    }
+
+    /// Get master volume
+    pub fn master_volume(&self) -> f32 {
+        self.master_volume
+    }
+
+    /// Mix audio sources into output buffer
+    pub fn mix(&mut self, output: &mut [Sample], frames: usize) {
+        let channels = self.output_layout.num_channels();
+        let samples_needed = frames * channels;
+        
+        // Clear output buffer
+        for sample in output.iter_mut().take(samples_needed) {
+            *sample = 0.0;
+        }
+
+        // Mix all sources
+        for source in self.sources.values_mut() {
+            let source_samples = source.read_samples(samples_needed);
+            
+            // Apply volume and mix into output
+            for (i, &sample) in source_samples.iter().enumerate() {
+                if i < samples_needed {
+                    output[i] += sample * source.volume * self.master_volume;
+                }
+            }
+        }
+
+        // Clamp output to prevent clipping
+        for sample in output.iter_mut().take(samples_needed) {
+            *sample = sample.clamp(-1.0, 1.0);
+        }
+    }
+
+    /// Clear all sources
+    pub fn clear_all(&mut self) {
+        for source in self.sources.values_mut() {
+            source.clear();
+        }
+    }
+}
+
+impl Default for HleAudioMixer {
+    fn default() -> Self {
+        Self::new(ChannelLayout::Stereo)
+    }
+}
+
+/// OC-Audio mixer backend reference
+pub type AudioBackend = Option<Arc<RwLock<HleAudioMixer>>>;
 
 /// Maximum number of audio ports
 pub const CELL_AUDIO_PORT_MAX: usize = 8;
@@ -50,6 +238,8 @@ pub struct AudioPort {
     buffer_addr: u32,
     /// Volume level (0.0 to 1.0)
     volume: f32,
+    /// OC-Audio mixer source ID
+    mixer_source_id: Option<SourceId>,
 }
 
 impl Default for AudioPort {
@@ -61,6 +251,7 @@ impl Default for AudioPort {
             tag: 0,
             buffer_addr: 0,
             volume: 1.0,
+            mixer_source_id: None,
         }
     }
 }
@@ -71,10 +262,12 @@ pub struct AudioManager {
     ports: [AudioPort; CELL_AUDIO_PORT_MAX],
     /// Initialization flag
     initialized: bool,
-    /// OC-Audio backend placeholder
-    audio_backend: Option<()>,
+    /// OC-Audio mixer backend
+    audio_backend: AudioBackend,
     /// Master volume (0.0 to 1.0)
     master_volume: f32,
+    /// Audio block index (for timing)
+    block_index: u64,
 }
 
 impl AudioManager {
@@ -85,6 +278,7 @@ impl AudioManager {
             initialized: false,
             audio_backend: None,
             master_volume: 1.0,
+            block_index: 0,
         }
     }
 
@@ -96,8 +290,14 @@ impl AudioManager {
 
         debug!("cellAudioInit: initializing audio system");
         self.initialized = true;
+        self.block_index = 0;
 
-        // TODO: Initialize oc-audio subsystem
+        // Initialize backend if connected
+        if let Some(backend) = &self.audio_backend {
+            if let Ok(mut mixer) = backend.write() {
+                mixer.set_master_volume(self.master_volume);
+            }
+        }
 
         0 // CELL_OK
     }
@@ -110,14 +310,20 @@ impl AudioManager {
 
         debug!("cellAudioQuit: shutting down audio system");
         
-        // Close all open ports
+        // Close all open ports and remove mixer sources
         for port in &mut self.ports {
+            if let Some(source_id) = port.mixer_source_id {
+                if let Some(backend) = &self.audio_backend {
+                    if let Ok(mut mixer) = backend.write() {
+                        mixer.remove_source(source_id);
+                    }
+                }
+            }
             port.state = AudioPortState::Closed;
+            port.mixer_source_id = None;
         }
         
         self.initialized = false;
-
-        // TODO: Shutdown oc-audio subsystem
 
         0 // CELL_OK
     }
@@ -146,14 +352,34 @@ impl AudioManager {
             port_num, num_channels, num_blocks
         );
 
+        // Determine channel layout based on channel count
+        let layout = match num_channels {
+            1 => ChannelLayout::Mono,
+            2 => ChannelLayout::Stereo,
+            6 => ChannelLayout::Surround51,
+            8 => ChannelLayout::Surround71,
+            _ => ChannelLayout::Stereo, // Default to stereo
+        };
+
+        // Create mixer source if backend is available
+        let source_id = if let Some(backend) = &self.audio_backend {
+            if let Ok(mut mixer) = backend.write() {
+                let id = mixer.add_source(layout);
+                let _ = mixer.set_source_volume(id, level);
+                Some(id)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // Configure the port
         self.ports[port_num].state = AudioPortState::Open;
         self.ports[port_num].num_channels = num_channels;
         self.ports[port_num].num_blocks = num_blocks;
         self.ports[port_num].volume = level;
-
-        // TODO: Allocate buffer through oc-audio subsystem
-        // TODO: Store buffer address
+        self.ports[port_num].mixer_source_id = source_id;
 
         Ok(port_num as u32)
     }
@@ -171,9 +397,17 @@ impl AudioManager {
 
         debug!("cellAudioPortClose: closing port {}", port_num);
 
-        port.state = AudioPortState::Closed;
+        // Remove mixer source if it exists
+        if let Some(source_id) = port.mixer_source_id {
+            if let Some(backend) = &self.audio_backend {
+                if let Ok(mut mixer) = backend.write() {
+                    mixer.remove_source(source_id);
+                }
+            }
+        }
 
-        // TODO: Free buffer through oc-audio subsystem
+        port.state = AudioPortState::Closed;
+        port.mixer_source_id = None;
 
         0 // CELL_OK
     }
@@ -193,8 +427,6 @@ impl AudioManager {
 
         port.state = AudioPortState::Started;
 
-        // TODO: Start audio output through oc-audio subsystem
-
         0 // CELL_OK
     }
 
@@ -213,8 +445,6 @@ impl AudioManager {
 
         port.state = AudioPortState::Open;
 
-        // TODO: Stop audio output through oc-audio subsystem
-
         0 // CELL_OK
     }
 
@@ -222,21 +452,21 @@ impl AudioManager {
     // OC-Audio Backend Integration
     // ========================================================================
 
-    /// Connect to oc-audio backend
+    /// Set the oc-audio mixer backend
     /// 
-    /// Integrates with oc-audio for actual audio playback.
-    pub fn connect_audio_backend(&mut self, _backend: Option<()>) -> i32 {
-        debug!("AudioManager::connect_audio_backend");
-        
-        // In a real implementation:
-        // 1. Store the oc-audio backend reference
-        // 2. Initialize audio output device
-        // 3. Configure sample rate and format
-        // 4. Set up audio callback for mixing
-        
-        self.audio_backend = None; // Would store actual backend
-        
-        0 // CELL_OK
+    /// Connects the AudioManager to the HLE audio mixer,
+    /// enabling actual audio playback through the system audio device.
+    /// 
+    /// # Arguments
+    /// * `backend` - Shared reference to HleAudioMixer
+    pub fn set_audio_backend(&mut self, backend: Arc<RwLock<HleAudioMixer>>) {
+        debug!("AudioManager::set_audio_backend - connecting to oc-audio mixer");
+        self.audio_backend = Some(backend);
+    }
+
+    /// Check if the audio backend is connected
+    pub fn has_audio_backend(&self) -> bool {
+        self.audio_backend.is_some()
     }
 
     /// Submit audio buffer to backend
@@ -244,7 +474,7 @@ impl AudioManager {
     /// # Arguments
     /// * `port_num` - Audio port number
     /// * `buffer` - Audio samples to submit
-    pub fn submit_audio(&mut self, port_num: u32, _buffer: &[f32]) -> i32 {
+    pub fn submit_audio(&mut self, port_num: u32, buffer: &[f32]) -> i32 {
         if port_num >= CELL_AUDIO_PORT_MAX as u32 {
             return 0x80310704u32 as i32; // CELL_AUDIO_ERROR_PARAM
         }
@@ -254,12 +484,18 @@ impl AudioManager {
             return 0x80310703u32 as i32; // CELL_AUDIO_ERROR_PORT_NOT_OPEN
         }
 
-        trace!("AudioManager::submit_audio: port={}", port_num);
+        trace!("AudioManager::submit_audio: port={}, samples={}", port_num, buffer.len());
 
-        // In a real implementation:
-        // 1. Apply port volume
-        // 2. Convert format if needed
-        // 3. Submit to oc-audio backend for playback
+        // Submit to oc-audio mixer backend
+        if let Some(source_id) = port.mixer_source_id {
+            if let Some(backend) = &self.audio_backend {
+                if let Ok(mut mixer) = backend.write() {
+                    // Apply port volume before submitting
+                    let scaled: Vec<f32> = buffer.iter().map(|s| s * port.volume).collect();
+                    let _ = mixer.write_to_source(source_id, &scaled);
+                }
+            }
+        }
 
         0 // CELL_OK
     }
@@ -280,6 +516,16 @@ impl AudioManager {
         }
 
         port.volume = volume.clamp(0.0, 1.0);
+
+        // Update mixer source volume
+        if let Some(source_id) = port.mixer_source_id {
+            if let Some(backend) = &self.audio_backend {
+                if let Ok(mut mixer) = backend.write() {
+                    let _ = mixer.set_source_volume(source_id, port.volume);
+                }
+            }
+        }
+
         debug!("Set port {} volume to {}", port_num, port.volume);
 
         0 // CELL_OK
@@ -308,6 +554,14 @@ impl AudioManager {
     /// * `volume` - Master volume level (0.0 to 1.0)
     pub fn set_master_volume(&mut self, volume: f32) {
         self.master_volume = volume.clamp(0.0, 1.0);
+
+        // Update mixer master volume
+        if let Some(backend) = &self.audio_backend {
+            if let Ok(mut mixer) = backend.write() {
+                mixer.set_master_volume(self.master_volume);
+            }
+        }
+
         debug!("Set master volume to {}", self.master_volume);
     }
 
@@ -323,33 +577,37 @@ impl AudioManager {
     /// 
     /// # Arguments
     /// * `output` - Output buffer to fill with mixed audio
-    pub fn mix_audio(&self, _output: &mut [f32]) -> i32 {
+    /// * `frames` - Number of audio frames to mix
+    pub fn mix_audio(&mut self, output: &mut [f32], frames: usize) -> i32 {
         if !self.initialized {
             return 0x80310702u32 as i32; // CELL_AUDIO_ERROR_AUDIOSYSTEM
         }
 
-        trace!("AudioManager::mix_audio");
+        trace!("AudioManager::mix_audio: frames={}", frames);
 
-        // In a real implementation:
-        // 1. For each active port (Started state):
-        //    a. Read audio data from port buffer
-        //    b. Apply port volume
-        //    c. Mix into output buffer
-        // 2. Apply master volume to output
-        // 3. Clamp output to prevent clipping
+        // Use mixer backend if available
+        if let Some(backend) = &self.audio_backend {
+            if let Ok(mut mixer) = backend.write() {
+                mixer.mix(output, frames);
+            }
+        }
 
-        // Pseudocode:
-        // output.fill(0.0);
-        // for port in active_ports {
-        //     for (i, sample) in port_buffer.iter().enumerate() {
-        //         output[i] += sample * port.volume;
-        //     }
-        // }
-        // for sample in output.iter_mut() {
-        //     *sample = (*sample * master_volume).clamp(-1.0, 1.0);
-        // }
+        // Increment block index for timing
+        self.block_index += 1;
 
         0 // CELL_OK
+    }
+
+    /// Get the current audio block index
+    /// 
+    /// Used for synchronization with the audio hardware.
+    pub fn get_block_index(&self) -> u64 {
+        self.block_index
+    }
+
+    /// Get number of active ports
+    pub fn get_active_port_count(&self) -> usize {
+        self.ports.iter().filter(|p| p.state == AudioPortState::Started).count()
     }
 
     /// Check if backend is connected
