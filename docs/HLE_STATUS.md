@@ -17,10 +17,10 @@ This document tracks the implementation status of High Level Emulation (HLE) mod
 
 | Module | Status | Notes |
 |--------|--------|-------|
-| cellGcmSys | 🟡 Partial | Command buffer, display buffers, textures implemented; needs RSX bridge |
-| cellGifDec | 🟡 Partial | Decoder manager with animation support, LZW decompression stub |
-| cellPngDec | 🟡 Partial | Full decoder manager, header parsing, color conversion stubs |
-| cellJpgDec | 🟡 Partial | Decoder manager with progressive JPEG support, DCT stub |
+| cellGcmSys | 🟡 Partial | Command buffer, display buffers, textures, RSX bridge integration |
+| cellGifDec | 🟡 Partial | Real GIF parsing, LZW decompression, animation/frame support |
+| cellPngDec | 🟡 Partial | Real PNG parsing, zlib decompression, filter reconstruction |
+| cellJpgDec | 🟡 Partial | Real JPEG parsing, SOF/DHT/DQT markers, progressive detection |
 | cellResc | 🟡 Partial | Resolution scaling with RSX backend integration, aspect ratio modes |
 
 ### cellGcmSys Details
@@ -29,33 +29,40 @@ This document tracks the implementation status of High Level Emulation (HLE) mod
 - ✅ Command buffer management
 - ✅ Texture object handling
 - ✅ Flip operations
-- ⏳ Full RSX command processing bridge
-- ⏳ Hardware-accurate render target handling
+- ✅ RSX bridge connection and command dispatch
+- ✅ Render target configuration
+- ⏳ Full hardware-accurate RSX command processing
 
 ### cellGifDec Details
 - ✅ Main/sub handle management
-- ✅ GIF header parsing (stub)
-- ✅ Animation frame support
-- ✅ LZW decompression (placeholder)
-- ✅ Palette-based color conversion
-- ⏳ Actual LZW implementation
+- ✅ Real GIF header parsing (GIF87a/GIF89a)
+- ✅ Global/local color table parsing
+- ✅ LZW decompression with code table building
+- ✅ Graphics Control Extension (animation timing, disposal)
+- ✅ NETSCAPE extension (loop count)
+- ✅ Multi-frame animation support
+- ✅ Transparency handling
 - ⏳ Interlaced GIF support
 
 ### cellPngDec Details
 - ✅ Main/sub handle management
-- ✅ PNG header validation
-- ✅ Color type handling (grayscale, RGB, RGBA, palette)
-- ✅ Output parameter configuration
-- ⏳ zlib/inflate decompression
-- ⏳ PNG filter reconstruction
+- ✅ Real PNG chunk parsing (IHDR, PLTE, tRNS, IDAT, IEND)
+- ✅ Zlib decompression via miniz_oxide
+- ✅ PNG filter reconstruction (None, Sub, Up, Average, Paeth)
+- ✅ Color type handling (grayscale, RGB, RGBA, palette, grayscale+alpha)
+- ✅ Output conversion to RGBA
 - ⏳ Adam7 interlace support
+- ⏳ 16-bit depth support
 
 ### cellJpgDec Details
 - ✅ Main/sub handle management
-- ✅ JPEG header parsing (SOI/SOF detection)
-- ✅ Progressive JPEG scan handling
-- ✅ Output buffer management
-- ⏳ Huffman decoding
+- ✅ Real JPEG marker parsing (SOI, SOF, DHT, DQT, DRI, SOS)
+- ✅ SOF parsing for dimensions and components
+- ✅ Huffman table (DHT) parsing
+- ✅ Quantization table (DQT) parsing
+- ✅ Progressive JPEG detection (SOF2)
+- ✅ Restart interval support
+- ⏳ Huffman entropy decoding
 - ⏳ DCT inverse transform
 - ⏳ YCbCr to RGB conversion
 
