@@ -1,9 +1,14 @@
 //! cellMouse HLE - Mouse Input
 //!
 //! This module provides HLE implementations for PS3 mouse input.
-//! It supports mouse position tracking and button state handling.
+//! It supports mouse position tracking and button state handling with full oc-input integration.
 
+use std::sync::{Arc, RwLock};
 use tracing::{debug, trace};
+use oc_input::mouse::{Mouse, MouseState, MouseButtons};
+
+/// OC-Input mouse backend reference
+pub type MouseBackend = Option<Arc<RwLock<Vec<Mouse>>>>;
 
 /// Error codes
 pub const CELL_MOUSE_ERROR_NOT_INITIALIZED: i32 = 0x80121301u32 as i32;
@@ -137,8 +142,8 @@ pub struct MouseManager {
     movement_delta: [(i32, i32); CELL_MOUSE_MAX_MICE],
     /// Wheel delta since last read
     wheel_delta: [i32; CELL_MOUSE_MAX_MICE],
-    /// OC-Input backend placeholder
-    input_backend: Option<()>,
+    /// OC-Input mouse backend
+    input_backend: MouseBackend,
 }
 
 impl MouseManager {
@@ -501,21 +506,21 @@ impl MouseManager {
     // OC-Input Backend Integration
     // ========================================================================
 
-    /// Connect to oc-input backend
+    /// Set the oc-input mouse backend
     /// 
-    /// Integrates with oc-input for actual mouse input.
-    pub fn connect_input_backend(&mut self, _backend: Option<()>) -> i32 {
-        debug!("MouseManager::connect_input_backend");
-        
-        // In a real implementation:
-        // 1. Store the oc-input backend reference
-        // 2. Register mouse input callbacks
-        // 3. Query connected mice
-        // 4. Set up button/axis mappings
-        
-        self.input_backend = None; // Would store actual backend
-        
-        0 // CELL_OK
+    /// Connects the MouseManager to the oc-input mouse system,
+    /// enabling actual mouse input polling.
+    /// 
+    /// # Arguments
+    /// * `backend` - Shared reference to mouse devices
+    pub fn set_input_backend(&mut self, backend: Arc<RwLock<Vec<Mouse>>>) {
+        debug!("MouseManager::set_input_backend - connecting to oc-input");
+        self.input_backend = Some(backend);
+    }
+
+    /// Check if the input backend is connected
+    pub fn has_input_backend(&self) -> bool {
+        self.input_backend.is_some()
     }
 
     /// Poll input from backend
@@ -528,15 +533,96 @@ impl MouseManager {
 
         trace!("MouseManager::poll_input");
 
-        // In a real implementation, this would:
-        // 1. Query oc-input for current mouse states
-        // 2. Convert oc-input mouse events to PS3 format
-        // 3. Update mouse_data for each connected mouse
-        // 4. Handle button presses
-        // 5. Handle position/delta updates
-        // 6. Handle wheel scrolling
+        // Get backend or fall back to manual updates
+        let backend = match &self.input_backend {
+            Some(b) => b.clone(),
+            None => {
+                // No backend connected, mouse data is manually updated
+                return 0;
+            }
+        };
+
+        // Lock backend for reading
+        let mice = match backend.read() {
+            Ok(m) => m,
+            Err(e) => {
+                debug!("MouseManager::poll_input - failed to lock backend: {}", e);
+                return 0;
+            }
+        };
+
+        // Update connected mice and poll each one
+        let mut connected_mask = 0u8;
+
+        for (port, mouse) in mice.iter().enumerate() {
+            if port >= CELL_MOUSE_MAX_MICE {
+                break;
+            }
+
+            if mouse.connected {
+                connected_mask |= 1 << port;
+
+                // Convert oc-input mouse state to PS3 format
+                self.convert_mouse_state(port, &mouse.state);
+            }
+        }
+
+        self.connected_mice = connected_mask;
 
         0 // CELL_OK
+    }
+
+    /// Convert oc-input mouse state to PS3 CellMouseData format
+    fn convert_mouse_state(&mut self, port: usize, state: &MouseState) {
+        // Calculate delta from previous position
+        let dx = state.x - self.prev_positions[port].0;
+        let dy = state.y - self.prev_positions[port].1;
+
+        // Update previous position for next delta calculation
+        self.prev_positions[port] = (state.x, state.y);
+
+        // Update current position
+        self.positions[port] = (state.x, state.y);
+
+        // Accumulate movement delta
+        self.movement_delta[port].0 = self.movement_delta[port].0.saturating_add(dx);
+        self.movement_delta[port].1 = self.movement_delta[port].1.saturating_add(dy);
+
+        // Accumulate wheel delta
+        self.wheel_delta[port] = self.wheel_delta[port].saturating_add(state.wheel);
+
+        // Convert button flags
+        self.button_states[port] = Self::convert_buttons(state.buttons);
+
+        // Update cached mouse data structure
+        self.mouse_data[port].x_pos = state.x;
+        self.mouse_data[port].y_pos = state.y;
+        self.mouse_data[port].buttons = self.button_states[port];
+        self.mouse_data[port].wheel = state.wheel;
+        self.mouse_data[port].update += 1;
+    }
+
+    /// Convert oc-input button flags to PS3 button flags
+    fn convert_buttons(buttons: MouseButtons) -> u32 {
+        let mut result = 0u32;
+
+        if buttons.contains(MouseButtons::LEFT) {
+            result |= CELL_MOUSE_BUTTON_LEFT;
+        }
+        if buttons.contains(MouseButtons::RIGHT) {
+            result |= CELL_MOUSE_BUTTON_RIGHT;
+        }
+        if buttons.contains(MouseButtons::MIDDLE) {
+            result |= CELL_MOUSE_BUTTON_MIDDLE;
+        }
+        if buttons.contains(MouseButtons::BUTTON4) {
+            result |= CELL_MOUSE_BUTTON_4;
+        }
+        if buttons.contains(MouseButtons::BUTTON5) {
+            result |= CELL_MOUSE_BUTTON_5;
+        }
+
+        result
     }
 
     /// Update mouse data from input backend
@@ -580,19 +666,8 @@ impl MouseManager {
     /// Map oc-input button to PS3 mouse button
     /// 
     /// Converts button codes between oc-input and PS3 formats.
-    pub fn map_button(oc_input_button: u32) -> u32 {
-        // In a real implementation, this would map:
-        // oc-input button codes -> PS3 button codes
-        // 
-        // For example:
-        // oc_input::MouseButton::LEFT -> CELL_MOUSE_BUTTON_LEFT
-        // oc_input::MouseButton::RIGHT -> CELL_MOUSE_BUTTON_RIGHT
-        // etc.
-
-        trace!("Mapping mouse button: 0x{:08X}", oc_input_button);
-
-        // Return as-is for now (assuming compatible format)
-        oc_input_button
+    pub fn map_button(oc_input_button: MouseButtons) -> u32 {
+        Self::convert_buttons(oc_input_button)
     }
 
     /// Check if backend is connected
