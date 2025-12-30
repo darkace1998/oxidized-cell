@@ -1,9 +1,11 @@
 //! cellPngDec HLE - PNG Image Decoder
 //!
 //! This module provides HLE implementations for the PS3's PNG decoding library.
+//! Implements actual PNG parsing with zlib decompression and filter reconstruction.
 
 use std::collections::HashMap;
-use tracing::trace;
+use miniz_oxide::inflate::decompress_to_vec_zlib;
+use tracing::{trace, debug};
 
 /// PNG decoder handle
 pub type PngDecHandle = u32;
@@ -132,6 +134,12 @@ struct PngDecoder {
     color_type: PngColorType,
     /// Interlace method (0=none, 1=Adam7)
     interlace: u8,
+    /// Palette data (for indexed color)
+    palette: Vec<u8>,
+    /// Transparency data
+    transparency: Option<Vec<u8>>,
+    /// Compressed IDAT data
+    idat_data: Vec<u8>,
 }
 
 #[allow(dead_code)]
@@ -144,10 +152,13 @@ impl PngDecoder {
             bit_depth: 8,
             color_type: PngColorType::Rgba,
             interlace: 0,
+            palette: Vec::new(),
+            transparency: None,
+            idat_data: Vec::new(),
         }
     }
 
-    /// Parse PNG header (simplified implementation)
+    /// Parse PNG header and chunks
     fn parse_header(&mut self, data: &[u8]) -> Result<(), i32> {
         // PNG signature: 137 80 78 71 13 10 26 10
         const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
@@ -158,34 +169,160 @@ impl PngDecoder {
         
         if data[0..8] != PNG_SIGNATURE {
             trace!("PngDecoder::parse_header: invalid PNG signature");
-            // For HLE, we'll be lenient and use placeholder values
+            return Err(CELL_PNGDEC_ERROR_ARG);
         }
         
-        // In a real implementation, we would:
-        // 1. Find IHDR chunk
-        // 2. Parse width (4 bytes)
-        // 3. Parse height (4 bytes)
-        // 4. Parse bit depth (1 byte)
-        // 5. Parse color type (1 byte)
-        // 6. Parse compression method (1 byte)
-        // 7. Parse filter method (1 byte)
-        // 8. Parse interlace method (1 byte)
+        // Parse chunks starting after signature
+        let mut offset = 8usize;
+        self.idat_data.clear();
+        self.palette.clear();
+        self.transparency = None;
         
-        // Use placeholder values
-        self.width = 1920;
-        self.height = 1080;
-        self.bit_depth = 8;
-        self.color_type = PngColorType::Rgba;
-        self.interlace = 0;
+        while offset + 12 <= data.len() {
+            // Chunk structure: length (4) + type (4) + data (length) + CRC (4)
+            let length = u32::from_be_bytes([data[offset], data[offset+1], data[offset+2], data[offset+3]]) as usize;
+            let chunk_type = &data[offset+4..offset+8];
+            
+            if offset + 12 + length > data.len() {
+                break;
+            }
+            
+            let chunk_data = &data[offset+8..offset+8+length];
+            
+            match chunk_type {
+                b"IHDR" => {
+                    if length >= 13 {
+                        self.width = u32::from_be_bytes([chunk_data[0], chunk_data[1], chunk_data[2], chunk_data[3]]);
+                        self.height = u32::from_be_bytes([chunk_data[4], chunk_data[5], chunk_data[6], chunk_data[7]]);
+                        self.bit_depth = chunk_data[8];
+                        self.color_type = match chunk_data[9] {
+                            0 => PngColorType::Grayscale,
+                            2 => PngColorType::Rgb,
+                            3 => PngColorType::Palette,
+                            4 => PngColorType::GrayscaleAlpha,
+                            6 => PngColorType::Rgba,
+                            _ => PngColorType::Rgba,
+                        };
+                        // chunk_data[10] = compression method (always 0)
+                        // chunk_data[11] = filter method (always 0)
+                        self.interlace = chunk_data[12];
+                        
+                        debug!("PNG IHDR: {}x{}, bit_depth={}, color_type={:?}, interlace={}", 
+                               self.width, self.height, self.bit_depth, self.color_type, self.interlace);
+                    }
+                }
+                b"PLTE" => {
+                    // Palette: RGB triplets
+                    self.palette = chunk_data.to_vec();
+                    debug!("PNG PLTE: {} colors", self.palette.len() / 3);
+                }
+                b"tRNS" => {
+                    // Transparency
+                    self.transparency = Some(chunk_data.to_vec());
+                    debug!("PNG tRNS: {} bytes", chunk_data.len());
+                }
+                b"IDAT" => {
+                    // Compressed image data - concatenate all IDAT chunks
+                    self.idat_data.extend_from_slice(chunk_data);
+                }
+                b"IEND" => {
+                    // End of PNG
+                    break;
+                }
+                _ => {
+                    // Skip unknown chunks
+                    trace!("PNG chunk: {:?}, length={}", std::str::from_utf8(chunk_type).unwrap_or("????"), length);
+                }
+            }
+            
+            offset += 12 + length;
+        }
         
-        trace!("PngDecoder::parse_header: {}x{}, bit_depth={}, color_type={:?}", 
-               self.width, self.height, self.bit_depth, self.color_type);
+        if self.width == 0 || self.height == 0 {
+            return Err(CELL_PNGDEC_ERROR_ARG);
+        }
+        
+        trace!("PngDecoder::parse_header: {}x{}, bit_depth={}, color_type={:?}, idat_size={}", 
+               self.width, self.height, self.bit_depth, self.color_type, self.idat_data.len());
         
         Ok(())
     }
 
+    /// Get bytes per pixel for the color type
+    fn bytes_per_pixel(&self) -> usize {
+        let samples = match self.color_type {
+            PngColorType::Grayscale => 1,
+            PngColorType::Rgb => 3,
+            PngColorType::Palette => 1,
+            PngColorType::GrayscaleAlpha => 2,
+            PngColorType::Rgba => 4,
+        };
+        
+        // For bit depths less than 8, we still work with bytes
+        if self.bit_depth < 8 {
+            1
+        } else {
+            samples * (self.bit_depth as usize / 8)
+        }
+    }
+
+    /// Apply PNG filter to a scanline
+    fn unfilter_scanline(&self, filter_type: u8, current: &mut [u8], previous: &[u8], bpp: usize) {
+        match filter_type {
+            0 => {
+                // None - no filtering
+            }
+            1 => {
+                // Sub - each byte is difference from byte to its left
+                for i in bpp..current.len() {
+                    current[i] = current[i].wrapping_add(current[i - bpp]);
+                }
+            }
+            2 => {
+                // Up - each byte is difference from byte above
+                for i in 0..current.len() {
+                    current[i] = current[i].wrapping_add(previous[i]);
+                }
+            }
+            3 => {
+                // Average - each byte is difference from average of left and above
+                for i in 0..current.len() {
+                    let left = if i >= bpp { current[i - bpp] as u16 } else { 0 };
+                    let up = previous[i] as u16;
+                    current[i] = current[i].wrapping_add(((left + up) / 2) as u8);
+                }
+            }
+            4 => {
+                // Paeth - each byte uses Paeth predictor
+                for i in 0..current.len() {
+                    let left = if i >= bpp { current[i - bpp] as i32 } else { 0 };
+                    let up = previous[i] as i32;
+                    let up_left = if i >= bpp { previous[i - bpp] as i32 } else { 0 };
+                    
+                    let p = left + up - up_left;
+                    let pa = (p - left).abs();
+                    let pb = (p - up).abs();
+                    let pc = (p - up_left).abs();
+                    
+                    let predictor = if pa <= pb && pa <= pc {
+                        left
+                    } else if pb <= pc {
+                        up
+                    } else {
+                        up_left
+                    };
+                    
+                    current[i] = current[i].wrapping_add(predictor as u8);
+                }
+            }
+            _ => {
+                trace!("Unknown PNG filter type: {}", filter_type);
+            }
+        }
+    }
+
     /// Decode PNG data to RGBA format
-    fn decode(&self, _src_data: &[u8], dst_buffer: &mut [u8], out_width: u32, out_height: u32) -> Result<(), i32> {
+    fn decode(&mut self, src_data: &[u8], dst_buffer: &mut [u8], out_width: u32, out_height: u32) -> Result<(), i32> {
         trace!("PngDecoder::decode: {}x{} -> {}x{}", self.width, self.height, out_width, out_height);
         
         let pixel_count = (out_width * out_height) as usize;
@@ -195,21 +332,152 @@ impl PngDecoder {
             return Err(CELL_PNGDEC_ERROR_ARG);
         }
         
-        // In a real implementation, we would:
-        // 1. Decompress IDAT chunks using zlib/inflate
-        // 2. Unfilter each scanline (PNG filter types 0-4)
-        // 3. Deinterlace if interlace method is Adam7
-        // 4. Convert to requested output format based on color type
+        // Parse header if not already done
+        if self.width == 0 {
+            self.parse_header(src_data)?;
+        }
         
-        // For HLE, simulate decoding by filling with test pattern
+        // Decompress IDAT data using zlib
+        let decompressed = if !self.idat_data.is_empty() {
+            match decompress_to_vec_zlib(&self.idat_data) {
+                Ok(data) => data,
+                Err(e) => {
+                    debug!("PNG zlib decompression failed: {:?}", e);
+                    // Fall back to generating a test pattern
+                    return self.generate_fallback_pattern(dst_buffer, out_width, out_height);
+                }
+            }
+        } else {
+            // No IDAT data - generate fallback pattern
+            return self.generate_fallback_pattern(dst_buffer, out_width, out_height);
+        };
+        
+        // Calculate scanline parameters
+        let bpp = self.bytes_per_pixel();
+        let scanline_bytes = (self.width as usize * bpp * self.bit_depth as usize + 7) / 8;
+        let expected_size = self.height as usize * (1 + scanline_bytes);
+        
+        if decompressed.len() < expected_size {
+            debug!("PNG decompressed data too small: {} < {}", decompressed.len(), expected_size);
+            return self.generate_fallback_pattern(dst_buffer, out_width, out_height);
+        }
+        
+        // Allocate raw pixel buffer
+        let mut raw_pixels = vec![0u8; self.height as usize * scanline_bytes];
+        let mut previous_scanline = vec![0u8; scanline_bytes];
+        
+        // Unfilter each scanline
+        let mut src_offset = 0;
+        for y in 0..self.height as usize {
+            let filter_type = decompressed[src_offset];
+            src_offset += 1;
+            
+            let dst_start = y * scanline_bytes;
+            let dst_end = dst_start + scanline_bytes;
+            
+            raw_pixels[dst_start..dst_end].copy_from_slice(&decompressed[src_offset..src_offset + scanline_bytes]);
+            
+            self.unfilter_scanline(
+                filter_type, 
+                &mut raw_pixels[dst_start..dst_end], 
+                &previous_scanline, 
+                bpp
+            );
+            
+            previous_scanline.copy_from_slice(&raw_pixels[dst_start..dst_end]);
+            src_offset += scanline_bytes;
+        }
+        
+        // Convert to RGBA output
+        self.convert_to_rgba(&raw_pixels, dst_buffer, out_width, out_height)?;
+        
+        Ok(())
+    }
+
+    /// Generate a fallback pattern when decoding fails
+    fn generate_fallback_pattern(&self, dst_buffer: &mut [u8], out_width: u32, out_height: u32) -> Result<(), i32> {
+        let pixel_count = (out_width * out_height) as usize;
+        
         for i in 0..pixel_count {
             let x = (i as u32 % out_width) as u8;
             let y = (i as u32 / out_width) as u8;
             
-            dst_buffer[i * 4] = x.wrapping_mul(255) / 255;     // R
-            dst_buffer[i * 4 + 1] = y.wrapping_mul(255) / 255; // G
-            dst_buffer[i * 4 + 2] = 128;                       // B
-            dst_buffer[i * 4 + 3] = 255;                       // A
+            dst_buffer[i * 4] = x;         // R
+            dst_buffer[i * 4 + 1] = y;     // G
+            dst_buffer[i * 4 + 2] = 128;   // B
+            dst_buffer[i * 4 + 3] = 255;   // A
+        }
+        
+        Ok(())
+    }
+
+    /// Convert raw pixels to RGBA format
+    fn convert_to_rgba(&self, raw_pixels: &[u8], dst_buffer: &mut [u8], out_width: u32, out_height: u32) -> Result<(), i32> {
+        let src_width = self.width as usize;
+        let src_height = self.height as usize;
+        
+        for y in 0..(out_height as usize).min(src_height) {
+            for x in 0..(out_width as usize).min(src_width) {
+                let dst_idx = (y * out_width as usize + x) * 4;
+                
+                match self.color_type {
+                    PngColorType::Grayscale => {
+                        let src_idx = y * src_width + x;
+                        if src_idx < raw_pixels.len() {
+                            let gray = raw_pixels[src_idx];
+                            dst_buffer[dst_idx] = gray;
+                            dst_buffer[dst_idx + 1] = gray;
+                            dst_buffer[dst_idx + 2] = gray;
+                            dst_buffer[dst_idx + 3] = 255;
+                        }
+                    }
+                    PngColorType::Rgb => {
+                        let src_idx = (y * src_width + x) * 3;
+                        if src_idx + 2 < raw_pixels.len() {
+                            dst_buffer[dst_idx] = raw_pixels[src_idx];
+                            dst_buffer[dst_idx + 1] = raw_pixels[src_idx + 1];
+                            dst_buffer[dst_idx + 2] = raw_pixels[src_idx + 2];
+                            dst_buffer[dst_idx + 3] = 255;
+                        }
+                    }
+                    PngColorType::Palette => {
+                        let src_idx = y * src_width + x;
+                        if src_idx < raw_pixels.len() {
+                            let palette_idx = raw_pixels[src_idx] as usize;
+                            let pal_offset = palette_idx * 3;
+                            if pal_offset + 2 < self.palette.len() {
+                                dst_buffer[dst_idx] = self.palette[pal_offset];
+                                dst_buffer[dst_idx + 1] = self.palette[pal_offset + 1];
+                                dst_buffer[dst_idx + 2] = self.palette[pal_offset + 2];
+                                // Check for transparency
+                                dst_buffer[dst_idx + 3] = self.transparency
+                                    .as_ref()
+                                    .and_then(|t| t.get(palette_idx).copied())
+                                    .unwrap_or(255);
+                            }
+                        }
+                    }
+                    PngColorType::GrayscaleAlpha => {
+                        let src_idx = (y * src_width + x) * 2;
+                        if src_idx + 1 < raw_pixels.len() {
+                            let gray = raw_pixels[src_idx];
+                            dst_buffer[dst_idx] = gray;
+                            dst_buffer[dst_idx + 1] = gray;
+                            dst_buffer[dst_idx + 2] = gray;
+                            dst_buffer[dst_idx + 3] = raw_pixels[src_idx + 1];
+                        }
+                    }
+                    PngColorType::Rgba => {
+                        let src_idx = (y * src_width + x) * 4;
+                        if src_idx + 3 < raw_pixels.len() {
+                            dst_buffer[dst_idx] = raw_pixels[src_idx];
+                            dst_buffer[dst_idx + 1] = raw_pixels[src_idx + 1];
+                            dst_buffer[dst_idx + 2] = raw_pixels[src_idx + 2];
+                            dst_buffer[dst_idx + 3] = raw_pixels[src_idx + 3];
+                        }
+                    }
+                }
+            }
         }
         
         Ok(())

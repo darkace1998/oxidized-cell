@@ -1,9 +1,10 @@
 //! cellJpgDec HLE - JPEG image decoding module
 //!
 //! This module provides HLE implementations for the PS3's JPEG decoding library.
+//! Implements JPEG header parsing and marker detection.
 
 use std::collections::HashMap;
-use tracing::trace;
+use tracing::{trace, debug};
 
 /// JPEG decoder handle
 pub type JpgDecHandle = u32;
@@ -41,6 +42,38 @@ struct JpegDecoder {
     progressive_scans: Vec<ProgressiveScan>,
     /// Current scan index
     current_scan: usize,
+    /// Quantization tables (up to 4)
+    quantization_tables: [[u8; 64]; 4],
+    /// Huffman DC tables (up to 4)
+    huffman_dc_tables: [Option<HuffmanTable>; 4],
+    /// Huffman AC tables (up to 4)
+    huffman_ac_tables: [Option<HuffmanTable>; 4],
+    /// Restart interval
+    restart_interval: u16,
+    /// Component info
+    components: Vec<JpegComponent>,
+}
+
+/// Huffman table for JPEG decoding
+#[derive(Debug, Clone)]
+struct HuffmanTable {
+    /// Bit lengths for each code
+    bits: [u8; 16],
+    /// Values for each code
+    values: Vec<u8>,
+}
+
+/// JPEG component info
+#[derive(Debug, Clone, Default)]
+struct JpegComponent {
+    /// Component ID
+    id: u8,
+    /// Horizontal sampling factor
+    h_sampling: u8,
+    /// Vertical sampling factor
+    v_sampling: u8,
+    /// Quantization table index
+    quant_table: u8,
 }
 
 /// Progressive scan information
@@ -68,32 +101,279 @@ impl JpegDecoder {
             scan_type: JpegScanType::Baseline,
             progressive_scans: Vec::new(),
             current_scan: 0,
+            quantization_tables: [[0u8; 64]; 4],
+            huffman_dc_tables: [None, None, None, None],
+            huffman_ac_tables: [None, None, None, None],
+            restart_interval: 0,
+            components: Vec::new(),
         }
     }
 
-    /// Parse JPEG header
+    /// Parse JPEG header and all markers
     fn parse_header(&mut self, data: &[u8]) -> Result<(), i32> {
         // JPEG starts with SOI marker: 0xFF 0xD8
         if data.len() < 2 || data[0] != 0xFF || data[1] != 0xD8 {
-            trace!("JpegDecoder::parse_header: invalid JPEG signature");
-            // Be lenient for HLE
+            debug!("JpegDecoder::parse_header: invalid JPEG signature");
+            return Err(CELL_JPGDEC_ERROR_ARG);
         }
 
-        // In a real implementation, we would parse:
-        // 1. SOF (Start of Frame) markers to get dimensions
-        // 2. DQT (Define Quantization Table)
-        // 3. DHT (Define Huffman Table)
-        // 4. SOS (Start of Scan) for progressive scans
+        let mut offset = 2;
         
-        // Use placeholder values
-        self.width = 1920;
-        self.height = 1080;
-        self.num_components = 3; // RGB
-        self.scan_type = JpegScanType::Baseline;
+        while offset + 4 <= data.len() {
+            // Find next marker
+            if data[offset] != 0xFF {
+                offset += 1;
+                continue;
+            }
+            
+            // Skip padding 0xFF bytes
+            while offset < data.len() && data[offset] == 0xFF {
+                offset += 1;
+            }
+            
+            if offset >= data.len() {
+                break;
+            }
+            
+            let marker = data[offset];
+            offset += 1;
+            
+            match marker {
+                0xD8 => {
+                    // SOI - Start of Image (already handled)
+                }
+                0xD9 => {
+                    // EOI - End of Image
+                    break;
+                }
+                0xD0..=0xD7 => {
+                    // RST0-RST7 - Restart markers (no length)
+                }
+                0x01 | 0x00 => {
+                    // TEM or stuffed byte
+                }
+                0xC0 | 0xC1 => {
+                    // SOF0/SOF1 - Baseline/Extended Sequential DCT
+                    self.scan_type = JpegScanType::Baseline;
+                    self.parse_sof(data, &mut offset)?;
+                }
+                0xC2 => {
+                    // SOF2 - Progressive DCT
+                    self.scan_type = JpegScanType::Progressive;
+                    self.parse_sof(data, &mut offset)?;
+                }
+                0xC4 => {
+                    // DHT - Define Huffman Table
+                    self.parse_dht(data, &mut offset)?;
+                }
+                0xDB => {
+                    // DQT - Define Quantization Table
+                    self.parse_dqt(data, &mut offset)?;
+                }
+                0xDD => {
+                    // DRI - Define Restart Interval
+                    self.parse_dri(data, &mut offset)?;
+                }
+                0xDA => {
+                    // SOS - Start of Scan
+                    // Skip the SOS header
+                    if offset + 1 < data.len() {
+                        let length = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
+                        offset += length;
+                    }
+                    // After SOS, entropy-coded data follows until next marker
+                    break;
+                }
+                0xE0..=0xEF => {
+                    // APPn - Application specific
+                    self.skip_segment(data, &mut offset)?;
+                }
+                0xFE => {
+                    // COM - Comment
+                    self.skip_segment(data, &mut offset)?;
+                }
+                _ => {
+                    // Unknown marker, try to skip
+                    self.skip_segment(data, &mut offset)?;
+                }
+            }
+        }
         
-        trace!("JpegDecoder::parse_header: {}x{}, components={}, scan_type={:?}", 
+        if self.width == 0 || self.height == 0 {
+            // If parsing failed, use default values
+            debug!("JpegDecoder: using fallback dimensions");
+            self.width = 640;
+            self.height = 480;
+            self.num_components = 3;
+        }
+        
+        debug!("JpegDecoder::parse_header: {}x{}, components={}, scan_type={:?}", 
                self.width, self.height, self.num_components, self.scan_type);
         
+        Ok(())
+    }
+
+    /// Parse SOF (Start of Frame) marker
+    fn parse_sof(&mut self, data: &[u8], offset: &mut usize) -> Result<(), i32> {
+        if *offset + 2 > data.len() {
+            return Err(CELL_JPGDEC_ERROR_ARG);
+        }
+        
+        let length = u16::from_be_bytes([data[*offset], data[*offset + 1]]) as usize;
+        if *offset + length > data.len() || length < 8 {
+            return Err(CELL_JPGDEC_ERROR_ARG);
+        }
+        
+        let precision = data[*offset + 2];
+        self.height = u16::from_be_bytes([data[*offset + 3], data[*offset + 4]]) as u32;
+        self.width = u16::from_be_bytes([data[*offset + 5], data[*offset + 6]]) as u32;
+        self.num_components = data[*offset + 7] as u32;
+        
+        debug!("JPEG SOF: {}x{}, precision={}, components={}", 
+               self.width, self.height, precision, self.num_components);
+        
+        // Parse component info
+        self.components.clear();
+        let comp_offset = *offset + 8;
+        for i in 0..self.num_components as usize {
+            let idx = comp_offset + i * 3;
+            if idx + 2 < data.len() {
+                self.components.push(JpegComponent {
+                    id: data[idx],
+                    h_sampling: (data[idx + 1] >> 4) & 0x0F,
+                    v_sampling: data[idx + 1] & 0x0F,
+                    quant_table: data[idx + 2],
+                });
+            }
+        }
+        
+        *offset += length;
+        Ok(())
+    }
+
+    /// Parse DHT (Define Huffman Table) marker
+    fn parse_dht(&mut self, data: &[u8], offset: &mut usize) -> Result<(), i32> {
+        if *offset + 2 > data.len() {
+            return Err(CELL_JPGDEC_ERROR_ARG);
+        }
+        
+        let length = u16::from_be_bytes([data[*offset], data[*offset + 1]]) as usize;
+        if *offset + length > data.len() {
+            return Err(CELL_JPGDEC_ERROR_ARG);
+        }
+        
+        let mut local_offset = *offset + 2;
+        let end_offset = *offset + length;
+        
+        while local_offset < end_offset {
+            if local_offset >= data.len() {
+                break;
+            }
+            
+            let table_info = data[local_offset];
+            let table_class = (table_info >> 4) & 0x0F; // 0 = DC, 1 = AC
+            let table_id = (table_info & 0x0F) as usize;
+            local_offset += 1;
+            
+            if table_id >= 4 || local_offset + 16 > data.len() {
+                break;
+            }
+            
+            let mut bits = [0u8; 16];
+            bits.copy_from_slice(&data[local_offset..local_offset + 16]);
+            local_offset += 16;
+            
+            let num_values: usize = bits.iter().map(|&b| b as usize).sum();
+            if local_offset + num_values > data.len() {
+                break;
+            }
+            
+            let values = data[local_offset..local_offset + num_values].to_vec();
+            local_offset += num_values;
+            
+            let table = HuffmanTable { bits, values };
+            
+            if table_class == 0 {
+                self.huffman_dc_tables[table_id] = Some(table);
+            } else {
+                self.huffman_ac_tables[table_id] = Some(table);
+            }
+            
+            trace!("JPEG DHT: class={}, id={}, values={}", table_class, table_id, num_values);
+        }
+        
+        *offset += length;
+        Ok(())
+    }
+
+    /// Parse DQT (Define Quantization Table) marker
+    fn parse_dqt(&mut self, data: &[u8], offset: &mut usize) -> Result<(), i32> {
+        if *offset + 2 > data.len() {
+            return Err(CELL_JPGDEC_ERROR_ARG);
+        }
+        
+        let length = u16::from_be_bytes([data[*offset], data[*offset + 1]]) as usize;
+        if *offset + length > data.len() {
+            return Err(CELL_JPGDEC_ERROR_ARG);
+        }
+        
+        let mut local_offset = *offset + 2;
+        let end_offset = *offset + length;
+        
+        while local_offset < end_offset {
+            if local_offset >= data.len() {
+                break;
+            }
+            
+            let table_info = data[local_offset];
+            let precision = (table_info >> 4) & 0x0F; // 0 = 8-bit, 1 = 16-bit
+            let table_id = (table_info & 0x0F) as usize;
+            local_offset += 1;
+            
+            if table_id >= 4 {
+                break;
+            }
+            
+            let table_size = if precision == 0 { 64 } else { 128 };
+            if local_offset + table_size > data.len() {
+                break;
+            }
+            
+            if precision == 0 {
+                self.quantization_tables[table_id].copy_from_slice(&data[local_offset..local_offset + 64]);
+            }
+            
+            local_offset += table_size;
+            trace!("JPEG DQT: id={}, precision={}", table_id, precision);
+        }
+        
+        *offset += length;
+        Ok(())
+    }
+
+    /// Parse DRI (Define Restart Interval) marker
+    fn parse_dri(&mut self, data: &[u8], offset: &mut usize) -> Result<(), i32> {
+        if *offset + 4 > data.len() {
+            return Err(CELL_JPGDEC_ERROR_ARG);
+        }
+        
+        let length = u16::from_be_bytes([data[*offset], data[*offset + 1]]) as usize;
+        self.restart_interval = u16::from_be_bytes([data[*offset + 2], data[*offset + 3]]);
+        
+        trace!("JPEG DRI: interval={}", self.restart_interval);
+        
+        *offset += length;
+        Ok(())
+    }
+
+    /// Skip a segment with length prefix
+    fn skip_segment(&self, data: &[u8], offset: &mut usize) -> Result<(), i32> {
+        if *offset + 2 > data.len() {
+            return Err(CELL_JPGDEC_ERROR_ARG);
+        }
+        
+        let length = u16::from_be_bytes([data[*offset], data[*offset + 1]]) as usize;
+        *offset += length;
         Ok(())
     }
 
@@ -111,9 +391,9 @@ impl JpegDecoder {
         false
     }
 
-    /// Decode baseline JPEG
+    /// Decode baseline JPEG to RGBA
     fn decode_baseline(&self, _src_data: &[u8], dst_buffer: &mut [u8]) -> Result<(), i32> {
-        trace!("JpegDecoder::decode_baseline: {}x{}", self.width, self.height);
+        debug!("JpegDecoder::decode_baseline: {}x{}", self.width, self.height);
         
         let pixel_count = (self.width * self.height) as usize;
         let required_size = pixel_count * 4;
@@ -122,22 +402,29 @@ impl JpegDecoder {
             return Err(CELL_JPGDEC_ERROR_ARG);
         }
         
-        // In a real implementation:
-        // 1. Perform Huffman decoding
-        // 2. Dequantize DCT coefficients
-        // 3. Perform inverse DCT on 8x8 blocks
-        // 4. Convert YCbCr to RGB
-        // 5. Upsample chroma if subsampled
+        // Note: Full JPEG decoding requires:
+        // 1. Huffman decoding of entropy-coded data
+        // 2. Dequantization of DCT coefficients
+        // 3. Inverse DCT on 8x8 blocks
+        // 4. YCbCr to RGB conversion
+        // 5. Chroma upsampling
+        //
+        // For HLE, we generate a pattern that indicates the image dimensions are correct
+        // This allows games to proceed even without full decoding
         
-        // Simulate decoding with test pattern
         for i in 0..pixel_count {
-            let x = (i % self.width as usize) as u8;
-            let y = (i / self.width as usize) as u8;
+            let x = (i % self.width as usize) as u32;
+            let y = (i / self.width as usize) as u32;
             
-            dst_buffer[i * 4] = x;         // R
-            dst_buffer[i * 4 + 1] = y;     // G
-            dst_buffer[i * 4 + 2] = 128;   // B
-            dst_buffer[i * 4 + 3] = 255;   // A
+            // Generate a gradient pattern based on position
+            let r = ((x * 255) / self.width.max(1)) as u8;
+            let g = ((y * 255) / self.height.max(1)) as u8;
+            let b = 128u8;
+            
+            dst_buffer[i * 4] = r;
+            dst_buffer[i * 4 + 1] = g;
+            dst_buffer[i * 4 + 2] = b;
+            dst_buffer[i * 4 + 3] = 255;
         }
         
         Ok(())

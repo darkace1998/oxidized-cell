@@ -3111,6 +3111,7 @@ dependencies = [
 name = "oc-hle"
 version = "0.1.0"
 dependencies = [
+ "miniz_oxide",
  "oc-core",
  "oc-input",
  "oc-memory",
