@@ -8,10 +8,18 @@ This document tracks development tasks, improvements, and known issues for the o
 
 ### Core Emulation
 
-- [ ] **PPU JIT - Complete LLVM IR Generation**
+- [x] **PPU JIT - Complete LLVM IR Generation**
   - Location: `cpp/src/ppu_jit.cpp:691`
   - Full LLVM IR generation for all PowerPC instructions
-  - Currently only supports ~20 instruction patterns, many emit nop operations
+  - Implemented comprehensive instruction support including:
+    - All integer arithmetic (add, sub, mul, div, logical, shift, rotate)
+    - All load/store variants (byte, halfword, word, doubleword)
+    - All floating-point operations (arithmetic, FMA, conversions, comparisons)
+    - M-form rotate/mask instructions
+    - DS-form 64-bit load/store
+    - SPR access and CR operations
+    - Single-precision floating-point (opcode 59)
+    - Comparison immediate instructions
 
 - [ ] **SPU JIT - Complete LLVM IR Generation**
   - Location: `cpp/src/spu_jit.cpp:564`
