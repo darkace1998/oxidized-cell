@@ -2214,9 +2214,18 @@ impl PpuInterpreter {
                         // R12 typically contains the descriptor address for import calls
                         let r12 = thread.gpr(12);
                         
-                        // If the target is in a "trampoline" area (typically near descriptors)
-                        // and we have a valid descriptor pointer in R12, try to handle as import
-                        if r12 >= 0x10000 && r12 < 0x1000000 {
+                        // Check if R12 points to the HLE stub region - this means we're
+                        // calling an HLE function via an import trampoline
+                        if r12 >= STUB_REGION_BASE && r12 < STUB_REGION_END {
+                            // R12 contains an HLE stub descriptor - dispatch the call
+                            if lk {
+                                thread.regs.lr = thread.pc() + 4;
+                            }
+                            // Set PC to the HLE stub address for dispatch
+                            thread.set_pc(r12);
+                        } else if r12 >= 0x10000 && r12 < 0x1000000 {
+                            // If the target is in a "trampoline" area (typically near descriptors)
+                            // and we have a valid descriptor pointer in R12, try to handle as import
                             // Check if target contains stub-like code (li r3,0; blr pattern)
                             let target_code = self.memory.read_be32(target as u32).unwrap_or(0);
                             
