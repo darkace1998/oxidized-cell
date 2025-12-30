@@ -6,6 +6,7 @@
 use std::sync::{Arc, RwLock};
 use tracing::{debug, trace};
 use oc_input::keyboard::{Keyboard, KeyboardState, KeyModifiers};
+use crate::memory::{write_be32, write_be16, ToGuestMemory};
 
 /// OC-Input keyboard backend reference
 pub type KeyboardBackend = Option<Arc<RwLock<Vec<Keyboard>>>>;
@@ -244,6 +245,18 @@ impl Default for CellKbInfo {
     }
 }
 
+impl ToGuestMemory for CellKbInfo {
+    fn to_guest_memory(&self, addr: u32) -> Result<(), i32> {
+        write_be32(addr, self.max)?;
+        write_be32(addr + 4, self.now_connect)?;
+        write_be32(addr + 8, self.system_info)?;
+        for i in 0..CELL_KB_MAX_KEYBOARDS {
+            write_be32(addr + 12 + (i as u32 * 4), self.status[i])?;
+        }
+        Ok(())
+    }
+}
+
 /// Keyboard data structure
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -266,6 +279,18 @@ impl Default for CellKbData {
             len: 0,
             keycodes: [0; CELL_KB_MAX_KEYCODES],
         }
+    }
+}
+
+impl ToGuestMemory for CellKbData {
+    fn to_guest_memory(&self, addr: u32) -> Result<(), i32> {
+        write_be32(addr, self.led)?;
+        write_be32(addr + 4, self.mkey)?;
+        write_be32(addr + 8, self.len as u32)?;
+        for i in 0..CELL_KB_MAX_KEYCODES {
+            write_be16(addr + 12 + (i as u32 * 2), self.keycodes[i])?;
+        }
+        Ok(())
     }
 }
 
@@ -736,12 +761,14 @@ pub fn cell_kb_end() -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_kb_get_info(_info_addr: u32) -> i32 {
-    trace!("cellKbGetInfo()");
+pub fn cell_kb_get_info(info_addr: u32) -> i32 {
+    trace!("cellKbGetInfo(info_addr=0x{:08X})", info_addr);
 
     match crate::context::get_hle_context().kb.get_info() {
-        Ok(_info) => {
-            // TODO: Write info to memory at _info_addr
+        Ok(info) => {
+            if let Err(e) = info.to_guest_memory(info_addr) {
+                return e;
+            }
             0 // CELL_OK
         }
         Err(e) => e,
@@ -756,12 +783,14 @@ pub fn cell_kb_get_info(_info_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_kb_read(port: u32, _data_addr: u32) -> i32 {
-    trace!("cellKbRead(port={})", port);
+pub fn cell_kb_read(port: u32, data_addr: u32) -> i32 {
+    trace!("cellKbRead(port={}, data_addr=0x{:08X})", port, data_addr);
 
     match crate::context::get_hle_context().kb.read(port) {
-        Ok(_data) => {
-            // TODO: Write data to memory at _data_addr
+        Ok(data) => {
+            if let Err(e) = data.to_guest_memory(data_addr) {
+                return e;
+            }
             0 // CELL_OK
         }
         Err(e) => e,

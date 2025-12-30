@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use tracing::{debug, trace};
+use crate::memory::write_be32;
 
 /// Game data type
 #[repr(u32)]
@@ -1177,10 +1178,17 @@ pub fn cell_game_get_local_web_content_path(_path_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_game_get_size_kb(_size_addr: u32) -> i32 {
-    trace!("cellGameGetSizeKB()");
+pub fn cell_game_get_size_kb(size_addr: u32) -> i32 {
+    trace!("cellGameGetSizeKB(size_addr=0x{:08X})", size_addr);
     
-    // TODO: Write content size to memory
+    // Get content size from game manager
+    let ctx = crate::context::get_hle_context();
+    let content_size = ctx.game.get_content_size();
+    
+    // Write content size in KB to memory (truncate to u32)
+    if let Err(e) = write_be32(size_addr, content_size.size_kb as u32) {
+        return e;
+    }
     
     0 // CELL_OK
 }
