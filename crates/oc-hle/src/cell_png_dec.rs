@@ -249,6 +249,8 @@ impl PngDecoder {
     }
 
     /// Get bytes per pixel for the color type
+    /// Note: For bit depths less than 8, this returns the number of bytes
+    /// needed for filter operations, which operates on byte boundaries.
     fn bytes_per_pixel(&self) -> usize {
         let samples = match self.color_type {
             PngColorType::Grayscale => 1,
@@ -258,8 +260,12 @@ impl PngDecoder {
             PngColorType::Rgba => 4,
         };
         
-        // For bit depths less than 8, we still work with bytes
+        // For bit depths less than 8, pixels are packed within bytes.
+        // For filter operations, we use 1 byte as minimum since filters
+        // operate at byte boundaries. The actual unpacking happens in
+        // the color conversion step.
         if self.bit_depth < 8 {
+            // For sub-byte bit depths, filter operations use 1 byte minimum
             1
         } else {
             samples * (self.bit_depth as usize / 8)

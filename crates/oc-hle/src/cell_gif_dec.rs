@@ -443,6 +443,10 @@ impl GifDecoder {
     }
 
     /// Decompress LZW-compressed data
+    /// 
+    /// Note: This implementation uses Vec<u8> for dictionary entries for clarity.
+    /// A more optimized version could use (prefix_index, suffix_byte) tuples
+    /// to avoid cloning, but the current approach prioritizes readability.
     fn decompress_lzw(&self, compressed: &[u8], min_code_size: u8) -> Vec<u8> {
         if compressed.is_empty() || min_code_size > 11 {
             // Return placeholder data if compressed data is invalid

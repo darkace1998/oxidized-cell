@@ -17,6 +17,11 @@ pub const CELL_JPGDEC_ERROR_BUSY: i32 = 0x80611304u32 as i32;
 pub const CELL_JPGDEC_ERROR_EMPTY: i32 = 0x80611305u32 as i32;
 pub const CELL_JPGDEC_ERROR_OPEN_FILE: i32 = 0x80611306u32 as i32;
 
+// Fallback dimensions when header parsing fails
+const DEFAULT_FALLBACK_WIDTH: u32 = 640;
+const DEFAULT_FALLBACK_HEIGHT: u32 = 480;
+const DEFAULT_FALLBACK_COMPONENTS: u32 = 3;
+
 /// JPEG scan type
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,9 +207,9 @@ impl JpegDecoder {
         if self.width == 0 || self.height == 0 {
             // If parsing failed, use default values
             debug!("JpegDecoder: using fallback dimensions");
-            self.width = 640;
-            self.height = 480;
-            self.num_components = 3;
+            self.width = DEFAULT_FALLBACK_WIDTH;
+            self.height = DEFAULT_FALLBACK_HEIGHT;
+            self.num_components = DEFAULT_FALLBACK_COMPONENTS;
         }
         
         debug!("JpegDecoder::parse_header: {}x{}, components={}, scan_type={:?}", 
