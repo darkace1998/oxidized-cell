@@ -262,7 +262,7 @@ pub struct AudioManager {
     /// Audio ports
     ports: [AudioPort; CELL_AUDIO_PORT_MAX],
     /// Initialization flag
-    pub initialized: bool,
+    initialized: bool,
     /// OC-Audio mixer backend
     audio_backend: AudioBackend,
     /// Master volume (0.0 to 1.0)
@@ -603,6 +603,11 @@ impl AudioManager {
         })
     }
 
+    /// Check if audio system is initialized
+    pub fn is_initialized(&self) -> bool {
+        self.initialized
+    }
+
     /// Mix audio from multiple ports
     /// 
     /// Mixes audio from all active ports into a single output buffer.
@@ -690,15 +695,24 @@ pub fn cell_audio_port_open(param_addr: u32, port_num_addr: u32) -> i32 {
     // nChannel (8 bytes) + nBlock (8 bytes) + attr (8 bytes) + level (4 bytes float)
     let n_channel = match read_be32(param_addr) {
         Ok(v) => v,
-        Err(_) => 2, // Default to stereo
+        Err(e) => {
+            trace!("cellAudioPortOpen: failed to read nChannel, using default stereo (error: 0x{:08X})", e as u32);
+            2 // Default to stereo
+        }
     };
     let n_block = match read_be32(param_addr + 8) {
         Ok(v) => v,
-        Err(_) => CELL_AUDIO_BLOCK_8, // Default to 8 blocks
+        Err(e) => {
+            trace!("cellAudioPortOpen: failed to read nBlock, using default (error: 0x{:08X})", e as u32);
+            CELL_AUDIO_BLOCK_8 // Default to 8 blocks
+        }
     };
     let attr = match read_be32(param_addr + 16) {
         Ok(v) => v,
-        Err(_) => 0, // No special attributes
+        Err(e) => {
+            trace!("cellAudioPortOpen: failed to read attr, using default (error: 0x{:08X})", e as u32);
+            0 // No special attributes
+        }
     };
     
     let level = 1.0f32; // Default to full volume
@@ -767,7 +781,7 @@ pub fn cell_audio_get_port_config(port_num: u32, config_addr: u32) -> i32 {
     trace!("cellAudioGetPortConfig(port_num={}, config_addr=0x{:08X})", port_num, config_addr);
 
     let ctx = crate::context::get_hle_context();
-    if !ctx.audio.initialized {
+    if !ctx.audio.is_initialized() {
         return 0x80310702u32 as i32; // CELL_AUDIO_ERROR_AUDIOSYSTEM
     }
     

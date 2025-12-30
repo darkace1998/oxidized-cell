@@ -1185,7 +1185,9 @@ pub fn cell_game_get_size_kb(size_addr: u32) -> i32 {
     let ctx = crate::context::get_hle_context();
     let content_size = ctx.game.get_content_size();
     
-    // Write content size in KB to memory (truncate to u32)
+    // Write content size in KB to memory
+    // Note: PS3 API uses u32 for size_kb, which supports up to 4TB in KB (4GB in bytes)
+    // This is sufficient for all practical game content sizes
     if let Err(e) = write_be32(size_addr, content_size.size_kb as u32) {
         return e;
     }

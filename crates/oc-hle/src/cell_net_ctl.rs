@@ -647,6 +647,8 @@ pub fn cell_net_ctl_get_info(code: u32, info_addr: u32) -> i32 {
             if let Err(e) = write_be32(info_addr, info.wlan_security) { return e; }
         }
         9 => { // CELL_NET_CTL_INFO_RXQ_LINK_QUALITY (rssi_dbm)
+            // Note: Casting i8 to u8 preserves the bit pattern (two's complement)
+            // which is correct for PS3 memory representation of signed RSSI values
             if let Err(e) = crate::memory::write_u8(info_addr, info.rssi_dbm as u8) { return e; }
         }
         10 => { // CELL_NET_CTL_INFO_IP_ADDRESS

@@ -92,6 +92,8 @@ impl ToGuestMemory for CellMouseData {
     fn to_guest_memory(&self, addr: u32) -> Result<(), i32> {
         write_be64(addr, self.update)?;
         write_be32(addr + 8, self.buttons)?;
+        // Note: Casting i32 to u32 preserves the bit pattern (two's complement)
+        // which is correct for PS3 big-endian memory representation
         write_be32(addr + 12, self.x_pos as u32)?;
         write_be32(addr + 16, self.y_pos as u32)?;
         write_be32(addr + 20, self.wheel as u32)?;
@@ -104,6 +106,8 @@ impl ToGuestMemory for CellMouseData {
 impl ToGuestMemory for CellMouseRawData {
     fn to_guest_memory(&self, addr: u32) -> Result<(), i32> {
         write_u8(addr, self.buttons)?;
+        // Note: Casting i8 to u8 preserves the bit pattern (two's complement)
+        // which is correct for PS3 memory representation of signed deltas
         write_u8(addr + 1, self.x_axis as u8)?;
         write_u8(addr + 2, self.y_axis as u8)?;
         write_u8(addr + 3, self.wheel as u8)?;
