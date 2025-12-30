@@ -701,6 +701,22 @@ static void apply_optimization_passes(llvm::Module* module);
  * 
  * Without LLVM, a placeholder implementation is used.
  */
+
+// Constant for placeholder code generation
+static constexpr uint8_t X86_RET_INSTRUCTION = 0xC3;
+
+/**
+ * Allocate placeholder code buffer for a basic block
+ * Used when full JIT compilation is not available or fails
+ */
+static void allocate_placeholder_code(BasicBlock* block) {
+    block->code_size = block->instructions.size() * 16; // Estimate
+    block->compiled_code = malloc(block->code_size);
+    if (block->compiled_code) {
+        memset(block->compiled_code, X86_RET_INSTRUCTION, block->code_size);
+    }
+}
+
 static void generate_llvm_ir(BasicBlock* block, oc_ppu_jit_t* jit = nullptr) {
 #ifdef HAVE_LLVM
     if (jit && jit->module) {
@@ -721,50 +737,23 @@ static void generate_llvm_ir(BasicBlock* block, oc_ppu_jit_t* jit = nullptr) {
                 
                 // For now, use placeholder code buffer since full LLJIT
                 // integration requires additional error handling
-                constexpr uint8_t X86_RET_INSTRUCTION = 0xC3;
-                block->code_size = block->instructions.size() * 16;
-                block->compiled_code = malloc(block->code_size);
-                if (block->compiled_code) {
-                    memset(block->compiled_code, X86_RET_INSTRUCTION, block->code_size);
-                }
+                allocate_placeholder_code(block);
             } else {
                 // No JIT available, use placeholder
-                constexpr uint8_t X86_RET_INSTRUCTION = 0xC3;
-                block->code_size = block->instructions.size() * 16;
-                block->compiled_code = malloc(block->code_size);
-                if (block->compiled_code) {
-                    memset(block->compiled_code, X86_RET_INSTRUCTION, block->code_size);
-                }
+                allocate_placeholder_code(block);
             }
         } else {
             // Function creation failed, use placeholder
-            constexpr uint8_t X86_RET_INSTRUCTION = 0xC3;
-            block->code_size = block->instructions.size() * 16;
-            block->compiled_code = malloc(block->code_size);
-            if (block->compiled_code) {
-                memset(block->compiled_code, X86_RET_INSTRUCTION, block->code_size);
-            }
+            allocate_placeholder_code(block);
         }
     } else {
         // No JIT context, use placeholder
-        constexpr uint8_t X86_RET_INSTRUCTION = 0xC3;
-        block->code_size = block->instructions.size() * 16;
-        block->compiled_code = malloc(block->code_size);
-        if (block->compiled_code) {
-            memset(block->compiled_code, X86_RET_INSTRUCTION, block->code_size);
-        }
+        allocate_placeholder_code(block);
     }
 #else
     // Without LLVM, use simple placeholder
     (void)jit; // Unused parameter
-    constexpr uint8_t X86_RET_INSTRUCTION = 0xC3;
-    block->code_size = block->instructions.size() * 16; // Estimate
-    block->compiled_code = malloc(block->code_size);
-    
-    if (block->compiled_code) {
-        // Fill with return instruction as placeholder
-        memset(block->compiled_code, X86_RET_INSTRUCTION, block->code_size);
-    }
+    allocate_placeholder_code(block);
 #endif
 }
 
