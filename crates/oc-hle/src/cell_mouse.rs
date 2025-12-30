@@ -6,6 +6,7 @@
 use std::sync::{Arc, RwLock};
 use tracing::{debug, trace};
 use oc_input::mouse::{Mouse, MouseState, MouseButtons};
+use crate::memory::{write_be32, write_be64, write_u8, write_be16, ToGuestMemory};
 
 /// OC-Input mouse backend reference
 pub type MouseBackend = Option<Arc<RwLock<Vec<Mouse>>>>;
@@ -62,6 +63,57 @@ impl Default for CellMouseInfo {
             product_id: [0; CELL_MOUSE_MAX_MICE],
             status: [0; CELL_MOUSE_MAX_MICE],
         }
+    }
+}
+
+impl ToGuestMemory for CellMouseInfo {
+    fn to_guest_memory(&self, addr: u32) -> Result<(), i32> {
+        let mut offset = 0u32;
+        write_be32(addr + offset, self.max)?; offset += 4;
+        write_be32(addr + offset, self.now_connect)?; offset += 4;
+        write_be32(addr + offset, self.system_info)?; offset += 4;
+        for i in 0..CELL_MOUSE_MAX_MICE {
+            write_be32(addr + offset, self.tablet_mode[i])?; offset += 4;
+        }
+        for i in 0..CELL_MOUSE_MAX_MICE {
+            write_be16(addr + offset, self.vendor_id[i])?; offset += 2;
+        }
+        for i in 0..CELL_MOUSE_MAX_MICE {
+            write_be16(addr + offset, self.product_id[i])?; offset += 2;
+        }
+        for i in 0..CELL_MOUSE_MAX_MICE {
+            write_u8(addr + offset, self.status[i])?; offset += 1;
+        }
+        Ok(())
+    }
+}
+
+impl ToGuestMemory for CellMouseData {
+    fn to_guest_memory(&self, addr: u32) -> Result<(), i32> {
+        write_be64(addr, self.update)?;
+        write_be32(addr + 8, self.buttons)?;
+        // Note: Casting i32 to u32 preserves the bit pattern (two's complement)
+        // which is correct for PS3 big-endian memory representation
+        write_be32(addr + 12, self.x_pos as u32)?;
+        write_be32(addr + 16, self.y_pos as u32)?;
+        write_be32(addr + 20, self.wheel as u32)?;
+        write_be32(addr + 24, self.tilt_x as u32)?;
+        write_be32(addr + 28, self.tilt_y as u32)?;
+        Ok(())
+    }
+}
+
+impl ToGuestMemory for CellMouseRawData {
+    fn to_guest_memory(&self, addr: u32) -> Result<(), i32> {
+        write_u8(addr, self.buttons)?;
+        // Note: Casting i8 to u8 preserves the bit pattern (two's complement)
+        // which is correct for PS3 memory representation of signed deltas
+        write_u8(addr + 1, self.x_axis as u8)?;
+        write_u8(addr + 2, self.y_axis as u8)?;
+        write_u8(addr + 3, self.wheel as u8)?;
+        write_u8(addr + 4, self.tilt_x as u8)?;
+        write_u8(addr + 5, self.tilt_y as u8)?;
+        Ok(())
     }
 }
 
@@ -712,12 +764,14 @@ pub fn cell_mouse_end() -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_mouse_get_info(_info_addr: u32) -> i32 {
-    trace!("cellMouseGetInfo()");
+pub fn cell_mouse_get_info(info_addr: u32) -> i32 {
+    trace!("cellMouseGetInfo(info_addr=0x{:08X})", info_addr);
 
     match crate::context::get_hle_context().mouse.get_info() {
-        Ok(_info) => {
-            // TODO: Write info to memory at _info_addr
+        Ok(info) => {
+            if let Err(e) = info.to_guest_memory(info_addr) {
+                return e;
+            }
             0 // CELL_OK
         }
         Err(e) => e,
@@ -732,12 +786,14 @@ pub fn cell_mouse_get_info(_info_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_mouse_get_data(port: u32, _data_addr: u32) -> i32 {
-    trace!("cellMouseGetData(port={})", port);
+pub fn cell_mouse_get_data(port: u32, data_addr: u32) -> i32 {
+    trace!("cellMouseGetData(port={}, data_addr=0x{:08X})", port, data_addr);
 
     match crate::context::get_hle_context().mouse.get_data(port) {
-        Ok(_data) => {
-            // TODO: Write data to memory at _data_addr
+        Ok(data) => {
+            if let Err(e) = data.to_guest_memory(data_addr) {
+                return e;
+            }
             0 // CELL_OK
         }
         Err(e) => e,
@@ -752,12 +808,22 @@ pub fn cell_mouse_get_data(port: u32, _data_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_mouse_get_data_list(port: u32, _data_addr: u32) -> i32 {
-    trace!("cellMouseGetDataList(port={})", port);
+pub fn cell_mouse_get_data_list(port: u32, data_addr: u32) -> i32 {
+    trace!("cellMouseGetDataList(port={}, data_addr=0x{:08X})", port, data_addr);
 
     match crate::context::get_hle_context().mouse.get_data_list(port) {
-        Ok(_list) => {
-            // TODO: Write data list to memory at _data_addr
+        Ok(list) => {
+            // Write list_num first
+            if let Err(e) = write_be32(data_addr, list.list_num) {
+                return e;
+            }
+            // Write each data entry
+            for i in 0..list.list_num.min(CELL_MOUSE_MAX_DATA as u32) as usize {
+                let entry_addr = data_addr + 4 + (i as u32 * 32); // Each CellMouseData is 32 bytes
+                if let Err(e) = list.list[i].to_guest_memory(entry_addr) {
+                    return e;
+                }
+            }
             0 // CELL_OK
         }
         Err(e) => e,
@@ -772,12 +838,14 @@ pub fn cell_mouse_get_data_list(port: u32, _data_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_mouse_get_raw_data(port: u32, _data_addr: u32) -> i32 {
-    trace!("cellMouseGetRawData(port={})", port);
+pub fn cell_mouse_get_raw_data(port: u32, data_addr: u32) -> i32 {
+    trace!("cellMouseGetRawData(port={}, data_addr=0x{:08X})", port, data_addr);
 
     match crate::context::get_hle_context().mouse.get_raw_data(port) {
-        Ok(_data) => {
-            // TODO: Write raw data to memory at _data_addr
+        Ok(data) => {
+            if let Err(e) = data.to_guest_memory(data_addr) {
+                return e;
+            }
             0 // CELL_OK
         }
         Err(e) => e,

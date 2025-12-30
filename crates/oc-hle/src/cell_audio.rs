@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tracing::{debug, trace};
+use crate::memory::{read_be32, write_be32, write_be64};
 
 // ============================================================================
 // Local Audio Types (compatible with oc-audio::mixer when integrated)
@@ -268,6 +269,14 @@ pub struct AudioManager {
     master_volume: f32,
     /// Audio block index (for timing)
     block_index: u64,
+}
+
+/// Public port info for querying
+#[derive(Debug, Clone, Copy)]
+pub struct PortInfo {
+    pub started: bool,
+    pub channels: u32,
+    pub block_count: u32,
 }
 
 impl AudioManager {
@@ -570,6 +579,35 @@ impl AudioManager {
         self.master_volume
     }
 
+    /// Get port information
+    /// 
+    /// # Arguments
+    /// * `port_num` - Port number
+    /// 
+    /// # Returns
+    /// * Some(PortInfo) if port is open, None otherwise
+    pub fn get_port(&self, port_num: u32) -> Option<PortInfo> {
+        if port_num >= CELL_AUDIO_PORT_MAX as u32 {
+            return None;
+        }
+
+        let port = &self.ports[port_num as usize];
+        if port.state == AudioPortState::Closed {
+            return None;
+        }
+
+        Some(PortInfo {
+            started: port.state == AudioPortState::Started,
+            channels: port.num_channels,
+            block_count: port.num_blocks,
+        })
+    }
+
+    /// Check if audio system is initialized
+    pub fn is_initialized(&self) -> bool {
+        self.initialized
+    }
+
     /// Mix audio from multiple ports
     /// 
     /// Mixes audio from all active ports into a single output buffer.
@@ -650,20 +688,42 @@ pub fn cell_audio_quit() -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_audio_port_open(_param_addr: u32, _port_num_addr: u32) -> i32 {
-    debug!("cellAudioPortOpen()");
+pub fn cell_audio_port_open(param_addr: u32, port_num_addr: u32) -> i32 {
+    debug!("cellAudioPortOpen(param_addr=0x{:08X}, port_num_addr=0x{:08X})", param_addr, port_num_addr);
 
-    // Default audio port parameters when memory read is not yet implemented
-    const DEFAULT_CHANNELS: u32 = 2;      // Stereo
-    const DEFAULT_BLOCK_COUNT: u32 = CELL_AUDIO_BLOCK_8;
-    const DEFAULT_ATTR: u32 = 0;          // No special attributes
-    const DEFAULT_LEVEL: f32 = 1.0;       // Full volume
+    // Read parameters from memory (CellAudioPortParam structure)
+    // nChannel (8 bytes) + nBlock (8 bytes) + attr (8 bytes) + level (4 bytes float)
+    let n_channel = match read_be32(param_addr) {
+        Ok(v) => v,
+        Err(e) => {
+            trace!("cellAudioPortOpen: failed to read nChannel, using default stereo (error: 0x{:08X})", e as u32);
+            2 // Default to stereo
+        }
+    };
+    let n_block = match read_be32(param_addr + 8) {
+        Ok(v) => v,
+        Err(e) => {
+            trace!("cellAudioPortOpen: failed to read nBlock, using default (error: 0x{:08X})", e as u32);
+            CELL_AUDIO_BLOCK_8 // Default to 8 blocks
+        }
+    };
+    let attr = match read_be32(param_addr + 16) {
+        Ok(v) => v,
+        Err(e) => {
+            trace!("cellAudioPortOpen: failed to read attr, using default (error: 0x{:08X})", e as u32);
+            0 // No special attributes
+        }
+    };
     
-    // TODO: Read actual parameters from memory at _param_addr
+    let level = 1.0f32; // Default to full volume
+    
     let mut ctx = crate::context::get_hle_context_mut();
-    match ctx.audio.port_open(DEFAULT_CHANNELS, DEFAULT_BLOCK_COUNT, DEFAULT_ATTR, DEFAULT_LEVEL) {
-        Ok(_port_num) => {
-            // TODO: Write port number to memory at _port_num_addr
+    match ctx.audio.port_open(n_channel, n_block, attr, level) {
+        Ok(port_num) => {
+            // Write port number to memory
+            if let Err(e) = write_be32(port_num_addr, port_num) {
+                return e;
+            }
             0 // CELL_OK
         }
         Err(e) => e,
@@ -717,15 +777,32 @@ pub fn cell_audio_port_stop(port_num: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_audio_get_port_config(port_num: u32, _config_addr: u32) -> i32 {
-    trace!("cellAudioGetPortConfig(port_num={})", port_num);
+pub fn cell_audio_get_port_config(port_num: u32, config_addr: u32) -> i32 {
+    trace!("cellAudioGetPortConfig(port_num={}, config_addr=0x{:08X})", port_num, config_addr);
 
-    // TODO: Write configuration to memory at _config_addr
-    // For now just return success if the audio is initialized
-    if crate::context::get_hle_context().audio.initialized {
+    let ctx = crate::context::get_hle_context();
+    if !ctx.audio.is_initialized() {
+        return 0x80310702u32 as i32; // CELL_AUDIO_ERROR_AUDIOSYSTEM
+    }
+    
+    // Get port configuration and write to memory
+    // CellAudioPortConfig: readIndexAddr(8), status(4), nChannel(8), nBlock(8), portSize(4), portAddr(8)
+    if let Some(port) = ctx.audio.get_port(port_num) {
+        // Write status
+        if let Err(e) = write_be32(config_addr + 8, if port.started { 1 } else { 0 }) {
+            return e;
+        }
+        // Write nChannel
+        if let Err(e) = write_be64(config_addr + 12, port.channels as u64) {
+            return e;
+        }
+        // Write nBlock
+        if let Err(e) = write_be64(config_addr + 20, port.block_count as u64) {
+            return e;
+        }
         0 // CELL_OK
     } else {
-        0x80310702u32 as i32 // CELL_AUDIO_ERROR_AUDIOSYSTEM
+        0x80310701u32 as i32 // CELL_AUDIO_ERROR_PARAM
     }
 }
 
@@ -737,11 +814,16 @@ pub fn cell_audio_get_port_config(port_num: u32, _config_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_audio_create_notify_event_queue(_id_addr: u32, key: u64) -> i32 {
-    debug!("cellAudioCreateNotifyEventQueue(key=0x{:016X})", key);
+pub fn cell_audio_create_notify_event_queue(id_addr: u32, key: u64) -> i32 {
+    debug!("cellAudioCreateNotifyEventQueue(id_addr=0x{:08X}, key=0x{:016X})", id_addr, key);
 
-    // TODO: Create event queue for audio notifications through kernel
-    // TODO: Write event queue ID to memory at _id_addr
+    // For now, create a fake event queue ID based on the key
+    let queue_id = (key & 0xFFFFFFFF) as u32;
+    
+    // Write event queue ID to memory
+    if let Err(e) = write_be32(id_addr, queue_id) {
+        return e;
+    }
 
     0 // CELL_OK
 }
