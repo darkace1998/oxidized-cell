@@ -760,10 +760,12 @@ impl PpuInterpreter {
             }
             thread.set_pc(return_addr as u64);
         } else {
-            // Unknown HLE stub - fall back to default behavior (return 0)
-            tracing::warn!(
-                "Unknown HLE stub at 0x{:08x}, LR=0x{:x}, returning 0",
-                stub_addr, lr
+            // Unknown HLE stub - this is a dynamically created stub for an import
+            // that wasn't matched to a known HLE function. Return 0 (CELL_OK) as
+            // a safe default. This is expected behavior for unimplemented imports.
+            tracing::debug!(
+                "Unimplemented HLE import at stub 0x{:08x} (LR=0x{:x}, R3=0x{:x}), returning CELL_OK",
+                stub_addr, lr, args[0]
             );
             thread.set_gpr(3, 0);
             
@@ -2199,6 +2201,10 @@ impl PpuInterpreter {
                     const STUB_REGION_BASE: u64 = 0x2F00_0000;
                     const STUB_REGION_END: u64 = 0x3000_0000;
                     
+                    // R12 typically contains the descriptor address for import calls
+                    // Check R12 first as it's the most reliable indicator for HLE imports
+                    let r12 = thread.gpr(12);
+                    
                     if target >= STUB_REGION_BASE && target < STUB_REGION_END {
                         // This is an HLE stub call - dispatch via the stub handler
                         if lk {
@@ -2206,24 +2212,22 @@ impl PpuInterpreter {
                         }
                         // Set PC to stub address, step_once will handle it on next iteration
                         thread.set_pc(target);
+                    } else if r12 >= STUB_REGION_BASE && r12 < STUB_REGION_END {
+                        // R12 contains an HLE stub descriptor - this is an import call
+                        // via a PLT stub. Redirect to the HLE handler.
+                        tracing::debug!(
+                            "Redirecting bctr to HLE stub via R12: CTR=0x{:x}, R12=0x{:x}",
+                            target, r12
+                        );
+                        // LR is already set by the caller (bl instruction before PLT stub)
+                        // Set PC to the HLE stub address for dispatch
+                        thread.set_pc(r12);
                     } else if target == 0 {
                         // Unresolved import (descriptor not patched) - handle as stub
                         self.handle_unresolved_import(thread)?;
                     } else {
                         // Check if this looks like a PS3 import trampoline
-                        // R12 typically contains the descriptor address for import calls
-                        let r12 = thread.gpr(12);
-                        
-                        // Check if R12 points to the HLE stub region - this means we're
-                        // calling an HLE function via an import trampoline
-                        if r12 >= STUB_REGION_BASE && r12 < STUB_REGION_END {
-                            // R12 contains an HLE stub descriptor - dispatch the call
-                            if lk {
-                                thread.regs.lr = thread.pc() + 4;
-                            }
-                            // Set PC to the HLE stub address for dispatch
-                            thread.set_pc(r12);
-                        } else if r12 >= 0x10000 && r12 < 0x1000000 {
+                        if r12 >= 0x10000 && r12 < 0x1000000 {
                             // If the target is in a "trampoline" area (typically near descriptors)
                             // and we have a valid descriptor pointer in R12, try to handle as import
                             // Check if target contains stub-like code (li r3,0; blr pattern)

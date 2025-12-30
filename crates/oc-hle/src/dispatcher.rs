@@ -89,6 +89,25 @@ impl HleDispatcher {
         self.stub_map.insert(stub_addr, info);
     }
 
+    /// Register a generic/unknown stub that just returns CELL_OK
+    /// 
+    /// This is used for dynamically discovered imports that don't have
+    /// a specific HLE implementation. The stub will just return 0.
+    pub fn register_generic_stub(&mut self, stub_addr: u32, desc_addr: u32) {
+        // Use a generic handler that returns OK
+        fn generic_stub_handler(_ctx: &HleCallContext) -> i64 {
+            0 // CELL_OK
+        }
+        
+        // We use static strings since the struct requires 'static lifetime
+        debug!("Registering generic HLE stub 0x{:08x} for descriptor 0x{:08x}", stub_addr, desc_addr);
+        self.stub_map.insert(stub_addr, HleFunctionInfo {
+            name: "unknown_import",
+            module: "unknown",
+            handler: generic_stub_handler,
+        });
+    }
+
     /// Register a new HLE function and return its stub address
     pub fn register_function(&mut self, module: &'static str, name: &'static str, handler: HleFn) -> u32 {
         const STUB_SIZE: u32 = 16;

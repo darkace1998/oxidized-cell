@@ -820,6 +820,13 @@ impl GameLoader {
                         }
                     };
                     
+                    // Register this stub with the HLE dispatcher as a generic stub
+                    // so it won't produce "Unknown HLE stub" warnings
+                    {
+                        let mut dispatcher = get_dispatcher_mut();
+                        dispatcher.register_generic_stub(stub_addr, desc_addr);
+                    }
+                    
                     // Patch the descriptor to point to our stub
                     if let Err(e) = self.memory.write_be32(desc_addr, stub_addr) {
                         warn!("Failed to patch descriptor at 0x{:08x}: {}", desc_addr, e);
@@ -929,6 +936,12 @@ impl GameLoader {
                         Err(_) => continue,
                     };
                     
+                    // Register with HLE dispatcher
+                    {
+                        let mut dispatcher = get_dispatcher_mut();
+                        dispatcher.register_generic_stub(stub_addr, entry_addr);
+                    }
+                    
                     if let Err(e) = self.memory.write_be64(entry_addr, stub_addr as u64) {
                         warn!("Failed to patch GOT entry at 0x{:08x}: {}", entry_addr, e);
                         continue;
@@ -965,6 +978,12 @@ impl GameLoader {
                         Ok(addr) => addr,
                         Err(_) => continue,
                     };
+                    
+                    // Register with HLE dispatcher
+                    {
+                        let mut dispatcher = get_dispatcher_mut();
+                        dispatcher.register_generic_stub(stub_addr, r_offset);
+                    }
                     
                     if let Err(e) = self.memory.write_be64(r_offset, stub_addr as u64) {
                         warn!("Failed to patch relocation target at 0x{:08x}: {}", r_offset, e);
