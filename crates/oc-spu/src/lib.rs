@@ -16,4 +16,8 @@ pub mod thread;
 pub use decoder::SpuDecoder;
 pub use interpreter::SpuInterpreter;
 pub use mfc::Mfc;
-pub use thread::SpuThread;
+pub use thread::{
+    SpuThread, SpuThreadState, SpuThreadGroup, SpuPriority, SpuAffinity,
+    SpuExceptionType, SpuExceptionState, SpuEventType, SpuEventQueue,
+    SPU_LS_SIZE, MAX_SPU_THREADS_PER_GROUP,
+};

@@ -4,7 +4,8 @@
 //! SPURS is a task scheduler for managing SPU workloads.
 
 use std::collections::HashMap;
-use tracing::{debug, trace};
+use tracing::{debug, trace, info};
+use oc_core::{SpuBridgeSender, SpuWorkload, SpuGroupRequest};
 
 /// Maximum number of SPUs
 pub const CELL_SPURS_MAX_SPU: usize = 8;
@@ -330,6 +331,12 @@ pub struct SpursManager {
     barriers: HashMap<u32, Barrier>,
     /// Next barrier ID
     next_barrier_id: u32,
+    /// SPU bridge sender for forwarding workloads to SPU interpreter
+    spu_bridge: Option<SpuBridgeSender>,
+    /// Next workload ID for bridge
+    next_workload_id: u32,
+    /// SPU thread group ID
+    spu_group_id: Option<u32>,
 }
 
 impl SpursManager {
@@ -354,7 +361,20 @@ impl SpursManager {
             next_event_flag_id: 1,
             barriers: HashMap::new(),
             next_barrier_id: 1,
+            spu_bridge: None,
+            next_workload_id: 1,
+            spu_group_id: None,
         }
+    }
+
+    /// Set the SPU bridge sender for forwarding workloads to SPU interpreter
+    pub fn set_spu_bridge(&mut self, bridge: SpuBridgeSender) {
+        self.spu_bridge = Some(bridge);
+    }
+
+    /// Check if SPU bridge is connected
+    pub fn has_spu_bridge(&self) -> bool {
+        self.spu_bridge.is_some()
     }
 
     /// Initialize SPURS instance
@@ -389,8 +409,32 @@ impl SpursManager {
             self.spu_thread_ids.push(0x1000 + i);
         }
 
-        // TODO: Create actual SPU thread group
-        // TODO: Set up task queue
+        // Create actual SPU thread group through the bridge
+        if let Some(ref bridge) = self.spu_bridge {
+            let group_id = 1u32; // SPURS uses a single main group
+            let group_request = SpuGroupRequest {
+                group_id,
+                num_threads: num_spus,
+                priority: spu_priority as u8,
+                name: "SPURS".to_string(),
+            };
+            
+            if !bridge.create_group(group_request) {
+                debug!("Failed to create SPU thread group");
+                return 0x80410805u32 as i32; // CELL_SPURS_ERROR_INTERNAL
+            }
+            
+            // Start the group
+            if !bridge.start_group(group_id) {
+                debug!("Failed to start SPU thread group");
+                return 0x80410805u32 as i32; // CELL_SPURS_ERROR_INTERNAL
+            }
+            
+            self.spu_group_id = Some(group_id);
+            info!("SPURS: Created and started SPU thread group {} with {} SPUs", group_id, num_spus);
+        } else {
+            debug!("SPURS: No SPU bridge connected, SPU thread group creation skipped");
+        }
 
         0 // CELL_OK
     }
@@ -403,6 +447,23 @@ impl SpursManager {
 
         debug!("SpursManager::finalize");
 
+        // Destroy SPU thread group through the bridge
+        if let Some(ref bridge) = self.spu_bridge {
+            if let Some(group_id) = self.spu_group_id {
+                // Stop the group first
+                if !bridge.stop_group(group_id) {
+                    debug!("Failed to stop SPU thread group");
+                }
+                
+                // Destroy the group
+                if !bridge.destroy_group(group_id) {
+                    debug!("Failed to destroy SPU thread group");
+                }
+                
+                info!("SPURS: Destroyed SPU thread group {}", group_id);
+            }
+        }
+
         self.initialized = false;
         self.workloads.clear();
         self.event_queues.clear();
@@ -412,9 +473,7 @@ impl SpursManager {
         self.tasksets.clear();
         self.event_flags.clear();
         self.barriers.clear();
-
-        // TODO: Destroy SPU thread group
-        // TODO: Clean up resources
+        self.spu_group_id = None;
 
         0 // CELL_OK
     }
@@ -566,6 +625,31 @@ impl SpursManager {
 
         trace!("SpursManager::push_task: queue={}, task={}", queue_id, task_id);
 
+        // Submit task to SPU through the bridge for execution
+        if let Some(ref bridge) = self.spu_bridge {
+            let workload_id = self.next_workload_id;
+            self.next_workload_id += 1;
+            
+            // Task workloads can run on any available SPU
+            let affinity = (1u8 << self.num_spus) - 1; // All SPUs in the group
+            
+            let spu_workload = SpuWorkload {
+                id: workload_id,
+                entry_point: entry,
+                program_size: 0, // Will be loaded from SPU image
+                argument,
+                priority,
+                affinity,
+            };
+            
+            if !bridge.submit_workload(spu_workload) {
+                debug!("Failed to submit task {} to SPU", task_id);
+                // Task is still in queue, just not submitted to SPU yet
+            } else {
+                trace!("SPURS: Submitted task {} (workload_id={}) to SPU queue", task_id, workload_id);
+            }
+        }
+
         Ok(task_id)
     }
 
@@ -607,7 +691,30 @@ impl SpursManager {
             workload.state = WorkloadState::Running;
         }
 
-        // TODO: Actually schedule workload on SPU
+        // Submit workload to SPU through the bridge
+        if let Some(ref bridge) = self.spu_bridge {
+            let bridge_workload_id = self.next_workload_id;
+            self.next_workload_id += 1;
+            
+            // Create SPU affinity bitmask (target specific SPU)
+            let affinity = 1u8 << spu_id;
+            
+            let spu_workload = SpuWorkload {
+                id: bridge_workload_id,
+                entry_point: 0, // Workload entry - would come from workload info
+                program_size: 0, // Program size - would be determined from SPU binary
+                argument: wid as u64, // Pass workload ID as argument
+                priority: self.spu_priority as u8,
+                affinity,
+            };
+            
+            if !bridge.submit_workload(spu_workload) {
+                debug!("Failed to submit workload {} to SPU", wid);
+                return 0x80410805u32 as i32; // CELL_SPURS_ERROR_INTERNAL
+            }
+            
+            trace!("SPURS: Submitted workload {} to SPU {} (bridge_id={})", wid, spu_id, bridge_workload_id);
+        }
 
         0 // CELL_OK
     }

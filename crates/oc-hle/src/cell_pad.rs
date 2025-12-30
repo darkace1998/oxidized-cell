@@ -3,11 +3,13 @@
 //! This module provides HLE implementations for PS3 controller input.
 //! It bridges to the oc-input subsystem.
 
+use std::sync::{Arc, RwLock};
 use tracing::{debug, trace};
+use oc_input::{DualShock3Manager, dualshock3::PadData as OcInputPadData, pad::PadButtons};
 
-/// OC-Input backend reference placeholder
-/// In a real implementation, this would hold a reference to oc-input Pad system
-type InputBackend = Option<()>;
+/// OC-Input backend reference
+/// Holds a shared reference to the oc-input DualShock3Manager for controller polling
+pub type InputBackend = Option<Arc<RwLock<DualShock3Manager>>>;
 
 /// Maximum number of controllers
 pub const CELL_PAD_MAX_PORT_NUM: usize = 7;
@@ -500,22 +502,21 @@ impl PadManager {
     // OC-Input Backend Integration
     // ========================================================================
 
-    /// Connect to oc-input backend
+    /// Set the oc-input backend for controller polling
     /// 
-    /// This would integrate with oc-input for actual controller input.
-    /// For now, this is a stub implementation.
-    pub fn connect_input_backend(&mut self, _backend: InputBackend) -> i32 {
-        debug!("PadManager::connect_input_backend");
-        
-        // In a real implementation:
-        // 1. Store the oc-input backend reference
-        // 2. Register pad input callbacks
-        // 3. Query connected controllers
-        // 4. Set up button/axis mappings
-        
-        self.input_backend = None; // Would store actual backend
-        
-        0 // CELL_OK
+    /// This connects the PadManager to the oc-input DualShock3Manager,
+    /// enabling actual controller input polling.
+    /// 
+    /// # Arguments
+    /// * `backend` - Shared reference to DualShock3Manager
+    pub fn set_input_backend(&mut self, backend: Arc<RwLock<DualShock3Manager>>) {
+        debug!("PadManager::set_input_backend - connecting to oc-input");
+        self.input_backend = Some(backend);
+    }
+
+    /// Check if the input backend is connected
+    pub fn has_input_backend(&self) -> bool {
+        self.input_backend.is_some()
     }
 
     /// Poll input from backend
@@ -528,33 +529,160 @@ impl PadManager {
 
         trace!("PadManager::poll_input");
 
-        // In a real implementation, this would:
-        // 1. Query oc-input for current controller states
-        // 2. Convert oc-input button/axis data to PS3 format
-        // 3. Update pad_data for each connected pad
-        // 4. Handle button pressure sensitivity
-        // 5. Handle analog stick values
+        // Get backend or fall back to manual updates
+        let backend = match &self.input_backend {
+            Some(b) => b.clone(),
+            None => {
+                // No backend connected, pad data is manually updated
+                return 0;
+            }
+        };
 
-        // For HLE, pad data is manually updated via update_pad_data()
+        // Lock backend for reading
+        let manager = match backend.read() {
+            Ok(m) => m,
+            Err(e) => {
+                debug!("PadManager::poll_input - failed to lock backend: {}", e);
+                return 0;
+            }
+        };
+
+        // Update connected pads mask and poll each controller
+        let mut connected_mask = 0u8;
+        
+        for port in 0..CELL_PAD_MAX_PORT_NUM {
+            if let Some(controller) = manager.get(port as u8) {
+                if controller.is_connected() {
+                    connected_mask |= 1 << port;
+                    
+                    // Get raw pad data from oc-input
+                    let input_data = controller.get_pad_data();
+                    
+                    // Convert to PS3 format
+                    self.convert_input_to_pad_data(port, &input_data);
+                }
+            }
+        }
+        
+        self.connected_pads = connected_mask;
 
         0 // CELL_OK
+    }
+
+    /// Convert oc-input PadData to PS3 CellPadData format
+    fn convert_input_to_pad_data(&mut self, port: usize, input: &OcInputPadData) {
+        let pad = &mut self.pad_data[port];
+        
+        // Set data length (with sensors since oc-input includes sixaxis)
+        pad.len = CELL_PAD_DATA_LEN_WITH_SENSORS;
+        
+        // Convert button bitmask to PS3 button[0] and button[1] format
+        let (btn0, btn1) = Self::convert_buttons_to_ps3(input.buttons);
+        pad.button[0] = btn0 as u16;
+        pad.button[1] = btn1 as u16;
+        
+        // Analog sticks (oc-input already uses 0-255 format with 128 center)
+        pad.right_stick_x = input.right_x;
+        pad.right_stick_y = input.right_y;
+        pad.left_stick_x = input.left_x;
+        pad.left_stick_y = input.left_y;
+        
+        // Pressure-sensitive button values
+        // PS3 pressure order: RIGHT, LEFT, UP, DOWN, TRIANGLE, CIRCLE, CROSS, SQUARE, L1, R1, L2, R2
+        for i in 0..12 {
+            pad.pressure[i] = input.pressure[i];
+        }
+        
+        // Sixaxis sensor data (convert from i16 to u16 with offset)
+        // PS3 expects values in range 0-1023 (10-bit)
+        pad.sensor_x = (input.accel_x + 512).clamp(0, 1023) as u16;
+        pad.sensor_y = (input.accel_y + 512).clamp(0, 1023) as u16;
+        pad.sensor_z = (input.accel_z + 512).clamp(0, 1023) as u16;
+        pad.sensor_g = (input.gyro_z + 512).clamp(0, 1023) as u16;
+    }
+
+    /// Convert oc-input button bitmask to PS3 button[0]/button[1] format
+    /// 
+    /// oc-input uses single u32 bitmask, PS3 uses two u8 values
+    fn convert_buttons_to_ps3(buttons: u32) -> (u8, u8) {
+        let mut btn0: u8 = 0;
+        let mut btn1: u8 = 0;
+        
+        // button[0] - D-pad and system buttons
+        if buttons & PadButtons::DPAD_LEFT.bits() != 0 {
+            btn0 |= button_codes::CELL_PAD_CTRL_LEFT as u8;
+        }
+        if buttons & PadButtons::DPAD_DOWN.bits() != 0 {
+            btn0 |= button_codes::CELL_PAD_CTRL_DOWN as u8;
+        }
+        if buttons & PadButtons::DPAD_RIGHT.bits() != 0 {
+            btn0 |= button_codes::CELL_PAD_CTRL_RIGHT as u8;
+        }
+        if buttons & PadButtons::DPAD_UP.bits() != 0 {
+            btn0 |= button_codes::CELL_PAD_CTRL_UP as u8;
+        }
+        if buttons & PadButtons::START.bits() != 0 {
+            btn0 |= button_codes::CELL_PAD_CTRL_START as u8;
+        }
+        if buttons & PadButtons::R3.bits() != 0 {
+            btn0 |= button_codes::CELL_PAD_CTRL_R3 as u8;
+        }
+        if buttons & PadButtons::L3.bits() != 0 {
+            btn0 |= button_codes::CELL_PAD_CTRL_L3 as u8;
+        }
+        if buttons & PadButtons::SELECT.bits() != 0 {
+            btn0 |= button_codes::CELL_PAD_CTRL_SELECT as u8;
+        }
+        
+        // button[1] - Face and shoulder buttons
+        if buttons & PadButtons::SQUARE.bits() != 0 {
+            btn1 |= button_codes_2::CELL_PAD_CTRL_SQUARE as u8;
+        }
+        if buttons & PadButtons::CROSS.bits() != 0 {
+            btn1 |= button_codes_2::CELL_PAD_CTRL_CROSS as u8;
+        }
+        if buttons & PadButtons::CIRCLE.bits() != 0 {
+            btn1 |= button_codes_2::CELL_PAD_CTRL_CIRCLE as u8;
+        }
+        if buttons & PadButtons::TRIANGLE.bits() != 0 {
+            btn1 |= button_codes_2::CELL_PAD_CTRL_TRIANGLE as u8;
+        }
+        if buttons & PadButtons::R1.bits() != 0 {
+            btn1 |= button_codes_2::CELL_PAD_CTRL_R1 as u8;
+        }
+        if buttons & PadButtons::L1.bits() != 0 {
+            btn1 |= button_codes_2::CELL_PAD_CTRL_L1 as u8;
+        }
+        if buttons & PadButtons::R2.bits() != 0 {
+            btn1 |= button_codes_2::CELL_PAD_CTRL_R2 as u8;
+        }
+        if buttons & PadButtons::L2.bits() != 0 {
+            btn1 |= button_codes_2::CELL_PAD_CTRL_L2 as u8;
+        }
+        
+        (btn0, btn1)
     }
 
     /// Map oc-input button to PS3 button
     /// 
     /// Converts button codes between oc-input and PS3 formats.
+    #[allow(dead_code)]
     pub fn map_button(oc_input_button: u32) -> u16 {
-        // In a real implementation, this would map:
-        // oc-input button codes -> PS3 button codes
-        // 
-        // For example:
-        // oc_input::PadButtons::CROSS -> CELL_PAD_CTRL_CROSS
-        // oc_input::PadButtons::CIRCLE -> CELL_PAD_CTRL_CIRCLE
-        // etc.
-
+        // Map individual button constants
+        if oc_input_button & PadButtons::CROSS.bits() != 0 {
+            return button_codes_2::CELL_PAD_CTRL_CROSS;
+        }
+        if oc_input_button & PadButtons::CIRCLE.bits() != 0 {
+            return button_codes_2::CELL_PAD_CTRL_CIRCLE;
+        }
+        if oc_input_button & PadButtons::SQUARE.bits() != 0 {
+            return button_codes_2::CELL_PAD_CTRL_SQUARE;
+        }
+        if oc_input_button & PadButtons::TRIANGLE.bits() != 0 {
+            return button_codes_2::CELL_PAD_CTRL_TRIANGLE;
+        }
+        
         trace!("Mapping button: 0x{:08X}", oc_input_button);
-
-        // Return unmapped for now
         0
     }
 
@@ -611,10 +739,28 @@ impl PadManager {
             port, param.motor_small, param.motor_large
         );
 
-        // In a real implementation, this would:
-        // 1. Send rumble commands to oc-input backend
-        // 2. Control actual controller motors
-        // 3. Handle timing and duration
+        // Forward rumble command to oc-input backend
+        if let Some(backend) = &self.input_backend {
+            if let Ok(mut manager) = backend.write() {
+                if let Some(controller) = manager.get_mut(port as u8) {
+                    use oc_input::dualshock3::VibrationEffect;
+                    
+                    if param.motor_small > 0 || param.motor_large > 0 {
+                        // Apply custom vibration with exact motor values
+                        controller.vibrate(
+                            VibrationEffect::Custom {
+                                small: param.motor_small,
+                                large: param.motor_large,
+                            },
+                            None, // No automatic timeout
+                        );
+                    } else {
+                        // Stop vibration
+                        controller.stop_vibration();
+                    }
+                }
+            }
+        }
 
         0 // CELL_OK
     }

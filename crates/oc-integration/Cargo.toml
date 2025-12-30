@@ -25,6 +25,7 @@ oc-hle.workspace = true
 oc-vfs.workspace = true
 oc-ffi.workspace = true
 oc-audio.workspace = true
+oc-input.workspace = true
 
 [dev-dependencies]
 tracing-subscriber.workspace = true

@@ -13,15 +13,13 @@
  */
 
 #include "oc_ffi.h"
+#include "oc_threading.h"
 #include <cstdlib>
 #include <cstring>
 #include <unordered_map>
 #include <vector>
 #include <memory>
 #include <queue>
-#include <mutex>
-#include <condition_variable>
-#include <thread>
 #include <atomic>
 #include <functional>
 
@@ -68,7 +66,7 @@ struct BasicBlock {
  */
 struct CodeCache {
     std::unordered_map<uint32_t, std::unique_ptr<BasicBlock>> blocks;
-    std::mutex mutex;
+    oc_mutex mutex;
     size_t total_size;
     size_t max_size;
     
@@ -176,21 +174,21 @@ struct BranchPrediction {
  */
 struct BranchPredictor {
     std::unordered_map<uint32_t, BranchPrediction> predictions;
-    std::mutex mutex;
+    oc_mutex mutex;
     
     void add_prediction(uint32_t address, uint32_t target, BranchHint hint) {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         predictions[address] = BranchPrediction(address, target, hint);
     }
     
     BranchPrediction* get_prediction(uint32_t address) {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         auto it = predictions.find(address);
         return (it != predictions.end()) ? &it->second : nullptr;
     }
     
     void update_prediction(uint32_t address, bool taken) {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         auto it = predictions.find(address);
         if (it != predictions.end()) {
             it->second.update(taken);
@@ -198,7 +196,7 @@ struct BranchPredictor {
     }
     
     void clear() {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         predictions.clear();
     }
 };
@@ -227,13 +225,13 @@ struct InlineCacheEntry {
  */
 struct InlineCacheManager {
     std::unordered_map<uint32_t, InlineCacheEntry> cache;
-    std::mutex mutex;
+    oc_mutex mutex;
     size_t max_entries;
     
     InlineCacheManager() : max_entries(4096) {}
     
     void add_entry(uint32_t call_site, uint32_t target) {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         
         // Evict if at capacity
         if (cache.size() >= max_entries) {
@@ -253,7 +251,7 @@ struct InlineCacheManager {
     }
     
     InlineCacheEntry* lookup(uint32_t call_site) {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         auto it = cache.find(call_site);
         if (it != cache.end() && it->second.is_valid) {
             it->second.hit_count++;
@@ -263,7 +261,7 @@ struct InlineCacheManager {
     }
     
     void invalidate(uint32_t target_address) {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         for (auto& pair : cache) {
             if (pair.second.target_address == target_address) {
                 pair.second.is_valid = false;
@@ -273,7 +271,7 @@ struct InlineCacheManager {
     }
     
     void update_compiled_target(uint32_t target_address, void* compiled) {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         for (auto& pair : cache) {
             if (pair.second.target_address == target_address && pair.second.is_valid) {
                 pair.second.compiled_target = compiled;
@@ -282,7 +280,7 @@ struct InlineCacheManager {
     }
     
     void clear() {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         cache.clear();
     }
 };
@@ -453,21 +451,21 @@ struct LazyCompilationEntry {
  */
 struct LazyCompilationManager {
     std::unordered_map<uint32_t, std::unique_ptr<LazyCompilationEntry>> entries;
-    std::mutex mutex;
+    oc_mutex mutex;
     
     void register_lazy(uint32_t address, const uint8_t* code, size_t size, uint32_t threshold = 10) {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         entries[address] = std::make_unique<LazyCompilationEntry>(address, code, size, threshold);
     }
     
     LazyCompilationEntry* get_entry(uint32_t address) {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         auto it = entries.find(address);
         return (it != entries.end()) ? it->second.get() : nullptr;
     }
     
     void mark_compiling(uint32_t address) {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         auto it = entries.find(address);
         if (it != entries.end()) {
             it->second->state = LazyState::Compiling;
@@ -475,7 +473,7 @@ struct LazyCompilationManager {
     }
     
     void mark_compiled(uint32_t address) {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         auto it = entries.find(address);
         if (it != entries.end()) {
             it->second->state = LazyState::Compiled;
@@ -483,7 +481,7 @@ struct LazyCompilationManager {
     }
     
     void mark_failed(uint32_t address) {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         auto it = entries.find(address);
         if (it != entries.end()) {
             it->second->state = LazyState::Failed;
@@ -491,7 +489,7 @@ struct LazyCompilationManager {
     }
     
     void clear() {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         entries.clear();
     }
 };
@@ -517,10 +515,10 @@ struct CompilationTask {
  * Multi-threaded compilation thread pool
  */
 struct CompilationThreadPool {
-    std::vector<std::thread> workers;
+    std::vector<oc_thread> workers;
     std::priority_queue<CompilationTask> task_queue;
-    std::mutex queue_mutex;
-    std::condition_variable condition;
+    oc_mutex queue_mutex;
+    oc_condition_variable condition;
     std::atomic<bool> stop_flag;
     std::atomic<size_t> pending_tasks;
     std::atomic<size_t> completed_tasks;
@@ -541,9 +539,9 @@ struct CompilationThreadPool {
                 while (true) {
                     CompilationTask task;
                     {
-                        std::unique_lock<std::mutex> lock(queue_mutex);
+                        oc_unique_lock<oc_mutex> lock(queue_mutex);
                         condition.wait(lock, [this] {
-                            return stop_flag || !task_queue.empty();
+                            return stop_flag.load() || !task_queue.empty();
                         });
                         
                         if (stop_flag && task_queue.empty()) {
@@ -564,7 +562,7 @@ struct CompilationThreadPool {
     
     void submit(const CompilationTask& task) {
         {
-            std::lock_guard<std::mutex> lock(queue_mutex);
+            oc_lock_guard<oc_mutex> lock(queue_mutex);
             task_queue.push(task);
             pending_tasks++;
         }
@@ -1250,7 +1248,7 @@ void oc_ppu_jit_start_compile_threads(oc_ppu_jit_t* jit, size_t num_threads) {
         
         // Insert into cache (thread-safe)
         {
-            std::lock_guard<std::mutex> lock(jit->cache.mutex);
+            oc_lock_guard<oc_mutex> lock(jit->cache.mutex);
             jit->cache.insert_block(task.address, std::move(block));
         }
         
@@ -1285,6 +1283,67 @@ size_t oc_ppu_jit_get_completed_tasks(oc_ppu_jit_t* jit) {
 int oc_ppu_jit_is_multithreaded(oc_ppu_jit_t* jit) {
     if (!jit) return 0;
     return jit->multithreaded_enabled ? 1 : 0;
+}
+
+// ============================================================================
+// JIT Execution APIs
+// ============================================================================
+
+/**
+ * JIT function signature type
+ * 
+ * JIT-compiled functions take a context pointer and memory base, then
+ * read/write registers through the context structure.
+ */
+typedef void (*JitFunctionPtr)(oc_ppu_context_t* context, void* memory_base);
+
+int oc_ppu_jit_execute(oc_ppu_jit_t* jit, oc_ppu_context_t* context, uint32_t address) {
+    if (!jit || !context) return -1;
+    
+    // Check for breakpoint at this address
+    if (jit->breakpoints.has_breakpoint(address)) {
+        context->exit_reason = OC_PPU_EXIT_BREAKPOINT;
+        return 0;
+    }
+    
+    // Get compiled code
+    BasicBlock* block = jit->cache.find_block(address);
+    if (!block || !block->compiled_code) {
+        // Not compiled - return error so interpreter can handle
+        context->exit_reason = OC_PPU_EXIT_ERROR;
+        return -2;
+    }
+    
+    // Set up context for execution
+    context->memory_base = context->memory_base; // Passed from caller
+    context->instructions_executed = 0;
+    context->exit_reason = OC_PPU_EXIT_NORMAL;
+    context->next_pc = address + (block->instructions.size() * 4);
+    
+    // Cast compiled code to function pointer and call
+    JitFunctionPtr func = reinterpret_cast<JitFunctionPtr>(block->compiled_code);
+    
+    // Execute the compiled block
+    // Note: In the current placeholder implementation, the compiled code
+    // is just a RET instruction, so this immediately returns.
+    // A full LLVM implementation would execute actual compiled code.
+    func(context, context->memory_base);
+    
+    // Update execution count
+    context->instructions_executed = static_cast<uint32_t>(block->instructions.size());
+    
+    // Update PC based on exit reason
+    if (context->exit_reason == OC_PPU_EXIT_NORMAL) {
+        context->pc = context->next_pc;
+    }
+    // For branches/syscalls, compiled code should have set next_pc
+    
+    return static_cast<int>(context->instructions_executed);
+}
+
+int oc_ppu_jit_execute_block(oc_ppu_jit_t* jit, oc_ppu_context_t* context, uint32_t address) {
+    // Same as execute for now - single block execution
+    return oc_ppu_jit_execute(jit, context, address);
 }
 
 } // extern "C"

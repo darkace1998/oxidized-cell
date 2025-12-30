@@ -99,6 +99,11 @@ pub const NV4097_SET_VERTEX_PROGRAM_LOAD_SLOT: u32 = 0x0484;
 pub const NV4097_SET_VERTEX_ATTRIB_INPUT_MASK: u32 = 0x1640;
 pub const NV4097_SET_VERTEX_ATTRIB_OUTPUT_MASK: u32 = 0x1644;
 
+// Vertex program constant methods (512 vec4 constants, 4 floats each)
+pub const NV4097_SET_TRANSFORM_CONSTANT_LOAD: u32 = 0x1EFC;  // Set starting slot
+pub const NV4097_SET_TRANSFORM_CONSTANT: u32 = 0x0B00;      // Write constant data (range 0x0B00-0x0EFC)
+pub const NV4097_SET_TRANSFORM_CONSTANT_END: u32 = 0x0EFC;
+
 // Fragment program methods
 pub const NV4097_SET_SHADER_PROGRAM: u32 = 0x0848;
 
@@ -117,6 +122,9 @@ pub const NV4097_SET_TEXTURE_OFFSET: u32 = 0x1A00;
 pub const NV4097_SET_TEXTURE_FORMAT: u32 = 0x1A04;
 pub const NV4097_SET_TEXTURE_CONTROL0: u32 = 0x1A08;
 pub const NV4097_SET_TEXTURE_FILTER: u32 = 0x1A0C;
+pub const NV4097_SET_TEXTURE_ADDRESS: u32 = 0x1A10;
+pub const NV4097_SET_TEXTURE_IMAGE_RECT: u32 = 0x1A14;
+pub const NV4097_SET_TEXTURE_BORDER_COLOR: u32 = 0x1A18;
 
 /// Handler for NV4097 methods
 pub struct MethodHandler;
@@ -353,6 +361,23 @@ impl MethodHandler {
                         state.vertex_attrib_offset[index] = data;
                     }
                 }
+                // Vertex program constants (0x0B00 - 0x0EFC, 4 floats per constant)
+                else if method >= NV4097_SET_TRANSFORM_CONSTANT 
+                    && method < NV4097_SET_TRANSFORM_CONSTANT_END {
+                    // Each constant is 4 consecutive writes (x, y, z, w)
+                    // method offset / 4 = which float component
+                    let offset = method - NV4097_SET_TRANSFORM_CONSTANT;
+                    let const_idx = state.vertex_constant_load_slot + (offset / 16);
+                    let component = ((offset / 4) % 4) as usize;
+                    
+                    if (const_idx as usize) < 512 {
+                        state.vertex_constants[const_idx as usize][component] = f32::from_bits(data);
+                    }
+                }
+                // Vertex program constant load slot
+                else if method == NV4097_SET_TRANSFORM_CONSTANT_LOAD {
+                    state.vertex_constant_load_slot = data;
+                }
                 // Check for texture ranges (texture methods are spaced 0x20 apart)
                 else if method >= NV4097_SET_TEXTURE_OFFSET 
                     && method < NV4097_SET_TEXTURE_OFFSET + (16 * 0x20) 
@@ -381,6 +406,29 @@ impl MethodHandler {
                     let index = ((method - NV4097_SET_TEXTURE_FILTER) / 0x20) as usize;
                     if index < state.texture_filter.len() {
                         state.texture_filter[index] = data;
+                    }
+                } else if method >= NV4097_SET_TEXTURE_ADDRESS 
+                    && method < NV4097_SET_TEXTURE_ADDRESS + (16 * 0x20) 
+                    && (method - NV4097_SET_TEXTURE_ADDRESS) % 0x20 == 0 {
+                    let index = ((method - NV4097_SET_TEXTURE_ADDRESS) / 0x20) as usize;
+                    if index < state.texture_address.len() {
+                        state.texture_address[index] = data;
+                    }
+                } else if method >= NV4097_SET_TEXTURE_IMAGE_RECT 
+                    && method < NV4097_SET_TEXTURE_IMAGE_RECT + (16 * 0x20) 
+                    && (method - NV4097_SET_TEXTURE_IMAGE_RECT) % 0x20 == 0 {
+                    let index = ((method - NV4097_SET_TEXTURE_IMAGE_RECT) / 0x20) as usize;
+                    if index < 16 {
+                        // Format: height in upper 16 bits, width in lower 16 bits
+                        state.texture_width[index] = data & 0xFFFF;
+                        state.texture_height[index] = (data >> 16) & 0xFFFF;
+                    }
+                } else if method >= NV4097_SET_TEXTURE_BORDER_COLOR 
+                    && method < NV4097_SET_TEXTURE_BORDER_COLOR + (16 * 0x20) 
+                    && (method - NV4097_SET_TEXTURE_BORDER_COLOR) % 0x20 == 0 {
+                    let index = ((method - NV4097_SET_TEXTURE_BORDER_COLOR) / 0x20) as usize;
+                    if index < state.texture_border_color.len() {
+                        state.texture_border_color[index] = data;
                     }
                 } else {
                     // Unknown or unimplemented method

@@ -1,10 +1,14 @@
 //! cellFs HLE - File System Operations
 //!
 //! This module provides HLE implementations for PS3 file system operations.
-//! It bridges to the oc-vfs subsystem.
+//! It bridges to the oc-vfs subsystem for actual file I/O.
 
 use std::collections::HashMap;
-use tracing::{debug, trace};
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write, Seek, SeekFrom};
+use std::sync::Arc;
+use oc_vfs::VirtualFileSystem;
+use tracing::{debug, trace, warn};
 
 /// Maximum path length
 pub const CELL_FS_MAX_PATH_LENGTH: usize = 1024;
@@ -111,19 +115,58 @@ enum FileHandleType {
     Directory,
 }
 
+/// Open file handle with optional real file backend
+struct OpenFile {
+    /// Rust file handle for actual I/O
+    file: File,
+}
+
+impl std::fmt::Debug for OpenFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenFile").finish()
+    }
+}
+
+/// Open directory handle
+struct OpenDir {
+    /// Directory path on host filesystem
+    host_path: std::path::PathBuf,
+    /// Directory entries (read when directory is opened)
+    entries: Vec<std::fs::DirEntry>,
+    /// Current position in entries
+    position: usize,
+}
+
+impl std::fmt::Debug for OpenDir {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenDir")
+            .field("host_path", &self.host_path)
+            .field("position", &self.position)
+            .field("entries_count", &self.entries.len())
+            .finish()
+    }
+}
+
 /// File handle information
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct FileHandle {
     /// Type of handle (file or directory)
     handle_type: FileHandleType,
-    /// File path
+    /// PS3 virtual file path
     path: String,
+    /// Host filesystem path (resolved via VFS)
+    #[allow(dead_code)] // Reserved for future direct host path access
+    host_path: Option<std::path::PathBuf>,
     /// Open flags
     flags: u32,
-    /// Current position (for files)
+    /// Current position (for files without real backend)
     position: u64,
     /// File size (cached)
     size: u64,
+    /// Real file handle (if VFS is connected)
+    open_file: Option<OpenFile>,
+    /// Real directory handle (if VFS is connected)
+    open_dir: Option<OpenDir>,
 }
 
 /// Async I/O request ID type
@@ -168,8 +211,8 @@ pub struct FsManager {
     next_fd: i32,
     /// Open file handles
     handles: HashMap<i32, FileHandle>,
-    /// OC-VFS backend placeholder
-    vfs_backend: Option<()>,
+    /// OC-VFS backend for path resolution
+    vfs: Option<Arc<VirtualFileSystem>>,
     /// Async I/O requests
     aio_requests: HashMap<AioRequestId, AioRequest>,
     /// Next AIO request ID
@@ -182,10 +225,29 @@ impl FsManager {
         Self {
             next_fd: 3, // Start after stdin/stdout/stderr
             handles: HashMap::new(),
-            vfs_backend: None,
+            vfs: None,
             aio_requests: HashMap::new(),
             next_aio_id: 1,
         }
+    }
+
+    /// Set the VFS backend for file operations
+    /// 
+    /// Once connected, all file operations will go through the VFS
+    /// for path resolution and actual file I/O.
+    pub fn set_vfs(&mut self, vfs: Arc<VirtualFileSystem>) {
+        debug!("FsManager: VFS backend connected");
+        self.vfs = Some(vfs);
+    }
+
+    /// Check if VFS is connected
+    pub fn has_vfs(&self) -> bool {
+        self.vfs.is_some()
+    }
+
+    /// Resolve a PS3 virtual path to a host path using VFS
+    fn resolve_path(&self, ps3_path: &str) -> Option<std::path::PathBuf> {
+        self.vfs.as_ref().and_then(|vfs| vfs.resolve(ps3_path))
     }
 
     /// Open a file
@@ -203,18 +265,72 @@ impl FsManager {
 
         debug!("FsManager::open: path={}, flags=0x{:X}, mode=0x{:X}, fd={}", path, flags, mode, fd);
 
+        // Resolve path through VFS
+        let host_path = self.resolve_path(path);
+        let mut open_file = None;
+        let mut file_size = 0u64;
+
+        if let Some(ref hp) = host_path {
+            // Build OpenOptions based on flags
+            let mut opts = OpenOptions::new();
+            
+            match flags & flags::CELL_FS_O_ACCMODE {
+                flags::CELL_FS_O_RDONLY => { opts.read(true); }
+                flags::CELL_FS_O_WRONLY => { opts.write(true); }
+                flags::CELL_FS_O_RDWR => { opts.read(true).write(true); }
+                _ => { opts.read(true); }
+            }
+
+            if flags & flags::CELL_FS_O_CREAT != 0 {
+                opts.create(true);
+            }
+            if flags & flags::CELL_FS_O_TRUNC != 0 {
+                opts.truncate(true);
+            }
+            if flags & flags::CELL_FS_O_APPEND != 0 {
+                opts.append(true);
+            }
+            if flags & flags::CELL_FS_O_EXCL != 0 {
+                opts.create_new(true);
+            }
+
+            match opts.open(hp) {
+                Ok(file) => {
+                    // Get file size
+                    if let Ok(metadata) = file.metadata() {
+                        file_size = metadata.len();
+                    }
+                    debug!("FsManager::open: Opened host file {:?}, size={}", hp, file_size);
+                    open_file = Some(OpenFile { file });
+                }
+                Err(e) => {
+                    warn!("FsManager::open: Failed to open {:?}: {}", hp, e);
+                    // Map I/O error to PS3 error code
+                    return match e.kind() {
+                        std::io::ErrorKind::NotFound => Err(0x80010006u32 as i32), // CELL_FS_ERROR_ENOENT
+                        std::io::ErrorKind::PermissionDenied => Err(0x80010001u32 as i32), // CELL_FS_ERROR_EACCES
+                        std::io::ErrorKind::AlreadyExists => Err(0x80010011u32 as i32), // CELL_FS_ERROR_EEXIST
+                        _ => Err(0x80010005u32 as i32), // CELL_FS_ERROR_EIO
+                    };
+                }
+            }
+        } else {
+            debug!("FsManager::open: No VFS mapping for path {}", path);
+        }
+
         // Create file handle
         let handle = FileHandle {
             handle_type: FileHandleType::File,
             path: path.to_string(),
+            host_path,
             flags,
             position: 0,
-            size: 0, // TODO: Get actual size from oc-vfs
+            size: file_size,
+            open_file,
+            open_dir: None,
         };
 
         self.handles.insert(fd, handle);
-
-        // TODO: Actually open file through oc-vfs
 
         Ok(fd)
     }
@@ -223,7 +339,7 @@ impl FsManager {
     pub fn close(&mut self, fd: CellFsFd) -> i32 {
         if let Some(handle) = self.handles.remove(&fd) {
             debug!("FsManager::close: fd={}, path={}", fd, handle.path);
-            // TODO: Close file through oc-vfs
+            // File handle is dropped here, closing the underlying file
             0 // CELL_OK
         } else {
             debug!("FsManager::close: invalid fd={}", fd);
@@ -246,12 +362,24 @@ impl FsManager {
 
         trace!("FsManager::read: fd={}, position={}, len={}", fd, handle.position, buf.len());
 
-        // TODO: Read from file through oc-vfs
-        // For now, simulate reading 0 bytes (EOF)
-        let bytes_read = 0u64;
-        
-        handle.position += bytes_read;
-        Ok(bytes_read)
+        // Read from actual file if available
+        if let Some(ref mut open_file) = handle.open_file {
+            match open_file.file.read(buf) {
+                Ok(n) => {
+                    handle.position += n as u64;
+                    trace!("FsManager::read: read {} bytes from file", n);
+                    Ok(n as u64)
+                }
+                Err(e) => {
+                    warn!("FsManager::read: I/O error: {}", e);
+                    Err(0x80010005u32 as i32) // CELL_FS_ERROR_EIO
+                }
+            }
+        } else {
+            // No real file backend, return EOF
+            trace!("FsManager::read: no VFS backend, returning EOF");
+            Ok(0)
+        }
     }
 
     /// Write to file
@@ -269,16 +397,32 @@ impl FsManager {
 
         trace!("FsManager::write: fd={}, position={}, len={}", fd, handle.position, buf.len());
 
-        // TODO: Write to file through oc-vfs
-        // For now, simulate writing all bytes
-        let bytes_written = buf.len() as u64;
-        
-        handle.position += bytes_written;
-        if handle.position > handle.size {
-            handle.size = handle.position;
+        // Write to actual file if available
+        if let Some(ref mut open_file) = handle.open_file {
+            match open_file.file.write(buf) {
+                Ok(n) => {
+                    handle.position += n as u64;
+                    if handle.position > handle.size {
+                        handle.size = handle.position;
+                    }
+                    trace!("FsManager::write: wrote {} bytes to file", n);
+                    Ok(n as u64)
+                }
+                Err(e) => {
+                    warn!("FsManager::write: I/O error: {}", e);
+                    Err(0x80010005u32 as i32) // CELL_FS_ERROR_EIO
+                }
+            }
+        } else {
+            // No real file backend, simulate success
+            trace!("FsManager::write: no VFS backend, simulating write");
+            let bytes_written = buf.len() as u64;
+            handle.position += bytes_written;
+            if handle.position > handle.size {
+                handle.size = handle.position;
+            }
+            Ok(bytes_written)
         }
-        
-        Ok(bytes_written)
     }
 
     /// Seek in file
@@ -289,17 +433,37 @@ impl FsManager {
             return Err(0x80010009u32 as i32); // CELL_FS_ERROR_EBADF
         }
 
-        let new_position = match whence {
-            seek::CELL_FS_SEEK_SET => offset.max(0) as u64,
-            seek::CELL_FS_SEEK_CUR => {
-                let pos = handle.position as i64 + offset;
-                pos.max(0) as u64
-            }
-            seek::CELL_FS_SEEK_END => {
-                let pos = handle.size as i64 + offset;
-                pos.max(0) as u64
-            }
+        // Convert PS3 whence to Rust SeekFrom
+        let seek_from = match whence {
+            seek::CELL_FS_SEEK_SET => SeekFrom::Start(offset.max(0) as u64),
+            seek::CELL_FS_SEEK_CUR => SeekFrom::Current(offset),
+            seek::CELL_FS_SEEK_END => SeekFrom::End(offset),
             _ => return Err(0x80010002u32 as i32), // CELL_FS_ERROR_EINVAL
+        };
+
+        // Seek in actual file if available
+        let new_position = if let Some(ref mut open_file) = handle.open_file {
+            match open_file.file.seek(seek_from) {
+                Ok(pos) => pos,
+                Err(e) => {
+                    warn!("FsManager::lseek: seek error: {}", e);
+                    return Err(0x80010002u32 as i32); // CELL_FS_ERROR_EINVAL
+                }
+            }
+        } else {
+            // No real file, compute position manually
+            match whence {
+                seek::CELL_FS_SEEK_SET => offset.max(0) as u64,
+                seek::CELL_FS_SEEK_CUR => {
+                    let pos = handle.position as i64 + offset;
+                    pos.max(0) as u64
+                }
+                seek::CELL_FS_SEEK_END => {
+                    let pos = handle.size as i64 + offset;
+                    pos.max(0) as u64
+                }
+                _ => return Err(0x80010002u32 as i32),
+            }
         };
 
         trace!("FsManager::lseek: fd={}, offset={}, whence={}, new_position={}", fd, offset, whence, new_position);
@@ -314,9 +478,32 @@ impl FsManager {
 
         trace!("FsManager::fstat: fd={}, path={}", fd, handle.path);
 
-        // TODO: Get actual file status from oc-vfs
-        // For now, return default stat with file size
         let mut stat = CellFsStat::default();
+        
+        // Try to get real metadata from file
+        if let Some(ref open_file) = handle.open_file {
+            if let Ok(metadata) = open_file.file.metadata() {
+                stat.size = metadata.len();
+                stat.mode = if metadata.is_dir() {
+                    mode::CELL_FS_S_IFDIR | mode::CELL_FS_S_IRUSR | mode::CELL_FS_S_IXUSR
+                } else {
+                    mode::CELL_FS_S_IFREG | mode::CELL_FS_S_IRUSR | mode::CELL_FS_S_IWUSR
+                };
+                
+                // Convert timestamps if available
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    stat.atime = metadata.atime() as u64;
+                    stat.mtime = metadata.mtime() as u64;
+                    stat.ctime = metadata.ctime() as u64;
+                }
+                
+                return Ok(stat);
+            }
+        }
+
+        // Fallback to cached info
         stat.size = handle.size;
         stat.mode = mode::CELL_FS_S_IFREG | mode::CELL_FS_S_IRUSR | mode::CELL_FS_S_IWUSR;
         
@@ -331,9 +518,40 @@ impl FsManager {
 
         trace!("FsManager::stat: path={}", path);
 
-        // TODO: Get actual file status from oc-vfs
-        // For now, return default stat
         let mut stat = CellFsStat::default();
+
+        // Try to get real metadata via VFS
+        if let Some(host_path) = self.resolve_path(path) {
+            match std::fs::metadata(&host_path) {
+                Ok(metadata) => {
+                    stat.size = metadata.len();
+                    stat.mode = if metadata.is_dir() {
+                        mode::CELL_FS_S_IFDIR | mode::CELL_FS_S_IRUSR | mode::CELL_FS_S_IXUSR
+                    } else {
+                        mode::CELL_FS_S_IFREG | mode::CELL_FS_S_IRUSR | mode::CELL_FS_S_IWUSR
+                    };
+                    
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::MetadataExt;
+                        stat.atime = metadata.atime() as u64;
+                        stat.mtime = metadata.mtime() as u64;
+                        stat.ctime = metadata.ctime() as u64;
+                    }
+                    
+                    return Ok(stat);
+                }
+                Err(e) => {
+                    return match e.kind() {
+                        std::io::ErrorKind::NotFound => Err(0x80010006u32 as i32), // CELL_FS_ERROR_ENOENT
+                        std::io::ErrorKind::PermissionDenied => Err(0x80010001u32 as i32), // CELL_FS_ERROR_EACCES
+                        _ => Err(0x80010005u32 as i32), // CELL_FS_ERROR_EIO
+                    };
+                }
+            }
+        }
+
+        // No VFS or path not mapped, return default (simulating file exists)
         stat.mode = mode::CELL_FS_S_IFREG | mode::CELL_FS_S_IRUSR | mode::CELL_FS_S_IWUSR;
         
         Ok(stat)
@@ -354,18 +572,50 @@ impl FsManager {
 
         debug!("FsManager::opendir: path={}, fd={}", path, fd);
 
+        // Resolve path through VFS and read directory entries
+        let host_path = self.resolve_path(path);
+        let mut open_dir = None;
+
+        if let Some(ref hp) = host_path {
+            match std::fs::read_dir(hp) {
+                Ok(dir_iter) => {
+                    // Collect all entries up front
+                    let entries: Vec<std::fs::DirEntry> = dir_iter
+                        .filter_map(|e| e.ok())
+                        .collect();
+                    
+                    debug!("FsManager::opendir: Read {} entries from {:?}", entries.len(), hp);
+                    
+                    open_dir = Some(OpenDir {
+                        host_path: hp.clone(),
+                        entries,
+                        position: 0,
+                    });
+                }
+                Err(e) => {
+                    warn!("FsManager::opendir: Failed to open directory {:?}: {}", hp, e);
+                    return match e.kind() {
+                        std::io::ErrorKind::NotFound => Err(0x80010006u32 as i32), // CELL_FS_ERROR_ENOENT
+                        std::io::ErrorKind::PermissionDenied => Err(0x80010001u32 as i32), // CELL_FS_ERROR_EACCES
+                        _ => Err(0x80010014u32 as i32), // CELL_FS_ERROR_ENOTDIR
+                    };
+                }
+            }
+        }
+
         // Create directory handle
         let handle = FileHandle {
             handle_type: FileHandleType::Directory,
             path: path.to_string(),
+            host_path,
             flags: 0,
             position: 0,
             size: 0,
+            open_file: None,
+            open_dir,
         };
 
         self.handles.insert(fd, handle);
-
-        // TODO: Actually open directory through oc-vfs
 
         Ok(fd)
     }
@@ -380,8 +630,36 @@ impl FsManager {
 
         trace!("FsManager::readdir: fd={}, path={}", fd, handle.path);
 
-        // TODO: Read directory entry through oc-vfs
-        // For now, return None (no more entries)
+        // Read from actual directory if available
+        if let Some(ref mut open_dir) = handle.open_dir {
+            if open_dir.position < open_dir.entries.len() {
+                let entry = &open_dir.entries[open_dir.position];
+                open_dir.position += 1;
+                
+                let file_name = entry.file_name();
+                let name_bytes = file_name.as_encoded_bytes();
+                
+                let mut dirent = CellFsDirent::default();
+                
+                // Set type (DT_DIR=4, DT_REG=8)
+                dirent.d_type = if entry.path().is_dir() { 4 } else { 8 };
+                
+                // Copy name
+                let copy_len = name_bytes.len().min(255);
+                dirent.d_namlen = copy_len as u8;
+                dirent.d_name[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
+                
+                trace!("FsManager::readdir: returning entry '{}'", 
+                       String::from_utf8_lossy(&dirent.d_name[..copy_len]));
+                
+                return Ok(Some(dirent));
+            } else {
+                // No more entries
+                return Ok(None);
+            }
+        }
+
+        // No real directory backend, return no entries
         Ok(None)
     }
 
@@ -394,7 +672,6 @@ impl FsManager {
             
             debug!("FsManager::closedir: fd={}, path={}", fd, handle.path);
             self.handles.remove(&fd);
-            // TODO: Close directory through oc-vfs
             0 // CELL_OK
         } else {
             debug!("FsManager::closedir: invalid fd={}", fd);
@@ -412,30 +689,9 @@ impl FsManager {
         self.handles.contains_key(&fd)
     }
 
-    // ========================================================================
-    // OC-VFS Backend Integration
-    // ========================================================================
-
-    /// Connect to oc-vfs backend
-    /// 
-    /// Integrates with oc-vfs for actual file system operations.
-    pub fn connect_vfs_backend(&mut self, _backend: Option<()>) -> i32 {
-        debug!("FsManager::connect_vfs_backend");
-        
-        // In a real implementation:
-        // 1. Store the oc-vfs backend reference
-        // 2. Initialize VFS mount points
-        // 3. Set up path mapping (PS3 paths to host paths)
-        // 4. Configure access permissions
-        
-        self.vfs_backend = None; // Would store actual backend
-        
-        0 // CELL_OK
-    }
-
-    /// Check if backend is connected
+    /// Check if backend is connected (deprecated, use has_vfs)
     pub fn is_backend_connected(&self) -> bool {
-        self.vfs_backend.is_some()
+        self.vfs.is_some()
     }
 
     /// Truncate file to specified length
@@ -450,13 +706,27 @@ impl FsManager {
 
         debug!("FsManager::truncate: path={}, length={}", path, length);
 
-        // In a real implementation:
-        // 1. Open file through VFS
-        // 2. Truncate or extend file to specified length
-        // 3. Update any cached file sizes
-        // 4. Close file
+        // Try to truncate via VFS
+        if let Some(host_path) = self.resolve_path(path) {
+            match OpenOptions::new().write(true).open(&host_path) {
+                Ok(file) => {
+                    if let Err(e) = file.set_len(length) {
+                        warn!("FsManager::truncate: Failed to truncate: {}", e);
+                        return 0x80010005u32 as i32; // CELL_FS_ERROR_EIO
+                    }
+                    return 0;
+                }
+                Err(e) => {
+                    return match e.kind() {
+                        std::io::ErrorKind::NotFound => 0x80010006u32 as i32, // CELL_FS_ERROR_ENOENT
+                        std::io::ErrorKind::PermissionDenied => 0x80010001u32 as i32, // CELL_FS_ERROR_EACCES
+                        _ => 0x80010005u32 as i32, // CELL_FS_ERROR_EIO
+                    };
+                }
+            }
+        }
 
-        0 // CELL_OK
+        0 // CELL_OK (simulate success when no VFS)
     }
 
     /// Create a directory
@@ -464,20 +734,32 @@ impl FsManager {
     /// # Arguments
     /// * `path` - Directory path
     /// * `mode` - Directory permissions
-    pub fn mkdir(&mut self, path: &str, mode: u32) -> i32 {
+    pub fn mkdir(&mut self, path: &str, _mode: u32) -> i32 {
         if path.is_empty() || path.len() > CELL_FS_MAX_PATH_LENGTH {
             return 0x80010002u32 as i32; // CELL_FS_ERROR_EINVAL
         }
 
-        debug!("FsManager::mkdir: path={}, mode=0x{:X}", path, mode);
+        debug!("FsManager::mkdir: path={}", path);
 
-        // In a real implementation:
-        // 1. Map PS3 path to VFS path
-        // 2. Create directory through VFS
-        // 3. Set permissions
-        // 4. Handle parent directory creation if needed
+        // Try to create directory via VFS
+        if let Some(host_path) = self.resolve_path(path) {
+            match std::fs::create_dir_all(&host_path) {
+                Ok(_) => {
+                    debug!("FsManager::mkdir: Created directory {:?}", host_path);
+                    return 0;
+                }
+                Err(e) => {
+                    warn!("FsManager::mkdir: Failed to create directory: {}", e);
+                    return match e.kind() {
+                        std::io::ErrorKind::AlreadyExists => 0x80010011u32 as i32, // CELL_FS_ERROR_EEXIST
+                        std::io::ErrorKind::PermissionDenied => 0x80010001u32 as i32, // CELL_FS_ERROR_EACCES
+                        _ => 0x80010005u32 as i32, // CELL_FS_ERROR_EIO
+                    };
+                }
+            }
+        }
 
-        0 // CELL_OK
+        0 // CELL_OK (simulate success when no VFS)
     }
 
     /// Remove a directory
@@ -491,13 +773,25 @@ impl FsManager {
 
         debug!("FsManager::rmdir: path={}", path);
 
-        // In a real implementation:
-        // 1. Map PS3 path to VFS path
-        // 2. Verify directory is empty
-        // 3. Remove directory through VFS
-        // 4. Handle errors (not empty, not found, etc.)
+        // Try to remove directory via VFS
+        if let Some(host_path) = self.resolve_path(path) {
+            match std::fs::remove_dir(&host_path) {
+                Ok(_) => {
+                    debug!("FsManager::rmdir: Removed directory {:?}", host_path);
+                    return 0;
+                }
+                Err(e) => {
+                    warn!("FsManager::rmdir: Failed to remove directory: {}", e);
+                    return match e.kind() {
+                        std::io::ErrorKind::NotFound => 0x80010006u32 as i32, // CELL_FS_ERROR_ENOENT
+                        std::io::ErrorKind::PermissionDenied => 0x80010001u32 as i32, // CELL_FS_ERROR_EACCES
+                        _ => 0x80010039u32 as i32, // CELL_FS_ERROR_ENOTEMPTY
+                    };
+                }
+            }
+        }
 
-        0 // CELL_OK
+        0 // CELL_OK (simulate success when no VFS)
     }
 
     /// Remove a file
@@ -511,12 +805,25 @@ impl FsManager {
 
         debug!("FsManager::unlink: path={}", path);
 
-        // In a real implementation:
-        // 1. Map PS3 path to VFS path
-        // 2. Remove file through VFS
-        // 3. Handle errors (not found, permission denied, etc.)
+        // Try to remove file via VFS
+        if let Some(host_path) = self.resolve_path(path) {
+            match std::fs::remove_file(&host_path) {
+                Ok(_) => {
+                    debug!("FsManager::unlink: Removed file {:?}", host_path);
+                    return 0;
+                }
+                Err(e) => {
+                    warn!("FsManager::unlink: Failed to remove file: {}", e);
+                    return match e.kind() {
+                        std::io::ErrorKind::NotFound => 0x80010006u32 as i32, // CELL_FS_ERROR_ENOENT
+                        std::io::ErrorKind::PermissionDenied => 0x80010001u32 as i32, // CELL_FS_ERROR_EACCES
+                        _ => 0x80010005u32 as i32, // CELL_FS_ERROR_EIO
+                    };
+                }
+            }
+        }
 
-        0 // CELL_OK
+        0 // CELL_OK (simulate success when no VFS)
     }
 
     // ========================================================================

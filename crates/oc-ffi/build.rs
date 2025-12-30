@@ -56,8 +56,48 @@ fn main() {
         build.file(rsx_file);
     }
     
+    // Cross-compilation settings for Windows
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target = env::var("TARGET").unwrap_or_default();
+    
+    if target_os == "windows" && target.contains("gnu") {
+        // For MinGW, use win32 threading to match Rust's expectations
+        // Note: The __gthr_win32_* symbols come from libgcc when using win32 threads
+        // We need to ensure these are properly linked
+        build.flag("-mthreads");
+    }
+    
     // Compile
     build.compile("oc_cpp");
+    
+    // Link required libraries for MinGW Windows builds
+    if target_os == "windows" && target.contains("gnu") {
+        // Try to find and add the gcc lib path for threading support
+        if let Ok(libgcc_path) = std::process::Command::new(
+            env::var("CXX_x86_64_pc_windows_gnu").unwrap_or_else(|_| "x86_64-w64-mingw32-g++".to_string())
+        )
+            .arg("-print-file-name=libgcc_s.a")
+            .output()
+        {
+            let libgcc = String::from_utf8_lossy(&libgcc_path.stdout).trim().to_string();
+            if let Some(dir) = std::path::Path::new(&libgcc).parent() {
+                if dir.exists() {
+                    println!("cargo:rustc-link-search=native={}", dir.display());
+                }
+            }
+        }
+        
+        // Add MinGW base library path
+        let mingw_lib = std::path::Path::new("/usr/x86_64-w64-mingw32/lib");
+        if mingw_lib.exists() {
+            println!("cargo:rustc-link-search=native={}", mingw_lib.display());
+        }
+        
+        // Link stdc++ statically for C++ runtime to avoid DLL dependencies
+        // This ensures the Windows executable is self-contained
+        println!("cargo:rustc-link-lib=static=stdc++");
+        println!("cargo:rustc-link-lib=static=gcc");
+    }
     
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed={}", cpp_src.display());

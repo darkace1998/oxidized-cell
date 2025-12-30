@@ -12,13 +12,13 @@
  */
 
 #include "oc_ffi.h"
+#include "oc_threading.h"
 #include <cstdlib>
 #include <cstring>
 #include <unordered_map>
 #include <vector>
 #include <memory>
 #include <queue>
-#include <mutex>
 #include <atomic>
 #include <algorithm>
 
@@ -163,7 +163,7 @@ struct ChannelOperation {
  */
 struct ChannelManager {
     std::vector<ChannelOperation> operations;
-    std::mutex mutex;
+    oc_mutex mutex;
     
     // Channel callback function type
     using ChannelReadFunc = uint32_t (*)(void* spu_state, uint8_t channel);
@@ -175,7 +175,7 @@ struct ChannelManager {
     ChannelManager() : read_callback(nullptr), write_callback(nullptr) {}
     
     void register_operation(SpuChannel channel, bool is_read, uint32_t address, uint8_t reg) {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         operations.emplace_back(channel, is_read, address, reg);
     }
     
@@ -189,7 +189,7 @@ struct ChannelManager {
     }
     
     void clear() {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         operations.clear();
     }
 };
@@ -259,7 +259,7 @@ struct MfcDmaOperation {
 struct MfcDmaManager {
     std::vector<MfcDmaOperation> pending_ops;
     std::unordered_map<uint16_t, std::vector<MfcDmaOperation>> tag_groups;
-    std::mutex mutex;
+    oc_mutex mutex;
     
     // DMA callback function type
     using DmaTransferFunc = int (*)(void* spu_state, uint32_t local_addr, 
@@ -269,7 +269,7 @@ struct MfcDmaManager {
     MfcDmaManager() : transfer_callback(nullptr) {}
     
     void queue_operation(const MfcDmaOperation& op) {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         pending_ops.push_back(op);
         tag_groups[op.tag].push_back(op);
     }
@@ -288,7 +288,7 @@ struct MfcDmaManager {
     }
     
     void complete_tag(uint16_t tag) {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         tag_groups.erase(tag);
         pending_ops.erase(
             std::remove_if(pending_ops.begin(), pending_ops.end(),
@@ -297,7 +297,7 @@ struct MfcDmaManager {
     }
     
     void clear() {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         pending_ops.clear();
         tag_groups.clear();
     }
@@ -332,15 +332,15 @@ struct LoopInfo {
  */
 struct LoopOptimizer {
     std::unordered_map<uint32_t, LoopInfo> loops;  // Key: header address
-    std::mutex mutex;
+    oc_mutex mutex;
     
     void detect_loop(uint32_t header, uint32_t back_edge, uint32_t exit) {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         loops[header] = LoopInfo(header, back_edge, exit);
     }
     
     void set_iteration_count(uint32_t header, uint32_t count) {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         auto it = loops.find(header);
         if (it != loops.end()) {
             it->second.iteration_count = count;
@@ -349,7 +349,7 @@ struct LoopOptimizer {
     }
     
     void set_vectorizable(uint32_t header, bool vectorizable) {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         auto it = loops.find(header);
         if (it != loops.end()) {
             it->second.is_vectorizable = vectorizable;
@@ -357,7 +357,7 @@ struct LoopOptimizer {
     }
     
     LoopInfo* get_loop(uint32_t header) {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         auto it = loops.find(header);
         return (it != loops.end()) ? &it->second : nullptr;
     }
@@ -373,7 +373,7 @@ struct LoopOptimizer {
     }
     
     void clear() {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         loops.clear();
     }
 };

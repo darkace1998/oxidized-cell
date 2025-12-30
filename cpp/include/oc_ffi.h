@@ -212,6 +212,94 @@ size_t oc_ppu_jit_get_completed_tasks(oc_ppu_jit_t* jit);
 int oc_ppu_jit_is_multithreaded(oc_ppu_jit_t* jit);
 
 // ============================================================================
+// PPU JIT Execution Context
+// ============================================================================
+
+/**
+ * PPU execution context structure
+ * 
+ * This structure holds the complete PPU state and is passed to JIT-compiled
+ * code for reading and writing registers. The compiled code operates on this
+ * context directly, allowing seamless transition between interpreter and JIT.
+ */
+typedef struct oc_ppu_context_t {
+    // General Purpose Registers (64-bit)
+    uint64_t gpr[32];
+    
+    // Floating Point Registers (64-bit IEEE double)
+    double fpr[32];
+    
+    // Vector Registers (128-bit, stored as 4 x uint32_t)
+    uint32_t vr[32][4];
+    
+    // Condition Register (32-bit)
+    uint32_t cr;
+    
+    // Link Register (64-bit)
+    uint64_t lr;
+    
+    // Count Register (64-bit)
+    uint64_t ctr;
+    
+    // Fixed-Point Exception Register (64-bit)
+    uint64_t xer;
+    
+    // Floating-Point Status and Control Register (64-bit)
+    uint64_t fpscr;
+    
+    // Vector Status and Control Register (32-bit)
+    uint32_t vscr;
+    
+    // Program Counter / Current Instruction Address (64-bit)
+    uint64_t pc;
+    
+    // Machine State Register (64-bit)
+    uint64_t msr;
+    
+    // Next instruction address after block execution
+    uint64_t next_pc;
+    
+    // Number of instructions executed in this block
+    uint32_t instructions_executed;
+    
+    // Execution result/status
+    // 0 = normal, 1 = branch, 2 = syscall, 3 = breakpoint, 4 = error
+    int32_t exit_reason;
+    
+    // Memory base pointer (set before execution)
+    void* memory_base;
+    
+    // Memory size (for bounds checking in debug builds)
+    uint64_t memory_size;
+} oc_ppu_context_t;
+
+/**
+ * Exit reason codes from JIT execution
+ */
+typedef enum {
+    OC_PPU_EXIT_NORMAL = 0,      // Block completed normally
+    OC_PPU_EXIT_BRANCH = 1,      // Block ended with branch
+    OC_PPU_EXIT_SYSCALL = 2,     // System call encountered
+    OC_PPU_EXIT_BREAKPOINT = 3,  // Breakpoint hit
+    OC_PPU_EXIT_ERROR = 4        // Execution error
+} oc_ppu_exit_reason_t;
+
+/**
+ * Execute JIT-compiled code with context
+ * 
+ * @param jit JIT compiler handle
+ * @param context PPU context (registers read/written here)
+ * @param address Start address of compiled block
+ * @return Number of instructions executed, or negative on error
+ */
+int oc_ppu_jit_execute(oc_ppu_jit_t* jit, oc_ppu_context_t* context, uint32_t address);
+
+/**
+ * Execute a single JIT block (does not handle branches)
+ */
+int oc_ppu_jit_execute_block(oc_ppu_jit_t* jit, oc_ppu_context_t* context, uint32_t address);
+
+// ============================================================================
 // SPU JIT Compiler
 // ============================================================================
 

@@ -69,8 +69,28 @@ pub struct VulkanBackend {
     pipeline_layout: Option<vk::PipelineLayout>,
     /// Current graphics pipeline
     pipeline: Option<vk::Pipeline>,
-    /// Descriptor set layout
+    /// Descriptor set layout for texture samplers
     descriptor_set_layout: Option<vk::DescriptorSetLayout>,
+    /// Descriptor pool for allocating descriptor sets
+    descriptor_pool: Option<vk::DescriptorPool>,
+    /// Descriptor sets for texture binding (one per frame in flight)
+    descriptor_sets: Vec<vk::DescriptorSet>,
+    /// Texture images (16 texture units max)
+    texture_images: [Option<vk::Image>; 16],
+    /// Texture image views
+    texture_image_views: [Option<vk::ImageView>; 16],
+    /// Texture image allocations
+    texture_allocations: [Option<Allocation>; 16],
+    /// Texture samplers (16 texture units max)
+    texture_samplers: [Option<vk::Sampler>; 16],
+    /// Whether each texture slot is bound
+    texture_bound: [bool; 16],
+    /// Current vertex shader module
+    vertex_shader: Option<vk::ShaderModule>,
+    /// Current fragment shader module
+    fragment_shader: Option<vk::ShaderModule>,
+    /// Shader translator
+    shader_translator: crate::shader::ShaderTranslator,
     /// Vertex input bindings
     vertex_bindings: Vec<vk::VertexInputBindingDescription>,
     /// Vertex input attributes
@@ -145,6 +165,16 @@ impl VulkanBackend {
             pipeline_layout: None,
             pipeline: None,
             descriptor_set_layout: None,
+            descriptor_pool: None,
+            descriptor_sets: Vec::new(),
+            texture_images: Default::default(),
+            texture_image_views: Default::default(),
+            texture_allocations: Default::default(),
+            texture_samplers: Default::default(),
+            texture_bound: [false; 16],
+            vertex_shader: None,
+            fragment_shader: None,
+            shader_translator: crate::shader::ShaderTranslator::new(),
             vertex_bindings: Vec::new(),
             vertex_attributes: Vec::new(),
             in_render_pass: false,
@@ -571,6 +601,688 @@ impl VulkanBackend {
         Ok((image, view, allocation))
     }
 
+    /// Create descriptor set layout for texture samplers
+    /// Matches the SPIR-V shader bindings: 16 combined image samplers at set 0
+    fn create_descriptor_set_layout(device: &ash::Device) -> Result<vk::DescriptorSetLayout, String> {
+        // Create bindings for 16 texture units
+        let bindings: Vec<vk::DescriptorSetLayoutBinding> = (0..16)
+            .map(|i| {
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(i)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::FRAGMENT)
+            })
+            .collect();
+
+        let layout_info = vk::DescriptorSetLayoutCreateInfo::default()
+            .bindings(&bindings);
+
+        unsafe {
+            device
+                .create_descriptor_set_layout(&layout_info, None)
+                .map_err(|e| format!("Failed to create descriptor set layout: {:?}", e))
+        }
+    }
+
+    /// Create descriptor pool for allocating descriptor sets
+    fn create_descriptor_pool(device: &ash::Device, max_sets: u32) -> Result<vk::DescriptorPool, String> {
+        // Pool size for combined image samplers (16 per set * max_sets)
+        let pool_sizes = [
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                descriptor_count: 16 * max_sets,
+            },
+        ];
+
+        let pool_info = vk::DescriptorPoolCreateInfo::default()
+            .pool_sizes(&pool_sizes)
+            .max_sets(max_sets);
+
+        unsafe {
+            device
+                .create_descriptor_pool(&pool_info, None)
+                .map_err(|e| format!("Failed to create descriptor pool: {:?}", e))
+        }
+    }
+
+    /// Allocate descriptor sets for each frame in flight
+    fn allocate_descriptor_sets(
+        device: &ash::Device,
+        pool: vk::DescriptorPool,
+        layout: vk::DescriptorSetLayout,
+        count: usize,
+    ) -> Result<Vec<vk::DescriptorSet>, String> {
+        let layouts: Vec<vk::DescriptorSetLayout> = vec![layout; count];
+
+        let alloc_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(pool)
+            .set_layouts(&layouts);
+
+        unsafe {
+            device
+                .allocate_descriptor_sets(&alloc_info)
+                .map_err(|e| format!("Failed to allocate descriptor sets: {:?}", e))
+        }
+    }
+
+    /// Create a texture sampler with the given configuration
+    fn create_sampler(
+        device: &ash::Device,
+        min_filter: vk::Filter,
+        mag_filter: vk::Filter,
+        mipmap_mode: vk::SamplerMipmapMode,
+        address_mode_u: vk::SamplerAddressMode,
+        address_mode_v: vk::SamplerAddressMode,
+        address_mode_w: vk::SamplerAddressMode,
+        anisotropy: f32,
+        max_anisotropy: f32,
+    ) -> Result<vk::Sampler, String> {
+        let enable_anisotropy = anisotropy > 1.0;
+        let sampler_info = vk::SamplerCreateInfo::default()
+            .mag_filter(mag_filter)
+            .min_filter(min_filter)
+            .mipmap_mode(mipmap_mode)
+            .address_mode_u(address_mode_u)
+            .address_mode_v(address_mode_v)
+            .address_mode_w(address_mode_w)
+            .anisotropy_enable(enable_anisotropy)
+            .max_anisotropy(anisotropy.min(max_anisotropy))
+            .compare_enable(false)
+            .compare_op(vk::CompareOp::ALWAYS)
+            .min_lod(0.0)
+            .max_lod(vk::LOD_CLAMP_NONE)
+            .border_color(vk::BorderColor::INT_OPAQUE_BLACK)
+            .unnormalized_coordinates(false);
+
+        unsafe {
+            device
+                .create_sampler(&sampler_info, None)
+                .map_err(|e| format!("Failed to create sampler: {:?}", e))
+        }
+    }
+
+    /// Create default samplers for all 16 texture units
+    fn create_default_samplers(device: &ash::Device, max_anisotropy: f32) -> Result<[Option<vk::Sampler>; 16], String> {
+        let mut samplers: [Option<vk::Sampler>; 16] = Default::default();
+        
+        for (i, sampler) in samplers.iter_mut().enumerate() {
+            *sampler = Some(Self::create_sampler(
+                device,
+                vk::Filter::LINEAR,
+                vk::Filter::LINEAR,
+                vk::SamplerMipmapMode::LINEAR,
+                vk::SamplerAddressMode::REPEAT,
+                vk::SamplerAddressMode::REPEAT,
+                vk::SamplerAddressMode::REPEAT,
+                1.0,
+                max_anisotropy,
+            ).map_err(|e| format!("Failed to create default sampler {}: {}", i, e))?);
+        }
+
+        Ok(samplers)
+    }
+
+    /// Create a placeholder texture image (1x1 white) for unbound texture slots
+    fn create_placeholder_texture(
+        device: &ash::Device,
+        allocator: &Arc<Mutex<Allocator>>,
+        queue: vk::Queue,
+        command_pool: vk::CommandPool,
+    ) -> Result<(vk::Image, vk::ImageView, Allocation), String> {
+        // Create 1x1 RGBA8 image
+        let image_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(vk::Format::R8G8B8A8_UNORM)
+            .extent(vk::Extent3D { width: 1, height: 1, depth: 1 })
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .initial_layout(vk::ImageLayout::UNDEFINED);
+
+        let image = unsafe {
+            device
+                .create_image(&image_info, None)
+                .map_err(|e| format!("Failed to create placeholder image: {:?}", e))?
+        };
+
+        let requirements = unsafe { device.get_image_memory_requirements(image) };
+
+        let allocation = allocator
+            .lock()
+            .unwrap()
+            .allocate(&AllocationCreateDesc {
+                name: "placeholder_texture",
+                requirements,
+                location: MemoryLocation::GpuOnly,
+                linear: false,
+                allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+            })
+            .map_err(|e| format!("Failed to allocate placeholder texture memory: {:?}", e))?;
+
+        unsafe {
+            device
+                .bind_image_memory(image, allocation.memory(), allocation.offset())
+                .map_err(|e| format!("Failed to bind placeholder image memory: {:?}", e))?;
+        }
+
+        // Transition to shader read layout
+        Self::transition_image_layout(
+            device,
+            queue,
+            command_pool,
+            image,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        )?;
+
+        // Create image view
+        let view_info = vk::ImageViewCreateInfo::default()
+            .image(image)
+            .view_type(vk::ImageViewType::TYPE_2D)
+            .format(vk::Format::R8G8B8A8_UNORM)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            });
+
+        let view = unsafe {
+            device
+                .create_image_view(&view_info, None)
+                .map_err(|e| format!("Failed to create placeholder image view: {:?}", e))?
+        };
+
+        Ok((image, view, allocation))
+    }
+
+    /// Transition image layout using a one-time command buffer
+    fn transition_image_layout(
+        device: &ash::Device,
+        queue: vk::Queue,
+        command_pool: vk::CommandPool,
+        image: vk::Image,
+        old_layout: vk::ImageLayout,
+        new_layout: vk::ImageLayout,
+    ) -> Result<(), String> {
+        // Allocate one-time command buffer
+        let alloc_info = vk::CommandBufferAllocateInfo::default()
+            .command_pool(command_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+
+        let cmd_buffer = unsafe {
+            device
+                .allocate_command_buffers(&alloc_info)
+                .map_err(|e| format!("Failed to allocate command buffer: {:?}", e))?
+        }[0];
+
+        // Begin recording
+        let begin_info = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+        unsafe {
+            device
+                .begin_command_buffer(cmd_buffer, &begin_info)
+                .map_err(|e| format!("Failed to begin command buffer: {:?}", e))?;
+        }
+
+        // Determine access masks and pipeline stages based on layouts
+        let (src_access, dst_access, src_stage, dst_stage) = match (old_layout, new_layout) {
+            (vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL) => (
+                vk::AccessFlags::empty(),
+                vk::AccessFlags::TRANSFER_WRITE,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::TRANSFER,
+            ),
+            (vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => (
+                vk::AccessFlags::TRANSFER_WRITE,
+                vk::AccessFlags::SHADER_READ,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+            ),
+            (vk::ImageLayout::UNDEFINED, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => (
+                vk::AccessFlags::empty(),
+                vk::AccessFlags::SHADER_READ,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+            ),
+            _ => {
+                return Err(format!(
+                    "Unsupported layout transition: {:?} -> {:?}",
+                    old_layout, new_layout
+                ));
+            }
+        };
+
+        let barrier = vk::ImageMemoryBarrier::default()
+            .old_layout(old_layout)
+            .new_layout(new_layout)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+            .src_access_mask(src_access)
+            .dst_access_mask(dst_access);
+
+        unsafe {
+            device.cmd_pipeline_barrier(
+                cmd_buffer,
+                src_stage,
+                dst_stage,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[barrier],
+            );
+
+            device
+                .end_command_buffer(cmd_buffer)
+                .map_err(|e| format!("Failed to end command buffer: {:?}", e))?;
+
+            // Submit and wait
+            let submit_info = vk::SubmitInfo::default()
+                .command_buffers(std::slice::from_ref(&cmd_buffer));
+
+            device
+                .queue_submit(queue, &[submit_info], vk::Fence::null())
+                .map_err(|e| format!("Failed to submit command buffer: {:?}", e))?;
+
+            device
+                .queue_wait_idle(queue)
+                .map_err(|e| format!("Failed to wait for queue: {:?}", e))?;
+
+            // Free the command buffer
+            device.free_command_buffers(command_pool, &[cmd_buffer]);
+        }
+
+        Ok(())
+    }
+
+    /// Upload texture data to a Vulkan image
+    pub fn upload_texture(
+        &mut self,
+        slot: u32,
+        texture: &crate::texture::Texture,
+        data: &[u8],
+    ) -> Result<(), String> {
+        if slot >= 16 {
+            return Err(format!("Invalid texture slot: {}", slot));
+        }
+
+        let slot = slot as usize;
+
+        // Destroy existing texture at this slot if any (do this first before borrowing device)
+        self.destroy_texture_at_slot(slot);
+
+        let device = self.device.as_ref().ok_or("Device not initialized")?;
+        let allocator = self.allocator.as_ref().ok_or("Allocator not initialized")?;
+        let queue = self.graphics_queue.ok_or("Graphics queue not available")?;
+        let command_pool = self.command_pool.ok_or("Command pool not available")?;
+
+        // Determine Vulkan format from RSX format
+        let vk_format = Self::rsx_format_to_vk(texture.format);
+
+        // Create texture image
+        let image_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(vk_format)
+            .extent(vk::Extent3D {
+                width: texture.width as u32,
+                height: texture.height as u32,
+                depth: 1,
+            })
+            .mip_levels(texture.mipmap_levels as u32)
+            .array_layers(if texture.is_cubemap { 6 } else { 1 })
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .initial_layout(vk::ImageLayout::UNDEFINED);
+
+        let image = unsafe {
+            device
+                .create_image(&image_info, None)
+                .map_err(|e| format!("Failed to create texture image: {:?}", e))?
+        };
+
+        let requirements = unsafe { device.get_image_memory_requirements(image) };
+
+        let allocation = allocator
+            .lock()
+            .unwrap()
+            .allocate(&AllocationCreateDesc {
+                name: &format!("texture_{}", slot),
+                requirements,
+                location: MemoryLocation::GpuOnly,
+                linear: false,
+                allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+            })
+            .map_err(|e| format!("Failed to allocate texture memory: {:?}", e))?;
+
+        unsafe {
+            device
+                .bind_image_memory(image, allocation.memory(), allocation.offset())
+                .map_err(|e| format!("Failed to bind texture image memory: {:?}", e))?;
+        }
+
+        // Create staging buffer for upload
+        let staging_buffer_info = vk::BufferCreateInfo::default()
+            .size(data.len() as u64)
+            .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+        let staging_buffer = unsafe {
+            device
+                .create_buffer(&staging_buffer_info, None)
+                .map_err(|e| format!("Failed to create staging buffer: {:?}", e))?
+        };
+
+        let staging_requirements = unsafe { device.get_buffer_memory_requirements(staging_buffer) };
+
+        let staging_allocation = allocator
+            .lock()
+            .unwrap()
+            .allocate(&AllocationCreateDesc {
+                name: "texture_staging",
+                requirements: staging_requirements,
+                location: MemoryLocation::CpuToGpu,
+                linear: true,
+                allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+            })
+            .map_err(|e| format!("Failed to allocate staging buffer memory: {:?}", e))?;
+
+        unsafe {
+            device
+                .bind_buffer_memory(staging_buffer, staging_allocation.memory(), staging_allocation.offset())
+                .map_err(|e| format!("Failed to bind staging buffer memory: {:?}", e))?;
+        }
+
+        // Copy data to staging buffer
+        if let Some(mapped_ptr) = staging_allocation.mapped_ptr() {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    data.as_ptr(),
+                    mapped_ptr.as_ptr() as *mut u8,
+                    data.len(),
+                );
+            }
+        } else {
+            // Clean up and return error
+            unsafe {
+                device.destroy_buffer(staging_buffer, None);
+                device.destroy_image(image, None);
+            }
+            allocator.lock().unwrap().free(staging_allocation).ok();
+            allocator.lock().unwrap().free(allocation).ok();
+            return Err("Staging buffer not mappable".to_string());
+        }
+
+        // Transition to transfer dst, copy, then transition to shader read
+        Self::transition_image_layout(
+            device,
+            queue,
+            command_pool,
+            image,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        )?;
+
+        // Copy buffer to image
+        Self::copy_buffer_to_image(
+            device,
+            queue,
+            command_pool,
+            staging_buffer,
+            image,
+            texture.width as u32,
+            texture.height as u32,
+        )?;
+
+        Self::transition_image_layout(
+            device,
+            queue,
+            command_pool,
+            image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        )?;
+
+        // Clean up staging buffer
+        unsafe {
+            device.destroy_buffer(staging_buffer, None);
+        }
+        allocator.lock().unwrap().free(staging_allocation).ok();
+
+        // Create image view
+        let view_info = vk::ImageViewCreateInfo::default()
+            .image(image)
+            .view_type(if texture.is_cubemap {
+                vk::ImageViewType::CUBE
+            } else {
+                vk::ImageViewType::TYPE_2D
+            })
+            .format(vk_format)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: texture.mipmap_levels as u32,
+                base_array_layer: 0,
+                layer_count: if texture.is_cubemap { 6 } else { 1 },
+            });
+
+        let view = unsafe {
+            device
+                .create_image_view(&view_info, None)
+                .map_err(|e| format!("Failed to create texture image view: {:?}", e))?
+        };
+
+        // Store in slot
+        self.texture_images[slot] = Some(image);
+        self.texture_image_views[slot] = Some(view);
+        self.texture_allocations[slot] = Some(allocation);
+        self.texture_bound[slot] = false;
+
+        Ok(())
+    }
+
+    /// Copy buffer data to image
+    fn copy_buffer_to_image(
+        device: &ash::Device,
+        queue: vk::Queue,
+        command_pool: vk::CommandPool,
+        buffer: vk::Buffer,
+        image: vk::Image,
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        // Allocate one-time command buffer
+        let alloc_info = vk::CommandBufferAllocateInfo::default()
+            .command_pool(command_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+
+        let cmd_buffer = unsafe {
+            device
+                .allocate_command_buffers(&alloc_info)
+                .map_err(|e| format!("Failed to allocate command buffer: {:?}", e))?
+        }[0];
+
+        let begin_info = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+        unsafe {
+            device
+                .begin_command_buffer(cmd_buffer, &begin_info)
+                .map_err(|e| format!("Failed to begin command buffer: {:?}", e))?;
+
+            let region = vk::BufferImageCopy::default()
+                .buffer_offset(0)
+                .buffer_row_length(0)
+                .buffer_image_height(0)
+                .image_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                .image_extent(vk::Extent3D { width, height, depth: 1 });
+
+            device.cmd_copy_buffer_to_image(
+                cmd_buffer,
+                buffer,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[region],
+            );
+
+            device
+                .end_command_buffer(cmd_buffer)
+                .map_err(|e| format!("Failed to end command buffer: {:?}", e))?;
+
+            let submit_info = vk::SubmitInfo::default()
+                .command_buffers(std::slice::from_ref(&cmd_buffer));
+
+            device
+                .queue_submit(queue, &[submit_info], vk::Fence::null())
+                .map_err(|e| format!("Failed to submit command buffer: {:?}", e))?;
+
+            device
+                .queue_wait_idle(queue)
+                .map_err(|e| format!("Failed to wait for queue: {:?}", e))?;
+
+            device.free_command_buffers(command_pool, &[cmd_buffer]);
+        }
+
+        Ok(())
+    }
+
+    /// Destroy texture resources at a slot
+    fn destroy_texture_at_slot(&mut self, slot: usize) {
+        if slot >= 16 {
+            return;
+        }
+
+        if let Some(device) = &self.device {
+            // Destroy image view
+            if let Some(view) = self.texture_image_views[slot].take() {
+                unsafe {
+                    device.destroy_image_view(view, None);
+                }
+            }
+
+            // Destroy image
+            if let Some(image) = self.texture_images[slot].take() {
+                unsafe {
+                    device.destroy_image(image, None);
+                }
+            }
+
+            // Free allocation
+            if let Some(allocator) = &self.allocator {
+                if let Some(allocation) = self.texture_allocations[slot].take() {
+                    allocator.lock().unwrap().free(allocation).ok();
+                }
+            }
+
+            self.texture_bound[slot] = false;
+        }
+    }
+
+    /// Convert RSX texture format to Vulkan format
+    fn rsx_format_to_vk(format: u8) -> vk::Format {
+        use crate::texture::format::*;
+        match format {
+            B8 => vk::Format::R8_UNORM,
+            A1R5G5B5 | R5G5B5A1 | D1R5G5B5 => vk::Format::A1R5G5B5_UNORM_PACK16,
+            A4R4G4B4 => vk::Format::R4G4B4A4_UNORM_PACK16,
+            R5G6B5 => vk::Format::R5G6B5_UNORM_PACK16,
+            ARGB8 | A8R8G8B8 | D8R8G8B8 => vk::Format::B8G8R8A8_UNORM,
+            XRGB8 => vk::Format::B8G8R8A8_UNORM,
+            DXT1 => vk::Format::BC1_RGBA_UNORM_BLOCK,
+            DXT3 => vk::Format::BC2_UNORM_BLOCK,
+            DXT5 => vk::Format::BC3_UNORM_BLOCK,
+            G8B8 => vk::Format::R8G8_UNORM,
+            DEPTH24_D8 => vk::Format::D24_UNORM_S8_UINT,
+            DEPTH16 => vk::Format::D16_UNORM,
+            X16 => vk::Format::R16_UNORM,
+            Y16_X16 => vk::Format::R16G16_UNORM,
+            W16_Z16_Y16_X16_FLOAT => vk::Format::R16G16B16A16_SFLOAT,
+            W32_Z32_Y32_X32_FLOAT => vk::Format::R32G32B32A32_SFLOAT,
+            X32_FLOAT => vk::Format::R32_SFLOAT,
+            Y16_X16_FLOAT => vk::Format::R16G16_SFLOAT,
+            _ => vk::Format::R8G8B8A8_UNORM, // Default fallback
+        }
+    }
+
+    /// Update descriptor set with bound textures
+    fn update_descriptor_set(&self, set_index: usize) {
+        if set_index >= self.descriptor_sets.len() {
+            return;
+        }
+
+        let device = match &self.device {
+            Some(d) => d,
+            None => return,
+        };
+
+        let descriptor_set = self.descriptor_sets[set_index];
+        
+        // First, collect all valid texture bindings
+        let mut bindings: Vec<(u32, vk::DescriptorImageInfo)> = Vec::with_capacity(16);
+        
+        for i in 0..16 {
+            if let (Some(view), Some(sampler)) = (self.texture_image_views[i], self.texture_samplers[i]) {
+                let image_info = vk::DescriptorImageInfo::default()
+                    .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .image_view(view)
+                    .sampler(sampler);
+                bindings.push((i as u32, image_info));
+            }
+        }
+
+        if bindings.is_empty() {
+            return;
+        }
+
+        // Store image infos in a boxed array to ensure stable addresses
+        let image_infos: Vec<[vk::DescriptorImageInfo; 1]> = bindings
+            .iter()
+            .map(|(_, info)| [*info])
+            .collect();
+        
+        // Now build write descriptors referencing the stable storage
+        let write_descriptors: Vec<vk::WriteDescriptorSet> = bindings
+            .iter()
+            .zip(image_infos.iter())
+            .map(|((binding, _), info)| {
+                vk::WriteDescriptorSet::default()
+                    .dst_set(descriptor_set)
+                    .dst_binding(*binding)
+                    .dst_array_element(0)
+                    .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+                    .descriptor_count(1)
+                    .image_info(info)
+            })
+            .collect();
+
+        unsafe {
+            device.update_descriptor_sets(&write_descriptors, &[]);
+        }
+    }
+
     /// Convert RSX vertex attribute type to Vulkan format
     fn vertex_type_to_vk_format(type_: VertexAttributeType, size: u8, normalized: bool) -> vk::Format {
         match (type_, size, normalized) {
@@ -618,6 +1330,240 @@ impl VulkanBackend {
             PrimitiveType::Quads => vk::PrimitiveTopology::TRIANGLE_LIST, // Will need index conversion
             PrimitiveType::QuadStrip => vk::PrimitiveTopology::TRIANGLE_STRIP,
             PrimitiveType::Polygon => vk::PrimitiveTopology::TRIANGLE_FAN, // Approximate
+        }
+    }
+
+    /// Create a Vulkan shader module from SPIR-V bytecode
+    pub fn create_shader_module(&self, spirv: &[u32]) -> Result<vk::ShaderModule, String> {
+        let device = self.device.as_ref()
+            .ok_or("Device not initialized")?;
+
+        let create_info = vk::ShaderModuleCreateInfo::default()
+            .code(spirv);
+
+        unsafe {
+            device.create_shader_module(&create_info, None)
+                .map_err(|e| format!("Failed to create shader module: {:?}", e))
+        }
+    }
+
+    /// Compile RSX vertex program to Vulkan shader module
+    pub fn compile_vertex_program(&mut self, program: &mut crate::shader::VertexProgram) -> Result<vk::ShaderModule, String> {
+        // Translate to SPIR-V
+        let spirv_module = self.shader_translator.translate_vertex(program)?;
+        
+        // Create Vulkan shader module
+        let module = self.create_shader_module(&spirv_module.bytecode)?;
+        
+        // Store and return
+        if let Some(old) = self.vertex_shader.take() {
+            if let Some(device) = &self.device {
+                unsafe { device.destroy_shader_module(old, None); }
+            }
+        }
+        self.vertex_shader = Some(module);
+        
+        Ok(module)
+    }
+
+    /// Compile RSX fragment program to Vulkan shader module
+    pub fn compile_fragment_program(&mut self, program: &mut crate::shader::FragmentProgram) -> Result<vk::ShaderModule, String> {
+        // Translate to SPIR-V
+        let spirv_module = self.shader_translator.translate_fragment(program)?;
+        
+        // Create Vulkan shader module
+        let module = self.create_shader_module(&spirv_module.bytecode)?;
+        
+        // Store and return
+        if let Some(old) = self.fragment_shader.take() {
+            if let Some(device) = &self.device {
+                unsafe { device.destroy_shader_module(old, None); }
+            }
+        }
+        self.fragment_shader = Some(module);
+        
+        Ok(module)
+    }
+
+    /// Create graphics pipeline with current shaders
+    pub fn create_graphics_pipeline(
+        &mut self,
+        topology: vk::PrimitiveTopology,
+    ) -> Result<vk::Pipeline, String> {
+        let device = self.device.as_ref()
+            .ok_or("Device not initialized")?;
+        let render_pass = self.render_pass
+            .ok_or("Render pass not created")?;
+
+        // Get shader modules
+        let vs = self.vertex_shader
+            .ok_or("Vertex shader not compiled")?;
+        let fs = self.fragment_shader
+            .ok_or("Fragment shader not compiled")?;
+
+        // Shader stage info
+        let main_name = std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap();
+        
+        let shader_stages = [
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vs)
+                .name(main_name),
+            vk::PipelineShaderStageCreateInfo::default()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(fs)
+                .name(main_name),
+        ];
+
+        // Vertex input state
+        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default()
+            .vertex_binding_descriptions(&self.vertex_bindings)
+            .vertex_attribute_descriptions(&self.vertex_attributes);
+
+        // Input assembly
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(topology)
+            .primitive_restart_enable(false);
+
+        // Viewport and scissor (dynamic)
+        let viewport = vk::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: self.width as f32,
+            height: self.height as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        };
+        let scissor = vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: vk::Extent2D { width: self.width, height: self.height },
+        };
+        let viewports = [viewport];
+        let scissors = [scissor];
+        let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+            .viewports(&viewports)
+            .scissors(&scissors);
+
+        // Rasterization
+        let rasterizer = vk::PipelineRasterizationStateCreateInfo::default()
+            .depth_clamp_enable(false)
+            .rasterizer_discard_enable(false)
+            .polygon_mode(vk::PolygonMode::FILL)
+            .line_width(1.0)
+            .cull_mode(vk::CullModeFlags::BACK)
+            .front_face(vk::FrontFace::CLOCKWISE)
+            .depth_bias_enable(false);
+
+        // Multisampling
+        let multisampling = vk::PipelineMultisampleStateCreateInfo::default()
+            .sample_shading_enable(false)
+            .rasterization_samples(self.msaa_samples);
+
+        // Depth stencil
+        let depth_stencil = vk::PipelineDepthStencilStateCreateInfo::default()
+            .depth_test_enable(true)
+            .depth_write_enable(true)
+            .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+            .depth_bounds_test_enable(false)
+            .stencil_test_enable(false);
+
+        // Color blending
+        let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA)
+            .blend_enable(true)
+            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .color_blend_op(vk::BlendOp::ADD)
+            .src_alpha_blend_factor(vk::BlendFactor::ONE)
+            .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+            .alpha_blend_op(vk::BlendOp::ADD);
+        let color_blend_attachments = [color_blend_attachment];
+        let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
+            .logic_op_enable(false)
+            .attachments(&color_blend_attachments);
+
+        // Create pipeline layout if needed (includes descriptor set layout for textures)
+        if self.pipeline_layout.is_none() {
+            let set_layouts = if let Some(desc_layout) = self.descriptor_set_layout {
+                vec![desc_layout]
+            } else {
+                vec![]
+            };
+            
+            let layout_info = vk::PipelineLayoutCreateInfo::default()
+                .set_layouts(&set_layouts);
+            
+            self.pipeline_layout = Some(unsafe {
+                device.create_pipeline_layout(&layout_info, None)
+                    .map_err(|e| format!("Failed to create pipeline layout: {:?}", e))?
+            });
+        }
+        let pipeline_layout = self.pipeline_layout.unwrap();
+
+        // Create pipeline
+        let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages)
+            .vertex_input_state(&vertex_input_info)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterizer)
+            .multisample_state(&multisampling)
+            .depth_stencil_state(&depth_stencil)
+            .color_blend_state(&color_blending)
+            .layout(pipeline_layout)
+            .render_pass(render_pass)
+            .subpass(0);
+
+        let pipeline = unsafe {
+            device.create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
+                .map_err(|e| format!("Failed to create graphics pipeline: {:?}", e.1))?
+        };
+
+        // Destroy old pipeline
+        if let Some(old) = self.pipeline.take() {
+            unsafe { device.destroy_pipeline(old, None); }
+        }
+        self.pipeline = Some(pipeline[0]);
+
+        Ok(pipeline[0])
+    }
+
+    /// Bind current pipeline for rendering
+    pub fn bind_pipeline(&self) {
+        if let (Some(cmd_buffer), Some(pipeline)) = (self.current_cmd_buffer, self.pipeline) {
+            if let Some(device) = &self.device {
+                unsafe {
+                    device.cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+                }
+                
+                // Also bind descriptor sets for textures
+                self.bind_descriptor_set_impl();
+            }
+        }
+    }
+
+    /// Bind the current descriptor set during rendering (inherent impl)
+    fn bind_descriptor_set_impl(&self) {
+        if !self.initialized {
+            return;
+        }
+
+        if let (Some(device), Some(cmd_buffer), Some(layout)) = 
+            (&self.device, self.current_cmd_buffer, self.pipeline_layout) 
+        {
+            if self.descriptor_sets.len() > self.current_frame {
+                let descriptor_set = self.descriptor_sets[self.current_frame];
+                unsafe {
+                    device.cmd_bind_descriptor_sets(
+                        cmd_buffer,
+                        vk::PipelineBindPoint::GRAPHICS,
+                        layout,
+                        0,
+                        &[descriptor_set],
+                        &[],
+                    );
+                }
+            }
         }
     }
 }
@@ -694,6 +1640,37 @@ impl GraphicsBackend for VulkanBackend {
         let (depth_image, depth_image_view, depth_allocation) =
             Self::create_depth_buffer(&device, &allocator, self.width, self.height)?;
 
+        // Create descriptor set layout for texture samplers
+        let descriptor_set_layout = Self::create_descriptor_set_layout(&device)?;
+
+        // Create descriptor pool
+        let descriptor_pool = Self::create_descriptor_pool(&device, self.max_frames_in_flight as u32)?;
+
+        // Allocate descriptor sets
+        let descriptor_sets = Self::allocate_descriptor_sets(
+            &device,
+            descriptor_pool,
+            descriptor_set_layout,
+            self.max_frames_in_flight,
+        )?;
+
+        // Create default samplers for all texture units
+        let texture_samplers = Self::create_default_samplers(&device, self.max_anisotropy)?;
+
+        // Create placeholder textures for all 16 slots
+        let mut texture_images: [Option<vk::Image>; 16] = Default::default();
+        let mut texture_image_views: [Option<vk::ImageView>; 16] = Default::default();
+        let mut texture_allocations: [Option<Allocation>; 16] = Default::default();
+
+        // Create one placeholder and use it for all slots
+        let (placeholder_image, placeholder_view, placeholder_allocation) =
+            Self::create_placeholder_texture(&device, &allocator, graphics_queue, command_pool)?;
+
+        // For slot 0, use the actual placeholder; others will be None until textures are uploaded
+        texture_images[0] = Some(placeholder_image);
+        texture_image_views[0] = Some(placeholder_view);
+        texture_allocations[0] = Some(placeholder_allocation);
+
         // Create framebuffer using the first render target
         let framebuffer = if !render_image_views.is_empty() {
             let attachments = [render_image_views[0], depth_image_view];
@@ -733,8 +1710,20 @@ impl GraphicsBackend for VulkanBackend {
         self.depth_image = Some(depth_image);
         self.depth_image_view = Some(depth_image_view);
         self.depth_image_allocation = Some(depth_allocation);
+        self.descriptor_set_layout = Some(descriptor_set_layout);
+        self.descriptor_pool = Some(descriptor_pool);
+        self.descriptor_sets = descriptor_sets;
+        self.texture_images = texture_images;
+        self.texture_image_views = texture_image_views;
+        self.texture_allocations = texture_allocations;
+        self.texture_samplers = texture_samplers;
         self.allocator = Some(allocator);
         self.initialized = true;
+
+        // Initialize descriptor sets with placeholder textures
+        for i in 0..self.max_frames_in_flight {
+            self.update_descriptor_set(i);
+        }
 
         tracing::info!("Vulkan backend initialized successfully");
         Ok(())
@@ -805,8 +1794,41 @@ impl GraphicsBackend for VulkanBackend {
                 if let Some(layout) = self.pipeline_layout.take() {
                     device.destroy_pipeline_layout(layout, None);
                 }
+
+                // Destroy texture resources
+                for i in 0..16 {
+                    if let Some(view) = self.texture_image_views[i].take() {
+                        device.destroy_image_view(view, None);
+                    }
+                    if let Some(image) = self.texture_images[i].take() {
+                        device.destroy_image(image, None);
+                    }
+                    if let Some(sampler) = self.texture_samplers[i].take() {
+                        device.destroy_sampler(sampler, None);
+                    }
+                    if let Some(allocator) = &self.allocator {
+                        if let Some(allocation) = self.texture_allocations[i].take() {
+                            allocator.lock().unwrap().free(allocation).ok();
+                        }
+                    }
+                }
+
+                // Destroy descriptor pool (this also frees descriptor sets)
+                if let Some(pool) = self.descriptor_pool.take() {
+                    device.destroy_descriptor_pool(pool, None);
+                }
+                self.descriptor_sets.clear();
+
                 if let Some(layout) = self.descriptor_set_layout.take() {
                     device.destroy_descriptor_set_layout(layout, None);
+                }
+
+                // Destroy shader modules
+                if let Some(vs) = self.vertex_shader.take() {
+                    device.destroy_shader_module(vs, None);
+                }
+                if let Some(fs) = self.fragment_shader.take() {
+                    device.destroy_shader_module(fs, None);
                 }
 
                 if let Some(render_pass) = self.render_pass.take() {
@@ -1089,10 +2111,26 @@ impl GraphicsBackend for VulkanBackend {
             return;
         }
 
+        if slot >= 16 {
+            tracing::warn!("Invalid texture slot: {}", slot);
+            return;
+        }
+
         tracing::trace!("Bind texture: slot={}, offset=0x{:08x}", slot, offset);
 
-        // TODO: Bind texture descriptor set
-        // This would update descriptor sets with the texture at the given offset
+        let slot = slot as usize;
+
+        // Mark this slot as bound (texture should have been uploaded via upload_texture)
+        if self.texture_image_views[slot].is_some() {
+            self.texture_bound[slot] = true;
+
+            // Update descriptor sets for all frames in flight
+            for i in 0..self.max_frames_in_flight {
+                self.update_descriptor_set(i);
+            }
+        } else {
+            tracing::warn!("Texture at slot {} not uploaded, binding skipped", slot);
+        }
     }
 
     fn set_viewport(&mut self, x: f32, y: f32, width: f32, height: f32, min_depth: f32, max_depth: f32) {

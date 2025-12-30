@@ -3112,7 +3112,9 @@ name = "oc-hle"
 version = "0.1.0"
 dependencies = [
  "oc-core",
+ "oc-input",
  "oc-memory",
+ "oc-vfs",
  "once_cell",
  "parking_lot",
  "regex",
@@ -3136,6 +3138,7 @@ dependencies = [
  "oc-core",
  "oc-ffi",
  "oc-hle",
+ "oc-input",
  "oc-loader",
  "oc-lv2",
  "oc-memory",
@@ -3197,6 +3200,7 @@ dependencies = [
  "bitflags 2.10.0",
  "bytemuck",
  "oc-core",
+ "oc-ffi",
  "oc-hle",
  "oc-memory",
  "parking_lot",

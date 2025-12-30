@@ -773,6 +773,431 @@ pub fn vminfp(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
     ]
 }
 
+// ============================================================================
+// Additional VMX/AltiVec instructions
+// ============================================================================
+
+/// Vector Shift Left Double by Octet Immediate (VA-form)
+/// Concatenates vA and vB, then shifts left by SH bytes
+pub fn vsldoi(a: [u32; 4], b: [u32; 4], sh: u8) -> [u32; 4] {
+    // Convert to bytes (big-endian)
+    let mut concat = [0u8; 32];
+    for i in 0..4 {
+        let a_bytes = a[i].to_be_bytes();
+        let b_bytes = b[i].to_be_bytes();
+        concat[i * 4] = a_bytes[0];
+        concat[i * 4 + 1] = a_bytes[1];
+        concat[i * 4 + 2] = a_bytes[2];
+        concat[i * 4 + 3] = a_bytes[3];
+        concat[16 + i * 4] = b_bytes[0];
+        concat[16 + i * 4 + 1] = b_bytes[1];
+        concat[16 + i * 4 + 2] = b_bytes[2];
+        concat[16 + i * 4 + 3] = b_bytes[3];
+    }
+    
+    // Extract 16 bytes starting at offset sh
+    let sh = (sh & 0xF) as usize;
+    let mut result_bytes = [0u8; 16];
+    for i in 0..16 {
+        result_bytes[i] = concat[sh + i];
+    }
+    
+    // Convert back to words
+    [
+        u32::from_be_bytes([result_bytes[0], result_bytes[1], result_bytes[2], result_bytes[3]]),
+        u32::from_be_bytes([result_bytes[4], result_bytes[5], result_bytes[6], result_bytes[7]]),
+        u32::from_be_bytes([result_bytes[8], result_bytes[9], result_bytes[10], result_bytes[11]]),
+        u32::from_be_bytes([result_bytes[12], result_bytes[13], result_bytes[14], result_bytes[15]]),
+    ]
+}
+
+/// Load Vector for Shift Left - generates permute control for lvsl
+pub fn lvsl(addr: u64) -> [u32; 4] {
+    let sh = (addr & 0xF) as u8;
+    let mut result = [0u32; 4];
+    for i in 0..16 {
+        let byte = (sh + i as u8) & 0x1F;
+        let word_idx = i / 4;
+        let byte_idx = i % 4;
+        result[word_idx] |= (byte as u32) << ((3 - byte_idx) * 8);
+    }
+    result
+}
+
+/// Load Vector for Shift Right - generates permute control for lvsr
+pub fn lvsr(addr: u64) -> [u32; 4] {
+    let sh = (16 - (addr & 0xF)) as u8;
+    let mut result = [0u32; 4];
+    for i in 0..16 {
+        let byte = (sh + i as u8) & 0x1F;
+        let word_idx = i / 4;
+        let byte_idx = i % 4;
+        result[word_idx] |= (byte as u32) << ((3 - byte_idx) * 8);
+    }
+    result
+}
+
+/// Vector Compare Greater Than or Equal Single-Precision
+pub fn vcmpgefp(a: [u32; 4], b: [u32; 4]) -> ([u32; 4], bool) {
+    let mut result = [0u32; 4];
+    let mut all_true = true;
+    
+    for i in 0..4 {
+        let fa = f32::from_bits(a[i]);
+        let fb = f32::from_bits(b[i]);
+        if fa >= fb {
+            result[i] = 0xFFFFFFFF;
+        } else {
+            result[i] = 0;
+            all_true = false;
+        }
+    }
+    (result, all_true)
+}
+
+/// Vector Compare Bounds Single-Precision
+/// Returns all 1s if |a| <= b, else 0
+pub fn vcmpbfp(a: [u32; 4], b: [u32; 4]) -> ([u32; 4], bool) {
+    let mut result = [0u32; 4];
+    let mut all_in_bounds = true;
+    
+    for i in 0..4 {
+        let fa = f32::from_bits(a[i]);
+        let fb = f32::from_bits(b[i]);
+        // Bit 0: a > b, Bit 1: a < -b
+        let gt = if fa > fb { 0x80000000u32 } else { 0 };
+        let lt = if fa < -fb { 0x40000000u32 } else { 0 };
+        result[i] = gt | lt;
+        if result[i] != 0 {
+            all_in_bounds = false;
+        }
+    }
+    (result, all_in_bounds)
+}
+
+/// Vector Log2 Estimate Single-Precision
+pub fn vlogefp(a: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let fa = f32::from_bits(a[i]);
+        result[i] = fa.log2().to_bits();
+    }
+    result
+}
+
+/// Vector 2^x Estimate Single-Precision
+pub fn vexptefp(a: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let fa = f32::from_bits(a[i]);
+        result[i] = (2.0f32).powf(fa).to_bits();
+    }
+    result
+}
+
+/// Vector Convert to Unsigned Fixed-Point Word Saturate
+pub fn vctuxs(a: [u32; 4], uimm: u8) -> [u32; 4] {
+    let scale = 1u64 << (uimm & 0x1F);
+    let mut result = [0u32; 4];
+    
+    for i in 0..4 {
+        let fa = f32::from_bits(a[i]) as f64;
+        let scaled = (fa * scale as f64).round();
+        let clamped = scaled.clamp(0.0, u32::MAX as f64) as u32;
+        result[i] = clamped;
+    }
+    result
+}
+
+/// Vector Convert from Unsigned Fixed-Point Word
+pub fn vcfux(a: [u32; 4], uimm: u8) -> [u32; 4] {
+    let scale = 1.0f32 / (1u32 << (uimm & 0x1F)) as f32;
+    let mut result = [0u32; 4];
+    
+    for i in 0..4 {
+        result[i] = (a[i] as f32 * scale).to_bits();
+    }
+    result
+}
+
+/// Vector Splat Byte
+pub fn vspltb(v: [u32; 4], uimm: u8) -> [u32; 4] {
+    let word_idx = (uimm >> 2) as usize & 3;
+    let byte_idx = (uimm & 3) as usize;
+    let byte = ((v[word_idx] >> ((3 - byte_idx) * 8)) & 0xFF) as u8;
+    let w = u32::from_be_bytes([byte, byte, byte, byte]);
+    [w, w, w, w]
+}
+
+/// Vector Splat Halfword
+pub fn vsplth(v: [u32; 4], uimm: u8) -> [u32; 4] {
+    let word_idx = (uimm >> 1) as usize & 3;
+    let half_idx = (uimm & 1) as usize;
+    let half = if half_idx == 0 {
+        (v[word_idx] >> 16) as u16
+    } else {
+        v[word_idx] as u16
+    };
+    let w = ((half as u32) << 16) | (half as u32);
+    [w, w, w, w]
+}
+
+/// Vector Merge High Byte
+pub fn vmrghb(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let a_bytes = [
+        a[0].to_be_bytes(), a[1].to_be_bytes(),
+    ];
+    let b_bytes = [
+        b[0].to_be_bytes(), b[1].to_be_bytes(),
+    ];
+    
+    // Interleave high 8 bytes from a and b
+    [
+        u32::from_be_bytes([a_bytes[0][0], b_bytes[0][0], a_bytes[0][1], b_bytes[0][1]]),
+        u32::from_be_bytes([a_bytes[0][2], b_bytes[0][2], a_bytes[0][3], b_bytes[0][3]]),
+        u32::from_be_bytes([a_bytes[1][0], b_bytes[1][0], a_bytes[1][1], b_bytes[1][1]]),
+        u32::from_be_bytes([a_bytes[1][2], b_bytes[1][2], a_bytes[1][3], b_bytes[1][3]]),
+    ]
+}
+
+/// Vector Merge Low Byte
+pub fn vmrglb(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let a_bytes = [
+        a[2].to_be_bytes(), a[3].to_be_bytes(),
+    ];
+    let b_bytes = [
+        b[2].to_be_bytes(), b[3].to_be_bytes(),
+    ];
+    
+    // Interleave low 8 bytes from a and b
+    [
+        u32::from_be_bytes([a_bytes[0][0], b_bytes[0][0], a_bytes[0][1], b_bytes[0][1]]),
+        u32::from_be_bytes([a_bytes[0][2], b_bytes[0][2], a_bytes[0][3], b_bytes[0][3]]),
+        u32::from_be_bytes([a_bytes[1][0], b_bytes[1][0], a_bytes[1][1], b_bytes[1][1]]),
+        u32::from_be_bytes([a_bytes[1][2], b_bytes[1][2], a_bytes[1][3], b_bytes[1][3]]),
+    ]
+}
+
+/// Vector Merge High Halfword
+pub fn vmrghh(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    [
+        (a[0] & 0xFFFF0000) | ((b[0] >> 16) & 0xFFFF),
+        ((a[0] << 16) & 0xFFFF0000) | (b[0] & 0xFFFF),
+        (a[1] & 0xFFFF0000) | ((b[1] >> 16) & 0xFFFF),
+        ((a[1] << 16) & 0xFFFF0000) | (b[1] & 0xFFFF),
+    ]
+}
+
+/// Vector Merge Low Halfword
+pub fn vmrglh(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    [
+        (a[2] & 0xFFFF0000) | ((b[2] >> 16) & 0xFFFF),
+        ((a[2] << 16) & 0xFFFF0000) | (b[2] & 0xFFFF),
+        (a[3] & 0xFFFF0000) | ((b[3] >> 16) & 0xFFFF),
+        ((a[3] << 16) & 0xFFFF0000) | (b[3] & 0xFFFF),
+    ]
+}
+
+/// Vector Average Unsigned Byte
+pub fn vavgub(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_bytes = a[i].to_be_bytes();
+        let b_bytes = b[i].to_be_bytes();
+        let r_bytes = [
+            ((a_bytes[0] as u16 + b_bytes[0] as u16 + 1) >> 1) as u8,
+            ((a_bytes[1] as u16 + b_bytes[1] as u16 + 1) >> 1) as u8,
+            ((a_bytes[2] as u16 + b_bytes[2] as u16 + 1) >> 1) as u8,
+            ((a_bytes[3] as u16 + b_bytes[3] as u16 + 1) >> 1) as u8,
+        ];
+        result[i] = u32::from_be_bytes(r_bytes);
+    }
+    result
+}
+
+/// Vector Average Unsigned Halfword
+pub fn vavguh(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_hi = (a[i] >> 16) as u16;
+        let a_lo = a[i] as u16;
+        let b_hi = (b[i] >> 16) as u16;
+        let b_lo = b[i] as u16;
+        let r_hi = ((a_hi as u32 + b_hi as u32 + 1) >> 1) as u16;
+        let r_lo = ((a_lo as u32 + b_lo as u32 + 1) >> 1) as u16;
+        result[i] = ((r_hi as u32) << 16) | (r_lo as u32);
+    }
+    result
+}
+
+/// Vector Average Unsigned Word
+pub fn vavguw(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    [
+        ((a[0] as u64 + b[0] as u64 + 1) >> 1) as u32,
+        ((a[1] as u64 + b[1] as u64 + 1) >> 1) as u32,
+        ((a[2] as u64 + b[2] as u64 + 1) >> 1) as u32,
+        ((a[3] as u64 + b[3] as u64 + 1) >> 1) as u32,
+    ]
+}
+
+/// Vector Average Signed Byte
+pub fn vavgsb(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_bytes = a[i].to_be_bytes();
+        let b_bytes = b[i].to_be_bytes();
+        let r_bytes = [
+            ((a_bytes[0] as i8 as i16 + b_bytes[0] as i8 as i16 + 1) >> 1) as u8,
+            ((a_bytes[1] as i8 as i16 + b_bytes[1] as i8 as i16 + 1) >> 1) as u8,
+            ((a_bytes[2] as i8 as i16 + b_bytes[2] as i8 as i16 + 1) >> 1) as u8,
+            ((a_bytes[3] as i8 as i16 + b_bytes[3] as i8 as i16 + 1) >> 1) as u8,
+        ];
+        result[i] = u32::from_be_bytes(r_bytes);
+    }
+    result
+}
+
+/// Vector Average Signed Halfword
+pub fn vavgsh(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_hi = (a[i] >> 16) as i16;
+        let a_lo = a[i] as i16;
+        let b_hi = (b[i] >> 16) as i16;
+        let b_lo = b[i] as i16;
+        let r_hi = ((a_hi as i32 + b_hi as i32 + 1) >> 1) as u16;
+        let r_lo = ((a_lo as i32 + b_lo as i32 + 1) >> 1) as u16;
+        result[i] = ((r_hi as u32) << 16) | (r_lo as u32);
+    }
+    result
+}
+
+/// Vector Average Signed Word
+pub fn vavgsw(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    [
+        ((a[0] as i32 as i64 + b[0] as i32 as i64 + 1) >> 1) as u32,
+        ((a[1] as i32 as i64 + b[1] as i32 as i64 + 1) >> 1) as u32,
+        ((a[2] as i32 as i64 + b[2] as i32 as i64 + 1) >> 1) as u32,
+        ((a[3] as i32 as i64 + b[3] as i32 as i64 + 1) >> 1) as u32,
+    ]
+}
+
+/// Vector Multiply Even Signed Byte
+pub fn vmulesb(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_bytes = a[i].to_be_bytes();
+        let b_bytes = b[i].to_be_bytes();
+        // Multiply even bytes (0, 2) producing 16-bit results
+        let hi = (a_bytes[0] as i8 as i16).wrapping_mul(b_bytes[0] as i8 as i16) as u16;
+        let lo = (a_bytes[2] as i8 as i16).wrapping_mul(b_bytes[2] as i8 as i16) as u16;
+        result[i] = ((hi as u32) << 16) | (lo as u32);
+    }
+    result
+}
+
+/// Vector Multiply Odd Signed Byte
+pub fn vmulosb(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_bytes = a[i].to_be_bytes();
+        let b_bytes = b[i].to_be_bytes();
+        // Multiply odd bytes (1, 3) producing 16-bit results
+        let hi = (a_bytes[1] as i8 as i16).wrapping_mul(b_bytes[1] as i8 as i16) as u16;
+        let lo = (a_bytes[3] as i8 as i16).wrapping_mul(b_bytes[3] as i8 as i16) as u16;
+        result[i] = ((hi as u32) << 16) | (lo as u32);
+    }
+    result
+}
+
+/// Vector Multiply Even Unsigned Byte  
+pub fn vmuleub(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_bytes = a[i].to_be_bytes();
+        let b_bytes = b[i].to_be_bytes();
+        // Multiply even bytes (0, 2) producing 16-bit results
+        let hi = (a_bytes[0] as u16) * (b_bytes[0] as u16);
+        let lo = (a_bytes[2] as u16) * (b_bytes[2] as u16);
+        result[i] = ((hi as u32) << 16) | (lo as u32);
+    }
+    result
+}
+
+/// Vector Multiply Odd Unsigned Byte
+pub fn vmuloub(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_bytes = a[i].to_be_bytes();
+        let b_bytes = b[i].to_be_bytes();
+        // Multiply odd bytes (1, 3) producing 16-bit results
+        let hi = (a_bytes[1] as u16) * (b_bytes[1] as u16);
+        let lo = (a_bytes[3] as u16) * (b_bytes[3] as u16);
+        result[i] = ((hi as u32) << 16) | (lo as u32);
+    }
+    result
+}
+
+/// Vector Multiply Even Signed Halfword
+pub fn vmulesh(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..2 {
+        let a_hi = (a[i * 2] >> 16) as i16;
+        let b_hi = (b[i * 2] >> 16) as i16;
+        result[i * 2] = (a_hi as i32).wrapping_mul(b_hi as i32) as u32;
+        
+        let a_hi2 = (a[i * 2 + 1] >> 16) as i16;
+        let b_hi2 = (b[i * 2 + 1] >> 16) as i16;
+        result[i * 2 + 1] = (a_hi2 as i32).wrapping_mul(b_hi2 as i32) as u32;
+    }
+    result
+}
+
+/// Vector Multiply Odd Signed Halfword
+pub fn vmulosh(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..2 {
+        let a_lo = a[i * 2] as i16;
+        let b_lo = b[i * 2] as i16;
+        result[i * 2] = (a_lo as i32).wrapping_mul(b_lo as i32) as u32;
+        
+        let a_lo2 = a[i * 2 + 1] as i16;
+        let b_lo2 = b[i * 2 + 1] as i16;
+        result[i * 2 + 1] = (a_lo2 as i32).wrapping_mul(b_lo2 as i32) as u32;
+    }
+    result
+}
+
+/// Vector Multiply Even Unsigned Halfword
+pub fn vmuleuh(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..2 {
+        let a_hi = (a[i * 2] >> 16) as u16;
+        let b_hi = (b[i * 2] >> 16) as u16;
+        result[i * 2] = (a_hi as u32) * (b_hi as u32);
+        
+        let a_hi2 = (a[i * 2 + 1] >> 16) as u16;
+        let b_hi2 = (b[i * 2 + 1] >> 16) as u16;
+        result[i * 2 + 1] = (a_hi2 as u32) * (b_hi2 as u32);
+    }
+    result
+}
+
+/// Vector Multiply Odd Unsigned Halfword
+pub fn vmulouh(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..2 {
+        let a_lo = a[i * 2] as u16;
+        let b_lo = b[i * 2] as u16;
+        result[i * 2] = (a_lo as u32) * (b_lo as u32);
+        
+        let a_lo2 = a[i * 2 + 1] as u16;
+        let b_lo2 = b[i * 2 + 1] as u16;
+        result[i * 2 + 1] = (a_lo2 as u32) * (b_lo2 as u32);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

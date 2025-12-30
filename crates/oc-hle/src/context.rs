@@ -5,6 +5,8 @@
 
 use std::sync::{Arc, RwLock};
 use once_cell::sync::Lazy;
+use oc_core::{RsxBridgeSender, SpuBridgeSender};
+use oc_vfs::VirtualFileSystem;
 
 use crate::cell_sysutil::SysutilManager;
 use crate::cell_game::GameManager;
@@ -176,6 +178,133 @@ pub fn get_hle_context_mut() -> std::sync::RwLockWriteGuard<'static, HleContext>
 /// Reset the global HLE context to its initial state
 pub fn reset_hle_context() {
     get_hle_context_mut().reset();
+}
+
+/// Set the RSX bridge sender on the GCM manager
+/// 
+/// This connects the GCM HLE module to the RSX graphics thread,
+/// allowing commands to flow from cellGcmSys to the RSX backend.
+pub fn set_rsx_bridge(bridge: RsxBridgeSender) {
+    get_hle_context_mut().gcm.set_rsx_bridge(bridge);
+}
+
+/// Check if RSX bridge is connected
+pub fn has_rsx_bridge() -> bool {
+    get_hle_context().gcm.has_rsx_bridge()
+}
+
+/// Set the SPU bridge sender on the SPURS manager
+/// 
+/// This connects the SPURS HLE module to the SPU thread runtime,
+/// allowing workloads to flow from cellSpurs to the SPU interpreter.
+pub fn set_spu_bridge(bridge: SpuBridgeSender) {
+    get_hle_context_mut().spurs.set_spu_bridge(bridge);
+}
+
+/// Check if SPU bridge is connected
+pub fn has_spu_bridge() -> bool {
+    get_hle_context().spurs.has_spu_bridge()
+}
+
+/// Pop a pending sysutil callback that needs to be invoked on PPU
+/// 
+/// Returns None if there are no pending callbacks. The runner should
+/// invoke the returned callback by calling the function at `func` with
+/// arguments (status, param, userdata).
+pub fn pop_sysutil_callback() -> Option<crate::cell_sysutil::PendingCallback> {
+    get_hle_context_mut().sysutil.pop_pending_callback()
+}
+
+/// Check if there are pending sysutil callbacks
+pub fn has_pending_sysutil_callbacks() -> bool {
+    get_hle_context().sysutil.has_pending_callbacks()
+}
+
+/// Queue a sysutil system event (e.g., XMB open, disc eject, etc.)
+/// 
+/// This will generate callbacks for all registered callback slots when
+/// `cellSysutilCheckCallback` is next called.
+pub fn queue_sysutil_event(event_type: u64, param: u64) {
+    get_hle_context_mut().sysutil.queue_event(event_type, param);
+}
+
+/// Close any open sysutil dialog with OK result
+/// 
+/// This simulates the user pressing OK/Yes on a dialog.
+pub fn close_sysutil_dialog_ok() -> i32 {
+    get_hle_context_mut().sysutil.close_dialog_ok()
+}
+
+/// Close any open sysutil dialog with Cancel result
+/// 
+/// This simulates the user pressing Cancel/No on a dialog.
+pub fn close_sysutil_dialog_cancel() -> i32 {
+    get_hle_context_mut().sysutil.close_dialog_cancel()
+}
+
+/// Check if a sysutil dialog is currently open
+pub fn is_sysutil_dialog_open() -> bool {
+    get_hle_context().sysutil.is_dialog_open()
+}
+
+// ============================================================================
+// Virtual File System (VFS) Integration
+// ============================================================================
+
+/// Set the VFS backend on the file system manager
+/// 
+/// This connects the cellFs HLE module to the virtual file system,
+/// enabling actual file I/O operations through mounted devices.
+/// 
+/// # Example
+/// ```ignore
+/// use oc_vfs::VirtualFileSystem;
+/// use std::sync::Arc;
+/// 
+/// let vfs = Arc::new(VirtualFileSystem::new());
+/// vfs.mount("/dev_hdd0", std::path::PathBuf::from("/path/to/dev_hdd0"));
+/// oc_hle::context::set_vfs(vfs);
+/// ```
+pub fn set_vfs(vfs: Arc<VirtualFileSystem>) {
+    get_hle_context_mut().fs.set_vfs(vfs);
+}
+
+/// Check if VFS is connected
+pub fn has_vfs() -> bool {
+    get_hle_context().fs.has_vfs()
+}
+
+// ============================================================================
+// Input Backend (oc-input) Integration
+// ============================================================================
+
+/// Set the input backend on the pad manager
+/// 
+/// This connects the cellPad HLE module to the oc-input DualShock3Manager,
+/// enabling actual controller polling from connected gamepads.
+/// 
+/// # Example
+/// ```ignore
+/// use oc_input::DualShock3Manager;
+/// use std::sync::{Arc, RwLock};
+/// 
+/// let input_manager = Arc::new(RwLock::new(DualShock3Manager::default()));
+/// oc_hle::context::set_input_backend(input_manager);
+/// ```
+pub fn set_input_backend(backend: Arc<std::sync::RwLock<oc_input::DualShock3Manager>>) {
+    get_hle_context_mut().pad.set_input_backend(backend);
+}
+
+/// Check if input backend is connected
+pub fn has_input_backend() -> bool {
+    get_hle_context().pad.has_input_backend()
+}
+
+/// Poll all controllers and update pad data
+/// 
+/// Should be called each frame to update controller state from oc-input.
+pub fn poll_input() -> i32 {
+    get_hle_context_mut().pad.poll_input()
 }
 
 #[cfg(test)]

@@ -22,6 +22,114 @@ pub struct RsxShader {
     _private: [u8; 0],
 }
 
+/// PPU execution context structure
+/// 
+/// This structure holds the complete PPU state and is passed to JIT-compiled
+/// code for reading and writing registers. Matches the C++ `oc_ppu_context_t`.
+#[repr(C)]
+#[derive(Clone)]
+pub struct PpuContext {
+    /// General Purpose Registers (64-bit)
+    pub gpr: [u64; 32],
+    
+    /// Floating Point Registers (64-bit IEEE double)
+    pub fpr: [f64; 32],
+    
+    /// Vector Registers (128-bit, stored as 4 x u32)
+    pub vr: [[u32; 4]; 32],
+    
+    /// Condition Register (32-bit)
+    pub cr: u32,
+    
+    /// Link Register (64-bit)
+    pub lr: u64,
+    
+    /// Count Register (64-bit)
+    pub ctr: u64,
+    
+    /// Fixed-Point Exception Register (64-bit)
+    pub xer: u64,
+    
+    /// Floating-Point Status and Control Register (64-bit)
+    pub fpscr: u64,
+    
+    /// Vector Status and Control Register (32-bit)
+    pub vscr: u32,
+    
+    /// Program Counter / Current Instruction Address (64-bit)
+    pub pc: u64,
+    
+    /// Machine State Register (64-bit)
+    pub msr: u64,
+    
+    /// Next instruction address after block execution
+    pub next_pc: u64,
+    
+    /// Number of instructions executed in this block
+    pub instructions_executed: u32,
+    
+    /// Execution result/status
+    /// 0 = normal, 1 = branch, 2 = syscall, 3 = breakpoint, 4 = error
+    pub exit_reason: i32,
+    
+    /// Memory base pointer (set before execution)
+    pub memory_base: *mut u8,
+    
+    /// Memory size (for bounds checking in debug builds)
+    pub memory_size: u64,
+}
+
+impl Default for PpuContext {
+    fn default() -> Self {
+        Self {
+            gpr: [0; 32],
+            fpr: [0.0; 32],
+            vr: [[0; 4]; 32],
+            cr: 0,
+            lr: 0,
+            ctr: 0,
+            xer: 0,
+            fpscr: 0,
+            vscr: 0,
+            pc: 0,
+            msr: 0x8000_0000_0000_0000, // 64-bit mode
+            next_pc: 0,
+            instructions_executed: 0,
+            exit_reason: 0,
+            memory_base: std::ptr::null_mut(),
+            memory_size: 0,
+        }
+    }
+}
+
+/// Exit reason codes from JIT execution
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum PpuExitReason {
+    /// Block completed normally
+    Normal = 0,
+    /// Block ended with branch
+    Branch = 1,
+    /// System call encountered
+    Syscall = 2,
+    /// Breakpoint hit
+    Breakpoint = 3,
+    /// Execution error
+    Error = 4,
+}
+
+impl From<i32> for PpuExitReason {
+    fn from(value: i32) -> Self {
+        match value {
+            0 => PpuExitReason::Normal,
+            1 => PpuExitReason::Branch,
+            2 => PpuExitReason::Syscall,
+            3 => PpuExitReason::Breakpoint,
+            _ => PpuExitReason::Error,
+        }
+    }
+}
+
 // FFI declarations for PPU JIT
 extern "C" {
     fn oc_ppu_jit_create() -> *mut PpuJit;
@@ -64,6 +172,10 @@ extern "C" {
     fn oc_ppu_jit_get_pending_tasks(jit: *mut PpuJit) -> usize;
     fn oc_ppu_jit_get_completed_tasks(jit: *mut PpuJit) -> usize;
     fn oc_ppu_jit_is_multithreaded(jit: *mut PpuJit) -> i32;
+    
+    // Execution APIs
+    fn oc_ppu_jit_execute(jit: *mut PpuJit, context: *mut PpuContext, address: u32) -> i32;
+    fn oc_ppu_jit_execute_block(jit: *mut PpuJit, context: *mut PpuContext, address: u32) -> i32;
 }
 
 // FFI declarations for SPU JIT
@@ -82,6 +194,7 @@ extern "C" {
     fn oc_spu_jit_enable_channel_ops(jit: *mut SpuJit, enable: i32);
     fn oc_spu_jit_is_channel_ops_enabled(jit: *mut SpuJit) -> i32;
     fn oc_spu_jit_register_channel_op(jit: *mut SpuJit, channel: u8, is_read: i32, address: u32, reg: u8);
+    #[allow(dead_code)]
     fn oc_spu_jit_set_channel_callbacks(jit: *mut SpuJit, read_callback: *mut u8, write_callback: *mut u8);
     fn oc_spu_jit_get_channel_op_count(jit: *mut SpuJit) -> usize;
     
@@ -92,6 +205,7 @@ extern "C" {
     fn oc_spu_jit_get_pending_dma_count(jit: *mut SpuJit) -> usize;
     fn oc_spu_jit_get_pending_dma_for_tag(jit: *mut SpuJit, tag: u16) -> usize;
     fn oc_spu_jit_complete_dma_tag(jit: *mut SpuJit, tag: u16);
+    #[allow(dead_code)]
     fn oc_spu_jit_set_dma_callback(jit: *mut SpuJit, callback: *mut u8);
     
     // Loop optimization APIs
@@ -119,6 +233,7 @@ extern "C" {
     fn oc_rsx_shader_free_spirv(spirv: *mut u32);
     fn oc_rsx_shader_link(shader: *mut RsxShader, vs_spirv: *const u32, vs_size: usize, fs_spirv: *const u32, fs_size: usize) -> i32;
     fn oc_rsx_shader_get_linked_count(shader: *mut RsxShader) -> usize;
+    #[allow(dead_code)]
     fn oc_rsx_shader_set_pipeline_callbacks(shader: *mut RsxShader, create_callback: *mut u8, destroy_callback: *mut u8);
     fn oc_rsx_shader_get_pipeline(shader: *mut RsxShader, vs_hash: u64, fs_hash: u64, vertex_mask: u32, cull_mode: u8, blend_enable: u8) -> *mut u8;
     fn oc_rsx_shader_advance_frame(shader: *mut RsxShader);
@@ -384,6 +499,56 @@ impl PpuJitCompiler {
     /// Check if multi-threaded compilation is enabled
     pub fn is_multithreaded(&self) -> bool {
         unsafe { oc_ppu_jit_is_multithreaded(self.handle) != 0 }
+    }
+    
+    // ========================================================================
+    // Execution APIs
+    // ========================================================================
+    
+    /// Execute JIT-compiled code at the given address
+    /// 
+    /// This executes a compiled basic block, reading and writing registers
+    /// through the provided context. The context should be populated with
+    /// the current PPU state before calling, and will contain the updated
+    /// state after execution.
+    /// 
+    /// # Arguments
+    /// * `context` - PPU context with register state and memory pointer
+    /// * `address` - Address of the compiled block to execute
+    /// 
+    /// # Returns
+    /// * `Ok(count)` - Number of instructions executed
+    /// * `Err(reason)` - Execution failed or interrupted
+    pub fn execute(&mut self, context: &mut PpuContext, address: u32) -> Result<u32, PpuExitReason> {
+        let result = unsafe { oc_ppu_jit_execute(self.handle, context, address) };
+        
+        if result < 0 {
+            return Err(PpuExitReason::from(context.exit_reason));
+        }
+        
+        let exit_reason = PpuExitReason::from(context.exit_reason);
+        match exit_reason {
+            PpuExitReason::Normal | PpuExitReason::Branch => Ok(result as u32),
+            _ => Err(exit_reason),
+        }
+    }
+    
+    /// Execute a single JIT block (does not follow branches)
+    /// 
+    /// Similar to `execute`, but only executes one basic block without
+    /// following any branches. Useful for step-through debugging.
+    pub fn execute_block(&mut self, context: &mut PpuContext, address: u32) -> Result<u32, PpuExitReason> {
+        let result = unsafe { oc_ppu_jit_execute_block(self.handle, context, address) };
+        
+        if result < 0 {
+            return Err(PpuExitReason::from(context.exit_reason));
+        }
+        
+        let exit_reason = PpuExitReason::from(context.exit_reason);
+        match exit_reason {
+            PpuExitReason::Normal | PpuExitReason::Branch => Ok(result as u32),
+            _ => Err(exit_reason),
+        }
     }
 }
 

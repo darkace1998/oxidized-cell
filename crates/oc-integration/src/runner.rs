@@ -9,15 +9,16 @@
 //! - Thread scheduler
 
 use crate::loader::{GameLoader, LoadedGame};
-use oc_core::{Config, EmulatorError, Result, Scheduler, ThreadId, ThreadState};
+use oc_core::{Config, EmulatorError, Result, Scheduler, ThreadId, ThreadState, create_rsx_bridge, create_spu_bridge, SpuBridgeReceiver, SpuBridgeMessage, SpuWorkload, SpuDmaRequest};
 use oc_memory::MemoryManager;
 use oc_ppu::{PpuInterpreter, PpuThread};
-use oc_spu::{SpuInterpreter, SpuThread};
+use oc_spu::{SpuInterpreter, SpuThread, SpuPriority, SpuThreadGroup};
 use oc_rsx::RsxThread;
 use oc_lv2::SyscallHandler;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use std::collections::HashMap;
 use parking_lot::RwLock;
 
 /// Emulator runner state
@@ -47,6 +48,10 @@ pub struct EmulatorRunner {
     spu_threads: RwLock<Vec<Arc<RwLock<SpuThread>>>>,
     /// SPU interpreter
     spu_interpreter: Arc<SpuInterpreter>,
+    /// SPU thread groups
+    spu_groups: RwLock<HashMap<u32, SpuThreadGroup>>,
+    /// SPU bridge receiver for receiving workloads from SPURS
+    spu_bridge_receiver: Option<SpuBridgeReceiver>,
     /// RSX thread
     rsx_thread: Arc<RwLock<RsxThread>>,
     /// LV2 syscall handler
@@ -79,7 +84,35 @@ impl EmulatorRunner {
         let spu_interpreter = Arc::new(SpuInterpreter::new());
 
         // Create RSX thread
-        let rsx_thread = Arc::new(RwLock::new(RsxThread::new(memory.clone())));
+        let mut rsx_thread_inner = RsxThread::new(memory.clone());
+        
+        // Create RSX bridge for GCM -> RSX communication
+        let (bridge_sender, bridge_receiver) = create_rsx_bridge();
+        
+        // Connect bridge receiver to RSX thread
+        rsx_thread_inner.set_bridge_receiver(bridge_receiver);
+        
+        // Connect bridge sender to GCM HLE manager
+        oc_hle::context::set_rsx_bridge(bridge_sender);
+        
+        tracing::info!("RSX bridge connected: GCM HLE <-> RSX Thread");
+        
+        let rsx_thread = Arc::new(RwLock::new(rsx_thread_inner));
+
+        // Create SPU bridge for SPURS -> SPU communication
+        let (spu_bridge_sender, spu_bridge_receiver) = create_spu_bridge();
+        
+        // Connect bridge sender to SPURS HLE manager
+        oc_hle::set_spu_bridge(spu_bridge_sender);
+        
+        tracing::info!("SPU bridge connected: SPURS HLE <-> SPU Runtime");
+
+        // Create input backend (DualShock3Manager) and connect to cellPad HLE
+        // Note: Uses std::sync::RwLock to match oc-hle's expected type
+        let input_backend = std::sync::Arc::new(std::sync::RwLock::new(oc_input::DualShock3Manager::new(4)));
+        oc_hle::set_input_backend(input_backend);
+        
+        tracing::info!("Input backend connected: cellPad HLE <-> DualShock3Manager");
 
         // Create syscall handler
         let syscall_handler = Arc::new(SyscallHandler::new());
@@ -98,6 +131,8 @@ impl EmulatorRunner {
             ppu_interpreter,
             spu_threads: RwLock::new(Vec::new()),
             spu_interpreter,
+            spu_groups: RwLock::new(HashMap::new()),
+            spu_bridge_receiver: Some(spu_bridge_receiver),
             rsx_thread,
             syscall_handler,
             scheduler,
@@ -381,11 +416,19 @@ impl EmulatorRunner {
 
         let frame_start = Instant::now();
 
+        // Poll controller input at the start of each frame
+        if oc_hle::has_input_backend() {
+            oc_hle::poll_input();
+        }
+
         // Begin graphics frame
         {
             let mut rsx = self.rsx_thread.write();
             rsx.begin_frame();
         }
+
+        // Process SPU bridge messages (workloads from SPURS)
+        self.process_spu_bridge();
 
         // Run threads for this frame
         self.run_threads()?;
@@ -411,6 +454,242 @@ impl EmulatorRunner {
         self.last_frame_time = Instant::now();
 
         Ok(())
+    }
+
+    /// Process SPU bridge messages from SPURS
+    fn process_spu_bridge(&mut self) {
+        let receiver = match &self.spu_bridge_receiver {
+            Some(r) => r,
+            None => return,
+        };
+        
+        // Drain all pending messages
+        let messages = receiver.drain();
+        
+        for message in messages {
+            match message {
+                SpuBridgeMessage::SubmitWorkload(workload) => {
+                    self.handle_spu_workload(workload);
+                }
+                SpuBridgeMessage::CreateGroup(request) => {
+                    self.handle_create_spu_group(request);
+                }
+                SpuBridgeMessage::DestroyGroup(group_id) => {
+                    self.handle_destroy_spu_group(group_id);
+                }
+                SpuBridgeMessage::StartGroup(group_id) => {
+                    self.handle_start_spu_group(group_id);
+                }
+                SpuBridgeMessage::StopGroup(group_id) => {
+                    self.handle_stop_spu_group(group_id);
+                }
+                SpuBridgeMessage::CreateThread(request) => {
+                    self.handle_create_spu_thread(request);
+                }
+                SpuBridgeMessage::TerminateThread(thread_id) => {
+                    self.handle_terminate_spu_thread(thread_id);
+                }
+                SpuBridgeMessage::DmaTransfer(request) => {
+                    self.handle_spu_dma_transfer(request);
+                }
+                SpuBridgeMessage::SendSignal { spu_id, signal } => {
+                    self.handle_spu_signal(spu_id, signal);
+                }
+                SpuBridgeMessage::WriteMailbox { spu_id, value } => {
+                    self.handle_spu_mailbox(spu_id, value);
+                }
+            }
+        }
+    }
+    
+    /// Handle SPU workload submission
+    fn handle_spu_workload(&mut self, workload: SpuWorkload) {
+        tracing::debug!(
+            "SPU workload submitted: id={}, entry=0x{:05x}, priority={}, affinity=0x{:02x}",
+            workload.id, workload.entry_point, workload.priority, workload.affinity
+        );
+        
+        // Find an available SPU thread that matches affinity
+        let spu_threads = self.spu_threads.read();
+        for thread_arc in spu_threads.iter() {
+            let mut thread = thread_arc.write();
+            if workload.affinity & (1 << thread.id) != 0 {
+                // Check if this SPU is available (not running another workload)
+                if thread.state == oc_spu::SpuThreadState::Stopped || 
+                   thread.state == oc_spu::SpuThreadState::Ready {
+                    // Set up the workload on this SPU
+                    thread.entry_point = workload.entry_point;
+                    thread.arg = workload.argument;
+                    thread.set_priority(SpuPriority::new(workload.priority));
+                    thread.set_pc(workload.entry_point);
+                    thread.state = oc_spu::SpuThreadState::Ready;
+                    
+                    // Add to scheduler
+                    self.scheduler.write().add_thread(
+                        ThreadId::Spu(thread.id),
+                        workload.priority as u32
+                    );
+                    
+                    tracing::debug!(
+                        "SPU workload {} scheduled on SPU {} at entry 0x{:05x}",
+                        workload.id, thread.id, workload.entry_point
+                    );
+                    return;
+                }
+            }
+        }
+        
+        tracing::warn!(
+            "No available SPU for workload {} with affinity 0x{:02x}",
+            workload.id, workload.affinity
+        );
+    }
+    
+    /// Handle SPU group creation
+    fn handle_create_spu_group(&mut self, request: oc_core::SpuGroupRequest) {
+        tracing::info!(
+            "Creating SPU group {}: {} threads, priority {}, name='{}'",
+            request.group_id, request.num_threads, request.priority, request.name
+        );
+        
+        // Create SPU thread group
+        let group = SpuThreadGroup::new(
+            request.group_id,
+            &request.name,
+            request.num_threads as usize,
+            SpuPriority::new(request.priority),
+        );
+        
+        // Create SPU threads for the group
+        for i in 0..request.num_threads {
+            let thread_id = request.group_id * 10 + i; // Simple ID scheme
+            let thread = SpuThread::new(thread_id, self.memory.clone());
+            self.spu_threads.write().push(Arc::new(RwLock::new(thread)));
+        }
+        
+        self.spu_groups.write().insert(request.group_id, group);
+    }
+    
+    /// Handle SPU group destruction
+    fn handle_destroy_spu_group(&mut self, group_id: u32) {
+        tracing::info!("Destroying SPU group {}", group_id);
+        self.spu_groups.write().remove(&group_id);
+        // Note: In a full implementation, we'd clean up the threads too
+    }
+    
+    /// Handle SPU group start
+    fn handle_start_spu_group(&mut self, group_id: u32) {
+        tracing::info!("Starting SPU group {}", group_id);
+        let mut groups = self.spu_groups.write();
+        if let Some(group) = groups.get_mut(&group_id) {
+            group.start();
+        }
+    }
+    
+    /// Handle SPU group stop
+    fn handle_stop_spu_group(&mut self, group_id: u32) {
+        tracing::info!("Stopping SPU group {}", group_id);
+        let mut groups = self.spu_groups.write();
+        if let Some(group) = groups.get_mut(&group_id) {
+            group.stop();
+        }
+    }
+    
+    /// Handle individual SPU thread creation
+    fn handle_create_spu_thread(&mut self, request: oc_core::SpuThreadRequest) {
+        tracing::debug!(
+            "Creating SPU thread: id={}, spu={}, entry=0x{:05x}",
+            request.thread_id, request.spu_id, request.entry_point
+        );
+        
+        let mut thread = SpuThread::new(request.spu_id as u32, self.memory.clone());
+        thread.entry_point = request.entry_point;
+        thread.arg = request.argument;
+        thread.set_priority(SpuPriority::new(request.priority as u8));
+        thread.set_pc(request.entry_point);
+        
+        self.spu_threads.write().push(Arc::new(RwLock::new(thread)));
+    }
+    
+    /// Handle SPU thread termination
+    fn handle_terminate_spu_thread(&mut self, thread_id: u32) {
+        tracing::debug!("Terminating SPU thread {}", thread_id);
+        let spu_threads = self.spu_threads.read();
+        for thread_arc in spu_threads.iter() {
+            let mut thread = thread_arc.write();
+            if thread.id == thread_id {
+                thread.state = oc_spu::SpuThreadState::Stopped;
+                self.scheduler.write().set_thread_state(
+                    ThreadId::Spu(thread_id),
+                    ThreadState::Stopped
+                );
+                break;
+            }
+        }
+    }
+    
+    /// Handle SPU DMA transfer request
+    fn handle_spu_dma_transfer(&mut self, request: SpuDmaRequest) {
+        tracing::trace!(
+            "SPU DMA transfer: spu={}, ls=0x{:05x}, ea=0x{:08x}, size={}, put={}",
+            request.spu_id, request.ls_addr, request.ea_addr,
+            request.size, request.is_put
+        );
+        
+        // Find the SPU thread
+        let spu_threads = self.spu_threads.read();
+        for thread_arc in spu_threads.iter() {
+            let mut thread = thread_arc.write();
+            if thread.id == request.spu_id as u32 {
+                // Transfer data word by word (aligned)
+                let num_words = (request.size as usize + 3) / 4;
+                if request.is_put {
+                    // DMA PUT: Local storage -> Main memory
+                    for i in 0..num_words {
+                        let ls_offset = request.ls_addr + (i as u32 * 4);
+                        let ea_offset = request.ea_addr as u32 + (i as u32 * 4);
+                        let word = thread.ls_read_u32(ls_offset);
+                        let _ = self.memory.write_be32(ea_offset, word);
+                    }
+                } else {
+                    // DMA GET: Main memory -> Local storage
+                    for i in 0..num_words {
+                        let ls_offset = request.ls_addr + (i as u32 * 4);
+                        let ea_offset = request.ea_addr as u32 + (i as u32 * 4);
+                        if let Ok(word) = self.memory.read_be32(ea_offset) {
+                            thread.ls_write_u32(ls_offset, word);
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+    
+    /// Handle SPU signal
+    fn handle_spu_signal(&mut self, spu_id: u8, signal: u32) {
+        tracing::trace!("SPU {} received signal: 0x{:08x}", spu_id, signal);
+        let spu_threads = self.spu_threads.read();
+        for thread_arc in spu_threads.iter() {
+            let mut thread = thread_arc.write();
+            if thread.id == spu_id as u32 {
+                thread.channels.send_signal1(signal);
+                break;
+            }
+        }
+    }
+    
+    /// Handle SPU mailbox write
+    fn handle_spu_mailbox(&mut self, spu_id: u8, value: u32) {
+        tracing::trace!("SPU {} mailbox write: 0x{:08x}", spu_id, value);
+        let spu_threads = self.spu_threads.read();
+        for thread_arc in spu_threads.iter() {
+            let mut thread = thread_arc.write();
+            if thread.id == spu_id as u32 {
+                thread.channels.put_inbound_mailbox(value);
+                break;
+            }
+        }
     }
 
     /// Run threads using the scheduler
@@ -572,6 +851,9 @@ impl EmulatorRunner {
     /// Process RSX graphics commands
     fn process_rsx(&self) -> Result<()> {
         let mut rsx = self.rsx_thread.write();
+        
+        // Process any pending messages from GCM bridge
+        rsx.process_bridge_messages();
         
         // Process any pending commands in the FIFO
         rsx.process_commands();

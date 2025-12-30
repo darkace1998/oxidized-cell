@@ -2,8 +2,9 @@
 
 use std::sync::Arc;
 use oc_memory::MemoryManager;
+use oc_core::{RsxBridgeReceiver, BridgeMessage, BridgeCommand, BridgeDisplayBuffer};
 use crate::state::RsxState;
-use crate::fifo::CommandFifo;
+use crate::fifo::{CommandFifo, RsxCommand};
 use crate::methods::MethodHandler;
 use crate::backend::{GraphicsBackend, null::NullBackend};
 
@@ -11,6 +12,24 @@ use crate::backend::{GraphicsBackend, null::NullBackend};
 const DRAW_FIRST_MASK: u32 = 0xFFFFFF;
 const DRAW_COUNT_SHIFT: u32 = 24;
 const DRAW_COUNT_MASK: u32 = 0xFF;
+
+/// Display buffer configuration received from GCM
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DisplayBuffer {
+    /// Buffer offset in memory
+    pub offset: u32,
+    /// Pitch (bytes per line)
+    pub pitch: u32,
+    /// Width in pixels
+    pub width: u32,
+    /// Height in pixels
+    pub height: u32,
+    /// Whether this buffer is configured
+    pub configured: bool,
+}
+
+/// Maximum display buffers
+pub const MAX_DISPLAY_BUFFERS: usize = 8;
 
 /// RSX thread state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +51,16 @@ pub struct RsxThread {
     memory: Arc<MemoryManager>,
     /// Graphics backend
     backend: Box<dyn GraphicsBackend>,
+    /// Bridge receiver for commands from GCM HLE
+    bridge_receiver: Option<RsxBridgeReceiver>,
+    /// Display buffers configured by GCM
+    display_buffers: [DisplayBuffer; MAX_DISPLAY_BUFFERS],
+    /// Current display buffer index
+    current_display_buffer: u32,
+    /// Flip pending flag
+    flip_pending: bool,
+    /// Pending flip buffer id
+    pending_flip_buffer: u32,
 }
 
 impl RsxThread {
@@ -48,6 +77,165 @@ impl RsxThread {
             fifo: CommandFifo::new(),
             memory,
             backend,
+            bridge_receiver: None,
+            display_buffers: [DisplayBuffer::default(); MAX_DISPLAY_BUFFERS],
+            current_display_buffer: 0,
+            flip_pending: false,
+            pending_flip_buffer: 0,
+        }
+    }
+    
+    /// Set the bridge receiver for receiving commands from GCM HLE
+    pub fn set_bridge_receiver(&mut self, receiver: RsxBridgeReceiver) {
+        tracing::info!("RsxThread: Bridge receiver connected");
+        receiver.connect();
+        self.bridge_receiver = Some(receiver);
+    }
+    
+    /// Check if bridge is connected
+    pub fn has_bridge(&self) -> bool {
+        self.bridge_receiver.is_some()
+    }
+    
+    /// Process messages from the GCM bridge
+    pub fn process_bridge_messages(&mut self) {
+        let receiver = match &self.bridge_receiver {
+            Some(r) => r,
+            None => return,
+        };
+        
+        // Drain all pending messages
+        let messages = receiver.drain();
+        
+        for message in messages {
+            match message {
+                BridgeMessage::Commands(commands) => {
+                    self.process_bridge_commands(commands);
+                }
+                BridgeMessage::ConfigureDisplayBuffer(buffer) => {
+                    self.configure_display_buffer(buffer);
+                }
+                BridgeMessage::Flip(request) => {
+                    self.handle_flip_request(request.buffer_id);
+                }
+                BridgeMessage::Finish => {
+                    self.handle_finish();
+                }
+            }
+        }
+    }
+    
+    /// Process commands received from bridge
+    fn process_bridge_commands(&mut self, commands: Vec<BridgeCommand>) {
+        tracing::debug!("RsxThread: Processing {} commands from bridge", commands.len());
+        
+        for cmd in commands {
+            // Add to FIFO for processing
+            self.fifo.push(RsxCommand {
+                method: cmd.method,
+                data: cmd.data,
+            });
+        }
+        
+        // Process the commands immediately
+        self.process_commands();
+    }
+    
+    /// Configure a display buffer
+    fn configure_display_buffer(&mut self, buffer: BridgeDisplayBuffer) {
+        if buffer.id as usize >= MAX_DISPLAY_BUFFERS {
+            tracing::warn!("RsxThread: Invalid display buffer id {}", buffer.id);
+            return;
+        }
+        
+        tracing::debug!(
+            "RsxThread: Configuring display buffer {}: offset=0x{:X}, pitch={}, {}x{}",
+            buffer.id, buffer.offset, buffer.pitch, buffer.width, buffer.height
+        );
+        
+        self.display_buffers[buffer.id as usize] = DisplayBuffer {
+            offset: buffer.offset,
+            pitch: buffer.pitch,
+            width: buffer.width,
+            height: buffer.height,
+            configured: true,
+        };
+    }
+    
+    /// Handle a flip request from GCM
+    fn handle_flip_request(&mut self, buffer_id: u32) {
+        tracing::debug!("RsxThread: Flip requested to buffer {}", buffer_id);
+        
+        if buffer_id as usize >= MAX_DISPLAY_BUFFERS {
+            tracing::warn!("RsxThread: Invalid flip buffer id {}", buffer_id);
+            return;
+        }
+        
+        self.flip_pending = true;
+        self.pending_flip_buffer = buffer_id;
+        
+        // Perform the flip at end of frame
+        self.perform_flip();
+    }
+    
+    /// Perform the actual flip operation
+    fn perform_flip(&mut self) {
+        if !self.flip_pending {
+            return;
+        }
+        
+        let buffer_id = self.pending_flip_buffer;
+        
+        if !self.display_buffers[buffer_id as usize].configured {
+            tracing::warn!("RsxThread: Flip to unconfigured buffer {}", buffer_id);
+        }
+        
+        // End current frame and present
+        self.end_frame();
+        
+        // Update current buffer
+        self.current_display_buffer = buffer_id;
+        self.flip_pending = false;
+        
+        // Signal flip complete to GCM
+        if let Some(ref receiver) = self.bridge_receiver {
+            receiver.signal_flip_complete(buffer_id);
+        }
+        
+        // Begin next frame
+        self.begin_frame();
+        
+        tracing::trace!("RsxThread: Flip complete to buffer {}", buffer_id);
+    }
+    
+    /// Handle finish/sync request
+    fn handle_finish(&mut self) {
+        tracing::debug!("RsxThread: Finish requested, processing remaining commands");
+        
+        // Process any remaining commands in FIFO
+        self.process_commands();
+        
+        // Signal finish complete
+        if let Some(ref receiver) = self.bridge_receiver {
+            receiver.signal_finish_complete();
+        }
+    }
+    
+    /// Get current display buffer index
+    pub fn current_display_buffer(&self) -> u32 {
+        self.current_display_buffer
+    }
+    
+    /// Get display buffer info
+    pub fn get_display_buffer(&self, id: u32) -> Option<&DisplayBuffer> {
+        if id as usize >= MAX_DISPLAY_BUFFERS {
+            return None;
+        }
+        let buf = &self.display_buffers[id as usize];
+        if buf.configured {
+            Some(buf)
+        } else {
+            None
         }
     }
 

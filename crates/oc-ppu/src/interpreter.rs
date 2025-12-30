@@ -2,16 +2,51 @@
 //!
 //! This module implements the PPU instruction interpreter, dispatching decoded
 //! instructions to the appropriate handlers in the instruction modules.
+//!
+//! The interpreter supports three execution modes:
+//! - **Interpreter**: Pure interpretation of every instruction
+//! - **JIT**: Just-In-Time compilation for all code (requires C++ backend)
+//! - **Hybrid**: Uses JIT for hot code paths, falls back to interpreter for cold code
 
 use std::sync::Arc;
 use std::collections::HashSet;
-use parking_lot::RwLock;
+use parking_lot::{RwLock, Mutex};
 use oc_memory::MemoryManager;
 use oc_core::error::PpuError;
 use oc_hle::dispatch_hle_call;
+use oc_ffi::jit::{PpuJitCompiler, BranchHint, LazyState, PpuContext, PpuExitReason};
 use crate::decoder::{PpuDecoder, InstructionForm};
 use crate::thread::PpuThread;
 use crate::instructions::{float, system, vector};
+
+/// JIT execution mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JitMode {
+    /// Pure interpreter mode - no JIT compilation
+    #[default]
+    Interpreter,
+    /// Pure JIT mode - all code is compiled before execution
+    Jit,
+    /// Hybrid mode - JIT for hot paths, interpreter for cold code
+    Hybrid,
+}
+
+/// JIT statistics for performance monitoring
+#[derive(Debug, Clone, Default)]
+pub struct JitStats {
+    /// Number of blocks compiled
+    pub blocks_compiled: u64,
+    /// Number of JIT executions
+    pub jit_executions: u64,
+    /// Number of interpreter fallbacks
+    pub interpreter_fallbacks: u64,
+    /// Total instructions executed via JIT
+    pub jit_instructions: u64,
+    /// Cache hits
+    pub cache_hits: u64,
+    /// Cache misses
+    pub cache_misses: u64,
+}
 
 /// Breakpoint type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,7 +88,17 @@ pub struct PpuInterpreter {
     /// Breakpoint details
     breakpoint_details: RwLock<std::collections::HashMap<u64, Breakpoint>>,
     /// Total instruction count (for conditional breakpoints)
-    instruction_count: parking_lot::Mutex<u64>,
+    instruction_count: Mutex<u64>,
+    /// JIT execution mode
+    jit_mode: RwLock<JitMode>,
+    /// JIT compiler (optional, created on demand)
+    jit_compiler: Mutex<Option<PpuJitCompiler>>,
+    /// JIT statistics
+    jit_stats: Mutex<JitStats>,
+    /// Hot block threshold for hybrid mode (execution count before compilation)
+    hot_threshold: u32,
+    /// Block execution counts for hybrid mode
+    block_exec_counts: RwLock<std::collections::HashMap<u32, u32>>,
 }
 
 impl PpuInterpreter {
@@ -63,9 +108,313 @@ impl PpuInterpreter {
             memory,
             breakpoints: RwLock::new(HashSet::new()),
             breakpoint_details: RwLock::new(std::collections::HashMap::new()),
-            instruction_count: parking_lot::Mutex::new(0),
+            instruction_count: Mutex::new(0),
+            jit_mode: RwLock::new(JitMode::Interpreter),
+            jit_compiler: Mutex::new(None),
+            jit_stats: Mutex::new(JitStats::default()),
+            hot_threshold: 100, // Compile after 100 executions
+            block_exec_counts: RwLock::new(std::collections::HashMap::new()),
         }
     }
+
+    // ========================================================================
+    // JIT Control Methods
+    // ========================================================================
+
+    /// Set the JIT execution mode
+    pub fn set_jit_mode(&self, mode: JitMode) {
+        *self.jit_mode.write() = mode;
+        tracing::info!("PPU JIT mode set to {:?}", mode);
+        
+        // Initialize JIT compiler if needed
+        if mode != JitMode::Interpreter {
+            self.ensure_jit_compiler();
+        }
+    }
+
+    /// Get the current JIT execution mode
+    pub fn jit_mode(&self) -> JitMode {
+        *self.jit_mode.read()
+    }
+
+    /// Enable JIT compilation (shorthand for Hybrid mode)
+    pub fn enable_jit(&self) {
+        self.set_jit_mode(JitMode::Hybrid);
+    }
+
+    /// Disable JIT compilation (pure interpreter mode)
+    pub fn disable_jit(&self) {
+        self.set_jit_mode(JitMode::Interpreter);
+    }
+
+    /// Check if JIT is available (C++ backend compiled)
+    pub fn is_jit_available(&self) -> bool {
+        self.ensure_jit_compiler();
+        self.jit_compiler.lock().is_some()
+    }
+
+    /// Ensure JIT compiler is initialized
+    fn ensure_jit_compiler(&self) {
+        let mut jit = self.jit_compiler.lock();
+        if jit.is_none() {
+            *jit = PpuJitCompiler::new();
+            if jit.is_some() {
+                tracing::info!("PPU JIT compiler initialized");
+            } else {
+                tracing::warn!("PPU JIT compiler not available (C++ backend not linked)");
+            }
+        }
+    }
+
+    /// Get JIT statistics
+    pub fn jit_stats(&self) -> JitStats {
+        self.jit_stats.lock().clone()
+    }
+
+    /// Reset JIT statistics
+    pub fn reset_jit_stats(&self) {
+        *self.jit_stats.lock() = JitStats::default();
+    }
+
+    /// Set the hot block threshold for hybrid mode
+    pub fn set_hot_threshold(&self, threshold: u32) {
+        // Note: Can't use self here for mutable field, but this is a const field
+        // For now, log the intended change
+        tracing::info!("Hot threshold would be set to {} (currently fixed at construction)", threshold);
+    }
+
+    /// Compile a specific block address
+    pub fn compile_block(&self, address: u32) -> Result<(), String> {
+        let mut jit = self.jit_compiler.lock();
+        let jit = jit.as_mut().ok_or("JIT compiler not available")?;
+
+        // Read the code block from memory
+        let code = self.read_block_code(address)?;
+        
+        jit.compile(address, &code)
+            .map_err(|e| format!("JIT compilation failed: {:?}", e))?;
+
+        self.jit_stats.lock().blocks_compiled += 1;
+        tracing::debug!("Compiled block at 0x{:08x} ({} bytes)", address, code.len());
+        
+        Ok(())
+    }
+
+    /// Read a basic block of code from memory for compilation
+    fn read_block_code(&self, start_address: u32) -> Result<Vec<u8>, String> {
+        let mut code = Vec::with_capacity(256);
+        let mut address = start_address;
+        
+        // Read instructions until we hit a branch or limit
+        for _ in 0..64 { // Max 64 instructions per block
+            let opcode = self.memory.read_be32(address)
+                .map_err(|e| format!("Failed to read instruction at 0x{:08x}: {:?}", address, e))?;
+            
+            // Add instruction bytes to code
+            code.extend_from_slice(&opcode.to_be_bytes());
+            address += 4;
+            
+            // Check if this is a block-ending instruction
+            if Self::is_block_end(opcode) {
+                break;
+            }
+        }
+        
+        Ok(code)
+    }
+
+    /// Check if an instruction ends a basic block
+    fn is_block_end(opcode: u32) -> bool {
+        let primary = (opcode >> 26) & 0x3F;
+        
+        match primary {
+            // Branch instructions
+            16 => true, // bc (conditional branch)
+            18 => true, // b (unconditional branch)
+            19 => {
+                // XL-form: check extended opcode for bclr, bcctr, etc.
+                let xo = (opcode >> 1) & 0x3FF;
+                matches!(xo, 16 | 528) // bclr, bcctr
+            }
+            17 => true, // sc (system call)
+            _ => false,
+        }
+    }
+
+    // ========================================================================
+    // JIT Execution Bridge
+    // ========================================================================
+
+    /// Create a PpuContext from thread state for JIT execution
+    fn thread_to_context(&self, thread: &PpuThread) -> PpuContext {
+        let regs = &thread.regs;
+        
+        PpuContext {
+            gpr: regs.gpr,
+            fpr: regs.fpr,
+            vr: regs.vr,
+            cr: regs.cr,
+            lr: regs.lr,
+            ctr: regs.ctr,
+            xer: regs.xer,
+            fpscr: regs.fpscr,
+            vscr: regs.vscr,
+            pc: regs.cia,
+            msr: regs.msr,
+            next_pc: regs.cia + 4,
+            instructions_executed: 0,
+            exit_reason: 0,
+            memory_base: self.memory.base_ptr(),
+            memory_size: self.memory.address_space_size(),
+        }
+    }
+
+    /// Copy context state back to thread after JIT execution
+    fn context_to_thread(&self, context: &PpuContext, thread: &mut PpuThread) {
+        let regs = &mut thread.regs;
+        
+        regs.gpr = context.gpr;
+        regs.fpr = context.fpr;
+        regs.vr = context.vr;
+        regs.cr = context.cr;
+        regs.lr = context.lr;
+        regs.ctr = context.ctr;
+        regs.xer = context.xer;
+        regs.fpscr = context.fpscr;
+        regs.vscr = context.vscr;
+        regs.cia = context.next_pc;
+        regs.msr = context.msr;
+    }
+
+    /// Try to execute code via JIT, returns true if successful
+    fn try_jit_execute(&self, thread: &mut PpuThread) -> Result<bool, PpuError> {
+        let mode = *self.jit_mode.read();
+        
+        if mode == JitMode::Interpreter {
+            return Ok(false);
+        }
+
+        let pc = thread.pc() as u32;
+        let mut jit = self.jit_compiler.lock();
+        
+        let jit = match jit.as_mut() {
+            Some(j) => j,
+            None => return Ok(false),
+        };
+
+        // Check for compiled code
+        if jit.get_compiled(pc).is_some() {
+            // JIT code is available - execute it!
+            self.jit_stats.lock().cache_hits += 1;
+            
+            // Create execution context from thread state
+            let mut context = self.thread_to_context(thread);
+            
+            // Execute the JIT-compiled code
+            match jit.execute(&mut context, pc) {
+                Ok(instructions_executed) => {
+                    // Copy state back to thread
+                    self.context_to_thread(&context, thread);
+                    
+                    // Update statistics
+                    {
+                        let mut stats = self.jit_stats.lock();
+                        stats.jit_executions += 1;
+                        stats.jit_instructions += instructions_executed as u64;
+                    }
+                    
+                    tracing::trace!(
+                        "JIT executed {} instructions at 0x{:08x}, next PC: 0x{:08x}",
+                        instructions_executed,
+                        pc,
+                        context.next_pc
+                    );
+                    
+                    return Ok(true);
+                }
+                Err(exit_reason) => {
+                    // Copy state back even on error (partial execution)
+                    self.context_to_thread(&context, thread);
+                    
+                    match exit_reason {
+                        PpuExitReason::Syscall => {
+                            // Syscall encountered - let interpreter handle it
+                            tracing::trace!("JIT hit syscall at 0x{:08x}", pc);
+                            return Ok(false);
+                        }
+                        PpuExitReason::Breakpoint => {
+                            // Breakpoint hit
+                            tracing::debug!("JIT hit breakpoint at 0x{:08x}", pc);
+                            return Err(PpuError::Breakpoint { addr: context.pc });
+                        }
+                        PpuExitReason::Error => {
+                            // JIT execution error - fall back to interpreter
+                            tracing::warn!("JIT execution error at 0x{:08x}", pc);
+                            self.jit_stats.lock().interpreter_fallbacks += 1;
+                            return Ok(false);
+                        }
+                        _ => {
+                            // Normal or branch - should have been Ok
+                            return Ok(true);
+                        }
+                    }
+                }
+            }
+        }
+
+        self.jit_stats.lock().cache_misses += 1;
+
+        // In hybrid mode, check if block is hot
+        if mode == JitMode::Hybrid {
+            let should_compile = {
+                let mut counts = self.block_exec_counts.write();
+                let count = counts.entry(pc).or_insert(0);
+                *count += 1;
+                *count >= self.hot_threshold
+            };
+
+            if should_compile {
+                // Check lazy compilation state
+                match jit.get_lazy_state(pc) {
+                    LazyState::NotCompiled => {
+                        // Register for lazy compilation
+                        if let Ok(code) = self.read_block_code(pc) {
+                            jit.register_lazy(pc, &code, self.hot_threshold);
+                            tracing::debug!("Registered block 0x{:08x} for lazy compilation", pc);
+                        }
+                    }
+                    LazyState::Pending | LazyState::Compiling => {
+                        // Compilation in progress
+                    }
+                    LazyState::Compiled => {
+                        // Should have been caught above
+                    }
+                    LazyState::Failed => {
+                        // Don't retry failed compilations
+                    }
+                }
+            }
+        }
+
+        Ok(false) // Fall back to interpreter
+    }
+
+    /// Add branch prediction hint from interpreter observation
+    #[allow(dead_code)] // Will be used when branch recording is enabled
+    fn record_branch(&self, address: u32, target: u32, taken: bool) {
+        let mut jit = self.jit_compiler.lock();
+        if let Some(jit) = jit.as_mut() {
+            jit.update_branch(address, taken);
+            
+            // Add hint if this is a new branch
+            let hint = if taken { BranchHint::Likely } else { BranchHint::Unlikely };
+            jit.add_branch_hint(address, target, hint);
+        }
+    }
+
+    // ========================================================================
+    // End JIT Control Methods
+    // ========================================================================
 
     /// Add a breakpoint at the specified address
     pub fn add_breakpoint(&self, addr: u64, bp_type: BreakpointType) {
@@ -160,6 +509,16 @@ impl PpuInterpreter {
             }
             return Err(PpuError::Breakpoint { addr: pc });
         }
+
+        // Try JIT execution first (if enabled and available)
+        if self.try_jit_execute(thread)? {
+            // JIT execution succeeded - stats already updated
+            self.jit_stats.lock().jit_executions += 1;
+            return Ok(());
+        }
+        
+        // Fall back to interpreter
+        self.jit_stats.lock().interpreter_fallbacks += 1;
 
         // Increment instruction count for conditional breakpoints
         let inst_count = {
@@ -2368,6 +2727,11 @@ impl PpuInterpreter {
                 0x2F => vector::vnmsubfp(a, c, b),
                 // vsel - Vector Select
                 0x2A => vector::vsel(a, b, c),
+                // vsldoi - Vector Shift Left Double by Octet Immediate
+                0x2C => {
+                    let sh = ((opcode >> 6) & 0xF) as u8;
+                    vector::vsldoi(a, b, sh)
+                }
                 _ => {
                     tracing::warn!(
                         "Unimplemented VA-form xo {} at 0x{:08x} (opcode: 0x{:08x}, vrt={}, vra={}, vrb={}, vrc={})",
@@ -2561,6 +2925,86 @@ impl PpuInterpreter {
                 0x44A => vector::vminfp(a, b),
                 // vsum4ubs - Vector Sum Across Quarter Unsigned Byte Saturate
                 0x608 => vector::vsum4ubs(a, b),
+                
+                // ===== New VMX instructions =====
+                
+                // lvsl - Load Vector for Shift Left
+                0x006 => {
+                    let ea = if vra == 0 { thread.gpr(vrb) } else { thread.gpr(vra).wrapping_add(thread.gpr(vrb)) };
+                    vector::lvsl(ea)
+                }
+                // lvsr - Load Vector for Shift Right
+                0x046 => {
+                    let ea = if vra == 0 { thread.gpr(vrb) } else { thread.gpr(vra).wrapping_add(thread.gpr(vrb)) };
+                    vector::lvsr(ea)
+                }
+                // vspltb - Vector Splat Byte
+                0x20C => vector::vspltb(b, uimm),
+                // vsplth - Vector Splat Halfword
+                0x24C => vector::vsplth(b, uimm),
+                // vmrghb - Vector Merge High Byte
+                0x00C => vector::vmrghb(a, b),
+                // vmrglb - Vector Merge Low Byte
+                0x10D => vector::vmrglb(a, b),
+                // vmrghh - Vector Merge High Halfword
+                0x04D => vector::vmrghh(a, b),
+                // vmrglh - Vector Merge Low Halfword
+                0x14C => vector::vmrglh(a, b),
+                // vcmpgefp - Vector Compare Greater Than or Equal FP
+                0x1C6 => {
+                    let (result, all_true) = vector::vcmpgefp(a, b);
+                    if (opcode & 0x400) != 0 {
+                        let cr6 = if all_true { 0b1000 } else { 0b0000 };
+                        thread.set_cr_field(6, cr6);
+                    }
+                    result
+                }
+                // vcmpbfp - Vector Compare Bounds FP
+                0x3C6 => {
+                    let (result, all_in_bounds) = vector::vcmpbfp(a, b);
+                    if (opcode & 0x400) != 0 {
+                        let cr6 = if all_in_bounds { 0b0010 } else { 0b0000 };
+                        thread.set_cr_field(6, cr6);
+                    }
+                    result
+                }
+                // vlogefp - Vector Log2 Estimate FP
+                0x1CA => vector::vlogefp(a),
+                // vexptefp - Vector 2^x Estimate FP
+                0x18A => vector::vexptefp(a),
+                // vctuxs - Vector Convert to Unsigned Fixed-Point Word Saturate
+                0x38A => vector::vctuxs(a, uimm),
+                // vcfux - Vector Convert from Unsigned Fixed-Point Word
+                0x30A => vector::vcfux(a, uimm),
+                // vavgub - Vector Average Unsigned Byte
+                0x402 => vector::vavgub(a, b),
+                // vavguh - Vector Average Unsigned Halfword
+                0x442 => vector::vavguh(a, b),
+                // vavguw - Vector Average Unsigned Word
+                0x482 => vector::vavguw(a, b),
+                // vavgsb - Vector Average Signed Byte
+                0x502 => vector::vavgsb(a, b),
+                // vavgsh - Vector Average Signed Halfword
+                0x542 => vector::vavgsh(a, b),
+                // vavgsw - Vector Average Signed Word
+                0x582 => vector::vavgsw(a, b),
+                // vmulesb - Vector Multiply Even Signed Byte
+                0x308 => vector::vmulesb(a, b),
+                // vmulosb - Vector Multiply Odd Signed Byte
+                0x108 => vector::vmulosb(a, b),
+                // vmuleub - Vector Multiply Even Unsigned Byte
+                0x208 => vector::vmuleub(a, b),
+                // vmuloub - Vector Multiply Odd Unsigned Byte
+                0x008 => vector::vmuloub(a, b),
+                // vmulesh - Vector Multiply Even Signed Halfword
+                0x348 => vector::vmulesh(a, b),
+                // vmulosh - Vector Multiply Odd Signed Halfword
+                0x148 => vector::vmulosh(a, b),
+                // vmuleuh - Vector Multiply Even Unsigned Halfword
+                0x248 => vector::vmuleuh(a, b),
+                // vmulouh - Vector Multiply Odd Unsigned Halfword
+                0x048 => vector::vmulouh(a, b),
+                
                 // lvx - Load Vector Indexed (handled specially with memory)
                 0x007 => {
                     // This shouldn't be in VA-form dispatch, but handle it anyway

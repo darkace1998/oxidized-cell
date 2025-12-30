@@ -4,7 +4,8 @@
 //! It manages display buffers, graphics memory, and the command FIFO.
 
 use std::collections::HashMap;
-use tracing::{debug, trace};
+use tracing::{debug, trace, info};
+use oc_core::{RsxBridgeSender, BridgeCommand, BridgeDisplayBuffer};
 
 /// Maximum number of display buffers
 pub const CELL_GCM_MAX_DISPLAY_BUFFERS: usize = 8;
@@ -426,6 +427,7 @@ impl Default for CellGcmScissor {
 
 /// Main memory mapping entry
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 struct MemoryMapping {
     /// Main memory address
     main_addr: u32,
@@ -528,6 +530,8 @@ pub struct GcmManager {
     flip_status: CellGcmFlipStatus,
     /// Draw call counter (for statistics)
     draw_call_count: u64,
+    /// RSX bridge sender for forwarding commands to RSX thread
+    rsx_bridge: Option<RsxBridgeSender>,
 }
 
 impl GcmManager {
@@ -555,7 +559,22 @@ impl GcmManager {
             next_io_offset: 0,
             flip_status: CellGcmFlipStatus::default(),
             draw_call_count: 0,
+            rsx_bridge: None,
         }
+    }
+    
+    /// Set the RSX bridge sender for forwarding commands to RSX thread
+    pub fn set_rsx_bridge(&mut self, bridge: RsxBridgeSender) {
+        info!("GcmManager: RSX bridge connected");
+        self.rsx_bridge = Some(bridge);
+        if self.initialized {
+            self.rsx_state = RsxConnectionState::Connected;
+        }
+    }
+    
+    /// Check if RSX bridge is connected
+    pub fn has_rsx_bridge(&self) -> bool {
+        self.rsx_bridge.as_ref().map_or(false, |b| b.is_connected())
     }
 
     /// Initialize GCM system
@@ -618,8 +637,18 @@ impl GcmManager {
         self.current_buffer = buffer_id;
         self.flip_status = CellGcmFlipStatus::Pending;
         
-        // Queue flip command to RSX command buffer
-        let _ = self.submit_command(0x0001, buffer_id);
+        // Flush any pending commands before flip
+        let _ = self.flush_commands();
+        
+        // Queue flip via bridge
+        if let Some(ref bridge) = self.rsx_bridge {
+            if bridge.queue_flip(buffer_id) {
+                debug!("GcmManager::set_flip: queued flip to buffer {} via bridge", buffer_id);
+            }
+        } else {
+            // Fallback: queue flip command to local buffer
+            let _ = self.submit_command(0x0001, buffer_id);
+        }
 
         0 // CELL_OK
     }
@@ -659,7 +688,19 @@ impl GcmManager {
             height,
         };
 
-        // TODO: Configure display buffer in RSX
+        // Configure display buffer in RSX via bridge
+        if let Some(ref bridge) = self.rsx_bridge {
+            let buffer_config = BridgeDisplayBuffer {
+                id: buffer_id,
+                offset,
+                pitch,
+                width,
+                height,
+            };
+            if bridge.configure_display_buffer(buffer_config) {
+                debug!("GcmManager: sent display buffer {} config to RSX via bridge", buffer_id);
+            }
+        }
 
         0 // CELL_OK
     }
@@ -749,15 +790,36 @@ impl GcmManager {
             return Err(RsxError::NotInitialized);
         }
         
-        if self.rsx_state != RsxConnectionState::Connected {
-            return Err(RsxError::BackendError);
-        }
-        
         let command_count = self.command_buffer.len();
         
-        // In a real implementation, this would send commands to oc-rsx
-        // For now, we just clear the buffer to simulate processing
-        debug!("GcmManager::flush_commands: flushing {} commands to RSX", command_count);
+        if command_count == 0 {
+            return Ok(0);
+        }
+        
+        // Convert local commands to bridge commands and send to RSX
+        if let Some(ref bridge) = self.rsx_bridge {
+            if bridge.is_connected() {
+                let bridge_commands: Vec<BridgeCommand> = self.command_buffer
+                    .get_commands()
+                    .iter()
+                    .map(|cmd| BridgeCommand {
+                        method: cmd.method,
+                        data: cmd.data,
+                    })
+                    .collect();
+                
+                if bridge.send_commands(bridge_commands) {
+                    debug!("GcmManager::flush_commands: sent {} commands to RSX via bridge", command_count);
+                } else {
+                    debug!("GcmManager::flush_commands: bridge send failed, {} commands dropped", command_count);
+                }
+            } else {
+                debug!("GcmManager::flush_commands: bridge not connected, {} commands dropped", command_count);
+            }
+        } else {
+            // No bridge connected, just log and drop
+            debug!("GcmManager::flush_commands: no bridge, {} commands simulated", command_count);
+        }
         
         self.command_buffer.clear();
         

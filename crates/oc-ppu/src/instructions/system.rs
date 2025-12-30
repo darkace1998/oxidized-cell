@@ -10,6 +10,12 @@ pub mod spr {
     pub const XER: u16 = 1;
     pub const LR: u16 = 8;
     pub const CTR: u16 = 9;
+    pub const DSISR: u16 = 18;    // Data Storage Interrupt Status Register
+    pub const DAR: u16 = 19;      // Data Address Register
+    pub const DEC: u16 = 22;      // Decrementer
+    pub const SDR1: u16 = 25;     // Storage Description Register 1
+    pub const SRR0: u16 = 26;     // Save/Restore Register 0
+    pub const SRR1: u16 = 27;     // Save/Restore Register 1
     pub const VRSAVE: u16 = 256;
     pub const SPRG0: u16 = 272;
     pub const SPRG1: u16 = 273;
@@ -53,6 +59,27 @@ pub fn mfspr(thread: &PpuThread, spr_num: u16) -> u64 {
         }
         spr::VRSAVE => 0, // VMX register save mask
         spr::PIR => thread.id as u64,
+        // Save/Restore registers for exception handling
+        spr::SRR0 => thread.regs.srr0,
+        spr::SRR1 => thread.regs.srr1,
+        // Decrementer (returns stored value)
+        spr::DEC => thread.regs.dec as u64,
+        // SPRG scratch registers - commonly used by OS/hypervisor
+        spr::SPRG0 | spr::SPRG1 | spr::SPRG2 | spr::SPRG3 => {
+            // SPRGs are typically supervisor-only, return 0 for user mode
+            tracing::trace!("mfspr: SPRG{} read (supervisor register)", spr_num - spr::SPRG0);
+            0
+        }
+        // Hardware Implementation Dependent registers - return safe defaults
+        spr::HID0 | spr::HID1 | spr::HID4 | spr::HID5 | spr::HID6 => {
+            tracing::trace!("mfspr: HID register {} read", spr_num);
+            0
+        }
+        // Data storage interrupt registers
+        spr::DSISR | spr::DAR | spr::SDR1 => {
+            tracing::trace!("mfspr: Memory management SPR {} read", spr_num);
+            0
+        }
         _ => {
             tracing::warn!("mfspr: Unimplemented SPR {}", spr_num);
             0
@@ -69,6 +96,23 @@ pub fn mtspr(thread: &mut PpuThread, spr_num: u16, value: u64) {
         spr::VRSAVE => { /* Ignored for now */ }
         spr::PVR => { /* Read-only, ignore */ }
         spr::TB | spr::TBU => { /* Time base is read-only in user mode */ }
+        // Save/Restore registers for exception handling
+        spr::SRR0 => thread.regs.srr0 = value,
+        spr::SRR1 => thread.regs.srr1 = value,
+        // Decrementer
+        spr::DEC => thread.regs.dec = value as u32,
+        // SPRG scratch registers - supervisor only, ignore in user mode
+        spr::SPRG0 | spr::SPRG1 | spr::SPRG2 | spr::SPRG3 => {
+            tracing::trace!("mtspr: SPRG{} write (ignored - supervisor register)", spr_num - spr::SPRG0);
+        }
+        // Hardware Implementation Dependent registers - ignore writes
+        spr::HID0 | spr::HID1 | spr::HID4 | spr::HID5 | spr::HID6 => {
+            tracing::trace!("mtspr: HID register {} write (ignored)", spr_num);
+        }
+        // Data storage interrupt registers - supervisor only
+        spr::DSISR | spr::DAR | spr::SDR1 => {
+            tracing::trace!("mtspr: Memory management SPR {} write (ignored)", spr_num);
+        }
         _ => {
             tracing::warn!("mtspr: Unimplemented SPR {} = 0x{:016x}", spr_num, value);
         }

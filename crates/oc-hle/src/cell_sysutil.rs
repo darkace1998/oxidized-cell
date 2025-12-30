@@ -27,11 +27,23 @@ fn get_current_unix_timestamp() -> u64 {
 pub type SysutilCallback = fn(status: u64, param: u64, userdata: u64);
 
 /// System callback entry
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 struct CallbackEntry {
     func: u32,      // Address of callback function
     userdata: u32,  // User data pointer
+}
+
+/// Pending callback - describes a callback that needs to be invoked on PPU
+#[derive(Debug, Clone, Copy)]
+pub struct PendingCallback {
+    /// Function address to call
+    pub func: u32,
+    /// Event status/type (first argument)
+    pub status: u64,
+    /// Event parameter (second argument)
+    pub param: u64,
+    /// User data pointer (third argument)
+    pub userdata: u32,
 }
 
 /// System event
@@ -408,6 +420,8 @@ pub struct SysutilManager {
     callbacks: [Option<CallbackEntry>; CELL_SYSUTIL_MAX_CALLBACK_SLOTS],
     /// Pending events queue
     pending_events: VecDeque<SystemEvent>,
+    /// Pending callbacks ready to invoke on PPU
+    pending_callbacks: VecDeque<PendingCallback>,
     /// System parameters (integer)
     int_params: HashMap<u32, i32>,
     /// System parameters (string)
@@ -440,6 +454,7 @@ impl SysutilManager {
         let mut manager = Self {
             callbacks: [None; CELL_SYSUTIL_MAX_CALLBACK_SLOTS],
             pending_events: VecDeque::new(),
+            pending_callbacks: VecDeque::new(),
             int_params: HashMap::new(),
             string_params: HashMap::new(),
             dialog: DialogState::default(),
@@ -521,19 +536,57 @@ impl SysutilManager {
     }
 
     /// Check callbacks (should be called periodically by game)
+    /// 
+    /// This processes pending events and generates callbacks that need to be
+    /// invoked on the PPU. The runner should call `pop_pending_callback()` after
+    /// this returns to get callbacks to invoke.
     pub fn check_callback(&mut self) -> i32 {
         trace!("SysutilManager::check_callback()");
 
-        // Process pending events
+        // Process pending events and generate callbacks for registered handlers
         while let Some(event) = self.pending_events.pop_front() {
-            // TODO: Call registered callbacks with event
-            trace!("Processing event: type=0x{:X}, param=0x{:X}", event.event_type, event.param);
+            debug!(
+                "Processing system event: type=0x{:X}, param=0x{:X}",
+                event.event_type, event.param
+            );
             
-            // For now, just process the event without calling actual callbacks
-            // Real implementation would need to call PPU callback functions
+            // Send the event to all registered callback slots
+            for slot in 0..CELL_SYSUTIL_MAX_CALLBACK_SLOTS {
+                if let Some(entry) = &self.callbacks[slot] {
+                    // Queue a pending callback for this slot
+                    self.pending_callbacks.push_back(PendingCallback {
+                        func: entry.func,
+                        status: event.event_type,
+                        param: event.param,
+                        userdata: entry.userdata,
+                    });
+                    
+                    debug!(
+                        "Queued callback: slot={}, func=0x{:08X}, status=0x{:X}, param=0x{:X}",
+                        slot, entry.func, event.event_type, event.param
+                    );
+                }
+            }
         }
 
         0 // CELL_OK
+    }
+
+    /// Pop a pending callback that needs to be invoked on PPU
+    /// 
+    /// Returns None if there are no pending callbacks
+    pub fn pop_pending_callback(&mut self) -> Option<PendingCallback> {
+        self.pending_callbacks.pop_front()
+    }
+
+    /// Check if there are pending callbacks to invoke
+    pub fn has_pending_callbacks(&self) -> bool {
+        !self.pending_callbacks.is_empty()
+    }
+
+    /// Get the number of pending callbacks
+    pub fn pending_callback_count(&self) -> usize {
+        self.pending_callbacks.len()
     }
 
     /// Queue a system event
@@ -642,12 +695,36 @@ impl SysutilManager {
 
         debug!("SysutilManager::close_dialog: result={:?}", result);
         
+        // Determine the event status code based on dialog result
+        let event_status = match result {
+            DialogStatus::Ok => 0x0000, // CELL_MSGDIALOG_BUTTON_YES / OK
+            DialogStatus::Cancel => 0x0001, // CELL_MSGDIALOG_BUTTON_NO / Cancel
+            DialogStatus::Error => 0x0002, // Error
+            _ => 0x0000,
+        };
+        
+        // Queue a dialog finished event so registered callbacks get notified
+        self.queue_event(
+            CellSysutilEvent::MenuClose as u64,
+            event_status,
+        );
+        
         self.dialog.status = result;
         self.dialog.dialog_type = None;
         self.dialog.message.clear();
         self.dialog.progress = 0;
         
         0 // CELL_OK
+    }
+
+    /// Close dialog with OK result (simulates user pressing OK/Yes)
+    pub fn close_dialog_ok(&mut self) -> i32 {
+        self.close_dialog(DialogStatus::Ok)
+    }
+
+    /// Close dialog with Cancel result (simulates user pressing Cancel/No)
+    pub fn close_dialog_cancel(&mut self) -> i32 {
+        self.close_dialog(DialogStatus::Cancel)
     }
 
     /// Get current dialog status
@@ -1768,11 +1845,78 @@ mod tests {
         
         assert_eq!(manager.pending_event_count(), 2);
         
-        // Process events
+        // Process events (no callbacks registered, so no pending callbacks)
         assert_eq!(manager.check_callback(), 0);
         
         // Events should be processed
         assert_eq!(manager.pending_event_count(), 0);
+        assert!(!manager.has_pending_callbacks());
+    }
+
+    #[test]
+    fn test_sysutil_callback_invocation() {
+        let mut manager = SysutilManager::new();
+        
+        // Register callbacks in two slots
+        assert_eq!(manager.register_callback(0, 0x10000100, 0xDEAD0000), 0);
+        assert_eq!(manager.register_callback(1, 0x10000200, 0xBEEF0000), 0);
+        
+        // Queue an event
+        manager.queue_event(CellSysutilEvent::MenuOpen as u64, 0x42);
+        
+        // Process - this should generate 2 pending callbacks (one per slot)
+        assert_eq!(manager.check_callback(), 0);
+        
+        // We should have 2 pending callbacks
+        assert!(manager.has_pending_callbacks());
+        assert_eq!(manager.pending_callback_count(), 2);
+        
+        // Pop first callback
+        let cb1 = manager.pop_pending_callback().unwrap();
+        assert_eq!(cb1.func, 0x10000100);
+        assert_eq!(cb1.status, CellSysutilEvent::MenuOpen as u64);
+        assert_eq!(cb1.param, 0x42);
+        assert_eq!(cb1.userdata, 0xDEAD0000);
+        
+        // Pop second callback
+        let cb2 = manager.pop_pending_callback().unwrap();
+        assert_eq!(cb2.func, 0x10000200);
+        assert_eq!(cb2.status, CellSysutilEvent::MenuOpen as u64);
+        assert_eq!(cb2.param, 0x42);
+        assert_eq!(cb2.userdata, 0xBEEF0000);
+        
+        // No more callbacks
+        assert!(!manager.has_pending_callbacks());
+        assert!(manager.pop_pending_callback().is_none());
+    }
+
+    #[test]
+    fn test_dialog_close_queues_event() {
+        let mut manager = SysutilManager::new();
+        
+        // Register a callback
+        assert_eq!(manager.register_callback(0, 0x10000100, 0), 0);
+        
+        // Open a dialog
+        assert_eq!(manager.open_message_dialog("Test message"), 0);
+        assert!(manager.is_dialog_open());
+        
+        // Close with OK
+        assert_eq!(manager.close_dialog_ok(), 0);
+        assert!(!manager.is_dialog_open());
+        
+        // Should have queued a MenuClose event
+        assert_eq!(manager.pending_event_count(), 1);
+        
+        // Process the event
+        assert_eq!(manager.check_callback(), 0);
+        
+        // Should have generated a pending callback
+        assert!(manager.has_pending_callbacks());
+        let cb = manager.pop_pending_callback().unwrap();
+        assert_eq!(cb.func, 0x10000100);
+        assert_eq!(cb.status, CellSysutilEvent::MenuClose as u64);
+        assert_eq!(cb.param, 0x0000); // OK result
     }
 
     #[test]

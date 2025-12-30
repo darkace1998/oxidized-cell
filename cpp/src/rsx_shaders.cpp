@@ -11,12 +11,12 @@
  */
 
 #include "oc_ffi.h"
+#include "oc_threading.h"
 #include <cstdlib>
 #include <cstring>
 #include <unordered_map>
 #include <vector>
 #include <memory>
-#include <mutex>
 #include <functional>
 #include <array>
 #include <new>
@@ -393,7 +393,7 @@ struct LinkedShaderProgram {
  */
 struct ShaderLinker {
     std::unordered_map<uint64_t, LinkedShaderProgram> linked_programs;
-    std::mutex mutex;
+    oc_mutex mutex;
     
     // Compute combined hash for vertex/fragment pair
     static uint64_t compute_pair_hash(uint64_t vp_hash, uint64_t fp_hash) {
@@ -401,14 +401,14 @@ struct ShaderLinker {
     }
     
     LinkedShaderProgram* get_linked(uint64_t vp_hash, uint64_t fp_hash) {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         uint64_t pair_hash = compute_pair_hash(vp_hash, fp_hash);
         auto it = linked_programs.find(pair_hash);
         return (it != linked_programs.end()) ? &it->second : nullptr;
     }
     
     void store_linked(uint64_t vp_hash, uint64_t fp_hash, const LinkedShaderProgram& program) {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         uint64_t pair_hash = compute_pair_hash(vp_hash, fp_hash);
         linked_programs[pair_hash] = program;
     }
@@ -449,7 +449,7 @@ struct ShaderLinker {
     }
     
     void clear() {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         linked_programs.clear();
     }
 };
@@ -546,7 +546,7 @@ struct CachedPipeline {
  */
 struct PipelineCache {
     std::unordered_map<uint64_t, CachedPipeline> pipelines;
-    std::mutex mutex;
+    oc_mutex mutex;
     size_t max_entries;
     uint64_t current_frame;
     
@@ -571,7 +571,7 @@ struct PipelineCache {
     }
     
     void* get_or_create(const PipelineState& state) {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         
         uint64_t hash = state.compute_hash();
         auto it = pipelines.find(hash);
@@ -632,7 +632,7 @@ struct PipelineCache {
     }
     
     void clear() {
-        std::lock_guard<std::mutex> lock(mutex);
+        oc_lock_guard<oc_mutex> lock(mutex);
         
         if (destroy_callback) {
             for (auto& pair : pipelines) {
@@ -658,7 +658,7 @@ struct oc_rsx_shader_t {
     PipelineCache pipeline_cache;
     std::unordered_map<uint64_t, std::vector<uint32_t>> vertex_cache;
     std::unordered_map<uint64_t, std::vector<uint32_t>> fragment_cache;
-    std::mutex mutex;
+    oc_mutex mutex;
     bool enabled;
     
     oc_rsx_shader_t() : enabled(true) {
@@ -686,6 +686,7 @@ static uint64_t compute_shader_hash(const uint32_t* data, size_t count) {
 /**
  * Decode RSX vertex program instruction
  */
+[[maybe_unused]]
 static RsxShaderInstruction decode_vp_instruction(const uint32_t* data) {
     RsxShaderInstruction instr;
     
@@ -721,6 +722,7 @@ static RsxShaderInstruction decode_vp_instruction(const uint32_t* data) {
 /**
  * Decode RSX fragment program instruction
  */
+[[maybe_unused]]
 static RsxShaderInstruction decode_fp_instruction(const uint32_t* data) {
     RsxShaderInstruction instr;
     
@@ -781,7 +783,7 @@ int oc_rsx_shader_compile_vertex(oc_rsx_shader_t* shader, const uint32_t* code,
     
     // Check cache
     {
-        std::lock_guard<std::mutex> lock(shader->mutex);
+        oc_lock_guard<oc_mutex> lock(shader->mutex);
         auto it = shader->vertex_cache.find(hash);
         if (it != shader->vertex_cache.end()) {
             *out_size = it->second.size();
@@ -809,7 +811,7 @@ int oc_rsx_shader_compile_vertex(oc_rsx_shader_t* shader, const uint32_t* code,
     
     // Cache result
     {
-        std::lock_guard<std::mutex> lock(shader->mutex);
+        oc_lock_guard<oc_mutex> lock(shader->mutex);
         shader->vertex_cache[hash] = spirv;
     }
     
@@ -832,7 +834,7 @@ int oc_rsx_shader_compile_fragment(oc_rsx_shader_t* shader, const uint32_t* code
     
     // Check cache
     {
-        std::lock_guard<std::mutex> lock(shader->mutex);
+        oc_lock_guard<oc_mutex> lock(shader->mutex);
         auto it = shader->fragment_cache.find(hash);
         if (it != shader->fragment_cache.end()) {
             *out_size = it->second.size();
@@ -859,7 +861,7 @@ int oc_rsx_shader_compile_fragment(oc_rsx_shader_t* shader, const uint32_t* code
     
     // Cache result
     {
-        std::lock_guard<std::mutex> lock(shader->mutex);
+        oc_lock_guard<oc_mutex> lock(shader->mutex);
         shader->fragment_cache[hash] = spirv;
     }
     
@@ -948,7 +950,7 @@ size_t oc_rsx_shader_get_pipeline_count(oc_rsx_shader_t* shader) {
 void oc_rsx_shader_clear_caches(oc_rsx_shader_t* shader) {
     if (!shader) return;
     
-    std::lock_guard<std::mutex> lock(shader->mutex);
+    oc_lock_guard<oc_mutex> lock(shader->mutex);
     shader->vertex_cache.clear();
     shader->fragment_cache.clear();
     shader->linker.clear();

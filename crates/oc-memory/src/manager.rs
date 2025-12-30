@@ -288,6 +288,25 @@ impl MemoryManager {
         Ok(())
     }
 
+    /// Get the base pointer for the address space
+    /// 
+    /// This returns the base pointer that JIT code can use for memory access.
+    /// JIT code should add offsets to this pointer for memory operations.
+    /// 
+    /// # Safety
+    /// The returned pointer should only be used by JIT code that properly
+    /// bounds-checks all memory accesses.
+    #[inline(always)]
+    pub fn base_ptr(&self) -> *mut u8 {
+        self.base
+    }
+    
+    /// Get the total size of the address space
+    #[inline(always)]
+    pub fn address_space_size(&self) -> u64 {
+        ADDRESS_SPACE_SIZE as u64
+    }
+
     /// Get raw pointer for address (unchecked, for hot paths)
     ///
     /// # Safety
