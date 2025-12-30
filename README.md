@@ -259,6 +259,7 @@ Contributions are welcome! Here's how you can help:
 
 - [docs/ppu_instructions.md](docs/ppu_instructions.md) - PPU instruction reference
 - [docs/spu_instructions.md](docs/spu_instructions.md) - SPU instruction reference
+- [docs/HLE_STATUS.md](docs/HLE_STATUS.md) - HLE module implementation status
 
 ## 🏗️ Architecture
 
