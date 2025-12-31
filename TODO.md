@@ -36,10 +36,11 @@ This document tracks development tasks, improvements, and known issues for the o
     - RR-form: fa, fs, fm, fceq, fcgt (floating-point)
     - RRR-form: selb, fma, fms, fnms, mpya, shufb
 
-- [ ] **Thread ID Management**
+- [x] **Thread ID Management**
   - Location: `crates/oc-integration/src/runner.rs:300`
   - Use a dedicated thread ID counter instead of thread count
   - Ensures unique IDs even after thread removal
+  - Implemented using AtomicU32 counters for both PPU and SPU threads
 
 ### RSX Graphics
 

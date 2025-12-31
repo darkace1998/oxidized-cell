@@ -17,6 +17,7 @@ use oc_rsx::RsxThread;
 use oc_lv2::SyscallHandler;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use std::collections::HashMap;
 use parking_lot::RwLock;
@@ -66,6 +67,12 @@ pub struct EmulatorRunner {
     last_frame_time: Instant,
     /// Target frame time (16.67ms for 60 FPS)
     target_frame_time: Duration,
+    /// Monotonically increasing PPU thread ID counter
+    /// Ensures unique thread IDs even after thread removal
+    next_ppu_thread_id: AtomicU32,
+    /// Monotonically increasing SPU thread ID counter
+    /// Ensures unique thread IDs even after thread removal
+    next_spu_thread_id: AtomicU32,
 }
 
 impl EmulatorRunner {
@@ -140,6 +147,8 @@ impl EmulatorRunner {
             total_cycles: 0,
             last_frame_time: Instant::now(),
             target_frame_time,
+            next_ppu_thread_id: AtomicU32::new(0),
+            next_spu_thread_id: AtomicU32::new(0),
         })
     }
 
@@ -225,10 +234,8 @@ impl EmulatorRunner {
 
     /// Create a new PPU thread
     pub fn create_ppu_thread(&self, priority: u32) -> Result<u32> {
-        let thread_id = {
-            let threads = self.ppu_threads.read();
-            threads.len() as u32
-        };
+        // Use atomic counter to ensure unique IDs even after thread removal
+        let thread_id = self.next_ppu_thread_id.fetch_add(1, Ordering::SeqCst);
 
         let thread = Arc::new(RwLock::new(PpuThread::new(thread_id, self.memory.clone())));
         
@@ -244,10 +251,8 @@ impl EmulatorRunner {
 
     /// Create a new SPU thread
     pub fn create_spu_thread(&self, priority: u32) -> Result<u32> {
-        let thread_id = {
-            let threads = self.spu_threads.read();
-            threads.len() as u32
-        };
+        // Use atomic counter to ensure unique IDs even after thread removal
+        let thread_id = self.next_spu_thread_id.fetch_add(1, Ordering::SeqCst);
 
         let thread = Arc::new(RwLock::new(SpuThread::new(thread_id, self.memory.clone())));
         
@@ -293,16 +298,11 @@ impl EmulatorRunner {
 
     /// Create a PPU thread with a specific entry point and initial state
     ///
-    /// Note: Thread ID is currently derived from the thread count, which could lead to
-    /// ID conflicts if threads are removed. A proper implementation would use a
-    /// monotonically increasing counter.
+    /// Uses a monotonically increasing counter to ensure unique thread IDs
+    /// even after thread removal.
     fn create_ppu_thread_with_entry(&self, game: &LoadedGame) -> Result<u32> {
-        // TODO: Use a dedicated thread ID counter instead of thread count
-        // to ensure unique IDs even after thread removal
-        let thread_id = {
-            let threads = self.ppu_threads.read();
-            threads.len() as u32
-        };
+        // Use atomic counter to ensure unique IDs even after thread removal
+        let thread_id = self.next_ppu_thread_id.fetch_add(1, Ordering::SeqCst);
 
         let mut thread = PpuThread::new(thread_id, self.memory.clone());
 
