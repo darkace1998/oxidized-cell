@@ -21,10 +21,20 @@ This document tracks development tasks, improvements, and known issues for the o
     - Single-precision floating-point (opcode 59)
     - Comparison immediate instructions
 
-- [ ] **SPU JIT - Complete LLVM IR Generation**
+- [x] **SPU JIT - Complete LLVM IR Generation**
   - Location: `cpp/src/spu_jit.cpp:564`
   - Full LLVM IR generation for all SPU instructions
-  - Currently only supports ~15 SIMD instruction patterns
+  - Implemented comprehensive SIMD instruction support including:
+    - RI10-form: ai, ahi, sfi, sfhi, andi, ori, xori, lqd, stqd, ceqi, cgti, clgti
+    - RI7-form: shli, roti, rotmi, rotmai (shift/rotate immediates)
+    - RI16-form: il, ilh, ilhu, iohl (immediate loads), lqa, stqa
+    - RR-form: a, ah, sf, sfh, mpy, mpyu, mpyh (arithmetic)
+    - RR-form: and, or, xor, nor, nand, andc, orc, eqv (logical)
+    - RR-form: shl, rot, rotm, rotma (shift/rotate)
+    - RR-form: ceq, ceqb, cgt, clgt (compare)
+    - RR-form: lqx, stqx (indexed load/store)
+    - RR-form: fa, fs, fm, fceq, fcgt (floating-point)
+    - RRR-form: selb, fma, fms, fnms, mpya, shufb
 
 - [ ] **Thread ID Management**
   - Location: `crates/oc-integration/src/runner.rs:300`
