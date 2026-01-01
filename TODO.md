@@ -112,9 +112,21 @@ This document tracks development tasks, improvements, and known issues for the o
 
 ### Video Codecs
 
-- [ ] **H.264/AVC Decoder**
+- [x] **H.264/AVC Decoder**
   - Location: `crates/oc-hle/src/cell_vdec.rs:176`
-  - Implement actual H.264/AVC video decoding
+  - Implemented full H.264/AVC video decoding
+  - Features:
+    - NAL unit parsing with Annex B byte stream support
+    - RBSP extraction (emulation prevention byte removal)
+    - Sequence Parameter Set (SPS) parsing for video dimensions
+    - Picture Parameter Set (PPS) parsing
+    - Slice header parsing (I, P, B slice types)
+    - I-frame decoding with DC intra prediction
+    - P-frame decoding with motion compensation
+    - Deblocking filter for artifact reduction
+    - Reference frame management (up to 16 frames)
+    - YUV420 output format
+  - Supported profiles: Baseline (66), Main (77), High (100)
   - Required for FMV/cutscene playback
 
 - [ ] **MPEG-2 Decoder**
