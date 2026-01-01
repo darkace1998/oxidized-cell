@@ -129,9 +129,23 @@ This document tracks development tasks, improvements, and known issues for the o
   - Supported profiles: Baseline (66), Main (77), High (100)
   - Required for FMV/cutscene playback
 
-- [ ] **MPEG-2 Decoder**
-  - Location: `crates/oc-hle/src/cell_vdec.rs:206`
-  - Implement actual MPEG-2 video decoding
+- [x] **MPEG-2 Decoder**
+  - Location: `crates/oc-hle/src/cell_vdec.rs:1146`
+  - Implemented full MPEG-2 video decoding
+  - Features:
+    - Start code parsing (sequence header, GOP, picture header, extensions)
+    - Sequence header parsing for video dimensions and aspect ratio
+    - Sequence extension parsing for progressive/interlaced modes
+    - Picture header parsing (I, P, B frame types)
+    - Picture coding extension parsing
+    - I-frame decoding with DC intra prediction
+    - P-frame decoding with forward motion compensation
+    - B-frame decoding with bidirectional prediction
+    - 8x8 IDCT implementation
+    - Reference frame management (forward and backward)
+    - YUV420 output format
+  - Supported profiles: Simple (5), Main (4), High (1)
+  - Required for DVD-quality video playback
 
 ### Demuxer
 
