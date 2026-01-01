@@ -11,5 +11,7 @@ oc-core.workspace = true
 tracing.workspace = true
 cpal.workspace = true
 parking_lot.workspace = true
+# AAC decoder support
+symphonia = { version = "0.5.4", features = ["aac", "isomp4"] }
 
 [dev-dependencies]

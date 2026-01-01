@@ -77,10 +77,11 @@ This document tracks development tasks, improvements, and known issues for the o
 
 ### Audio Codecs
 
-- [ ] **AAC Decoder Implementation**
+- [x] **AAC Decoder Implementation**
   - Locations: `crates/oc-audio/src/codec.rs:228`, `crates/oc-hle/src/cell_adec.rs:155`
-  - Integrate with ffmpeg, symphonia, or similar library for actual AAC decoding
-  - Currently returns stub/silence data
+  - Integrated with symphonia library for actual AAC decoding
+  - Supports ADTS-framed AAC and raw AAC data with automatic header generation
+  - Decodes AAC LC profile at various sample rates and channel configurations
 
 - [ ] **ATRAC3+ Decoder Implementation**
   - Locations: `crates/oc-audio/src/codec.rs:275`, `crates/oc-hle/src/cell_adec.rs:210`

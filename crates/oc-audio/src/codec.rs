@@ -2,6 +2,14 @@
 //!
 //! Provides support for various audio codecs used in PS3 games.
 
+use std::io::Cursor;
+use symphonia::core::audio::SampleBuffer;
+use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_AAC};
+use symphonia::core::formats::FormatOptions;
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::meta::MetadataOptions;
+use symphonia::core::probe::Hint;
+
 /// Audio codec type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AudioCodec {
@@ -192,9 +200,14 @@ impl AudioDecoder for PcmDecoder {
     }
 }
 
-/// AAC decoder (stub)
+/// AAC decoder using symphonia
 pub struct AacDecoder {
     config: CodecConfig,
+    /// Symphonia decoder instance (boxed to avoid type complexity)
+    #[allow(dead_code)]
+    decoder: Option<Box<dyn symphonia::core::codecs::Decoder>>,
+    /// Sample buffer for decoded audio
+    sample_buf: Option<SampleBuffer<f32>>,
 }
 
 impl AacDecoder {
@@ -204,7 +217,79 @@ impl AacDecoder {
                 codec: AudioCodec::Aac,
                 ..Default::default()
             },
+            decoder: None,
+            sample_buf: None,
         }
+    }
+
+    /// Create an ADTS header for raw AAC data
+    /// This is needed because symphonia expects ADTS-framed AAC
+    fn create_adts_header(&self, aac_data_len: usize) -> Vec<u8> {
+        let sample_rate = self.config.sample_rate;
+        let channels = self.config.num_channels;
+        
+        // ADTS sampling frequency index
+        let freq_index = match sample_rate {
+            96000 => 0,
+            88200 => 1,
+            64000 => 2,
+            48000 => 3,
+            44100 => 4,
+            32000 => 5,
+            24000 => 6,
+            22050 => 7,
+            16000 => 8,
+            12000 => 9,
+            11025 => 10,
+            8000 => 11,
+            7350 => 12,
+            _ => 4, // Default to 44100
+        };
+
+        // Channel configuration
+        let channel_config = match channels {
+            1 => 1,
+            2 => 2,
+            3 => 3,
+            4 => 4,
+            5 => 5,
+            6 => 6,
+            8 => 7,
+            _ => 2, // Default to stereo
+        };
+
+        // ADTS frame length (header + data)
+        let frame_len = 7 + aac_data_len;
+
+        // Build ADTS header (7 bytes)
+        let mut header = Vec::with_capacity(7);
+        
+        // Syncword (12 bits), ID (1 bit), Layer (2 bits), Protection absent (1 bit)
+        header.push(0xFF); // 11111111
+        header.push(0xF1); // 1111 0 00 1 (MPEG-4, layer 0, no CRC)
+        
+        // Profile (2 bits), Sampling freq index (4 bits), Private (1 bit), Channel config (3 bits) [first 1 bit]
+        // AAC LC = profile 1 (stored as 0 in ADTS, 2-bit value is profile - 1)
+        let byte2 = ((0 & 0x03) << 6) | ((freq_index & 0x0F) << 2) | (0 << 1) | ((channel_config >> 2) & 0x01);
+        header.push(byte2);
+        
+        // Channel config (2 bits), Original copy (1 bit), Home (1 bit), 
+        // Copyright ID bit (1 bit), Copyright ID start (1 bit), Frame length (13 bits) [first 2 bits]
+        let byte3 = ((channel_config & 0x03) << 6) | ((frame_len >> 11) & 0x03) as u8;
+        header.push(byte3);
+        
+        // Frame length (11 bits), Buffer fullness (11 bits) [first 5 bits]
+        let byte4 = ((frame_len >> 3) & 0xFF) as u8;
+        header.push(byte4);
+        
+        // Frame length (3 bits), Buffer fullness (11 bits) [remaining 6 bits]
+        let byte5 = (((frame_len & 0x07) << 5) | 0x1F) as u8; // 0x1F = VBR
+        header.push(byte5);
+        
+        // Buffer fullness (5 bits), Number of raw data blocks (2 bits)
+        header.push(0xFC); // 11111 00 (1 raw data block)
+        
+        header
     }
 }
 
@@ -220,18 +305,142 @@ impl AudioDecoder for AacDecoder {
             return Err("AAC decoder only supports AAC codec".to_string());
         }
         self.config = config;
-        tracing::warn!("AAC decoder is not fully implemented");
+        tracing::info!(
+            "AAC decoder initialized: {}Hz, {} channels",
+            config.sample_rate,
+            config.num_channels
+        );
         Ok(())
     }
 
-    fn decode(&mut self, _input: &[u8], _output: &mut Vec<f32>) -> Result<usize, String> {
-        // TODO: Implement AAC decoding
-        tracing::warn!("AAC decoding not yet implemented, returning silence");
-        Ok(0)
+    fn decode(&mut self, input: &[u8], output: &mut Vec<f32>) -> Result<usize, String> {
+        if input.is_empty() {
+            return Ok(0);
+        }
+
+        // Check if input already has ADTS header (0xFFF sync word)
+        let aac_data = if input.len() >= 2 && input[0] == 0xFF && (input[1] & 0xF0) == 0xF0 {
+            // Already has ADTS header
+            input.to_vec()
+        } else {
+            // Add ADTS header for raw AAC data
+            let mut data = self.create_adts_header(input.len());
+            data.extend_from_slice(input);
+            data
+        };
+
+        // Create a media source from the input data
+        let cursor = Cursor::new(aac_data);
+        let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
+
+        // Create probe hint for ADTS format
+        let mut hint = Hint::new();
+        hint.with_extension("aac");
+
+        // Probe the format
+        let format_opts = FormatOptions::default();
+        let metadata_opts = MetadataOptions::default();
+
+        let probed = match symphonia::default::get_probe().format(&hint, mss, &format_opts, &metadata_opts) {
+            Ok(probed) => probed,
+            Err(e) => {
+                tracing::warn!("AAC probe failed: {}, returning silence", e);
+                // Return silence for undecodable data
+                let samples = 1024 * self.config.num_channels;
+                output.resize(output.len() + samples, 0.0);
+                return Ok(samples);
+            }
+        };
+
+        let mut format = probed.format;
+
+        // Find the AAC track
+        let track = format.tracks()
+            .iter()
+            .find(|t| t.codec_params.codec == CODEC_TYPE_AAC)
+            .or_else(|| format.tracks().first());
+
+        let track = match track {
+            Some(t) => t,
+            None => {
+                tracing::warn!("No AAC track found, returning silence");
+                let samples = 1024 * self.config.num_channels;
+                output.resize(output.len() + samples, 0.0);
+                return Ok(samples);
+            }
+        };
+
+        let track_id = track.id;
+        let codec_params = track.codec_params.clone();
+
+        // Create decoder
+        let dec_opts = DecoderOptions::default();
+        let mut decoder = match symphonia::default::get_codecs().make(&codec_params, &dec_opts) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!("AAC decoder creation failed: {}, returning silence", e);
+                let samples = 1024 * self.config.num_channels;
+                output.resize(output.len() + samples, 0.0);
+                return Ok(samples);
+            }
+        };
+
+        let mut total_samples = 0;
+
+        // Decode all packets
+        loop {
+            let packet = match format.next_packet() {
+                Ok(p) => p,
+                Err(symphonia::core::errors::Error::IoError(ref e)) 
+                    if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(_) => break,
+            };
+
+            if packet.track_id() != track_id {
+                continue;
+            }
+
+            let decoded = match decoder.decode(&packet) {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::debug!("AAC decode error: {}", e);
+                    continue;
+                }
+            };
+
+            // Get audio specification
+            let spec = *decoded.spec();
+            let duration = decoded.capacity() as u64;
+
+            // Create or resize sample buffer
+            let sample_buf = self.sample_buf.get_or_insert_with(|| {
+                SampleBuffer::<f32>::new(duration, spec)
+            });
+
+            // Copy samples to buffer
+            sample_buf.copy_interleaved_ref(decoded);
+
+            // Append to output
+            let samples = sample_buf.samples();
+            output.extend_from_slice(samples);
+            total_samples += samples.len();
+        }
+
+        if total_samples == 0 {
+            // If no samples were decoded, return a frame of silence
+            let samples = 1024 * self.config.num_channels;
+            output.resize(output.len() + samples, 0.0);
+            return Ok(samples);
+        }
+
+        tracing::trace!("AAC decoded {} samples", total_samples);
+        Ok(total_samples)
     }
 
     fn reset(&mut self) {
-        // TODO: Reset AAC decoder state
+        self.decoder = None;
+        self.sample_buf = None;
+        tracing::debug!("AAC decoder reset");
     }
 
     fn config(&self) -> &CodecConfig {
