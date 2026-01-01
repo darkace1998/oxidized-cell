@@ -51,9 +51,12 @@ This document tracks development tasks, improvements, and known issues for the o
   - Extended `transition_image_layout` to support TRANSFER_SRC transitions
   - Required for screenshot functionality and frame output
 
-- [ ] **Vertex Buffer Submission**
-  - Location: `crates/oc-rsx/src/thread.rs:360`
-  - Implement vertex buffer submission to Vulkan backend
+- [x] **Vertex Buffer Submission**
+  - Location: `crates/oc-rsx/src/thread.rs:356`
+  - Implemented vertex buffer submission to Vulkan backend
+  - Added `submit_vertex_buffer` and `submit_index_buffer` methods to GraphicsBackend trait
+  - Vulkan backend creates GPU buffers with CPU-visible memory for direct upload
+  - Thread flushes vertex data from RSX memory using attribute format/offset state
   - Critical for actual game rendering
 
 - [ ] **Post-Processing Pipeline Integration**

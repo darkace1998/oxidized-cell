@@ -125,6 +125,10 @@ pub struct VulkanBackend {
     anisotropy_level: f32,
     /// Maximum supported anisotropy
     max_anisotropy: f32,
+    /// Vertex buffers (binding index -> (buffer, allocation, size))
+    vertex_buffers: Vec<(u32, vk::Buffer, Option<Allocation>, u64)>,
+    /// Index buffer (buffer, allocation, size, index_type)
+    index_buffer: Option<(vk::Buffer, Option<Allocation>, u64, vk::IndexType)>,
 }
 
 impl VulkanBackend {
@@ -192,6 +196,8 @@ impl VulkanBackend {
             rtt_framebuffers: Vec::new(),
             anisotropy_level: 1.0,
             max_anisotropy: 16.0,
+            vertex_buffers: Vec::new(),
+            index_buffer: None,
         }
     }
 
@@ -1945,6 +1951,26 @@ impl GraphicsBackend for VulkanBackend {
                     device.destroy_shader_module(fs, None);
                 }
 
+                // Destroy vertex buffers
+                if let Some(allocator) = &self.allocator {
+                    for (_, buffer, alloc, _) in self.vertex_buffers.drain(..) {
+                        if let Some(allocation) = alloc {
+                            allocator.lock().unwrap().free(allocation).ok();
+                        }
+                        device.destroy_buffer(buffer, None);
+                    }
+                }
+
+                // Destroy index buffer
+                if let Some((buffer, alloc, _, _)) = self.index_buffer.take() {
+                    if let Some(allocator) = &self.allocator {
+                        if let Some(allocation) = alloc {
+                            allocator.lock().unwrap().free(allocation).ok();
+                        }
+                    }
+                    device.destroy_buffer(buffer, None);
+                }
+
                 if let Some(render_pass) = self.render_pass.take() {
                     device.destroy_render_pass(render_pass, None);
                 }
@@ -2296,6 +2322,227 @@ impl GraphicsBackend for VulkanBackend {
                 device.cmd_set_scissor(cmd_buffer, 0, &[scissor]);
             }
         }
+    }
+    
+    fn submit_vertex_buffer(&mut self, binding: u32, data: &[u8], stride: u32) {
+        if !self.initialized || data.is_empty() {
+            return;
+        }
+
+        tracing::trace!(
+            "Submit vertex buffer: binding={}, size={}, stride={}",
+            binding, data.len(), stride
+        );
+
+        let device = match &self.device {
+            Some(d) => d,
+            None => return,
+        };
+
+        let allocator = match &self.allocator {
+            Some(a) => a,
+            None => return,
+        };
+
+        // Create or reuse a vertex buffer for this binding
+        let buffer_size = data.len() as u64;
+
+        // Remove old buffer for this binding if it exists
+        // Find and remove old buffers for this binding
+        let mut i = 0;
+        while i < self.vertex_buffers.len() {
+            if self.vertex_buffers[i].0 == binding {
+                let (_, old_buf, old_alloc, _) = self.vertex_buffers.remove(i);
+                if let Some(allocation) = old_alloc {
+                    let _ = allocator.lock().unwrap().free(allocation);
+                }
+                unsafe { device.destroy_buffer(old_buf, None); }
+            } else {
+                i += 1;
+            }
+        }
+
+        // Create new vertex buffer with CPU-visible memory for direct upload
+        let buffer_info = vk::BufferCreateInfo::default()
+            .size(buffer_size)
+            .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+        let buffer = match unsafe { device.create_buffer(&buffer_info, None) } {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("Failed to create vertex buffer: {:?}", e);
+                return;
+            }
+        };
+
+        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+
+        let allocation_desc = AllocationCreateDesc {
+            name: "vertex_buffer",
+            requirements,
+            location: MemoryLocation::CpuToGpu,
+            linear: true,
+            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        };
+
+        let allocation = match allocator.lock().unwrap().allocate(&allocation_desc) {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::error!("Failed to allocate vertex buffer memory: {:?}", e);
+                unsafe { device.destroy_buffer(buffer, None); }
+                return;
+            }
+        };
+
+        // Bind buffer memory
+        if let Err(e) = unsafe {
+            device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
+        } {
+            tracing::error!("Failed to bind vertex buffer memory: {:?}", e);
+            let _ = allocator.lock().unwrap().free(allocation);
+            unsafe { device.destroy_buffer(buffer, None); }
+            return;
+        }
+
+        // Copy data to buffer
+        if let Some(mapped_ptr) = allocation.mapped_ptr() {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    data.as_ptr(),
+                    mapped_ptr.as_ptr() as *mut u8,
+                    data.len(),
+                );
+            }
+        } else {
+            tracing::error!("Vertex buffer memory not mapped");
+            let _ = allocator.lock().unwrap().free(allocation);
+            unsafe { device.destroy_buffer(buffer, None); }
+            return;
+        }
+
+        // Store the buffer
+        self.vertex_buffers.push((binding, buffer, Some(allocation), buffer_size));
+
+        // Bind the vertex buffer to the command buffer
+        if let Some(cmd_buffer) = self.current_cmd_buffer {
+            unsafe {
+                device.cmd_bind_vertex_buffers(cmd_buffer, binding, &[buffer], &[0]);
+            }
+        }
+
+        tracing::trace!("Vertex buffer submitted and bound for binding {}", binding);
+    }
+    
+    fn submit_index_buffer(&mut self, data: &[u8], index_type: u32) {
+        if !self.initialized || data.is_empty() {
+            return;
+        }
+
+        tracing::trace!(
+            "Submit index buffer: size={}, index_type={}",
+            data.len(), index_type
+        );
+
+        let device = match &self.device {
+            Some(d) => d,
+            None => return,
+        };
+
+        let allocator = match &self.allocator {
+            Some(a) => a,
+            None => return,
+        };
+
+        let vk_index_type = match index_type {
+            2 => vk::IndexType::UINT16,
+            4 => vk::IndexType::UINT32,
+            _ => {
+                tracing::warn!("Unknown index type {}, defaulting to UINT16", index_type);
+                vk::IndexType::UINT16
+            }
+        };
+
+        // Remove old index buffer if it exists
+        if let Some((buf, alloc, _, _)) = self.index_buffer.take() {
+            if let Some(allocation) = alloc {
+                let _ = allocator.lock().unwrap().free(allocation);
+            }
+            unsafe { device.destroy_buffer(buf, None); }
+        }
+
+        let buffer_size = data.len() as u64;
+
+        // Create new index buffer with CPU-visible memory for direct upload
+        let buffer_info = vk::BufferCreateInfo::default()
+            .size(buffer_size)
+            .usage(vk::BufferUsageFlags::INDEX_BUFFER)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+
+        let buffer = match unsafe { device.create_buffer(&buffer_info, None) } {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("Failed to create index buffer: {:?}", e);
+                return;
+            }
+        };
+
+        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+
+        let allocation_desc = AllocationCreateDesc {
+            name: "index_buffer",
+            requirements,
+            location: MemoryLocation::CpuToGpu,
+            linear: true,
+            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        };
+
+        let allocation = match allocator.lock().unwrap().allocate(&allocation_desc) {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::error!("Failed to allocate index buffer memory: {:?}", e);
+                unsafe { device.destroy_buffer(buffer, None); }
+                return;
+            }
+        };
+
+        // Bind buffer memory
+        if let Err(e) = unsafe {
+            device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
+        } {
+            tracing::error!("Failed to bind index buffer memory: {:?}", e);
+            let _ = allocator.lock().unwrap().free(allocation);
+            unsafe { device.destroy_buffer(buffer, None); }
+            return;
+        }
+
+        // Copy data to buffer
+        if let Some(mapped_ptr) = allocation.mapped_ptr() {
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    data.as_ptr(),
+                    mapped_ptr.as_ptr() as *mut u8,
+                    data.len(),
+                );
+            }
+        } else {
+            tracing::error!("Index buffer memory not mapped");
+            let _ = allocator.lock().unwrap().free(allocation);
+            unsafe { device.destroy_buffer(buffer, None); }
+            return;
+        }
+
+        // Store the buffer
+        self.index_buffer = Some((buffer, Some(allocation), buffer_size, vk_index_type));
+
+        // Bind the index buffer to the command buffer
+        if let Some(cmd_buffer) = self.current_cmd_buffer {
+            unsafe {
+                device.cmd_bind_index_buffer(cmd_buffer, buffer, 0, vk_index_type);
+            }
+        }
+
+        tracing::trace!("Index buffer submitted and bound");
     }
     
     fn get_framebuffer(&self) -> Option<super::FramebufferData> {
