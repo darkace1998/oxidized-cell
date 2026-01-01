@@ -59,9 +59,17 @@ This document tracks development tasks, improvements, and known issues for the o
   - Thread flushes vertex data from RSX memory using attribute format/offset state
   - Critical for actual game rendering
 
-- [ ] **Post-Processing Pipeline Integration**
+- [x] **Post-Processing Pipeline Integration**
   - Location: `crates/oc-rsx/src/postprocess.rs:209`
-  - Implement actual Vulkan rendering pipeline integration for post-processing effects
+  - Implemented full Vulkan rendering pipeline integration for post-processing effects:
+    - Added `VulkanPostProcessResources` struct to manage Vulkan resources
+    - Created `init_vulkan()` method to initialize post-process render pass, descriptor sets, pipeline layout
+    - Implemented intermediate render target creation with ping-pong rendering support
+    - Added `process_with_cmd_buffer()` for recording post-process passes into command buffers
+    - Created `PostProcessPushConstants` struct for effect parameters via push constants
+    - Implemented `shutdown()` method for proper Vulkan resource cleanup
+    - Added pipeline registration for effect-specific shader pipelines
+    - Full-screen triangle rendering (no vertex buffer needed)
 
 ---
 
