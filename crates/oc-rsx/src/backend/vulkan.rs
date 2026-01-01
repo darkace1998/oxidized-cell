@@ -2299,6 +2299,9 @@ impl GraphicsBackend for VulkanBackend {
     }
     
     fn get_framebuffer(&self) -> Option<super::FramebufferData> {
+        /// RGBA format uses 4 bytes per pixel
+        const BYTES_PER_PIXEL: u32 = 4;
+        
         if !self.initialized {
             return None;
         }
@@ -2319,7 +2322,8 @@ impl GraphicsBackend for VulkanBackend {
         };
         
         // Calculate buffer size (RGBA, 4 bytes per pixel)
-        let buffer_size = (self.width * self.height * 4) as u64;
+        let buffer_size = (self.width * self.height * BYTES_PER_PIXEL) as u64;
+        let buffer_size_bytes = buffer_size as usize;
         
         // Create staging buffer for readback (CPU-readable)
         let staging_buffer_info = vk::BufferCreateInfo::default()
@@ -2338,13 +2342,15 @@ impl GraphicsBackend for VulkanBackend {
         let staging_requirements = unsafe { device.get_buffer_memory_requirements(staging_buffer) };
         
         // Allocate CPU-readable memory for the staging buffer
-        let staging_allocation = match allocator.lock().unwrap().allocate(&AllocationCreateDesc {
+        let alloc_desc = AllocationCreateDesc {
             name: "framebuffer_readback_staging",
             requirements: staging_requirements,
             location: MemoryLocation::GpuToCpu,
             linear: true,
             allocation_scheme: AllocationScheme::GpuAllocatorManaged,
-        }) {
+        };
+        
+        let staging_allocation = match allocator.lock().unwrap().allocate(&alloc_desc) {
             Ok(alloc) => alloc,
             Err(e) => {
                 tracing::error!("Failed to allocate staging buffer memory: {:?}", e);
@@ -2417,12 +2423,12 @@ impl GraphicsBackend for VulkanBackend {
         
         // Read the pixel data from the staging buffer
         let pixels = if let Some(mapped_ptr) = staging_allocation.mapped_ptr() {
-            let mut pixels = vec![0u8; buffer_size as usize];
+            let mut pixels = vec![0u8; buffer_size_bytes];
             unsafe {
                 std::ptr::copy_nonoverlapping(
                     mapped_ptr.as_ptr() as *const u8,
                     pixels.as_mut_ptr(),
-                    buffer_size as usize,
+                    buffer_size_bytes,
                 );
             }
             pixels
