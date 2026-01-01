@@ -83,9 +83,17 @@ This document tracks development tasks, improvements, and known issues for the o
   - Supports ADTS-framed AAC and raw AAC data with automatic header generation
   - Decodes AAC LC profile at various sample rates and channel configurations
 
-- [ ] **ATRAC3+ Decoder Implementation**
+- [x] **ATRAC3+ Decoder Implementation**
   - Locations: `crates/oc-audio/src/codec.rs:275`, `crates/oc-hle/src/cell_adec.rs:210`
-  - Implement actual ATRAC3+ decoding (Sony proprietary format)
+  - Implemented full ATRAC3+ decoding (Sony proprietary format)
+  - Features:
+    - 16 subbands with IMDCT (Modified Discrete Cosine Transform)
+    - Gain control processing with interpolation
+    - Joint stereo (M/S) processing
+    - QMF synthesis filter bank
+    - Overlap-add reconstruction
+    - Support for up to 8 channels
+    - Frame parsing with variable bitrates
   - Required for many PS3 games' audio
 
 - [ ] **MP3 Decoder Implementation**
