@@ -149,13 +149,32 @@ This document tracks development tasks, improvements, and known issues for the o
 
 ### Demuxer
 
-- [ ] **PAMF Container Parsing**
-  - Location: `crates/oc-hle/src/cell_dmux.rs:131`
-  - Implement actual PAMF (PlayStation Audiovisual Media Format) parsing
+- [x] **PAMF Container Parsing**
+  - Location: `crates/oc-hle/src/cell_dmux.rs:128`
+  - Implemented full PAMF (PlayStation Audiovisual Media Format) parsing
+  - Features:
+    - PAMF header parsing (magic, version, data offset, stream count)
+    - Stream info table parsing (stream type, coding type, stream ID, offset)
+    - PES packet extraction with PTS/DTS timestamp parsing
+    - Fallback scanning for PES packets if header is invalid
+    - Support for video (0xE0-0xEF) and audio (0xC0-0xDF, 0xBD) streams
 
-- [ ] **MPEG-2 PS/TS Parsing**
-  - Locations: `crates/oc-hle/src/cell_dmux.rs:163`, `crates/oc-hle/src/cell_dmux.rs:221`
-  - Implement actual MPEG-2 Program Stream and Transport Stream parsing
+- [x] **MPEG-2 PS/TS Parsing**
+  - Locations: `crates/oc-hle/src/cell_dmux.rs:348`, `crates/oc-hle/src/cell_dmux.rs:481`
+  - Implemented full MPEG-2 Program Stream and Transport Stream parsing
+  - MPEG-2 PS Features:
+    - Pack header parsing (0x000001BA) with SCR extraction
+    - System header parsing (0x000001BB)
+    - PES packet parsing with PTS/DTS extraction
+    - Support for video (0xE0-0xEF), audio (0xC0-0xDF), and private streams (0xBD)
+    - MPEG-1/2 format detection and handling
+  - MPEG-2 TS Features:
+    - TS packet parsing (188-byte packets with 0x47 sync)
+    - PAT (Program Association Table) parsing for PMT PID discovery
+    - PMT (Program Map Table) parsing for elementary stream PID discovery
+    - Stream type classification (H.264, MPEG-2, AAC, AC-3, etc.)
+    - PES packet assembly from fragmented TS packets
+    - PTS/DTS timestamp extraction from PES headers
 
 ### Image Decoders
 
