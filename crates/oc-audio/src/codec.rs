@@ -4,7 +4,7 @@
 
 use std::io::Cursor;
 use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_AAC};
+use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_AAC, CODEC_TYPE_MP3};
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
@@ -441,6 +441,191 @@ impl AudioDecoder for AacDecoder {
         self.decoder = None;
         self.sample_buf = None;
         tracing::debug!("AAC decoder reset");
+    }
+
+    fn config(&self) -> &CodecConfig {
+        &self.config
+    }
+}
+
+/// MP3 decoder using symphonia
+/// 
+/// Supports MPEG-1/2 Layer III audio decoding at various bitrates and sample rates.
+/// Uses symphonia's built-in MP3 decoder for actual decoding.
+pub struct Mp3Decoder {
+    config: CodecConfig,
+    /// Symphonia decoder instance (boxed to avoid type complexity)
+    #[allow(dead_code)]
+    decoder: Option<Box<dyn symphonia::core::codecs::Decoder>>,
+    /// Sample buffer for decoded audio
+    sample_buf: Option<SampleBuffer<f32>>,
+}
+
+impl Mp3Decoder {
+    pub fn new() -> Self {
+        Self {
+            config: CodecConfig {
+                codec: AudioCodec::Mp3,
+                sample_rate: 44100, // Most common for MP3
+                num_channels: 2,
+                bit_rate: None,
+                bits_per_sample: None,
+            },
+            decoder: None,
+            sample_buf: None,
+        }
+    }
+}
+
+impl Default for Mp3Decoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AudioDecoder for Mp3Decoder {
+    fn init(&mut self, config: CodecConfig) -> Result<(), String> {
+        if config.codec != AudioCodec::Mp3 {
+            return Err("MP3 decoder only supports MP3 codec".to_string());
+        }
+        self.config = config;
+        tracing::info!(
+            "MP3 decoder initialized: {}Hz, {} channels",
+            config.sample_rate,
+            config.num_channels
+        );
+        Ok(())
+    }
+
+    fn decode(&mut self, input: &[u8], output: &mut Vec<f32>) -> Result<usize, String> {
+        if input.is_empty() {
+            return Ok(0);
+        }
+
+        // Check for valid MP3 frame sync (0xFFE or 0xFFF depending on version)
+        // MP3 frames start with sync word: 11 bits of 1s
+        let has_sync = input.len() >= 2 && input[0] == 0xFF && (input[1] & 0xE0) == 0xE0;
+        
+        if !has_sync && input.len() < 4 {
+            tracing::warn!("MP3 data too short or missing sync, returning silence");
+            let samples = 1152 * self.config.num_channels;
+            output.resize(output.len() + samples, 0.0);
+            return Ok(samples);
+        }
+
+        // Create a media source from the input data
+        let cursor = Cursor::new(input.to_vec());
+        let mss = MediaSourceStream::new(Box::new(cursor), Default::default());
+
+        // Create probe hint for MP3 format
+        let mut hint = Hint::new();
+        hint.with_extension("mp3");
+
+        // Probe the format
+        let format_opts = FormatOptions::default();
+        let metadata_opts = MetadataOptions::default();
+
+        let probed = match symphonia::default::get_probe().format(&hint, mss, &format_opts, &metadata_opts) {
+            Ok(probed) => probed,
+            Err(e) => {
+                tracing::warn!("MP3 probe failed: {}, returning silence", e);
+                // Return silence for undecodable data
+                let samples = 1152 * self.config.num_channels;
+                output.resize(output.len() + samples, 0.0);
+                return Ok(samples);
+            }
+        };
+
+        let mut format = probed.format;
+
+        // Find the MP3 track
+        let track = format.tracks()
+            .iter()
+            .find(|t| t.codec_params.codec == CODEC_TYPE_MP3)
+            .or_else(|| format.tracks().first());
+
+        let track = match track {
+            Some(t) => t,
+            None => {
+                tracing::warn!("No MP3 track found, returning silence");
+                let samples = 1152 * self.config.num_channels;
+                output.resize(output.len() + samples, 0.0);
+                return Ok(samples);
+            }
+        };
+
+        let track_id = track.id;
+        let codec_params = track.codec_params.clone();
+
+        // Create decoder
+        let dec_opts = DecoderOptions::default();
+        let mut decoder = match symphonia::default::get_codecs().make(&codec_params, &dec_opts) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!("MP3 decoder creation failed: {}, returning silence", e);
+                let samples = 1152 * self.config.num_channels;
+                output.resize(output.len() + samples, 0.0);
+                return Ok(samples);
+            }
+        };
+
+        let mut total_samples = 0;
+
+        // Decode all packets
+        loop {
+            let packet = match format.next_packet() {
+                Ok(p) => p,
+                Err(symphonia::core::errors::Error::IoError(ref e)) 
+                    if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(_) => break,
+            };
+
+            if packet.track_id() != track_id {
+                continue;
+            }
+
+            let decoded = match decoder.decode(&packet) {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::debug!("MP3 decode error: {}", e);
+                    continue;
+                }
+            };
+
+            // Get audio specification
+            let spec = *decoded.spec();
+            let duration = decoded.capacity() as u64;
+
+            // Create or resize sample buffer
+            let sample_buf = self.sample_buf.get_or_insert_with(|| {
+                SampleBuffer::<f32>::new(duration, spec)
+            });
+
+            // Copy samples to buffer
+            sample_buf.copy_interleaved_ref(decoded);
+
+            // Append to output
+            let samples = sample_buf.samples();
+            output.extend_from_slice(samples);
+            total_samples += samples.len();
+        }
+
+        if total_samples == 0 {
+            // If no samples were decoded, return a frame of silence
+            // MP3 frames are typically 1152 samples for MPEG-1 Layer III
+            let samples = 1152 * self.config.num_channels;
+            output.resize(output.len() + samples, 0.0);
+            return Ok(samples);
+        }
+
+        tracing::trace!("MP3 decoded {} samples", total_samples);
+        Ok(total_samples)
+    }
+
+    fn reset(&mut self) {
+        self.decoder = None;
+        self.sample_buf = None;
+        tracing::debug!("MP3 decoder reset");
     }
 
     fn config(&self) -> &CodecConfig {
@@ -972,6 +1157,7 @@ pub fn get_decoder(codec: AudioCodec) -> Box<dyn AudioDecoder> {
     match codec {
         AudioCodec::Pcm | AudioCodec::Lpcm => Box::new(PcmDecoder::new()),
         AudioCodec::Aac => Box::new(AacDecoder::new()),
+        AudioCodec::Mp3 => Box::new(Mp3Decoder::new()),
         AudioCodec::At3 | AudioCodec::At3Plus => Box::new(At3Decoder::new()),
         _ => {
             tracing::warn!("No decoder available for {:?}, using PCM", codec);
@@ -1067,8 +1253,85 @@ mod tests {
         let aac_decoder = get_decoder(AudioCodec::Aac);
         assert_eq!(aac_decoder.config().codec, AudioCodec::Aac);
         
+        let mp3_decoder = get_decoder(AudioCodec::Mp3);
+        assert_eq!(mp3_decoder.config().codec, AudioCodec::Mp3);
+        
         let at3_decoder = get_decoder(AudioCodec::At3Plus);
         assert_eq!(at3_decoder.config().codec, AudioCodec::At3);
+    }
+
+    #[test]
+    fn test_mp3_decoder_init() {
+        let mut decoder = Mp3Decoder::new();
+        let config = CodecConfig {
+            codec: AudioCodec::Mp3,
+            sample_rate: 44100,
+            num_channels: 2,
+            bit_rate: Some(128000),
+            bits_per_sample: None,
+        };
+        
+        assert!(decoder.init(config).is_ok());
+        assert_eq!(decoder.config().sample_rate, 44100);
+        assert_eq!(decoder.config().num_channels, 2);
+    }
+
+    #[test]
+    fn test_mp3_decoder_wrong_codec() {
+        let mut decoder = Mp3Decoder::new();
+        let config = CodecConfig {
+            codec: AudioCodec::Aac,  // Wrong codec type
+            sample_rate: 44100,
+            num_channels: 2,
+            bit_rate: None,
+            bits_per_sample: None,
+        };
+        
+        assert!(decoder.init(config).is_err());
+    }
+
+    #[test]
+    fn test_mp3_decoder_reset() {
+        let mut decoder = Mp3Decoder::new();
+        let config = CodecConfig {
+            codec: AudioCodec::Mp3,
+            sample_rate: 44100,
+            num_channels: 2,
+            bit_rate: None,
+            bits_per_sample: None,
+        };
+        decoder.init(config).unwrap();
+        
+        // Reset should not panic
+        decoder.reset();
+        // After reset, decoder state should be cleared
+        assert!(decoder.decoder.is_none());
+        assert!(decoder.sample_buf.is_none());
+    }
+
+    #[test]
+    fn test_mp3_decoder_invalid_data() {
+        let mut decoder = Mp3Decoder::new();
+        let config = CodecConfig {
+            codec: AudioCodec::Mp3,
+            sample_rate: 44100,
+            num_channels: 2,
+            bit_rate: None,
+            bits_per_sample: None,
+        };
+        decoder.init(config).unwrap();
+        
+        // Invalid MP3 data (random bytes)
+        let input = vec![0x12, 0x34, 0x56, 0x78];
+        let mut output = Vec::new();
+        
+        // Should return silence rather than error
+        let samples = decoder.decode(&input, &mut output).unwrap();
+        // Returns 1152 samples per channel * 2 channels = 2304 samples of silence
+        assert_eq!(samples, 2304);
+        assert_eq!(output.len(), 2304);
+        // All should be silence
+        assert!(output.iter().all(|&s| s == 0.0));
     }
 
     #[test]

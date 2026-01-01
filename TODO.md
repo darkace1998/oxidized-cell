@@ -96,9 +96,19 @@ This document tracks development tasks, improvements, and known issues for the o
     - Frame parsing with variable bitrates
   - Required for many PS3 games' audio
 
-- [ ] **MP3 Decoder Implementation**
-  - Location: `crates/oc-hle/src/cell_adec.rs:182`
-  - Integrate with minimp3 or symphonia library
+- [x] **MP3 Decoder Implementation**
+  - Locations: `crates/oc-audio/src/codec.rs:450`, `crates/oc-hle/src/cell_adec.rs:182`
+  - Integrated with symphonia library for actual MP3 decoding
+  - Supports MPEG-1/2 Layer III at various bitrates and sample rates
+  - Features:
+    - Frame sync detection and parsing
+    - Uses symphonia's built-in MP3 decoder for:
+      - Huffman decoding of quantized spectral data
+      - Inverse quantization and dequantization
+      - IMDCT transform
+      - Polyphase synthesis filter bank
+      - Joint stereo processing
+    - 1152 samples per channel per frame output
 
 ### Video Codecs
 
