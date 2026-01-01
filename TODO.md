@@ -44,9 +44,11 @@ This document tracks development tasks, improvements, and known issues for the o
 
 ### RSX Graphics
 
-- [ ] **Vulkan Framebuffer Readback**
-  - Location: `crates/oc-rsx/src/backend/vulkan.rs:2193`
-  - Implement actual framebuffer readback using staging buffer and `vkCmdCopyImageToBuffer`
+- [x] **Vulkan Framebuffer Readback**
+  - Location: `crates/oc-rsx/src/backend/vulkan.rs:2301`
+  - Implemented actual framebuffer readback using staging buffer and `vkCmdCopyImageToBuffer`
+  - Added `copy_image_to_buffer` helper function
+  - Extended `transition_image_layout` to support TRANSFER_SRC transitions
   - Required for screenshot functionality and frame output
 
 - [ ] **Vertex Buffer Submission**

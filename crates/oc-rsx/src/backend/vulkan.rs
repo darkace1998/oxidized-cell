@@ -852,6 +852,48 @@ impl VulkanBackend {
                 vk::PipelineStageFlags::TOP_OF_PIPE,
                 vk::PipelineStageFlags::FRAGMENT_SHADER,
             ),
+            // Transition from color attachment to transfer source for framebuffer readback
+            (vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL) => (
+                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                vk::AccessFlags::TRANSFER_READ,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::TRANSFER,
+            ),
+            // Transition back from transfer source to color attachment after readback
+            (vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL) => (
+                vk::AccessFlags::TRANSFER_READ,
+                vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            ),
+            // Transition from general layout to transfer source (for images that may be in general layout)
+            (vk::ImageLayout::GENERAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL) => (
+                vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+                vk::AccessFlags::TRANSFER_READ,
+                vk::PipelineStageFlags::ALL_COMMANDS,
+                vk::PipelineStageFlags::TRANSFER,
+            ),
+            // Transition back to general layout after readback
+            (vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::GENERAL) => (
+                vk::AccessFlags::TRANSFER_READ,
+                vk::AccessFlags::MEMORY_READ | vk::AccessFlags::MEMORY_WRITE,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::ALL_COMMANDS,
+            ),
+            // Transition from shader read to transfer source
+            (vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL, vk::ImageLayout::TRANSFER_SRC_OPTIMAL) => (
+                vk::AccessFlags::SHADER_READ,
+                vk::AccessFlags::TRANSFER_READ,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::PipelineStageFlags::TRANSFER,
+            ),
+            // Transition back from transfer source to shader read
+            (vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => (
+                vk::AccessFlags::TRANSFER_READ,
+                vk::AccessFlags::SHADER_READ,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+            ),
             _ => {
                 return Err(format!(
                     "Unsupported layout transition: {:?} -> {:?}",
@@ -1145,6 +1187,78 @@ impl VulkanBackend {
                 buffer,
                 image,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[region],
+            );
+
+            device
+                .end_command_buffer(cmd_buffer)
+                .map_err(|e| format!("Failed to end command buffer: {:?}", e))?;
+
+            let submit_info = vk::SubmitInfo::default()
+                .command_buffers(std::slice::from_ref(&cmd_buffer));
+
+            device
+                .queue_submit(queue, &[submit_info], vk::Fence::null())
+                .map_err(|e| format!("Failed to submit command buffer: {:?}", e))?;
+
+            device
+                .queue_wait_idle(queue)
+                .map_err(|e| format!("Failed to wait for queue: {:?}", e))?;
+
+            device.free_command_buffers(command_pool, &[cmd_buffer]);
+        }
+
+        Ok(())
+    }
+
+    /// Copy image to buffer (for framebuffer readback)
+    fn copy_image_to_buffer(
+        device: &ash::Device,
+        queue: vk::Queue,
+        command_pool: vk::CommandPool,
+        image: vk::Image,
+        buffer: vk::Buffer,
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        // Allocate one-time command buffer
+        let alloc_info = vk::CommandBufferAllocateInfo::default()
+            .command_pool(command_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+
+        let cmd_buffer = unsafe {
+            device
+                .allocate_command_buffers(&alloc_info)
+                .map_err(|e| format!("Failed to allocate command buffer: {:?}", e))?
+        }[0];
+
+        let begin_info = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+        unsafe {
+            device
+                .begin_command_buffer(cmd_buffer, &begin_info)
+                .map_err(|e| format!("Failed to begin command buffer: {:?}", e))?;
+
+            let region = vk::BufferImageCopy::default()
+                .buffer_offset(0)
+                .buffer_row_length(0)
+                .buffer_image_height(0)
+                .image_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                .image_extent(vk::Extent3D { width, height, depth: 1 });
+
+            device.cmd_copy_image_to_buffer(
+                cmd_buffer,
+                image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                buffer,
                 &[region],
             );
 
@@ -2189,9 +2303,145 @@ impl GraphicsBackend for VulkanBackend {
             return None;
         }
         
-        // For now, return a test pattern until proper GPU readback is implemented
-        // TODO: Implement actual framebuffer readback using staging buffer and vkCmdCopyImageToBuffer
-        Some(super::FramebufferData::test_pattern(self.width, self.height))
+        // Get required resources
+        let device = self.device.as_ref()?;
+        let queue = self.graphics_queue?;
+        let command_pool = self.command_pool?;
+        let allocator = self.allocator.as_ref()?;
+        
+        // Get the render image to read from
+        // Use the current frame's render image
+        let render_image = if !self.render_images.is_empty() {
+            self.render_images[self.current_frame % self.render_images.len()]
+        } else {
+            tracing::warn!("No render images available for framebuffer readback");
+            return Some(super::FramebufferData::test_pattern(self.width, self.height));
+        };
+        
+        // Calculate buffer size (RGBA, 4 bytes per pixel)
+        let buffer_size = (self.width * self.height * 4) as u64;
+        
+        // Create staging buffer for readback (CPU-readable)
+        let staging_buffer_info = vk::BufferCreateInfo::default()
+            .size(buffer_size)
+            .usage(vk::BufferUsageFlags::TRANSFER_DST)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        
+        let staging_buffer = match unsafe { device.create_buffer(&staging_buffer_info, None) } {
+            Ok(buffer) => buffer,
+            Err(e) => {
+                tracing::error!("Failed to create staging buffer for readback: {:?}", e);
+                return Some(super::FramebufferData::test_pattern(self.width, self.height));
+            }
+        };
+        
+        let staging_requirements = unsafe { device.get_buffer_memory_requirements(staging_buffer) };
+        
+        // Allocate CPU-readable memory for the staging buffer
+        let staging_allocation = match allocator.lock().unwrap().allocate(&AllocationCreateDesc {
+            name: "framebuffer_readback_staging",
+            requirements: staging_requirements,
+            location: MemoryLocation::GpuToCpu,
+            linear: true,
+            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        }) {
+            Ok(alloc) => alloc,
+            Err(e) => {
+                tracing::error!("Failed to allocate staging buffer memory: {:?}", e);
+                unsafe { device.destroy_buffer(staging_buffer, None); }
+                return Some(super::FramebufferData::test_pattern(self.width, self.height));
+            }
+        };
+        
+        if let Err(e) = unsafe {
+            device.bind_buffer_memory(staging_buffer, staging_allocation.memory(), staging_allocation.offset())
+        } {
+            tracing::error!("Failed to bind staging buffer memory: {:?}", e);
+            unsafe { device.destroy_buffer(staging_buffer, None); }
+            allocator.lock().unwrap().free(staging_allocation).ok();
+            return Some(super::FramebufferData::test_pattern(self.width, self.height));
+        }
+        
+        // Transition render image to transfer source layout
+        if let Err(e) = Self::transition_image_layout(
+            device,
+            queue,
+            command_pool,
+            render_image,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        ) {
+            tracing::error!("Failed to transition image for readback: {}", e);
+            unsafe { device.destroy_buffer(staging_buffer, None); }
+            allocator.lock().unwrap().free(staging_allocation).ok();
+            return Some(super::FramebufferData::test_pattern(self.width, self.height));
+        }
+        
+        // Copy image to buffer
+        if let Err(e) = Self::copy_image_to_buffer(
+            device,
+            queue,
+            command_pool,
+            render_image,
+            staging_buffer,
+            self.width,
+            self.height,
+        ) {
+            tracing::error!("Failed to copy image to buffer: {}", e);
+            // Try to transition back even on error
+            let _ = Self::transition_image_layout(
+                device,
+                queue,
+                command_pool,
+                render_image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            );
+            unsafe { device.destroy_buffer(staging_buffer, None); }
+            allocator.lock().unwrap().free(staging_allocation).ok();
+            return Some(super::FramebufferData::test_pattern(self.width, self.height));
+        }
+        
+        // Transition render image back to color attachment layout
+        if let Err(e) = Self::transition_image_layout(
+            device,
+            queue,
+            command_pool,
+            render_image,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        ) {
+            tracing::error!("Failed to transition image back after readback: {}", e);
+            // Continue anyway, we have the data
+        }
+        
+        // Read the pixel data from the staging buffer
+        let pixels = if let Some(mapped_ptr) = staging_allocation.mapped_ptr() {
+            let mut pixels = vec![0u8; buffer_size as usize];
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    mapped_ptr.as_ptr() as *const u8,
+                    pixels.as_mut_ptr(),
+                    buffer_size as usize,
+                );
+            }
+            pixels
+        } else {
+            tracing::error!("Staging buffer not mappable for readback");
+            unsafe { device.destroy_buffer(staging_buffer, None); }
+            allocator.lock().unwrap().free(staging_allocation).ok();
+            return Some(super::FramebufferData::test_pattern(self.width, self.height));
+        };
+        
+        // Clean up staging buffer
+        unsafe { device.destroy_buffer(staging_buffer, None); }
+        allocator.lock().unwrap().free(staging_allocation).ok();
+        
+        Some(super::FramebufferData {
+            width: self.width,
+            height: self.height,
+            pixels,
+        })
     }
     
     fn get_dimensions(&self) -> (u32, u32) {
