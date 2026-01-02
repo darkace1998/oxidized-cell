@@ -193,9 +193,15 @@ This document tracks development tasks, improvements, and known issues for the o
 
 ### Video Post-Processing
 
-- [ ] **YUV ↔ RGB Color Conversion**
-  - Locations: `crates/oc-hle/src/cell_vpost.rs:396`, `434`
-  - Implement actual YUV to RGB and RGB to YUV color conversions
+- [x] **YUV ↔ RGB Color Conversion**
+  - Locations: `crates/oc-hle/src/cell_vpost.rs:383`, `456`
+  - Implemented full YUV to RGB and RGB to YUV color conversions
+  - Features:
+    - YUV420 to RGBA conversion with proper chroma upsampling
+    - RGBA to YUV420 conversion with 2x2 chroma subsampling
+    - YUV422 to RGBA conversion with horizontal-only chroma upsampling
+    - BT.601 (SDTV) and BT.709 (HDTV) color matrix support
+    - Proper coefficient calculations for both standards
   - Required for video playback and capture
 
 ---
