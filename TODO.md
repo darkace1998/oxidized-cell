@@ -432,17 +432,24 @@ This document tracks development tasks, improvements, and known issues for the o
 
 ## 📐 Resolution & Scaling
 
-- [ ] **RSX Backend Scaling**
+- [x] **RSX Backend Scaling**
   - Location: `crates/oc-hle/src/cell_resc.rs:634`
   - Perform actual scaling and flip through RSX backend
+  - `cell_resc_set_convert_and_flip()` now calls RescManager::convert_and_flip()
+  - Calculates scale factors based on source/destination dimensions
+  - Supports letterbox, fullscreen, and pan-scan aspect ratio modes
 
-- [ ] **Flip Completion Wait**
+- [x] **Flip Completion Wait**
   - Location: `crates/oc-hle/src/cell_resc.rs:651`
   - Wait for flip operation to complete
+  - `cell_resc_set_wait_flip()` now properly waits for flip via flip_count synchronization
 
-- [ ] **RESC Info Memory Writes**
+- [x] **RESC Info Memory Writes**
   - Locations: `crates/oc-hle/src/cell_resc.rs:668`, `687`, `706`
   - Write buffer number, size, and time to memory
+  - `cell_resc_get_num_display_buffers()` writes buffer count via write_be32()
+  - `cell_resc_get_display_buffer_size()` writes buffer size via write_be32()
+  - `cell_resc_get_last_flip_time()` writes flip time via write_be64()
 
 ---
 
