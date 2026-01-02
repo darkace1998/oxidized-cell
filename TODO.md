@@ -377,19 +377,27 @@ This document tracks development tasks, improvements, and known issues for the o
 
 ### Event Queues
 
-- [ ] **SPURS Event Queue Attachment**
+- [x] **SPURS Event Queue Attachment**
   - Locations: `crates/oc-hle/src/cell_spurs.rs:503`, `520`
-  - Actually attach and detach event queues to SPURS
+  - Implemented actual event queue attachment/detachment via SPU bridge
+  - Added AttachEventQueue and DetachEventQueue message types to SpuBridgeMessage
+  - Added attach_event_queue() and detach_event_queue() methods to SpuBridgeSender
+  - Proper error handling with queue state management
 
 ### Job Queue
 
-- [ ] **Job Completion Waiting**
+- [x] **Job Completion Waiting**
   - Locations: `crates/oc-hle/src/cell_spurs_jq.rs:328`, `350`
-  - Actually wait for individual job or all jobs to complete
+  - sync_job() now executes pending jobs and waits for completion
+  - sync_all() processes all pending jobs in the queue
+  - Proper state tracking (Pending → Running → Complete)
+  - Aborted job detection with error return
 
-- [ ] **Queue Handle Memory Write**
+- [x] **Queue Handle Memory Write**
   - Location: `crates/oc-hle/src/cell_spurs_jq.rs:539`
-  - Write queue ID to memory
+  - cell_spurs_job_queue_create() now writes queue ID to memory via write_be32()
+  - Added validation for output address
+  - Added 5 new unit tests for job queue synchronization
 
 ---
 

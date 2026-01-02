@@ -500,7 +500,20 @@ impl SpursManager {
 
         self.event_queues.insert(port, queue_id);
 
-        // TODO: Actually attach event queue
+        // Attach event queue - notify the SPU bridge about the new event queue connection
+        if let Some(ref bridge) = self.spu_bridge {
+            // Register this event queue with the SPU system for SPURS notifications
+            // The bridge handles the actual LV2 event queue attachment
+            if !bridge.attach_event_queue(queue_id, port) {
+                debug!("Failed to attach event queue {} to port {}", queue_id, port);
+                self.event_queues.remove(&port);
+                return 0x80410805u32 as i32; // CELL_SPURS_ERROR_INTERNAL
+            }
+            debug!("SPURS: Attached event queue {} to port {}", queue_id, port);
+        } else {
+            // Without SPU bridge, just track the mapping (HLE fallback)
+            trace!("SPURS: Event queue {} attached to port {} (HLE mode)", queue_id, port);
+        }
 
         0 // CELL_OK
     }
@@ -513,11 +526,23 @@ impl SpursManager {
 
         debug!("SpursManager::detach_lv2_event_queue: port={}", port);
 
-        if self.event_queues.remove(&port).is_none() {
-            return 0x80410802u32 as i32; // CELL_SPURS_ERROR_INVALID_ARGUMENT
-        }
+        let queue_id = match self.event_queues.remove(&port) {
+            Some(qid) => qid,
+            None => return 0x80410802u32 as i32, // CELL_SPURS_ERROR_INVALID_ARGUMENT
+        };
 
-        // TODO: Actually detach event queue
+        // Detach event queue from SPU bridge
+        if let Some(ref bridge) = self.spu_bridge {
+            if !bridge.detach_event_queue(queue_id, port) {
+                debug!("Failed to detach event queue {} from port {}", queue_id, port);
+                // Re-insert since detach failed
+                self.event_queues.insert(port, queue_id);
+                return 0x80410805u32 as i32; // CELL_SPURS_ERROR_INTERNAL
+            }
+            debug!("SPURS: Detached event queue {} from port {}", queue_id, port);
+        } else {
+            trace!("SPURS: Event queue {} detached from port {} (HLE mode)", queue_id, port);
+        }
 
         0 // CELL_OK
     }

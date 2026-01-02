@@ -130,6 +130,10 @@ pub enum SpuBridgeMessage {
     SendSignal { spu_id: u8, signal: u32 },
     /// Write to SPU mailbox
     WriteMailbox { spu_id: u8, value: u32 },
+    /// Attach an event queue to SPURS
+    AttachEventQueue { queue_id: u32, port: u32 },
+    /// Detach an event queue from SPURS
+    DetachEventQueue { queue_id: u32, port: u32 },
 }
 
 /// The sender side of the SPU bridge (used by SpursManager in oc-hle)
@@ -243,6 +247,30 @@ impl SpuBridgeSender {
         
         let mut queue = self.queue.lock();
         queue.push_back(SpuBridgeMessage::WriteMailbox { spu_id, value });
+        true
+    }
+    
+    /// Attach an event queue to SPURS
+    pub fn attach_event_queue(&self, queue_id: u32, port: u32) -> bool {
+        if !self.connected.load(Ordering::Acquire) {
+            // In HLE mode without full SPU bridge, always succeed
+            return true;
+        }
+        
+        let mut queue = self.queue.lock();
+        queue.push_back(SpuBridgeMessage::AttachEventQueue { queue_id, port });
+        true
+    }
+    
+    /// Detach an event queue from SPURS
+    pub fn detach_event_queue(&self, queue_id: u32, port: u32) -> bool {
+        if !self.connected.load(Ordering::Acquire) {
+            // In HLE mode without full SPU bridge, always succeed
+            return true;
+        }
+        
+        let mut queue = self.queue.lock();
+        queue.push_back(SpuBridgeMessage::DetachEventQueue { queue_id, port });
         true
     }
     
