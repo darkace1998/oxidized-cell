@@ -22,6 +22,8 @@ pub mod fpscr {
     pub const VXVC: u64 = 0x0008_0000_0000_0000;   // FP Invalid Op (Invalid Compare)
     pub const FR: u64 = 0x0004_0000_0000_0000;     // FP Fraction Rounded
     pub const FI: u64 = 0x0002_0000_0000_0000;     // FP Fraction Inexact
+    pub const VXSQRT: u64 = 0x0001_0000_0000_0000; // FP Invalid Op (√negative)
+    pub const VXCVI: u64 = 0x0000_8000_0000_0000;  // FP Invalid Op (Invalid Integer Convert)
     
     /// Rounding mode mask (bits 62-63)
     pub const RN_MASK: u64 = 0x0000_0000_0000_0003;
@@ -236,7 +238,161 @@ pub fn fsel(a: f64, b: f64, c: f64) -> f64 {
     if a >= 0.0 { c } else { b }
 }
 
-/// Check for and set FPSCR exception flags
+/// Check if a floating-point operation result is inexact (rounding occurred)
+/// 
+/// This checks if the result differs from the mathematically exact result,
+/// which indicates that rounding was performed during the operation.
+/// 
+/// For addition/subtraction/multiplication, we compute a higher-precision result
+/// and compare. For FMA operations, we use a different approach since the 
+/// intermediate product is exact in double precision.
+pub fn check_rounding_occurred(operands: &[f64], result: f64, operation: &str) -> (bool, bool) {
+    // FR: Fraction Rounded - set if last rounding was away from zero
+    // FI: Fraction Inexact - set if result differs from exact value
+    
+    if result.is_nan() || result.is_infinite() {
+        // No rounding tracking for special values
+        return (false, false);
+    }
+    
+    let (inexact, rounded_away) = match operation {
+        "add" if operands.len() >= 2 => {
+            let a = operands[0];
+            let b = operands[1];
+            // Use Kahan summation to detect if rounding occurred
+            let sum = a + b;
+            let c = sum - a;
+            let error = b - c;
+            let is_inexact = error != 0.0;
+            // Check if rounded away from zero (magnitude increased)
+            let rounded_away = is_inexact && result.abs() > (a + b - error).abs();
+            (is_inexact, rounded_away)
+        }
+        "sub" if operands.len() >= 2 => {
+            let a = operands[0];
+            let b = operands[1];
+            let diff = a - b;
+            let c = diff - a;
+            let error = -b - c;
+            let is_inexact = error != 0.0;
+            let rounded_away = is_inexact && result.abs() > (a - b - error).abs();
+            (is_inexact, rounded_away)
+        }
+        "mul" if operands.len() >= 2 => {
+            let a = operands[0];
+            let b = operands[1];
+            // For multiplication, check using fused multiply-add to detect error
+            let product = a * b;
+            let error = a.mul_add(b, -product);
+            let is_inexact = error != 0.0;
+            let rounded_away = is_inexact && result.abs() > (a * b - error).abs();
+            (is_inexact, rounded_away)
+        }
+        "fma" if operands.len() >= 3 => {
+            let a = operands[0];
+            let c = operands[1];
+            let b = operands[2];
+            // For FMA, compare fused result with separate multiply+add
+            // If they differ, rounding occurred in the non-fused case
+            let fma_result = a.mul_add(c, b);
+            let separate_result = a * c + b;
+            let is_inexact = fma_result != separate_result || {
+                // Also check if the FMA itself rounded
+                // The FMA is inexact if (a*c)+b cannot be exactly represented
+                let product_error = a.mul_add(c, -(a * c));
+                product_error != 0.0
+            };
+            let rounded_away = is_inexact && result.abs() > fma_result.abs();
+            (is_inexact, rounded_away)
+        }
+        "divide" if operands.len() >= 2 => {
+            let a = operands[0];
+            let b = operands[1];
+            // For division, check if a = b * result exactly
+            let check = b * result;
+            let is_inexact = check != a;
+            let rounded_away = is_inexact && result.abs() > (a / b).abs();
+            (is_inexact, rounded_away)
+        }
+        "sqrt" if operands.len() >= 1 => {
+            let a = operands[0];
+            // For sqrt, check if result^2 == a
+            let check = result * result;
+            let is_inexact = check != a;
+            let rounded_away = is_inexact && result * result > a;
+            (is_inexact, rounded_away)
+        }
+        "frsp" if operands.len() >= 1 => {
+            // Round to single precision - check if double != single
+            let a = operands[0];
+            let single = (a as f32) as f64;
+            let is_inexact = single != a;
+            let rounded_away = is_inexact && single.abs() > a.abs();
+            (is_inexact, rounded_away)
+        }
+        _ => {
+            // Default: assume no rounding for unknown operations
+            (false, false)
+        }
+    };
+    
+    (inexact, rounded_away)
+}
+
+/// Check for and set FPSCR exception flags including rounding tracking
+pub fn check_fp_exceptions_with_rounding(
+    thread: &mut PpuThread, 
+    value: f64, 
+    operation: &str,
+    operands: &[f64]
+) {
+    let mut fpscr = thread.regs.fpscr;
+    
+    // Clear FR and FI bits before setting
+    fpscr &= !(fpscr::FR | fpscr::FI);
+    
+    // Check for invalid operation (NaN operand or invalid operation)
+    if value.is_nan() {
+        fpscr |= fpscr::VXSNAN; // SNaN
+        fpscr |= fpscr::VX;     // Any invalid operation
+        fpscr |= fpscr::FX;     // Any exception
+    }
+    
+    // Check for overflow
+    if value.is_infinite() && operation != "divide" {
+        fpscr |= fpscr::OX;     // Overflow
+        fpscr |= fpscr::FX;
+    }
+    
+    // Check for underflow (very small denormalized number)
+    let class = classify_f64(value);
+    if matches!(class, FpClass::PositiveDenormalized | FpClass::NegativeDenormalized) {
+        fpscr |= fpscr::UX;     // Underflow
+        fpscr |= fpscr::FX;
+    }
+    
+    // Check for zero divide
+    if matches!(operation, "divide") && value.is_infinite() {
+        fpscr |= fpscr::ZX;     // Zero divide
+        fpscr |= fpscr::FX;
+    }
+    
+    // Check for inexact (rounded result) - now properly tracked
+    let (inexact, rounded_away) = check_rounding_occurred(operands, value, operation);
+    if inexact {
+        fpscr |= fpscr::FI;     // Fraction Inexact
+        fpscr |= fpscr::XX;     // Inexact exception
+        fpscr |= fpscr::FX;     // Any exception
+        
+        if rounded_away {
+            fpscr |= fpscr::FR; // Fraction Rounded (away from zero)
+        }
+    }
+    
+    thread.regs.fpscr = fpscr;
+}
+
+/// Check for and set FPSCR exception flags (legacy function for compatibility)
 pub fn check_fp_exceptions(thread: &mut PpuThread, value: f64, operation: &str) {
     let mut fpscr = thread.regs.fpscr;
     
@@ -265,13 +421,6 @@ pub fn check_fp_exceptions(thread: &mut PpuThread, value: f64, operation: &str) 
         fpscr |= fpscr::ZX;     // Zero divide
         fpscr |= fpscr::FX;
     }
-    
-    // Check for inexact (rounded result)
-    // Note: This is a simplified check. In a full implementation, the FPU would
-    // track whether rounding occurred during the actual arithmetic operation.
-    // For now, we conservatively set XX for non-exact results, but this should
-    // be improved by tracking rounding in the actual operations (fmadd, etc.)
-    // TODO: Track actual rounding during operations instead of checking fractional part
     
     thread.regs.fpscr = fpscr;
 }
@@ -371,7 +520,7 @@ pub fn dfma(a: f64, c: f64, b: f64, accurate: bool) -> f64 {
     }
 }
 
-/// Enhanced FMA with full FPSCR flag handling
+/// Enhanced FMA with full FPSCR flag handling and rounding tracking
 pub fn fmadd_with_flags(thread: &mut PpuThread, a: f64, c: f64, b: f64) -> f64 {
     // Check for invalid operations
     check_fma_invalid(thread, a, c, b);
@@ -379,8 +528,8 @@ pub fn fmadd_with_flags(thread: &mut PpuThread, a: f64, c: f64, b: f64) -> f64 {
     // Perform the operation
     let result = fmadd(a, c, b);
     
-    // Check for exceptions
-    check_fp_exceptions(thread, result, "fma");
+    // Check for exceptions with proper rounding tracking
+    check_fp_exceptions_with_rounding(thread, result, "fma", &[a, c, b]);
     
     // Update FPRF
     update_fprf(thread, result);
@@ -388,7 +537,7 @@ pub fn fmadd_with_flags(thread: &mut PpuThread, a: f64, c: f64, b: f64) -> f64 {
     result
 }
 
-/// Enhanced divide with full FPSCR flag handling  
+/// Enhanced divide with full FPSCR flag handling and rounding tracking
 pub fn fdiv_with_flags(thread: &mut PpuThread, a: f64, b: f64) -> f64 {
     // Check for invalid operations
     check_divide_invalid(thread, a, b);
@@ -396,8 +545,82 @@ pub fn fdiv_with_flags(thread: &mut PpuThread, a: f64, b: f64) -> f64 {
     // Perform the operation
     let result = a / b;
     
-    // Check for exceptions
-    check_fp_exceptions(thread, result, "divide");
+    // Check for exceptions with proper rounding tracking
+    check_fp_exceptions_with_rounding(thread, result, "divide", &[a, b]);
+    
+    // Update FPRF
+    update_fprf(thread, result);
+    
+    result
+}
+
+/// Enhanced add with full FPSCR flag handling and rounding tracking
+pub fn fadd_with_flags(thread: &mut PpuThread, a: f64, b: f64) -> f64 {
+    let result = a + b;
+    
+    // Check for exceptions with proper rounding tracking
+    check_fp_exceptions_with_rounding(thread, result, "add", &[a, b]);
+    
+    // Update FPRF
+    update_fprf(thread, result);
+    
+    result
+}
+
+/// Enhanced subtract with full FPSCR flag handling and rounding tracking
+pub fn fsub_with_flags(thread: &mut PpuThread, a: f64, b: f64) -> f64 {
+    let result = a - b;
+    
+    // Check for exceptions with proper rounding tracking
+    check_fp_exceptions_with_rounding(thread, result, "sub", &[a, b]);
+    
+    // Update FPRF
+    update_fprf(thread, result);
+    
+    result
+}
+
+/// Enhanced multiply with full FPSCR flag handling and rounding tracking
+pub fn fmul_with_flags(thread: &mut PpuThread, a: f64, c: f64) -> f64 {
+    let result = a * c;
+    
+    // Check for exceptions with proper rounding tracking
+    check_fp_exceptions_with_rounding(thread, result, "mul", &[a, c]);
+    
+    // Update FPRF
+    update_fprf(thread, result);
+    
+    result
+}
+
+/// Enhanced round to single precision with full FPSCR flag handling and rounding tracking
+pub fn frsp_with_flags(thread: &mut PpuThread, value: f64) -> f64 {
+    let result = frsp(value);
+    
+    // Check for exceptions with proper rounding tracking
+    check_fp_exceptions_with_rounding(thread, result, "frsp", &[value]);
+    
+    // Update FPRF
+    update_fprf(thread, result);
+    
+    result
+}
+
+/// Enhanced square root with full FPSCR flag handling and rounding tracking
+pub fn fsqrt_with_flags(thread: &mut PpuThread, value: f64) -> f64 {
+    // Check for invalid sqrt (negative number)
+    if value < 0.0 && !value.is_nan() {
+        let mut fpscr = thread.regs.fpscr;
+        fpscr |= fpscr::VXSQRT; // Invalid sqrt (negative number - custom flag, not standard)
+        fpscr |= fpscr::VX;
+        fpscr |= fpscr::FX;
+        thread.regs.fpscr = fpscr;
+    }
+    
+    let result = value.sqrt();
+    
+    // Check for exceptions with proper rounding tracking
+    check_fp_exceptions_with_rounding(thread, result, "sqrt", &[value]);
     
     // Update FPRF
     update_fprf(thread, result);
@@ -463,5 +686,54 @@ mod tests {
         let result_accurate = dfma(2.0, 3.0, 4.0, true);
         assert_eq!(result_fast, 10.0);
         assert_eq!(result_accurate, 10.0);
+    }
+    
+    #[test]
+    fn test_check_rounding_exact_operations() {
+        // Test exact operations (no rounding)
+        let (inexact, _rounded_away) = check_rounding_occurred(&[2.0, 3.0], 5.0, "add");
+        assert!(!inexact, "2.0 + 3.0 = 5.0 should be exact");
+        
+        let (inexact, _rounded_away) = check_rounding_occurred(&[4.0, 2.0], 8.0, "mul");
+        assert!(!inexact, "4.0 * 2.0 = 8.0 should be exact");
+        
+        let (inexact, _rounded_away) = check_rounding_occurred(&[6.0, 2.0], 3.0, "divide");
+        assert!(!inexact, "6.0 / 2.0 = 3.0 should be exact");
+    }
+    
+    #[test]
+    fn test_check_rounding_inexact_division() {
+        // Test inexact division that requires rounding
+        let result = 1.0 / 3.0;
+        let (inexact, _rounded_away) = check_rounding_occurred(&[1.0, 3.0], result, "divide");
+        assert!(inexact, "1.0 / 3.0 should be inexact (requires rounding)");
+    }
+    
+    #[test]
+    fn test_check_rounding_frsp() {
+        // Test round to single precision
+        // Pi cannot be exactly represented in single precision
+        let pi = std::f64::consts::PI;
+        let single_pi = (pi as f32) as f64;
+        let (inexact, _rounded_away) = check_rounding_occurred(&[pi], single_pi, "frsp");
+        assert!(inexact, "Pi should lose precision when converted to single");
+        
+        // Exact single-precision value should not be inexact
+        let exact = 1.5f64;  // 1.5 can be exactly represented in both f32 and f64
+        let single_exact = (exact as f32) as f64;
+        let (inexact, _rounded_away) = check_rounding_occurred(&[exact], single_exact, "frsp");
+        assert!(!inexact, "1.5 should convert exactly to single precision");
+    }
+    
+    #[test]
+    fn test_check_rounding_sqrt() {
+        // sqrt(4) = 2 exactly
+        let (inexact, _rounded_away) = check_rounding_occurred(&[4.0], 2.0, "sqrt");
+        assert!(!inexact, "sqrt(4) = 2 should be exact");
+        
+        // sqrt(2) cannot be exactly represented
+        let sqrt2 = 2.0f64.sqrt();
+        let (inexact, _rounded_away) = check_rounding_occurred(&[2.0], sqrt2, "sqrt");
+        assert!(inexact, "sqrt(2) should be inexact");
     }
 }
