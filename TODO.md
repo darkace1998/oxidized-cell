@@ -247,10 +247,19 @@ This document tracks development tasks, improvements, and known issues for the o
 
 ### Async File I/O
 
-- [ ] **Async I/O Operations**
-  - Locations: `crates/oc-hle/src/cell_fs.rs:874`, `923`, `944`
-  - Queue and handle actual async I/O operations
-  - Implement request completion waiting
+- [x] **Async I/O Operations**
+  - Locations: `crates/oc-hle/src/cell_fs.rs:868`, `883`, `1015`, `1096`
+  - Implemented thread-based async I/O with completion channel
+  - Features:
+    - `aio_read`: Spawns background thread to read from file asynchronously
+    - `aio_write`: Spawns background thread to write to file asynchronously
+    - `aio_wait`: Blocks until request completes with timeout support
+    - `aio_poll`: Non-blocking check if request has completed
+    - `aio_cancel`: Cancel pending async I/O request
+    - `aio_get_result`: Get bytes transferred after completion
+  - Completion results communicated via mpsc channel
+  - Proper data transfer to guest memory for read operations
+  - Positioned I/O support (read/write at specific offset)
 
 ---
 
