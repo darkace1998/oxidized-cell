@@ -3,6 +3,9 @@
 //! Handles PS3 save data creation, deletion, and management
 
 use crate::VirtualFileSystem;
+use crate::formats::sfo::{Sfo, SfoBuilder};
+use std::fs::File;
+use std::io::BufReader;
 use std::path::PathBuf;
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -187,38 +190,64 @@ impl SaveDataManager {
 
     /// Create PARAM.SFO file
     fn create_param_sfo(&self, path: &PathBuf, game_id: &str, title: &str) -> Result<(), String> {
-        // TODO: Implement proper PARAM.SFO format generation
+        // Use SfoBuilder to create a proper PARAM.SFO file
+        // 
         // PARAM.SFO format specification:
         // - Header: Magic (0x00505346), Version, Key table offset, Data table offset
         // - Index table: entries for each parameter (key offset, data type, data length, etc.)
         // - Key table: null-terminated strings for parameter names
         // - Data table: actual parameter values
-        // 
-        // Required parameters for save data:
-        // - CATEGORY: "SD" (save data)
-        // - TITLE: Game title
-        // - TITLE_ID: Game ID
-        // - SAVEDATA_DIRECTORY: Directory name
-        // - DETAIL: Save description (optional)
-        // 
-        // For now, we create a minimal placeholder file that marks the directory
-        // as save data. Real games would expect a properly formatted PARAM.SFO.
         
-        let placeholder = format!("PARAM.SFO placeholder\ngame_id={}\ntitle={}\n", game_id, title);
-        std::fs::write(path, placeholder)
+        let dir_name = path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or(game_id);
+        
+        let sfo_data = SfoBuilder::new()
+            .category("SD")  // SD = Save Data
+            .title(title)
+            .title_id(game_id)
+            .savedata_directory(dir_name)
+            .detail("")
+            .subtitle("")
+            .version("01.00")
+            .parental_level(0)
+            .attribute(0)
+            .generate();
+        
+        std::fs::write(path, sfo_data)
             .map_err(|e| format!("Failed to create PARAM.SFO: {}", e))?;
 
-        tracing::debug!("Created PARAM.SFO placeholder for {} ({})", title, game_id);
-        tracing::warn!("PARAM.SFO is a placeholder - implement proper format for production use");
+        tracing::debug!("Created PARAM.SFO for {} ({}) at {:?}", title, game_id, path);
 
         Ok(())
     }
 
     /// Parse PARAM.SFO file
-    fn parse_param_sfo(&self, _path: &PathBuf) -> Result<(String, String), String> {
-        // TODO: Implement actual PARAM.SFO parsing using ParamSfo struct
-        // For now, return placeholder values
-        Ok((String::from("Unknown Title"), String::from("UNKNOWN00")))
+    fn parse_param_sfo(&self, path: &PathBuf) -> Result<(String, String), String> {
+        // Open and parse the PARAM.SFO file using the Sfo parser
+        let file = File::open(path)
+            .map_err(|e| format!("Failed to open PARAM.SFO: {}", e))?;
+        
+        let mut reader = BufReader::new(file);
+        
+        // Parse the SFO file
+        let sfo = Sfo::parse(&mut reader)
+            .map_err(|e| format!("Failed to parse PARAM.SFO: {}", e))?;
+        
+        // Extract title and title_id
+        let title = sfo.title()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "Unknown Title".to_string());
+        
+        let game_id = sfo.title_id()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "UNKNOWN00".to_string());
+        
+        tracing::debug!("Parsed PARAM.SFO: title='{}', game_id='{}'", title, game_id);
+        
+        Ok((title, game_id))
     }
 
     /// Calculate directory size recursively

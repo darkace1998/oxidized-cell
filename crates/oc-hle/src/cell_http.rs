@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use tracing::{debug, trace};
+use crate::memory::{write_be32, read_bytes};
 
 // Error codes
 pub const CELL_HTTP_ERROR_NOT_INITIALIZED: i32 = 0x80710001u32 as i32;
@@ -83,6 +84,8 @@ struct TransactionEntry {
     state: TransactionState,
     request_headers: Vec<(String, String)>,
     response_headers: Vec<(String, String)>,
+    request_body: Vec<u8>,
+    response_body: Vec<u8>,
     status_code: u32,
     content_length: u64,
     bytes_sent: u64,
@@ -97,11 +100,23 @@ impl TransactionEntry {
             state: TransactionState::Created,
             request_headers: Vec::new(),
             response_headers: Vec::new(),
+            request_body: Vec::new(),
+            response_body: Vec::new(),
             status_code: 0,
             content_length: 0,
             bytes_sent: 0,
             bytes_received: 0,
         }
+    }
+
+    /// Set request body
+    fn set_request_body(&mut self, body: Vec<u8>) {
+        self.request_body = body;
+    }
+
+    /// Get request body
+    fn get_request_body(&self) -> &[u8] {
+        &self.request_body
     }
 }
 
@@ -126,9 +141,9 @@ impl HttpBackend {
         method: &CellHttpMethod,
         url: &str,
         _headers: &[(String, String)],
-        _body: &[u8],
+        body: &[u8],
     ) -> Result<HttpResponse, i32> {
-        trace!("HttpBackend::send_request: {:?} {}", method, url);
+        trace!("HttpBackend::send_request: {:?} {} (body: {} bytes)", method, url, body.len());
 
         if self.use_real_network {
             // In a real implementation:
@@ -140,16 +155,50 @@ impl HttpBackend {
             trace!("HttpBackend: real networking not implemented, using simulation");
         }
 
-        // Simulate HTTP response
+        // Simulate HTTP response based on method and URL
+        let (status_code, reason, content_type, response_body) = match *method {
+            CellHttpMethod::Get => {
+                // Simulate GET response
+                let body = b"<html><body>Hello, World!</body></html>".to_vec();
+                (200, "OK", "text/html; charset=UTF-8", body)
+            }
+            CellHttpMethod::Post => {
+                // Simulate POST response - echo back body length
+                let msg = format!("{{\"received\": {} }}", body.len());
+                (200, "OK", "application/json", msg.into_bytes())
+            }
+            CellHttpMethod::Head => {
+                // HEAD returns no body
+                (200, "OK", "text/html; charset=UTF-8", vec![])
+            }
+            CellHttpMethod::Put => {
+                // Simulate PUT response
+                let msg = format!("{{\"updated\": true, \"size\": {} }}", body.len());
+                (200, "OK", "application/json", msg.into_bytes())
+            }
+            CellHttpMethod::Delete => {
+                // Simulate DELETE response
+                (204, "No Content", "application/json", vec![])
+            }
+            CellHttpMethod::Options => {
+                // OPTIONS response
+                (200, "OK", "text/plain", b"GET,POST,PUT,DELETE,HEAD,OPTIONS".to_vec())
+            }
+            _ => {
+                // Generic response
+                (200, "OK", "text/plain", b"OK".to_vec())
+            }
+        };
+        
         let response = HttpResponse {
-            status_code: 200,
-            reason: String::from("OK"),
+            status_code,
+            reason: String::from(reason),
             headers: vec![
-                (String::from("Content-Type"), String::from("text/html; charset=UTF-8")),
-                (String::from("Content-Length"), String::from("1234")),
+                (String::from("Content-Type"), String::from(content_type)),
+                (String::from("Content-Length"), response_body.len().to_string()),
                 (String::from("Connection"), String::from("close")),
             ],
-            body: vec![],
+            body: response_body,
         };
 
         Ok(response)
@@ -349,13 +398,16 @@ impl HttpManager {
             return Err(CELL_HTTP_ERROR_BUSY);
         }
 
-        // Send request through backend
+        // Get request body from transaction
+        let request_body = transaction.get_request_body().to_vec();
+        
+        // Send request through backend with actual body
         let response = if let (Some(proxy_host), proxy_port) = (&client.proxy_host, client.proxy_port) {
             client.backend.send_request_with_proxy(
                 &transaction.method,
                 &transaction.url,
                 &transaction.request_headers,
-                &[], // TODO: Get request body
+                &request_body,
                 proxy_host,
                 proxy_port,
             )?
@@ -364,7 +416,7 @@ impl HttpManager {
                 &transaction.method,
                 &transaction.url,
                 &transaction.request_headers,
-                &[], // TODO: Get request body
+                &request_body,
             )?
         };
 
@@ -373,17 +425,18 @@ impl HttpManager {
         transaction.state = TransactionState::RequestSent;
         transaction.status_code = response.status_code;
         transaction.response_headers = response.headers;
-        transaction.content_length = response.body.len() as u64;
+        transaction.response_body = response.body;
+        transaction.content_length = transaction.response_body.len() as u64;
         transaction.state = TransactionState::ResponseReceived;
 
-        trace!("HttpManager::send_request: {} {} -> status {}", 
-               transaction.method as u32, transaction.url, transaction.status_code);
+        trace!("HttpManager::send_request: {} {} -> status {} (response: {} bytes)", 
+               transaction.method as u32, transaction.url, transaction.status_code, transaction.content_length);
 
         Ok(())
     }
 
     /// Receive HTTP response
-    pub fn recv_response(&mut self, client_id: HttpClientId, transaction_id: HttpTransactionId, _buffer_size: u64) -> Result<u64, i32> {
+    pub fn recv_response(&mut self, client_id: HttpClientId, transaction_id: HttpTransactionId, buffer_size: u64) -> Result<(u64, Vec<u8>), i32> {
         if !self.is_initialized {
             return Err(CELL_HTTP_ERROR_NOT_INITIALIZED);
         }
@@ -395,16 +448,29 @@ impl HttpManager {
             return Err(CELL_HTTP_ERROR_NOT_CONNECTED);
         }
 
-        // TODO: Integrate with actual HTTP networking
-        // For now, return 0 bytes (empty response)
-        let bytes_to_read = 0u64;
+        // Calculate how many bytes we can return
+        let remaining = transaction.content_length.saturating_sub(transaction.bytes_received);
+        let bytes_to_read = std::cmp::min(buffer_size, remaining);
+        
+        // Get the response body slice
+        let start = transaction.bytes_received as usize;
+        let end = start + bytes_to_read as usize;
+        let data = if end <= transaction.response_body.len() {
+            transaction.response_body[start..end].to_vec()
+        } else {
+            Vec::new()
+        };
+        
         transaction.bytes_received += bytes_to_read;
 
         if transaction.bytes_received >= transaction.content_length {
             transaction.state = TransactionState::Completed;
         }
 
-        Ok(bytes_to_read)
+        trace!("HttpManager::recv_response: {} bytes (total: {}/{})", 
+               bytes_to_read, transaction.bytes_received, transaction.content_length);
+
+        Ok((bytes_to_read, data))
     }
 
     /// Get response status code
@@ -464,6 +530,35 @@ impl HttpManager {
     pub fn is_client_valid(&self, client_id: HttpClientId) -> bool {
         self.is_initialized && self.clients.contains_key(&client_id)
     }
+
+    /// Set request body for a transaction
+    pub fn set_request_body(&mut self, client_id: HttpClientId, transaction_id: HttpTransactionId, body: Vec<u8>) -> Result<(), i32> {
+        if !self.is_initialized {
+            return Err(CELL_HTTP_ERROR_NOT_INITIALIZED);
+        }
+
+        let client = self.clients.get_mut(&client_id).ok_or(CELL_HTTP_ERROR_INVALID_CLIENT)?;
+        let transaction = client.transactions.get_mut(&transaction_id).ok_or(CELL_HTTP_ERROR_INVALID_TRANSACTION)?;
+
+        if transaction.state != TransactionState::Created {
+            return Err(CELL_HTTP_ERROR_BUSY);
+        }
+
+        transaction.set_request_body(body);
+        Ok(())
+    }
+
+    /// Get response content length for a transaction
+    pub fn get_content_length(&self, client_id: HttpClientId, transaction_id: HttpTransactionId) -> Result<u64, i32> {
+        if !self.is_initialized {
+            return Err(CELL_HTTP_ERROR_NOT_INITIALIZED);
+        }
+
+        let client = self.clients.get(&client_id).ok_or(CELL_HTTP_ERROR_INVALID_CLIENT)?;
+        let transaction = client.transactions.get(&transaction_id).ok_or(CELL_HTTP_ERROR_INVALID_TRANSACTION)?;
+
+        Ok(transaction.content_length)
+    }
 }
 
 impl Default for HttpManager {
@@ -508,12 +603,17 @@ pub fn cell_http_end() -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_http_create_client(_client_addr: u32) -> i32 {
-    debug!("cellHttpCreateClient()");
+pub fn cell_http_create_client(client_addr: u32) -> i32 {
+    debug!("cellHttpCreateClient(client_addr=0x{:08X})", client_addr);
 
     match crate::context::get_hle_context_mut().http.create_client() {
-        Ok(_client_id) => {
-            // TODO: Write client handle to memory at _client_addr
+        Ok(client_id) => {
+            // Write client handle to memory
+            if client_addr != 0 {
+                if let Err(e) = write_be32(client_addr, client_id) {
+                    return e;
+                }
+            }
             0 // CELL_OK
         }
         Err(e) => e,
@@ -611,17 +711,27 @@ pub fn cell_http_send_request(transaction: u32, _data_addr: u32, size: u64) -> i
 ///
 /// # Returns
 /// * Number of bytes received on success
-pub fn cell_http_recv_response(transaction: u32, _data_addr: u32, size: u64) -> i64 {
-    trace!("cellHttpRecvResponse(transaction={}, size={})", transaction, size);
+pub fn cell_http_recv_response(transaction: u32, data_addr: u32, size: u64) -> i64 {
+    trace!("cellHttpRecvResponse(transaction={}, data_addr=0x{:08X}, size={})", transaction, data_addr, size);
 
     // Verify HTTP manager is initialized
     if !crate::context::get_hle_context().http.is_initialized() {
         return 0;
     }
 
-    // Note: Actual HTTP response receiving requires network backend integration
+    // For now, we need to find the client that owns this transaction
+    // In a full implementation, we would track transaction-to-client mapping
+    // For simulation, just return 0 bytes if data can't be written
+    
+    // If we have valid data address, we could write response data here
+    // The actual integration would require knowing which client the transaction belongs to
+    
+    if data_addr != 0 && size > 0 {
+        // Write empty response for now - actual data would come from transaction
+        trace!("cellHttpRecvResponse: returning 0 bytes (transaction lookup not implemented)");
+    }
 
-    0 // Return 0 bytes for now
+    0 // Return 0 bytes - would need full transaction-to-client mapping for actual data
 }
 
 /// cellHttpAddRequestHeader - Add request header
@@ -881,5 +991,85 @@ mod tests {
         assert_ne!(CELL_HTTP_ERROR_INVALID_CLIENT, 0);
         assert_ne!(CELL_HTTP_ERROR_INVALID_TRANSACTION, 0);
         assert_ne!(CELL_HTTP_ERROR_BUSY, 0);
+    }
+
+    #[test]
+    fn test_http_manager_request_body() {
+        let mut manager = HttpManager::new();
+        manager.init(1024 * 1024).unwrap();
+        let client_id = manager.create_client().unwrap();
+        let transaction_id = manager.create_transaction(client_id, CellHttpMethod::Post, "http://example.com/api").unwrap();
+
+        // Set request body
+        let body = b"{'key': 'value'}".to_vec();
+        manager.set_request_body(client_id, transaction_id, body.clone()).unwrap();
+    }
+
+    #[test]
+    fn test_http_manager_recv_response_with_body() {
+        let mut manager = HttpManager::new();
+        manager.init(1024 * 1024).unwrap();
+        let client_id = manager.create_client().unwrap();
+        let transaction_id = manager.create_transaction(client_id, CellHttpMethod::Get, "http://example.com").unwrap();
+
+        // Send request
+        manager.send_request(client_id, transaction_id, 0).unwrap();
+        
+        // Verify content length is set (simulated response has content)
+        let content_length = manager.get_content_length(client_id, transaction_id).unwrap();
+        assert!(content_length > 0, "Content length should be greater than 0");
+        
+        // Receive response data
+        let (bytes, data) = manager.recv_response(client_id, transaction_id, 1024).unwrap();
+        assert_eq!(bytes as usize, data.len());
+        assert!(bytes > 0, "Should receive some bytes");
+    }
+
+    #[test]
+    fn test_http_manager_post_with_body() {
+        let mut manager = HttpManager::new();
+        manager.init(1024 * 1024).unwrap();
+        let client_id = manager.create_client().unwrap();
+        let transaction_id = manager.create_transaction(client_id, CellHttpMethod::Post, "http://example.com/api").unwrap();
+
+        // Set request body
+        let request_body = b"test data".to_vec();
+        manager.set_request_body(client_id, transaction_id, request_body).unwrap();
+
+        // Send request with body
+        manager.send_request(client_id, transaction_id, 9).unwrap();
+        
+        // Check status
+        assert_eq!(manager.get_status_code(client_id, transaction_id).unwrap(), 200);
+        
+        // Receive response
+        let (bytes, _data) = manager.recv_response(client_id, transaction_id, 1024).unwrap();
+        assert!(bytes > 0);
+    }
+
+    #[test]
+    fn test_http_manager_head_request() {
+        let mut manager = HttpManager::new();
+        manager.init(1024 * 1024).unwrap();
+        let client_id = manager.create_client().unwrap();
+        let transaction_id = manager.create_transaction(client_id, CellHttpMethod::Head, "http://example.com").unwrap();
+
+        manager.send_request(client_id, transaction_id, 0).unwrap();
+        assert_eq!(manager.get_status_code(client_id, transaction_id).unwrap(), 200);
+        
+        // HEAD returns no body
+        let content_length = manager.get_content_length(client_id, transaction_id).unwrap();
+        assert_eq!(content_length, 0);
+    }
+
+    #[test]
+    fn test_http_manager_delete_request() {
+        let mut manager = HttpManager::new();
+        manager.init(1024 * 1024).unwrap();
+        let client_id = manager.create_client().unwrap();
+        let transaction_id = manager.create_transaction(client_id, CellHttpMethod::Delete, "http://example.com/resource/1").unwrap();
+
+        manager.send_request(client_id, transaction_id, 0).unwrap();
+        assert_eq!(manager.get_status_code(client_id, transaction_id).unwrap(), 204);
     }
 }

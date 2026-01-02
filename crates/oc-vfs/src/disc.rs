@@ -4,10 +4,12 @@
 
 use crate::devices::bdvd::BdvdDevice;
 use crate::formats::iso::{IsoReader, IsoVolume};
+use crate::formats::sfo::Sfo;
 use crate::VirtualFileSystem;
 use std::path::PathBuf;
 use std::sync::Arc;
 use parking_lot::RwLock;
+use std::io::Cursor;
 
 /// Disc image format
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,21 +138,65 @@ impl DiscManager {
                 // Try to find PARAM.SFO
                 let param_sfo_path = ps3_game_path.join("PARAM.SFO");
                 if param_sfo_path.exists() {
-                    // TODO: Parse PARAM.SFO for title and game ID
-                    // For now, just extract game ID from path if available
-                    let game_id = disc_path
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .map(|s| s.to_string());
-                    return (None, game_id);
+                    return self.parse_param_sfo_file(&param_sfo_path);
+                }
+            }
+            // Fallback: extract game ID from path
+            let game_id = disc_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string());
+            return (None, game_id);
+        }
+
+        // For ISO format, read PARAM.SFO directly from the ISO
+        if format == DiscFormat::Iso {
+            let mut iso_reader = IsoReader::new(disc_path.clone());
+            if iso_reader.open().is_ok() {
+                // Try to read PARAM.SFO from ISO
+                if let Ok(sfo_data) = iso_reader.read_file("/PS3_GAME/PARAM.SFO") {
+                    return self.parse_param_sfo_data(&sfo_data);
                 }
             }
         }
 
-        // For ISO format, we would need to parse the ISO to find PARAM.SFO
-        // This is more complex and would require full ISO directory parsing
-
         (None, None)
+    }
+
+    /// Parse PARAM.SFO from file path
+    fn parse_param_sfo_file(&self, path: &PathBuf) -> (Option<String>, Option<String>) {
+        match std::fs::File::open(path) {
+            Ok(file) => {
+                let mut reader = std::io::BufReader::new(file);
+                self.parse_param_sfo_reader(&mut reader)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to open PARAM.SFO: {}", e);
+                (None, None)
+            }
+        }
+    }
+
+    /// Parse PARAM.SFO from raw data
+    fn parse_param_sfo_data(&self, data: &[u8]) -> (Option<String>, Option<String>) {
+        let mut cursor = Cursor::new(data);
+        self.parse_param_sfo_reader(&mut cursor)
+    }
+
+    /// Parse PARAM.SFO from any reader
+    fn parse_param_sfo_reader<R: std::io::Read + std::io::Seek>(&self, reader: &mut R) -> (Option<String>, Option<String>) {
+        match Sfo::parse(reader) {
+            Ok(sfo) => {
+                let title = sfo.title().map(|s| s.to_string());
+                let game_id = sfo.title_id().map(|s| s.to_string());
+                tracing::debug!("Parsed PARAM.SFO: title={:?}, game_id={:?}", title, game_id);
+                (title, game_id)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to parse PARAM.SFO: {}", e);
+                (None, None)
+            }
+        }
     }
 
     /// Verify disc integrity (basic check)
@@ -181,6 +227,9 @@ impl Default for DiscManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::formats::sfo::SfoBuilder;
+    use std::io::Write;
+    use tempfile::TempDir;
 
     #[test]
     fn test_disc_manager_creation() {
@@ -194,5 +243,67 @@ mod tests {
         // This would require actual test files, so we just test the structure
         let manager = DiscManager::new();
         assert!(!manager.is_disc_mounted());
+    }
+
+    #[test]
+    fn test_extract_game_info_from_folder() {
+        let manager = DiscManager::new();
+
+        // Create a temporary directory structure
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let disc_path = temp_dir.path().to_path_buf();
+        let ps3_game_path = disc_path.join("PS3_GAME");
+        std::fs::create_dir_all(&ps3_game_path).expect("Failed to create PS3_GAME dir");
+
+        // Create a PARAM.SFO file
+        let sfo_data = SfoBuilder::new()
+            .title("Test Game Title")
+            .title_id("BLES12345")
+            .category("DG")
+            .generate();
+
+        let param_sfo_path = ps3_game_path.join("PARAM.SFO");
+        let mut file = std::fs::File::create(&param_sfo_path).expect("Failed to create PARAM.SFO");
+        file.write_all(&sfo_data).expect("Failed to write PARAM.SFO");
+
+        // Extract game info
+        let (title, game_id) = manager.extract_game_info(&disc_path, DiscFormat::Folder);
+
+        assert_eq!(title, Some("Test Game Title".to_string()));
+        assert_eq!(game_id, Some("BLES12345".to_string()));
+    }
+
+    #[test]
+    fn test_extract_game_info_missing_sfo() {
+        let manager = DiscManager::new();
+
+        // Create a temporary directory without PARAM.SFO
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let disc_path = temp_dir.path().to_path_buf();
+
+        // Extract game info - should fall back to path-based extraction
+        let (title, game_id) = manager.extract_game_info(&disc_path, DiscFormat::Folder);
+
+        assert!(title.is_none());
+        // game_id will be the temp dir name
+        assert!(game_id.is_some());
+    }
+
+    #[test]
+    fn test_parse_param_sfo_reader() {
+        let manager = DiscManager::new();
+
+        // Create SFO data
+        let sfo_data = SfoBuilder::new()
+            .title("Another Game")
+            .title_id("NPUB00001")
+            .version("01.00")
+            .generate();
+
+        // Parse using the helper
+        let (title, game_id) = manager.parse_param_sfo_data(&sfo_data);
+
+        assert_eq!(title, Some("Another Game".to_string()));
+        assert_eq!(game_id, Some("NPUB00001".to_string()));
     }
 }

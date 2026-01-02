@@ -277,10 +277,18 @@ impl SaveDataManager {
 
         let mut entry = SaveDataEntry::default();
         entry.dir_name = dir_name.to_string();
+        entry.dir_stat.mtime = get_current_unix_timestamp();
 
         self.entries.insert(dir_name.to_string(), entry);
 
-        // TODO: Create directory in VFS
+        // Create directory on host filesystem
+        // The base_path (e.g., /dev_hdd0/savedata) maps to a host directory
+        // In a full VFS integration, the VFS would resolve this path
+        // For HLE purposes, we create a subdirectory in the save data base path
+        if let Err(e) = self.create_directory_on_disk(dir_name) {
+            debug!("SaveDataManager::create_directory: disk creation skipped ({})", e);
+            // Non-fatal - directory tracking is still valid
+        }
 
         0 // CELL_OK
     }
@@ -289,11 +297,63 @@ impl SaveDataManager {
     pub fn delete_directory(&mut self, dir_name: &str) -> i32 {
         if let Some(_entry) = self.entries.remove(dir_name) {
             debug!("SaveDataManager::delete_directory: {}", dir_name);
-            // TODO: Delete directory from VFS
+            
+            // Delete directory from host filesystem
+            if let Err(e) = self.delete_directory_from_disk(dir_name) {
+                debug!("SaveDataManager::delete_directory: disk deletion skipped ({})", e);
+                // Non-fatal - directory tracking is still removed
+            }
+            
             0 // CELL_OK
         } else {
             CELL_SAVEDATA_ERROR_NODATA
         }
+    }
+
+    /// Create directory on host filesystem
+    fn create_directory_on_disk(&self, dir_name: &str) -> Result<(), String> {
+        // Construct path: base_path is a virtual path like /dev_hdd0/savedata
+        // In a real emulator, this would be mapped to a host path through VFS
+        // For now, we use a relative path based on the base_path structure
+        
+        // Extract the last component of base_path (e.g., "savedata")
+        // and create it under the user's data directory
+        let host_base = std::env::var("OXIDIZED_CELL_SAVEDATA")
+            .unwrap_or_else(|_| {
+                // Default to current directory + savedata
+                std::env::current_dir()
+                    .map(|p| p.join("savedata").to_string_lossy().to_string())
+                    .unwrap_or_else(|_| "./savedata".to_string())
+            });
+        
+        let dir_path = std::path::Path::new(&host_base).join(dir_name);
+        
+        std::fs::create_dir_all(&dir_path)
+            .map_err(|e| format!("Failed to create directory {:?}: {}", dir_path, e))?;
+        
+        trace!("Created save directory on disk: {:?}", dir_path);
+        Ok(())
+    }
+
+    /// Delete directory from host filesystem
+    fn delete_directory_from_disk(&self, dir_name: &str) -> Result<(), String> {
+        let host_base = std::env::var("OXIDIZED_CELL_SAVEDATA")
+            .unwrap_or_else(|_| {
+                std::env::current_dir()
+                    .map(|p| p.join("savedata").to_string_lossy().to_string())
+                    .unwrap_or_else(|_| "./savedata".to_string())
+            });
+        
+        let dir_path = std::path::Path::new(&host_base).join(dir_name);
+        
+        if dir_path.exists() {
+            std::fs::remove_dir_all(&dir_path)
+                .map_err(|e| format!("Failed to delete directory {:?}: {}", dir_path, e))?;
+            
+            trace!("Deleted save directory from disk: {:?}", dir_path);
+        }
+        
+        Ok(())
     }
 
     /// Check if directory exists

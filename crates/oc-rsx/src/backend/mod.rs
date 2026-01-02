@@ -95,6 +95,21 @@ pub trait GraphicsBackend {
     /// Set scissor rectangle
     fn set_scissor(&mut self, x: u32, y: u32, width: u32, height: u32);
     
+    /// Submit vertex buffer data to the GPU
+    /// 
+    /// # Arguments
+    /// * `binding` - The vertex buffer binding index
+    /// * `data` - The raw vertex data bytes
+    /// * `stride` - The stride between vertices in bytes
+    fn submit_vertex_buffer(&mut self, binding: u32, data: &[u8], stride: u32);
+    
+    /// Submit index buffer data to the GPU
+    /// 
+    /// # Arguments
+    /// * `data` - The raw index data bytes
+    /// * `index_type` - The index type (2 for u16, 4 for u32)
+    fn submit_index_buffer(&mut self, data: &[u8], index_type: u32);
+    
     /// Get the current framebuffer contents as RGBA pixels
     /// Returns None if the framebuffer is not available
     fn get_framebuffer(&self) -> Option<FramebufferData>;

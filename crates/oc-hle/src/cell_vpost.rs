@@ -381,37 +381,62 @@ impl ColorConverter {
     }
 
     /// Convert YUV420 to RGBA using specified color matrix
-    fn yuv420_to_rgba(&self, y_plane: &[u8], _u_plane: &[u8], _v_plane: &[u8], 
+    /// 
+    /// Implements full YUV to RGB color conversion following ITU-R BT.601 and BT.709 standards.
+    /// YUV420 format has full-resolution Y (luma) and half-resolution U/V (chroma) in both dimensions.
+    fn yuv420_to_rgba(&self, y_plane: &[u8], u_plane: &[u8], v_plane: &[u8], 
                        width: u32, height: u32, out_buffer: &mut [u8]) -> Result<(), i32> {
         trace!("ColorConverter::yuv420_to_rgba: {}x{}, matrix={:?}", width, height, self.color_matrix);
         
-        // Get conversion coefficients based on color matrix
-        let (kr, kb) = match self.color_matrix {
-            CellVpostColorMatrix::Bt601 => (0.299, 0.114),  // BT.601/SDTV
-            CellVpostColorMatrix::Bt709 => (0.2126, 0.0722), // BT.709/HDTV
+        let pixel_count = (width * height) as usize;
+        if out_buffer.len() < pixel_count * 4 {
+            return Err(CELL_VPOST_ERROR_ARG);
+        }
+        
+        // YUV420 has chroma subsampled by 2 in both dimensions
+        let chroma_width = (width / 2) as usize;
+        
+        // Color conversion coefficients based on color matrix standard
+        // For full-range YUV (0-255):
+        //   R = Y + Cr_coeff * (V - 128)
+        //   G = Y - Cb_coeff_g * (U - 128) - Cr_coeff_g * (V - 128)
+        //   B = Y + Cb_coeff * (U - 128)
+        let (cr_coeff, cb_coeff_g, cr_coeff_g, cb_coeff) = match self.color_matrix {
+            CellVpostColorMatrix::Bt601 => {
+                // BT.601/SDTV coefficients
+                (1.402, 0.344136, 0.714136, 1.772)
+            }
+            CellVpostColorMatrix::Bt709 => {
+                // BT.709/HDTV coefficients
+                (1.5748, 0.187324, 0.468124, 1.8556)
+            }
         };
         
-        let _kg = 1.0 - kr - kb;
-        
-        // TODO: Actual YUV to RGB conversion
-        // In a real implementation:
-        // 1. For each pixel:
-        //    R = Y + 1.402 * (V - 128)
-        //    G = Y - 0.344 * (U - 128) - 0.714 * (V - 128)
-        //    B = Y + 1.772 * (U - 128)
-        // 2. Clamp to [0, 255]
-        // 3. Write RGBA (with alpha = 255)
-        
-        // Simulate conversion by filling output
-        let pixel_count = (width * height) as usize;
-        if out_buffer.len() >= pixel_count * 4 {
-            for i in 0..pixel_count {
-                let y = if i < y_plane.len() { y_plane[i] } else { 128 };
-                // Simple grayscale for now
-                out_buffer[i * 4] = y;     // R
-                out_buffer[i * 4 + 1] = y; // G
-                out_buffer[i * 4 + 2] = y; // B
-                out_buffer[i * 4 + 3] = 255; // A
+        for py in 0..height {
+            for px in 0..width {
+                let y_idx = (py * width + px) as usize;
+                
+                // Chroma is subsampled - each 2x2 block of Y shares one U,V pair
+                let chroma_x = (px / 2) as usize;
+                let chroma_y = (py / 2) as usize;
+                let uv_idx = chroma_y * chroma_width + chroma_x;
+                
+                // Get Y, U, V values (default to neutral if out of bounds)
+                let y = if y_idx < y_plane.len() { y_plane[y_idx] as f32 } else { 128.0 };
+                let u = if uv_idx < u_plane.len() { u_plane[uv_idx] as f32 } else { 128.0 };
+                let v = if uv_idx < v_plane.len() { v_plane[uv_idx] as f32 } else { 128.0 };
+                
+                // Convert YUV to RGB
+                let r = y + cr_coeff * (v - 128.0);
+                let g = y - cb_coeff_g * (u - 128.0) - cr_coeff_g * (v - 128.0);
+                let b = y + cb_coeff * (u - 128.0);
+                
+                // Clamp and write RGBA
+                let out_idx = y_idx * 4;
+                out_buffer[out_idx] = r.clamp(0.0, 255.0) as u8;
+                out_buffer[out_idx + 1] = g.clamp(0.0, 255.0) as u8;
+                out_buffer[out_idx + 2] = b.clamp(0.0, 255.0) as u8;
+                out_buffer[out_idx + 3] = 255; // Full alpha
             }
         }
         
@@ -419,43 +444,153 @@ impl ColorConverter {
     }
 
     /// Convert RGBA to YUV420
+    /// 
+    /// Implements full RGB to YUV color conversion following ITU-R BT.601 and BT.709 standards.
+    /// YUV420 format stores full-resolution Y (luma) and 4:1 subsampled U/V (chroma).
     fn rgba_to_yuv420(&self, rgba_buffer: &[u8], width: u32, height: u32,
                        y_plane: &mut [u8], u_plane: &mut [u8], v_plane: &mut [u8]) -> Result<(), i32> {
         trace!("ColorConverter::rgba_to_yuv420: {}x{}, matrix={:?}", width, height, self.color_matrix);
         
-        // Get conversion coefficients
-        let (kr, kb) = match self.color_matrix {
-            CellVpostColorMatrix::Bt601 => (0.299, 0.114),
-            CellVpostColorMatrix::Bt709 => (0.2126, 0.0722),
+        let pixel_count = (width * height) as usize;
+        if rgba_buffer.len() < pixel_count * 4 {
+            return Err(CELL_VPOST_ERROR_ARG);
+        }
+        
+        // RGB to YUV coefficients based on color matrix standard
+        // Y = Kr*R + Kg*G + Kb*B
+        // U (Cb) = (B - Y) / (2 * (1 - Kb)) + 128 = -0.5*Kr/(1-Kb)*R - 0.5*Kg/(1-Kb)*G + 0.5*B + 128
+        // V (Cr) = (R - Y) / (2 * (1 - Kr)) + 128 = 0.5*R - 0.5*Kg/(1-Kr)*G - 0.5*Kb/(1-Kr)*B + 128
+        let (kr, kg, kb) = match self.color_matrix {
+            CellVpostColorMatrix::Bt601 => {
+                // BT.601/SDTV coefficients
+                (0.299, 0.587, 0.114)
+            }
+            CellVpostColorMatrix::Bt709 => {
+                // BT.709/HDTV coefficients
+                (0.2126, 0.7152, 0.0722)
+            }
         };
         
-        let _kg = 1.0 - kr - kb;
+        // Pre-compute chroma coefficients
+        let u_r = -0.5 * kr / (1.0 - kb);
+        let u_g = -0.5 * kg / (1.0 - kb);
+        let u_b = 0.5;
+        let v_r = 0.5;
+        let v_g = -0.5 * kg / (1.0 - kr);
+        let v_b = -0.5 * kb / (1.0 - kr);
         
-        // TODO: Actual RGB to YUV conversion
-        // In a real implementation:
-        // 1. For each pixel:
-        //    Y = 16 + (65.481 * R + 128.553 * G + 24.966 * B) / 256
-        //    U = 128 + (-37.797 * R - 74.203 * G + 112.0 * B) / 256
-        //    V = 128 + (112.0 * R - 93.786 * G - 18.214 * B) / 256
-        // 2. Subsample U and V for 4:2:0
-        
-        let pixel_count = (width * height) as usize;
+        // Compute Y plane (full resolution)
         for i in 0..pixel_count.min(y_plane.len()) {
-            if i * 4 + 2 < rgba_buffer.len() {
-                let r = rgba_buffer[i * 4];
-                let g = rgba_buffer[i * 4 + 1];
-                let b = rgba_buffer[i * 4 + 2];
+            let rgba_idx = i * 4;
+            if rgba_idx + 2 < rgba_buffer.len() {
+                let r = rgba_buffer[rgba_idx] as f32;
+                let g = rgba_buffer[rgba_idx + 1] as f32;
+                let b = rgba_buffer[rgba_idx + 2] as f32;
                 
-                // Simple grayscale
-                y_plane[i] = ((r as u32 + g as u32 + b as u32) / 3) as u8;
+                // Y = Kr*R + Kg*G + Kb*B
+                let y = kr * r + kg * g + kb * b;
+                y_plane[i] = y.clamp(0.0, 255.0) as u8;
             }
         }
         
-        // Subsample U and V (2x2 blocks)
-        let uv_size = ((width / 2) * (height / 2)) as usize;
-        for i in 0..uv_size.min(u_plane.len()).min(v_plane.len()) {
-            u_plane[i] = 128;
-            v_plane[i] = 128;
+        // Compute U and V planes (subsampled 2x2)
+        // Average the chroma values from each 2x2 block of pixels
+        let chroma_width = width / 2;
+        let chroma_height = height / 2;
+        let chroma_size = (chroma_width * chroma_height) as usize;
+        
+        for cy in 0..chroma_height {
+            for cx in 0..chroma_width {
+                let uv_idx = (cy * chroma_width + cx) as usize;
+                if uv_idx >= u_plane.len() || uv_idx >= v_plane.len() {
+                    break;
+                }
+                
+                // Average 2x2 block of pixels for chroma
+                let mut u_sum = 0.0f32;
+                let mut v_sum = 0.0f32;
+                let mut count = 0.0f32;
+                
+                for dy in 0..2 {
+                    for dx in 0..2 {
+                        let px = cx * 2 + dx;
+                        let py = cy * 2 + dy;
+                        if px < width && py < height {
+                            let rgba_idx = ((py * width + px) * 4) as usize;
+                            if rgba_idx + 2 < rgba_buffer.len() {
+                                let r = rgba_buffer[rgba_idx] as f32;
+                                let g = rgba_buffer[rgba_idx + 1] as f32;
+                                let b = rgba_buffer[rgba_idx + 2] as f32;
+                                
+                                // U (Cb) and V (Cr) computation
+                                u_sum += u_r * r + u_g * g + u_b * b + 128.0;
+                                v_sum += v_r * r + v_g * g + v_b * b + 128.0;
+                                count += 1.0;
+                            }
+                        }
+                    }
+                }
+                
+                if count > 0.0 {
+                    u_plane[uv_idx] = (u_sum / count).clamp(0.0, 255.0) as u8;
+                    v_plane[uv_idx] = (v_sum / count).clamp(0.0, 255.0) as u8;
+                } else {
+                    u_plane[uv_idx] = 128;
+                    v_plane[uv_idx] = 128;
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Convert YUV422 to RGBA using specified color matrix
+    /// 
+    /// Implements YUV422 to RGB color conversion. YUV422 format has full-resolution Y (luma)
+    /// and half-resolution U/V (chroma) only in the horizontal direction.
+    fn yuv422_to_rgba(&self, y_plane: &[u8], u_plane: &[u8], v_plane: &[u8], 
+                       width: u32, height: u32, out_buffer: &mut [u8]) -> Result<(), i32> {
+        trace!("ColorConverter::yuv422_to_rgba: {}x{}, matrix={:?}", width, height, self.color_matrix);
+        
+        let pixel_count = (width * height) as usize;
+        if out_buffer.len() < pixel_count * 4 {
+            return Err(CELL_VPOST_ERROR_ARG);
+        }
+        
+        // YUV422 has chroma subsampled by 2 only in horizontal direction
+        let chroma_width = (width / 2) as usize;
+        
+        // Color conversion coefficients based on color matrix standard
+        let (cr_coeff, cb_coeff_g, cr_coeff_g, cb_coeff) = match self.color_matrix {
+            CellVpostColorMatrix::Bt601 => (1.402, 0.344136, 0.714136, 1.772),
+            CellVpostColorMatrix::Bt709 => (1.5748, 0.187324, 0.468124, 1.8556),
+        };
+        
+        for py in 0..height {
+            for px in 0..width {
+                let y_idx = (py * width + px) as usize;
+                
+                // YUV422: each pair of pixels horizontally shares one U,V pair
+                let chroma_x = (px / 2) as usize;
+                let uv_idx = py as usize * chroma_width + chroma_x;
+                
+                // Get Y, U, V values
+                let y = if y_idx < y_plane.len() { y_plane[y_idx] as f32 } else { 128.0 };
+                let u = if uv_idx < u_plane.len() { u_plane[uv_idx] as f32 } else { 128.0 };
+                let v = if uv_idx < v_plane.len() { v_plane[uv_idx] as f32 } else { 128.0 };
+                
+                // Convert YUV to RGB
+                let r = y + cr_coeff * (v - 128.0);
+                let g = y - cb_coeff_g * (u - 128.0) - cr_coeff_g * (v - 128.0);
+                let b = y + cb_coeff * (u - 128.0);
+                
+                // Clamp and write RGBA
+                let out_idx = y_idx * 4;
+                out_buffer[out_idx] = r.clamp(0.0, 255.0) as u8;
+                out_buffer[out_idx + 1] = g.clamp(0.0, 255.0) as u8;
+                out_buffer[out_idx + 2] = b.clamp(0.0, 255.0) as u8;
+                out_buffer[out_idx + 3] = 255;
+            }
         }
         
         Ok(())
@@ -495,17 +630,16 @@ impl ColorConverter {
                 }
             }
             (CellVpostFormatType::Yuv422Planar, CellVpostFormatType::Rgba8888) => {
-                // Similar to YUV420 but with different chroma subsampling
-                trace!("YUV422 to RGBA conversion (using YUV420 path for now)");
+                // YUV422 has chroma subsampled only horizontally
                 let y_size = (pic_info.in_width * pic_info.in_height) as usize;
-                let uv_size = y_size / 2; // 4:2:2 has more chroma
+                let uv_size = y_size / 2; // 4:2:2 has half-width chroma per row
                 
                 if in_buffer.len() >= y_size + uv_size * 2 {
                     let y_plane = &in_buffer[0..y_size];
                     let u_plane = &in_buffer[y_size..y_size + uv_size];
                     let v_plane = &in_buffer[y_size + uv_size..];
                     
-                    self.yuv420_to_rgba(y_plane, u_plane, v_plane,
+                    self.yuv422_to_rgba(y_plane, u_plane, v_plane,
                                        pic_info.out_width, pic_info.out_height, out_buffer)
                 } else {
                     Err(CELL_VPOST_ERROR_ARG)
@@ -991,5 +1125,235 @@ mod tests {
         assert_ne!(CELL_VPOST_ERROR_SEQ, 0);
         assert_ne!(CELL_VPOST_ERROR_BUSY, 0);
         assert_ne!(CELL_VPOST_ERROR_FATAL, 0);
+    }
+
+    #[test]
+    fn test_yuv420_to_rgba_basic() {
+        // Test YUV420 to RGBA conversion with known values
+        let in_format = CellVpostPictureFormat {
+            format_type: CellVpostFormatType::Yuv420Planar as u32,
+            color_matrix: CellVpostColorMatrix::Bt601 as u32,
+            alpha: 255,
+        };
+        let out_format = CellVpostPictureFormat {
+            format_type: CellVpostFormatType::Rgba8888 as u32,
+            color_matrix: CellVpostColorMatrix::Bt601 as u32,
+            alpha: 255,
+        };
+        let converter = ColorConverter::new(&in_format, &out_format);
+        
+        // 4x4 image for testing (2x2 chroma)
+        let width = 4u32;
+        let height = 4u32;
+        let y_size = (width * height) as usize;
+        let uv_size = y_size / 4;
+        
+        // Create neutral gray YUV data (Y=128, U=128, V=128 -> gray RGB)
+        let y_plane = vec![128u8; y_size];
+        let u_plane = vec![128u8; uv_size];
+        let v_plane = vec![128u8; uv_size];
+        
+        let mut out_buffer = vec![0u8; y_size * 4];
+        
+        let result = converter.yuv420_to_rgba(&y_plane, &u_plane, &v_plane, width, height, &mut out_buffer);
+        assert!(result.is_ok());
+        
+        // All pixels should be approximately gray (around 128)
+        for i in 0..(y_size) {
+            let r = out_buffer[i * 4];
+            let g = out_buffer[i * 4 + 1];
+            let b = out_buffer[i * 4 + 2];
+            let a = out_buffer[i * 4 + 3];
+            
+            // Check that values are close to expected gray (within tolerance for rounding)
+            assert!(r >= 126 && r <= 130, "R should be ~128, got {}", r);
+            assert!(g >= 126 && g <= 130, "G should be ~128, got {}", g);
+            assert!(b >= 126 && b <= 130, "B should be ~128, got {}", b);
+            assert_eq!(a, 255, "Alpha should be 255");
+        }
+    }
+
+    #[test]
+    fn test_yuv420_to_rgba_red() {
+        // Test YUV values that should produce red (Y=81, U=90, V=240 for BT.601)
+        let in_format = CellVpostPictureFormat {
+            format_type: CellVpostFormatType::Yuv420Planar as u32,
+            color_matrix: CellVpostColorMatrix::Bt601 as u32,
+            alpha: 255,
+        };
+        let out_format = CellVpostPictureFormat {
+            format_type: CellVpostFormatType::Rgba8888 as u32,
+            color_matrix: CellVpostColorMatrix::Bt601 as u32,
+            alpha: 255,
+        };
+        let converter = ColorConverter::new(&in_format, &out_format);
+        
+        // 2x2 image
+        let y_plane = vec![81u8; 4]; // Approximate Y for pure red
+        let u_plane = vec![90u8; 1]; // Approximate U for pure red
+        let v_plane = vec![240u8; 1]; // Approximate V for pure red
+        
+        let mut out_buffer = vec![0u8; 16];
+        
+        let result = converter.yuv420_to_rgba(&y_plane, &u_plane, &v_plane, 2, 2, &mut out_buffer);
+        assert!(result.is_ok());
+        
+        // Red channel should be high, green and blue should be low
+        let r = out_buffer[0];
+        let g = out_buffer[1];
+        let b = out_buffer[2];
+        
+        assert!(r > 200, "Red channel should be high, got {}", r);
+        assert!(g < 50, "Green channel should be low, got {}", g);
+        assert!(b < 50, "Blue channel should be low, got {}", b);
+    }
+
+    #[test]
+    fn test_rgba_to_yuv420_basic() {
+        // Test RGBA to YUV420 conversion with gray color
+        let in_format = CellVpostPictureFormat {
+            format_type: CellVpostFormatType::Rgba8888 as u32,
+            color_matrix: CellVpostColorMatrix::Bt601 as u32,
+            alpha: 255,
+        };
+        let out_format = CellVpostPictureFormat {
+            format_type: CellVpostFormatType::Yuv420Planar as u32,
+            color_matrix: CellVpostColorMatrix::Bt601 as u32,
+            alpha: 255,
+        };
+        let converter = ColorConverter::new(&in_format, &out_format);
+        
+        // 4x4 gray RGBA image
+        let width = 4u32;
+        let height = 4u32;
+        let pixel_count = (width * height) as usize;
+        
+        let mut rgba_buffer = vec![0u8; pixel_count * 4];
+        for i in 0..pixel_count {
+            rgba_buffer[i * 4] = 128;     // R
+            rgba_buffer[i * 4 + 1] = 128; // G
+            rgba_buffer[i * 4 + 2] = 128; // B
+            rgba_buffer[i * 4 + 3] = 255; // A
+        }
+        
+        let y_size = pixel_count;
+        let uv_size = y_size / 4;
+        let mut y_plane = vec![0u8; y_size];
+        let mut u_plane = vec![0u8; uv_size];
+        let mut v_plane = vec![0u8; uv_size];
+        
+        let result = converter.rgba_to_yuv420(&rgba_buffer, width, height, &mut y_plane, &mut u_plane, &mut v_plane);
+        assert!(result.is_ok());
+        
+        // Y should be close to 128 for gray
+        for y in &y_plane {
+            assert!(*y >= 120 && *y <= 136, "Y should be ~128, got {}", y);
+        }
+        
+        // U and V should be close to 128 for gray (neutral chroma)
+        for u in &u_plane {
+            assert!(*u >= 120 && *u <= 136, "U should be ~128, got {}", u);
+        }
+        for v in &v_plane {
+            assert!(*v >= 120 && *v <= 136, "V should be ~128, got {}", v);
+        }
+    }
+
+    #[test]
+    fn test_rgba_to_yuv420_roundtrip() {
+        // Test that converting RGBA -> YUV420 -> RGBA produces similar results
+        // Note: YUV420 is a lossy conversion due to chroma subsampling
+        let in_format = CellVpostPictureFormat {
+            format_type: CellVpostFormatType::Rgba8888 as u32,
+            color_matrix: CellVpostColorMatrix::Bt709 as u32,
+            alpha: 255,
+        };
+        let yuv_format = CellVpostPictureFormat {
+            format_type: CellVpostFormatType::Yuv420Planar as u32,
+            color_matrix: CellVpostColorMatrix::Bt709 as u32,
+            alpha: 255,
+        };
+        
+        let rgba_to_yuv = ColorConverter::new(&in_format, &yuv_format);
+        let yuv_to_rgba = ColorConverter::new(&yuv_format, &in_format);
+        
+        // Use neutral gray for roundtrip test (minimizes conversion error)
+        let width = 4u32;
+        let height = 4u32;
+        let pixel_count = (width * height) as usize;
+        
+        // Create a uniform gray image
+        let mut original_rgba = vec![0u8; pixel_count * 4];
+        for i in 0..pixel_count {
+            original_rgba[i * 4] = 128;     // R
+            original_rgba[i * 4 + 1] = 128; // G
+            original_rgba[i * 4 + 2] = 128; // B
+            original_rgba[i * 4 + 3] = 255; // A
+        }
+        
+        // Convert to YUV420
+        let y_size = pixel_count;
+        let uv_size = y_size / 4;
+        let mut y_plane = vec![0u8; y_size];
+        let mut u_plane = vec![0u8; uv_size];
+        let mut v_plane = vec![0u8; uv_size];
+        
+        rgba_to_yuv.rgba_to_yuv420(&original_rgba, width, height, &mut y_plane, &mut u_plane, &mut v_plane).unwrap();
+        
+        // Convert back to RGBA
+        let mut final_rgba = vec![0u8; pixel_count * 4];
+        yuv_to_rgba.yuv420_to_rgba(&y_plane, &u_plane, &v_plane, width, height, &mut final_rgba).unwrap();
+        
+        // Check that values are reasonably close for uniform gray (should be very close)
+        for i in 0..pixel_count {
+            let orig_r = original_rgba[i * 4] as i32;
+            let final_r = final_rgba[i * 4] as i32;
+            
+            // Gray should round-trip with minimal error
+            assert!((orig_r - final_r).abs() < 10, "R mismatch at pixel {}: {} vs {}", i, orig_r, final_r);
+        }
+        
+        // Also verify the YUV planes have expected values for gray
+        for y in &y_plane {
+            assert!(*y >= 120 && *y <= 136, "Y should be ~128 for gray");
+        }
+    }
+
+    #[test]
+    fn test_yuv422_to_rgba_basic() {
+        // Test YUV422 to RGBA conversion
+        let in_format = CellVpostPictureFormat {
+            format_type: CellVpostFormatType::Yuv422Planar as u32,
+            color_matrix: CellVpostColorMatrix::Bt601 as u32,
+            alpha: 255,
+        };
+        let out_format = CellVpostPictureFormat {
+            format_type: CellVpostFormatType::Rgba8888 as u32,
+            color_matrix: CellVpostColorMatrix::Bt601 as u32,
+            alpha: 255,
+        };
+        let converter = ColorConverter::new(&in_format, &out_format);
+        
+        // 4x4 image (YUV422 has 2x4 chroma)
+        let width = 4u32;
+        let height = 4u32;
+        let y_size = (width * height) as usize;
+        let uv_size = y_size / 2; // 4:2:2 has half-width chroma per row
+        
+        // Neutral gray
+        let y_plane = vec![128u8; y_size];
+        let u_plane = vec![128u8; uv_size];
+        let v_plane = vec![128u8; uv_size];
+        
+        let mut out_buffer = vec![0u8; y_size * 4];
+        
+        let result = converter.yuv422_to_rgba(&y_plane, &u_plane, &v_plane, width, height, &mut out_buffer);
+        assert!(result.is_ok());
+        
+        // All pixels should be gray
+        for i in 0..(y_size) {
+            let r = out_buffer[i * 4];
+            assert!(r >= 126 && r <= 130, "R should be ~128, got {}", r);
+        }
     }
 }

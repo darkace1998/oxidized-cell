@@ -307,10 +307,13 @@ impl SpursJqManager {
     }
 
     /// Sync on a job (wait for completion)
-    pub fn sync_job(&self, queue_id: u32, job_id: u32) -> i32 {
+    pub fn sync_job(&mut self, queue_id: u32, job_id: u32) -> i32 {
         if !self.initialized {
             return CELL_SPURS_JQ_ERROR_NOT_INITIALIZED;
         }
+
+        // Execute the job if it's still pending
+        let _ = self.execute_job(queue_id, job_id);
 
         let queue = match self.queues.get(&queue_id) {
             Some(q) => q,
@@ -325,18 +328,20 @@ impl SpursJqManager {
         trace!("SpursJqManager::sync_job: queue={}, job_id={}, state={:?}", 
             queue_id, job_id, entry.state);
 
-        // TODO: Actually wait for job completion
-        // For now, return immediately
-
-        if entry.state == CellSpursJobState::Aborted {
-            return CELL_SPURS_JQ_ERROR_JOB_ABORT;
+        // Check the job state after potential execution
+        match entry.state {
+            CellSpursJobState::Complete => 0, // CELL_OK - job completed
+            CellSpursJobState::Aborted => CELL_SPURS_JQ_ERROR_JOB_ABORT,
+            CellSpursJobState::Running | CellSpursJobState::Pending => {
+                // For HLE, we simulate immediate completion by processing the queue
+                // In a real implementation, this would block until the SPU completes
+                0 // CELL_OK
+            }
         }
-
-        0 // CELL_OK
     }
 
     /// Sync on all jobs in a queue
-    pub fn sync_all(&self, queue_id: u32) -> i32 {
+    pub fn sync_all(&mut self, queue_id: u32) -> i32 {
         if !self.initialized {
             return CELL_SPURS_JQ_ERROR_NOT_INITIALIZED;
         }
@@ -347,7 +352,19 @@ impl SpursJqManager {
 
         trace!("SpursJqManager::sync_all: queue={}", queue_id);
 
-        // TODO: Wait for all jobs to complete
+        // Process all pending jobs in the queue
+        let result = self.process_queue(queue_id);
+        if result != 0 {
+            return result;
+        }
+
+        // Check if any jobs were aborted
+        let queue = self.queues.get(&queue_id).unwrap();
+        for entry in queue.jobs.values() {
+            if entry.state == CellSpursJobState::Aborted {
+                return CELL_SPURS_JQ_ERROR_JOB_ABORT;
+            }
+        }
 
         0 // CELL_OK
     }
@@ -529,14 +546,28 @@ pub fn cell_spurs_job_queue_finalize() -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_spurs_job_queue_create(_attr_addr: u32, _queue_addr: u32) -> i32 {
-    debug!("cellSpursJobQueueCreate()");
+pub fn cell_spurs_job_queue_create(_attr_addr: u32, queue_addr: u32) -> i32 {
+    debug!("cellSpursJobQueueCreate(attr=0x{:08X}, queue_addr=0x{:08X})", _attr_addr, queue_addr);
+
+    // Validate output address
+    if queue_addr == 0 {
+        return CELL_SPURS_JQ_ERROR_INVALID_ARGUMENT;
+    }
 
     // Use default attributes when memory read is not yet implemented
     let attr = CellSpursJobQueueAttribute::default();
     match crate::context::get_hle_context_mut().spurs_jq.create_queue(attr) {
-        Ok(_queue_id) => {
-            // TODO: Write queue ID to memory at _queue_addr
+        Ok(queue_id) => {
+            // Write queue ID to memory at queue_addr
+            if crate::memory::is_hle_memory_initialized() {
+                if let Err(_) = crate::memory::write_be32(queue_addr, queue_id) {
+                    debug!("Failed to write queue ID {} to memory at 0x{:08X}", queue_id, queue_addr);
+                    return CELL_SPURS_JQ_ERROR_NO_MEMORY;
+                }
+                debug!("Created job queue {} and wrote handle to 0x{:08X}", queue_id, queue_addr);
+            } else {
+                trace!("Memory not initialized, queue {} created but handle not written", queue_id);
+            }
             0 // CELL_OK
         }
         Err(e) => e,
@@ -593,7 +624,7 @@ pub fn cell_spurs_job_queue_push_job(
 pub fn cell_spurs_job_queue_sync(queue: u32, job_id: u32) -> i32 {
     trace!("cellSpursJobQueueSync(queue={}, job_id={})", queue, job_id);
 
-    crate::context::get_hle_context().spurs_jq.sync_job(queue, job_id)
+    crate::context::get_hle_context_mut().spurs_jq.sync_job(queue, job_id)
 }
 
 /// cellSpursJobQueueSyncAll - Wait for all jobs in queue
@@ -606,7 +637,7 @@ pub fn cell_spurs_job_queue_sync(queue: u32, job_id: u32) -> i32 {
 pub fn cell_spurs_job_queue_sync_all(queue: u32) -> i32 {
     trace!("cellSpursJobQueueSyncAll(queue={})", queue);
 
-    crate::context::get_hle_context().spurs_jq.sync_all(queue)
+    crate::context::get_hle_context_mut().spurs_jq.sync_all(queue)
 }
 
 /// cellSpursJobQueueAbort - Abort a pending job
@@ -740,5 +771,98 @@ mod tests {
     fn test_spurs_jq_attr_default() {
         let attr = CellSpursJobQueueAttribute::default();
         assert_eq!(attr.max_jobs, CELL_SPURS_JQ_MAX_JOBS as u32);
+    }
+
+    #[test]
+    fn test_spurs_jq_sync_all_jobs() {
+        let mut manager = SpursJqManager::new();
+        manager.init(0x10000000);
+        
+        let attr = CellSpursJobQueueAttribute::default();
+        let queue = manager.create_queue(attr).unwrap();
+        
+        // Push multiple jobs
+        let job = CellSpursJob::default();
+        let _job1 = manager.push_job(queue, job, 0, 0).unwrap();
+        let _job2 = manager.push_job(queue, job, 0, 0).unwrap();
+        let _job3 = manager.push_job(queue, job, 0, 0).unwrap();
+        
+        assert_eq!(manager.get_pending_job_count(queue), Ok(3));
+        
+        // Sync all should process all pending jobs
+        assert_eq!(manager.sync_all(queue), 0);
+        
+        // All jobs should be complete now
+        assert_eq!(manager.get_completed_job_count(queue), Ok(3));
+        assert_eq!(manager.get_pending_job_count(queue), Ok(0));
+        
+        manager.finalize();
+    }
+
+    #[test]
+    fn test_spurs_jq_sync_job_executes() {
+        let mut manager = SpursJqManager::new();
+        manager.init(0x10000000);
+        
+        let attr = CellSpursJobQueueAttribute::default();
+        let queue = manager.create_queue(attr).unwrap();
+        
+        let job = CellSpursJob::default();
+        let job_id = manager.push_job(queue, job, 0, 0).unwrap();
+        
+        // Before sync, job is pending
+        assert_eq!(manager.get_job_status(queue, job_id), Ok(CellSpursJobState::Pending));
+        
+        // Sync should execute the job
+        assert_eq!(manager.sync_job(queue, job_id), 0);
+        
+        // After sync, job should be complete
+        assert_eq!(manager.get_job_status(queue, job_id), Ok(CellSpursJobState::Complete));
+        
+        manager.finalize();
+    }
+
+    #[test]
+    fn test_spurs_jq_is_job_complete() {
+        let mut manager = SpursJqManager::new();
+        manager.init(0x10000000);
+        
+        let attr = CellSpursJobQueueAttribute::default();
+        let queue = manager.create_queue(attr).unwrap();
+        
+        let job = CellSpursJob::default();
+        let job_id = manager.push_job(queue, job, 0, 0).unwrap();
+        
+        // Initially not complete
+        assert_eq!(manager.is_job_complete(queue, job_id), Ok(false));
+        
+        // Execute job
+        manager.execute_job(queue, job_id);
+        
+        // Now complete
+        assert_eq!(manager.is_job_complete(queue, job_id), Ok(true));
+        
+        manager.finalize();
+    }
+
+    #[test]
+    fn test_spurs_jq_sync_all_with_aborted_job() {
+        let mut manager = SpursJqManager::new();
+        manager.init(0x10000000);
+        
+        let attr = CellSpursJobQueueAttribute::default();
+        let queue = manager.create_queue(attr).unwrap();
+        
+        let job = CellSpursJob::default();
+        let job1 = manager.push_job(queue, job, 0, 0).unwrap();
+        let _job2 = manager.push_job(queue, job, 0, 0).unwrap();
+        
+        // Abort one job
+        manager.abort_job(queue, job1);
+        
+        // Sync all should detect the aborted job
+        assert_eq!(manager.sync_all(queue), CELL_SPURS_JQ_ERROR_JOB_ABORT);
+        
+        manager.finalize();
     }
 }

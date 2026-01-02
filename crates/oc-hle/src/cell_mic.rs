@@ -302,7 +302,17 @@ impl MicManager {
         device.state = CellMicDeviceState::Capturing;
         device.info.state = CellMicDeviceState::Capturing as u32;
 
-        // TODO: Start actual audio capture
+        // Start actual audio capture on backend if connected
+        if let Some(backend) = &self.capture_backend {
+            if let Ok(mut manager) = backend.write() {
+                if let Some(mic) = manager.get_mut(device_id as u8) {
+                    if let Err(e) = mic.start_recording() {
+                        debug!("MicManager::start - backend start failed: {:?}", e);
+                        // Continue anyway, device state is set
+                    }
+                }
+            }
+        }
 
         0 // CELL_OK
     }
@@ -331,13 +341,20 @@ impl MicManager {
         device.state = CellMicDeviceState::Open;
         device.info.state = CellMicDeviceState::Open as u32;
 
-        // TODO: Stop actual audio capture
+        // Stop actual audio capture on backend if connected
+        if let Some(backend) = &self.capture_backend {
+            if let Ok(mut manager) = backend.write() {
+                if let Some(mic) = manager.get_mut(device_id as u8) {
+                    let _ = mic.stop_recording();
+                }
+            }
+        }
 
         0 // CELL_OK
     }
 
     /// Read captured data
-    pub fn read(&self, device_id: u32, _buffer: &mut [u8]) -> Result<u32, i32> {
+    pub fn read(&mut self, device_id: u32, buffer: &mut [u8]) -> Result<u32, i32> {
         if !self.initialized {
             return Err(CELL_MIC_ERROR_NOT_INITIALIZED);
         }
@@ -357,9 +374,8 @@ impl MicManager {
 
         trace!("MicManager::read: device_id={}", device_id);
 
-        // TODO: Read actual captured data
-
-        Ok(0) // No data available in stub
+        // Read actual captured data from backend
+        self.backend_read_data(device_id, buffer)
     }
 
     /// Set parameters
@@ -654,12 +670,17 @@ pub fn cell_mic_end() -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_mic_get_device_count(_count_addr: u32) -> i32 {
+pub fn cell_mic_get_device_count(count_addr: u32) -> i32 {
     trace!("cellMicGetDeviceCount()");
 
     match crate::context::get_hle_context().mic.get_device_count() {
-        Ok(_count) => {
-            // TODO: Write count to memory at _count_addr
+        Ok(count) => {
+            // Write count to memory
+            if count_addr != 0 {
+                if let Err(e) = crate::memory::write_be32(count_addr, count) {
+                    return e;
+                }
+            }
             0 // CELL_OK
         }
         Err(e) => e,
@@ -674,12 +695,21 @@ pub fn cell_mic_get_device_count(_count_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_mic_get_device_info(device_id: u32, _info_addr: u32) -> i32 {
+pub fn cell_mic_get_device_info(device_id: u32, info_addr: u32) -> i32 {
     trace!("cellMicGetDeviceInfo(device_id={})", device_id);
 
     match crate::context::get_hle_context().mic.get_device_info(device_id) {
-        Ok(_info) => {
-            // TODO: Write info to memory at _info_addr
+        Ok(info) => {
+            // Write info to memory
+            if info_addr != 0 {
+                // Write device info structure (big-endian)
+                if let Err(e) = crate::memory::write_be32(info_addr, info.device_id) { return e; }
+                if let Err(e) = crate::memory::write_be32(info_addr + 4, info.device_type) { return e; }
+                if let Err(e) = crate::memory::write_be32(info_addr + 8, info.num_channels) { return e; }
+                if let Err(e) = crate::memory::write_be32(info_addr + 12, info.sample_rate) { return e; }
+                if let Err(e) = crate::memory::write_be32(info_addr + 16, info.state) { return e; }
+                if let Err(e) = crate::memory::write_bytes(info_addr + 20, &info.name) { return e; }
+            }
             0 // CELL_OK
         }
         Err(e) => e,
@@ -748,22 +778,39 @@ pub fn cell_mic_stop(device_id: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_mic_read(device_id: u32, _buffer_addr: u32, _buffer_size: u32, _read_size_addr: u32) -> i32 {
+pub fn cell_mic_read(device_id: u32, buffer_addr: u32, buffer_size: u32, read_size_addr: u32) -> i32 {
     trace!("cellMicRead(device_id={})", device_id);
 
-    // Read data
-    // Check if operation would be valid
-    let ctx = crate::context::get_hle_context();
-    match ctx.mic.get_device_info(device_id) {
-        Ok(info) => {
-            if info.state != CellMicDeviceState::Capturing as u32 {
-                return CELL_MIC_ERROR_DEVICE_BUSY;
-            }
-            // TODO: Read actual captured data to buffer
-            0 // CELL_OK
-        }
-        Err(e) => e,
+    // Read captured data
+    if buffer_addr == 0 || buffer_size == 0 {
+        return CELL_MIC_ERROR_INVALID_PARAMETER;
     }
+
+    // Create a local buffer to read into
+    let mut buffer = vec![0u8; buffer_size as usize];
+
+    // Read data from manager
+    let mut ctx = crate::context::get_hle_context_mut();
+    let bytes_read = match ctx.mic.read(device_id, &mut buffer) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    // Write data to guest memory
+    if bytes_read > 0 {
+        if let Err(e) = crate::memory::write_bytes(buffer_addr, &buffer[..bytes_read as usize]) {
+            return e;
+        }
+    }
+
+    // Write bytes read to memory
+    if read_size_addr != 0 {
+        if let Err(e) = crate::memory::write_be32(read_size_addr, bytes_read) {
+            return e;
+        }
+    }
+
+    0 // CELL_OK
 }
 
 #[cfg(test)]

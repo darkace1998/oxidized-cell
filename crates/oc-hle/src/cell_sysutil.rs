@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use tracing::{debug, trace};
-use crate::memory::write_be32;
+use crate::memory::{write_be32, write_bytes, write_string, read_be32};
 
 /// Maximum number of callback slots
 pub const CELL_SYSUTIL_MAX_CALLBACK_SLOTS: usize = 4;
@@ -1413,8 +1413,8 @@ pub fn cell_user_info_get_list(list_num_addr: u32, _list_addr: u32, current_user
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_disc_game_get_boot_disc_info(_info_addr: u32) -> i32 {
-    debug!("cellDiscGameGetBootDiscInfo()");
+pub fn cell_disc_game_get_boot_disc_info(info_addr: u32) -> i32 {
+    debug!("cellDiscGameGetBootDiscInfo(info_addr=0x{:08X})", info_addr);
     
     let ctx = crate::context::get_hle_context();
     let disc = ctx.sysutil.get_disc_info();
@@ -1423,7 +1423,29 @@ pub fn cell_disc_game_get_boot_disc_info(_info_addr: u32) -> i32 {
         return 0x80010002u32 as i32; // Disc not ready
     }
     
-    // TODO: Write disc info to memory at _info_addr
+    // Write disc info to memory at info_addr
+    // CellDiscGameDiscInfo structure:
+    //   uint8_t type;        // offset 0: disc type (1=PS3 game disc)
+    //   uint8_t reserved[3]; // offset 1-3: padding
+    //   char titleId[10];    // offset 4: title ID (e.g., "BLUS00001")
+    //   char reserved2[6];   // offset 14: padding
+    if info_addr != 0 {
+        // Write disc type (1 = PS3 game disc)
+        if let Err(e) = write_be32(info_addr, disc.disc_type << 24) {
+            return e;
+        }
+        
+        // Write title ID (game_id) as null-terminated string
+        let game_id = &disc.game_id;
+        let game_id_bytes: Vec<u8> = game_id.bytes().take(9).collect();
+        let mut title_id_buf = [0u8; 10];
+        for (i, &b) in game_id_bytes.iter().enumerate() {
+            title_id_buf[i] = b;
+        }
+        if let Err(e) = write_bytes(info_addr + 4, &title_id_buf) {
+            return e;
+        }
+    }
     
     0 // CELL_OK
 }
@@ -1582,13 +1604,42 @@ pub fn cell_video_out_get_state(_video_out: u32, _device_index: u32, state_addr:
 /// * 0 on success
 pub fn cell_video_out_configure(
     _video_out: u32,
-    _config_addr: u32,
+    config_addr: u32,
     _option_addr: u32,
     _wait: u32,
 ) -> i32 {
-    debug!("cellVideoOutConfigure()");
+    debug!("cellVideoOutConfigure(config_addr=0x{:08X})", config_addr);
     
-    // TODO: Read config from memory and apply
+    // Read configuration from memory and apply
+    // CellVideoOutConfiguration structure:
+    //   uint8_t  resolutionId;  // offset 0
+    //   uint8_t  format;        // offset 1
+    //   uint8_t  aspect;        // offset 2
+    //   uint8_t  reserved[9];   // offset 3-11
+    //   uint32_t pitch;         // offset 12
+    if config_addr != 0 {
+        // Read resolution and format from config
+        let config_word = read_be32(config_addr).unwrap_or(0);
+        let resolution_id = (config_word >> 24) as u8;
+        let _format = ((config_word >> 16) & 0xFF) as u8;
+        
+        // Convert resolution ID to VideoResolution enum
+        let resolution = match resolution_id {
+            1 => VideoResolution::Res480i,
+            2 => VideoResolution::Res480p,
+            3 => VideoResolution::Res576i,
+            4 => VideoResolution::Res576p,
+            5 => VideoResolution::Res720p,
+            6 => VideoResolution::Res1080i,
+            7 => VideoResolution::Res1080p,
+            _ => VideoResolution::Res720p, // Default
+        };
+        
+        // Apply configuration (store in sysutil manager)
+        let mut ctx = crate::context::get_hle_context_mut();
+        ctx.sysutil.set_resolution(resolution);
+    }
+    
     0 // CELL_OK
 }
 
@@ -1603,12 +1654,40 @@ pub fn cell_video_out_configure(
 /// * 0 on success
 pub fn cell_video_out_get_configuration(
     _video_out: u32,
-    _config_addr: u32,
+    config_addr: u32,
     _option_addr: u32,
 ) -> i32 {
-    debug!("cellVideoOutGetConfiguration()");
+    debug!("cellVideoOutGetConfiguration(config_addr=0x{:08X})", config_addr);
     
-    // TODO: Write configuration to memory
+    // Write configuration to memory
+    // CellVideoOutConfiguration structure:
+    //   uint8_t  resolutionId;  // offset 0
+    //   uint8_t  format;        // offset 1 (0=XRGB, 1=XBGR)
+    //   uint8_t  aspect;        // offset 2 (0=4:3, 1=16:9)
+    //   uint8_t  reserved[9];   // offset 3-11
+    //   uint32_t pitch;         // offset 12
+    if config_addr != 0 {
+        let ctx = crate::context::get_hle_context();
+        let resolution = ctx.sysutil.get_resolution() as u32;
+        
+        // Write resolution, format (XRGB=0), and aspect (16:9=1)
+        let config_word: u32 = (resolution << 24) | (0 << 16) | (1 << 8);
+        if let Err(e) = write_be32(config_addr, config_word) {
+            return e;
+        }
+        
+        // Write reserved bytes and pitch (1280 * 4 = 5120 for 720p)
+        if let Err(e) = write_be32(config_addr + 4, 0) {
+            return e;
+        }
+        if let Err(e) = write_be32(config_addr + 8, 0) {
+            return e;
+        }
+        if let Err(e) = write_be32(config_addr + 12, 5120) {
+            return e;
+        }
+    }
+    
     0 // CELL_OK
 }
 
@@ -1662,13 +1741,28 @@ pub fn cell_audio_out_get_state(_audio_out: u32, _device_index: u32, state_addr:
 /// * 0 on success
 pub fn cell_audio_out_configure(
     _audio_out: u32,
-    _config_addr: u32,
+    config_addr: u32,
     _option_addr: u32,
     _wait: u32,
 ) -> i32 {
-    debug!("cellAudioOutConfigure()");
+    debug!("cellAudioOutConfigure(config_addr=0x{:08X})", config_addr);
     
-    // TODO: Read config from memory and apply
+    // Read configuration from memory and apply
+    // CellAudioOutConfiguration structure:
+    //   uint8_t  channel;     // offset 0: channel count
+    //   uint8_t  encoder;     // offset 1: encoder type
+    //   uint8_t  reserved[2]; // offset 2-3: padding
+    //   uint32_t downMixer;   // offset 4: down mixer mode
+    if config_addr != 0 {
+        // Read channel and encoder from config
+        let config_word = read_be32(config_addr).unwrap_or(0);
+        let _channel = (config_word >> 24) as u8;
+        let _encoder = ((config_word >> 16) & 0xFF) as u8;
+        
+        // Audio configuration is acknowledged but doesn't need to be stored
+        // since audio output is handled by the audio subsystem
+    }
+    
     0 // CELL_OK
 }
 
@@ -1683,12 +1777,30 @@ pub fn cell_audio_out_configure(
 /// * 0 on success
 pub fn cell_audio_out_get_configuration(
     _audio_out: u32,
-    _config_addr: u32,
+    config_addr: u32,
     _option_addr: u32,
 ) -> i32 {
-    debug!("cellAudioOutGetConfiguration()");
+    debug!("cellAudioOutGetConfiguration(config_addr=0x{:08X})", config_addr);
     
-    // TODO: Write configuration to memory
+    // Write configuration to memory
+    // CellAudioOutConfiguration structure:
+    //   uint8_t  channel;     // offset 0: channel count (2 for stereo)
+    //   uint8_t  encoder;     // offset 1: encoder type (0 = LPCM)
+    //   uint8_t  reserved[2]; // offset 2-3: padding
+    //   uint32_t downMixer;   // offset 4: down mixer mode (0 = none)
+    if config_addr != 0 {
+        // Default: stereo (2 channels), LPCM encoder, no padding
+        let config_word: u32 = (2 << 24) | (0 << 16);
+        if let Err(e) = write_be32(config_addr, config_word) {
+            return e;
+        }
+        
+        // downMixer = 0 (none)
+        if let Err(e) = write_be32(config_addr + 4, 0) {
+            return e;
+        }
+    }
+    
     0 // CELL_OK
 }
 
@@ -1812,14 +1924,71 @@ pub fn cell_np_trophy_get_trophy_info(
     _context: u32,
     _handle: u32,
     trophy_id: u32,
-    _details_addr: u32,
-    _data_addr: u32,
+    details_addr: u32,
+    data_addr: u32,
 ) -> i32 {
-    trace!("cellNpTrophyGetTrophyInfo(trophy_id={})", trophy_id);
+    trace!("cellNpTrophyGetTrophyInfo(trophy_id={}, details_addr=0x{:08X}, data_addr=0x{:08X})", 
+        trophy_id, details_addr, data_addr);
     
     let ctx = crate::context::get_hle_context();
-    if ctx.sysutil.trophy_get_info(trophy_id).is_some() {
-        // TODO: Write trophy info to memory
+    if let Some(trophy_info) = ctx.sysutil.trophy_get_info(trophy_id) {
+        // Write trophy details to memory
+        // SceNpTrophyDetails structure:
+        //   uint32_t trophyId;         // offset 0
+        //   uint32_t trophyGrade;      // offset 4: platinum=1, gold=2, silver=3, bronze=4
+        //   char     name[128];        // offset 8
+        //   char     description[1024];// offset 136
+        //   uint8_t  hidden;           // offset 1160
+        //   uint8_t  reserved[3];      // offset 1161-1163
+        if details_addr != 0 {
+            // Write trophy ID
+            if let Err(e) = write_be32(details_addr, trophy_id) {
+                return e;
+            }
+            // Write trophy grade
+            if let Err(e) = write_be32(details_addr + 4, trophy_info.grade as u32) {
+                return e;
+            }
+            // Write name (max 127 chars + null)
+            if let Err(e) = write_string(details_addr + 8, &trophy_info.name, 128) {
+                return e;
+            }
+            // Write description (max 1023 chars + null)
+            if let Err(e) = write_string(details_addr + 136, &trophy_info.description, 1024) {
+                return e;
+            }
+            // Write hidden flag
+            let hidden_byte = if trophy_info.hidden { 1u8 } else { 0u8 };
+            if let Err(e) = write_bytes(details_addr + 1160, &[hidden_byte, 0, 0, 0]) {
+                return e;
+            }
+        }
+        
+        // Write trophy data to memory
+        // SceNpTrophyData structure:
+        //   uint64_t timestamp;        // offset 0: unlock timestamp
+        //   uint32_t trophyId;         // offset 8
+        //   uint8_t  unlocked;         // offset 12
+        //   uint8_t  reserved[3];      // offset 13-15
+        if data_addr != 0 {
+            // Write timestamp
+            if let Err(e) = write_be32(data_addr, (trophy_info.unlock_time >> 32) as u32) {
+                return e;
+            }
+            if let Err(e) = write_be32(data_addr + 4, trophy_info.unlock_time as u32) {
+                return e;
+            }
+            // Write trophy ID
+            if let Err(e) = write_be32(data_addr + 8, trophy_id) {
+                return e;
+            }
+            // Write unlocked flag
+            let unlocked_byte = if trophy_info.unlocked { 1u8 } else { 0u8 };
+            if let Err(e) = write_bytes(data_addr + 12, &[unlocked_byte, 0, 0, 0]) {
+                return e;
+            }
+        }
+        
         0 // CELL_OK
     } else {
         CELL_SYSUTIL_ERROR_VALUE
@@ -1838,15 +2007,20 @@ pub fn cell_np_trophy_get_trophy_info(
 pub fn cell_np_trophy_get_game_progress(
     _context: u32,
     _handle: u32,
-    _percentage_addr: u32,
+    percentage_addr: u32,
 ) -> i32 {
-    trace!("cellNpTrophyGetGameProgress()");
+    trace!("cellNpTrophyGetGameProgress(percentage_addr=0x{:08X})", percentage_addr);
     
     let ctx = crate::context::get_hle_context();
     let (unlocked, total) = ctx.sysutil.trophy_get_progress();
-    let _percentage = if total > 0 { (unlocked * 100) / total } else { 0 };
+    let percentage = if total > 0 { (unlocked * 100) / total } else { 0 };
     
-    // TODO: Write percentage to memory
+    // Write percentage to memory as i32
+    if percentage_addr != 0 {
+        if let Err(e) = write_be32(percentage_addr, percentage as u32) {
+            return e;
+        }
+    }
     
     0 // CELL_OK
 }
@@ -2493,5 +2667,74 @@ mod tests {
         assert_eq!(AudioOutput::Hdmi as u32, 0);
         assert_eq!(AudioOutput::Optical as u32, 1);
         assert_eq!(AudioOutput::AvMulti as u32, 2);
+    }
+
+    // ========================================================================
+    // System Utilities Memory Write Tests
+    // ========================================================================
+
+    #[test]
+    fn test_disc_info_api_no_disc() {
+        crate::context::reset_hle_context();
+        
+        // When no disc is ready, should return error
+        let result = cell_disc_game_get_boot_disc_info(0);
+        assert_ne!(result, 0);
+    }
+
+    #[test]
+    fn test_video_configure_api() {
+        crate::context::reset_hle_context();
+        
+        // Test with null address (should not crash)
+        assert_eq!(cell_video_out_configure(0, 0, 0, 0), 0);
+        assert_eq!(cell_video_out_get_configuration(0, 0, 0), 0);
+    }
+
+    #[test]
+    fn test_audio_configure_api() {
+        crate::context::reset_hle_context();
+        
+        // Test with null address (should not crash)
+        assert_eq!(cell_audio_out_configure(0, 0, 0, 0), 0);
+        assert_eq!(cell_audio_out_get_configuration(0, 0, 0), 0);
+    }
+
+    #[test]
+    fn test_trophy_info_api() {
+        crate::context::reset_hle_context();
+        
+        // Initialize trophy system and register a trophy
+        crate::context::get_hle_context_mut().sysutil.trophy_init("NPWR12345");
+        crate::context::get_hle_context_mut().sysutil.trophy_register(
+            1, "Test Trophy", "Test Description", TrophyGrade::Bronze, false
+        );
+        
+        // Get trophy info with null addresses (should not crash)
+        assert_eq!(cell_np_trophy_get_trophy_info(0, 0, 1, 0, 0), 0);
+        
+        // Get info for non-existent trophy
+        assert_ne!(cell_np_trophy_get_trophy_info(0, 0, 999, 0, 0), 0);
+        
+        crate::context::get_hle_context_mut().sysutil.trophy_term();
+    }
+
+    #[test]
+    fn test_trophy_progress_api() {
+        crate::context::reset_hle_context();
+        
+        // Initialize trophy system
+        crate::context::get_hle_context_mut().sysutil.trophy_init("NPWR12345");
+        crate::context::get_hle_context_mut().sysutil.trophy_register(
+            1, "Trophy 1", "Description", TrophyGrade::Bronze, false
+        );
+        crate::context::get_hle_context_mut().sysutil.trophy_register(
+            2, "Trophy 2", "Description", TrophyGrade::Silver, false
+        );
+        
+        // Get progress with null address (should not crash)
+        assert_eq!(cell_np_trophy_get_game_progress(0, 0, 0), 0);
+        
+        crate::context::get_hle_context_mut().sysutil.trophy_term();
     }
 }
