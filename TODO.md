@@ -178,10 +178,18 @@ This document tracks development tasks, improvements, and known issues for the o
 
 ### Image Decoders
 
-- [ ] **GIF Decoder Enhancement**
-  - Locations: `crates/oc-hle/src/cell_gif_dec.rs:876`, `915`, `952`
-  - Parse actual GIF header for real dimensions
-  - Complete GIF decoding implementation
+- [x] **GIF Decoder Enhancement**
+  - Locations: `crates/oc-hle/src/cell_gif_dec.rs:920`, `960`, `1005`
+  - Implemented full GIF decoding using GifDecoder backend
+  - Features:
+    - Full GIF89a header parsing (Logical Screen Descriptor, Global Color Table)
+    - Graphics Control Extension parsing for animation and transparency
+    - Image Descriptor parsing with local color tables
+    - LZW decompression of image data
+    - Palette to RGBA color conversion
+    - Animation frame handling (multiple frames, timing, disposal methods)
+    - Added `parse_header_from_data` and `decode_data` methods to GifDecManager
+    - HLE functions updated to use actual decoder backend
 
 ### Video Post-Processing
 
