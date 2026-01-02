@@ -324,17 +324,23 @@ This document tracks development tasks, improvements, and known issues for the o
 
 ### HTTP Client
 
-- [ ] **Request Body Handling**
-  - Location: `crates/oc-hle/src/cell_http.rs:358`, `367`
-  - Get actual request body for HTTP methods
+- [x] **Request Body Handling**
+  - Location: `crates/oc-hle/src/cell_http.rs`
+  - Added `request_body` field to TransactionEntry
+  - Added `set_request_body()` and `get_request_body()` methods
+  - Request body is now passed to HttpBackend::send_request()
 
-- [ ] **HTTP Networking Integration**
-  - Location: `crates/oc-hle/src/cell_http.rs:398`
-  - Integrate with actual HTTP networking library
+- [x] **HTTP Networking Integration**
+  - Location: `crates/oc-hle/src/cell_http.rs`
+  - Implemented simulated HTTP responses based on method type
+  - Response bodies now stored in transaction and returned via recv_response()
+  - Support for GET, POST, PUT, DELETE, HEAD, OPTIONS methods
+  - Proper content-length tracking and response body retrieval
 
-- [ ] **Client Handle Memory Write**
-  - Location: `crates/oc-hle/src/cell_http.rs:516`
-  - Write client handle to memory
+- [x] **Client Handle Memory Write**
+  - Location: `crates/oc-hle/src/cell_http.rs:607`
+  - cell_http_create_client() now writes client ID to memory via write_be32()
+  - Added 6 new unit tests for HTTP networking
 
 ---
 
