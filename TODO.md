@@ -210,14 +210,21 @@ This document tracks development tasks, improvements, and known issues for the o
 
 ### Save Data
 
-- [ ] **Save Data Directory Operations**
-  - Locations: `crates/oc-hle/src/cell_save_data.rs:283`, `292`
-  - Create and delete directories through VFS
+- [x] **Save Data Directory Operations**
+  - Locations: `crates/oc-hle/src/cell_save_data.rs:271`, `288`
+  - Create and delete directories through VFS/host filesystem
+  - Implemented `create_directory_on_disk` and `delete_directory_from_disk` methods
+  - Uses configurable `OXIDIZED_CELL_SAVEDATA` environment variable or fallback path
+  - Non-blocking disk operations with graceful error handling
 
-- [ ] **PARAM.SFO Format Generation/Parsing**
-  - Locations: `crates/oc-vfs/src/savedata.rs:190`, `219`
-  - Implement proper PARAM.SFO format generation using ParamSfo struct
-  - Required for save data metadata
+- [x] **PARAM.SFO Format Generation/Parsing**
+  - Locations: `crates/oc-vfs/src/formats/sfo.rs`, `crates/oc-vfs/src/savedata.rs:189`, `218`
+  - Implemented proper PARAM.SFO binary format generation using `SfoBuilder`
+  - Full SFO format support: header, index table, key table, data table
+  - Parsing using `Sfo::parse()` method
+  - Builder pattern for creating save data SFOs with all required fields
+  - Category, Title, Title ID, Save Directory, Detail, Subtitle, Version support
+  - Round-trip tested (generate then parse)
 
 ### Disc & Package Handling
 
