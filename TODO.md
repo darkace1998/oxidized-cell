@@ -296,15 +296,16 @@ This document tracks development tasks, improvements, and known issues for the o
 
 ### Microphone
 
-- [ ] **Audio Capture Implementation**
+- [x] **Audio Capture Implementation**
   - Locations: `crates/oc-hle/src/cell_mic.rs:305`, `334`, `360`
-  - Start/stop actual audio capture
-  - Read actual captured audio data
+  - Start/stop actual audio capture via oc-input MicrophoneManager backend
+  - Read actual captured audio data via backend_read_data() method
   
-- [ ] **Device Info Memory Write**
-  - Locations: `crates/oc-hle/src/cell_mic.rs:662`, `682`, `762`
-  - Write device count and info to memory
-  - Read captured data to buffer
+- [x] **Device Info Memory Write**
+  - Locations: `crates/oc-hle/src/cell_mic.rs:673`, `693`, `781`
+  - Write device count to memory in cell_mic_get_device_count()
+  - Write device info struct to memory in cell_mic_get_device_info()
+  - Read captured data to buffer and write bytes read in cell_mic_read()
 
 ---
 
