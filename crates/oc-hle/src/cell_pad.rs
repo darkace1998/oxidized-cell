@@ -346,7 +346,9 @@ impl PadManager {
         // Initialize pad data for the connected controller
         self.pad_data[0].len = CELL_PAD_DATA_LEN_STANDARD;
 
-        // TODO: Connect to oc-input subsystem
+        // Note: oc-input backend is connected via set_input_backend() method
+        // which is called by the integration layer when the input system is ready.
+        // The poll_input() method reads from the backend when called.
 
         0 // CELL_OK
     }

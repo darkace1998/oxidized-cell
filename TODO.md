@@ -267,25 +267,32 @@ This document tracks development tasks, improvements, and known issues for the o
 
 ### Controller
 
-- [ ] **oc-input Subsystem Integration**
+- [x] **oc-input Subsystem Integration**
   - Location: `crates/oc-hle/src/cell_pad.rs:349`
   - Complete connection to oc-input subsystem for controller data
+  - Implemented via `set_input_backend()` and `poll_input()` methods
+  - Full button mapping, analog sticks, pressure sensitivity, and sixaxis sensors
+  - Rumble/vibration support forwarded to oc-input backend
 
 ### Keyboard
 
-- [ ] **Input Buffer Operations**
+- [x] **Input Buffer Operations**
   - Location: `crates/oc-hle/src/cell_kb.rs:495`
   - Implement actual input buffer clearing
+  - Clears keyboard data buffer and forwards to oc-input backend if connected
 
-- [ ] **LED Status Setting**
+- [x] **LED Status Setting**
   - Location: `crates/oc-hle/src/cell_kb.rs:854`
   - Set actual LED status (Num/Caps/Scroll Lock)
+  - Uses `set_led()` method which updates internal state and forwards to backend
 
 ### Mouse
 
-- [ ] **Mouse Data Retrieval**
+- [x] **Mouse Data Retrieval**
   - Locations: `crates/oc-hle/src/cell_mouse.rs:285`, `310`
   - Get actual mouse data and buffered data from oc-input subsystem
+  - Returns cached mouse state updated by `poll_input()` when backend is connected
+  - Supports both single data retrieval and buffered data list
 
 ### Microphone
 
