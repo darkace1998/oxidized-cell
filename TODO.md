@@ -348,17 +348,21 @@ This document tracks development tasks, improvements, and known issues for the o
 
 ### System Information
 
-- [ ] **Disc Info Memory Write**
-  - Location: `crates/oc-hle/src/cell_sysutil.rs:1426`
-  - Write disc info to memory
+- [x] **Disc Info Memory Write**
+  - Location: `crates/oc-hle/src/cell_sysutil.rs:1416`
+  - Write disc info to memory (CellDiscGameDiscInfo structure: type, titleId)
+  - Implemented proper game ID extraction and memory write
 
-- [ ] **Video/Audio Configuration**
-  - Locations: `crates/oc-hle/src/cell_sysutil.rs:1591`, `1611`, `1671`, `1691`
+- [x] **Video/Audio Configuration**
+  - Locations: `crates/oc-hle/src/cell_sysutil.rs:1605`, `1655`, `1730`, `1766`
   - Read and write video/audio configuration to/from memory
+  - Video: resolution, format, aspect ratio, pitch
+  - Audio: channel count, encoder type, down mixer mode
 
-- [ ] **Trophy Info Memory Write**
-  - Locations: `crates/oc-hle/src/cell_sysutil.rs:1822`, `1849`
-  - Write trophy info and progress percentage to memory
+- [x] **Trophy Info Memory Write**
+  - Locations: `crates/oc-hle/src/cell_sysutil.rs:1911`, `1995`
+  - Write trophy info (SceNpTrophyDetails, SceNpTrophyData) to memory
+  - Write trophy progress percentage to memory
 
 ### Game Content
 
