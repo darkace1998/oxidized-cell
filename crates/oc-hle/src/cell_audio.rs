@@ -269,6 +269,8 @@ pub struct AudioManager {
     master_volume: f32,
     /// Audio block index (for timing)
     block_index: u64,
+    /// Notification event queues (keyed by event queue key)
+    notify_event_queues: Vec<u64>,
 }
 
 /// Public port info for querying
@@ -288,6 +290,7 @@ impl AudioManager {
             audio_backend: None,
             master_volume: 1.0,
             block_index: 0,
+            notify_event_queues: Vec::new(),
         }
     }
 
@@ -331,6 +334,9 @@ impl AudioManager {
             port.state = AudioPortState::Closed;
             port.mixer_source_id = None;
         }
+        
+        // Clear all notification event queues
+        self.notify_event_queues.clear();
         
         self.initialized = false;
 
@@ -652,6 +658,78 @@ impl AudioManager {
     pub fn is_backend_connected(&self) -> bool {
         self.audio_backend.is_some()
     }
+
+    // ========================================================================
+    // Notification Event Queue Management
+    // ========================================================================
+
+    /// Set notification event queue for audio manager
+    /// 
+    /// Registers an event queue key for receiving audio notifications.
+    /// The audio system will send events to this queue when audio blocks
+    /// need to be filled.
+    /// 
+    /// # Arguments
+    /// * `key` - Event queue key to register
+    /// 
+    /// # Returns
+    /// * 0 on success
+    /// * CELL_AUDIO_ERROR_AUDIOSYSTEM if not initialized
+    pub fn set_notify_event_queue(&mut self, key: u64) -> i32 {
+        if !self.initialized {
+            return 0x80310702u32 as i32; // CELL_AUDIO_ERROR_AUDIOSYSTEM
+        }
+
+        // Check if already registered
+        if !self.notify_event_queues.contains(&key) {
+            self.notify_event_queues.push(key);
+            debug!("AudioManager: registered notification event queue key=0x{:016X}, total={}", 
+                   key, self.notify_event_queues.len());
+        } else {
+            trace!("AudioManager: event queue key=0x{:016X} already registered", key);
+        }
+
+        0 // CELL_OK
+    }
+
+    /// Remove notification event queue from audio manager
+    /// 
+    /// Unregisters an event queue key from receiving audio notifications.
+    /// 
+    /// # Arguments
+    /// * `key` - Event queue key to unregister
+    /// 
+    /// # Returns
+    /// * 0 on success
+    /// * CELL_AUDIO_ERROR_AUDIOSYSTEM if not initialized
+    /// * CELL_AUDIO_ERROR_PARAM if key not found
+    pub fn remove_notify_event_queue(&mut self, key: u64) -> i32 {
+        if !self.initialized {
+            return 0x80310702u32 as i32; // CELL_AUDIO_ERROR_AUDIOSYSTEM
+        }
+
+        if let Some(pos) = self.notify_event_queues.iter().position(|&k| k == key) {
+            self.notify_event_queues.remove(pos);
+            debug!("AudioManager: removed notification event queue key=0x{:016X}, remaining={}", 
+                   key, self.notify_event_queues.len());
+            0 // CELL_OK
+        } else {
+            trace!("AudioManager: event queue key=0x{:016X} not found", key);
+            0x80310704u32 as i32 // CELL_AUDIO_ERROR_PARAM
+        }
+    }
+
+    /// Get the registered notification event queue keys
+    /// 
+    /// Returns a copy of all registered event queue keys.
+    pub fn get_notify_event_queues(&self) -> Vec<u64> {
+        self.notify_event_queues.clone()
+    }
+
+    /// Check if any notification event queues are registered
+    pub fn has_notify_event_queues(&self) -> bool {
+        !self.notify_event_queues.is_empty()
+    }
 }
 
 impl Default for AudioManager {
@@ -838,9 +916,7 @@ pub fn cell_audio_create_notify_event_queue(id_addr: u32, key: u64) -> i32 {
 pub fn cell_audio_set_notify_event_queue(key: u64) -> i32 {
     debug!("cellAudioSetNotifyEventQueue(key=0x{:016X})", key);
 
-    // TODO: Set notification event queue for audio manager
-
-    0 // CELL_OK
+    crate::context::get_hle_context_mut().audio.set_notify_event_queue(key)
 }
 
 /// cellAudioRemoveNotifyEventQueue - Remove notification event queue
@@ -853,9 +929,7 @@ pub fn cell_audio_set_notify_event_queue(key: u64) -> i32 {
 pub fn cell_audio_remove_notify_event_queue(key: u64) -> i32 {
     debug!("cellAudioRemoveNotifyEventQueue(key=0x{:016X})", key);
 
-    // TODO: Remove notification event queue from audio manager
-
-    0 // CELL_OK
+    crate::context::get_hle_context_mut().audio.remove_notify_event_queue(key)
 }
 
 #[cfg(test)]
@@ -902,5 +976,66 @@ mod tests {
     fn test_audio_port_type() {
         assert_eq!(CellAudioPortType::Audio2Ch as u32, 2);
         assert_eq!(CellAudioPortType::Audio8Ch as u32, 8);
+    }
+
+    #[test]
+    fn test_notify_event_queue_set_and_remove() {
+        let mut manager = AudioManager::new();
+        manager.init();
+
+        // Set event queue
+        let key = 0x1234567890ABCDEF;
+        assert_eq!(manager.set_notify_event_queue(key), 0);
+        assert!(manager.has_notify_event_queues());
+        assert_eq!(manager.get_notify_event_queues().len(), 1);
+
+        // Remove event queue
+        assert_eq!(manager.remove_notify_event_queue(key), 0);
+        assert!(!manager.has_notify_event_queues());
+
+        manager.quit();
+    }
+
+    #[test]
+    fn test_notify_event_queue_duplicate_set() {
+        let mut manager = AudioManager::new();
+        manager.init();
+
+        let key = 0xDEADBEEFCAFEBABE;
+        assert_eq!(manager.set_notify_event_queue(key), 0);
+        assert_eq!(manager.set_notify_event_queue(key), 0); // Duplicate should be OK
+        assert_eq!(manager.get_notify_event_queues().len(), 1); // Still only one
+
+        manager.quit();
+    }
+
+    #[test]
+    fn test_notify_event_queue_remove_nonexistent() {
+        let mut manager = AudioManager::new();
+        manager.init();
+
+        // Try to remove non-existent key
+        let result = manager.remove_notify_event_queue(0x12345678);
+        assert_eq!(result, 0x80310704u32 as i32); // CELL_AUDIO_ERROR_PARAM
+
+        manager.quit();
+    }
+
+    #[test]
+    fn test_notify_event_queue_cleared_on_quit() {
+        let mut manager = AudioManager::new();
+        manager.init();
+
+        manager.set_notify_event_queue(0x1111);
+        manager.set_notify_event_queue(0x2222);
+        assert_eq!(manager.get_notify_event_queues().len(), 2);
+
+        manager.quit();
+        
+        // Re-init and check queues are cleared
+        manager.init();
+        assert!(!manager.has_notify_event_queues());
+        
+        manager.quit();
     }
 }

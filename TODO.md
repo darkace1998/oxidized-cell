@@ -311,9 +311,12 @@ This document tracks development tasks, improvements, and known issues for the o
 
 ## 🎵 Audio System
 
-- [ ] **Notification Event Queue**
-  - Locations: `crates/oc-hle/src/cell_audio.rs:841`, `856`
+- [x] **Notification Event Queue**
+  - Locations: `crates/oc-hle/src/cell_audio.rs:916`, `931`
   - Set and remove notification event queue for audio manager
+  - Implemented via `set_notify_event_queue()` and `remove_notify_event_queue()` methods
+  - Event queue keys stored in AudioManager and cleared on quit
+  - Added unit tests for event queue management
 
 ---
 
