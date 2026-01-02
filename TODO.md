@@ -228,14 +228,22 @@ This document tracks development tasks, improvements, and known issues for the o
 
 ### Disc & Package Handling
 
-- [ ] **Disc Info Parsing**
+- [x] **Disc Info Parsing**
   - Location: `crates/oc-vfs/src/disc.rs:139`
   - Parse PARAM.SFO for title and game ID from disc images
+  - Implemented `parse_param_sfo_file`, `parse_param_sfo_data`, and `parse_param_sfo_reader` methods
+  - Supports both folder-based discs and ISO images
+  - Uses existing SFO parser for proper PARAM.SFO parsing
 
-- [ ] **PKG Extraction**
+- [x] **PKG Extraction**
   - Locations: `crates/oc-vfs/src/formats/pkg.rs:101`, `157`
-  - Parse title ID and content ID from PKG metadata
-  - Implement complete PKG extraction logic
+  - Parse title ID and content ID from PKG metadata (content ID at offset 48)
+  - Extract title ID from content ID format (XX00000-TITLE_ID_00000)
+  - Implemented complete PKG extraction logic via `extract_to()` method
+  - Added `PkgFileEntry` struct for file table entries
+  - Added file table parsing from PKG structure
+  - Added `read_file()` method for reading individual files from PKG
+  - Added `list_files()` and `info_summary()` utility methods
 
 ### Async File I/O
 

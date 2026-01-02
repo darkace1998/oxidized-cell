@@ -3274,6 +3274,7 @@ version = "0.1.0"
 dependencies = [
  "oc-core",
  "parking_lot",
+ "tempfile",
  "tracing",
 ]
 
