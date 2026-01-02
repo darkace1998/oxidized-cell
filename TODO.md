@@ -405,28 +405,28 @@ This document tracks development tasks, improvements, and known issues for the o
 
 ### Font Library
 
-- [ ] **Font Cache Management**
+- [x] **Font Cache Management**
   - Locations: `crates/oc-hle/src/cell_font.rs:242-243`, `260`
   - Allocate and free font cache
   - Set up default system fonts
 
-- [ ] **Font Loading and Parsing**
+- [x] **Font Loading and Parsing**
   - Locations: `crates/oc-hle/src/cell_font.rs:584-617`
-  - Parse font data from memory
+  - Parse font data from memory (TrueType/Type1 header parsing)
   - Load font from file
-  - Create and write font handles to memory
+  - Create and write font handles to memory via write_be32()
 
-- [ ] **Font Rendering Operations**
+- [x] **Font Rendering Operations**
   - Locations: `crates/oc-hle/src/cell_font.rs:655`, `694-696`, `712-713`
-  - Write renderer handle to memory
-  - Render character glyph to surface
-  - Get horizontal layout metrics
+  - Write renderer handle to memory via write_be32()
+  - Render character glyph to surface with glyph metrics output
+  - Get horizontal layout metrics (baseline, lineHeight, effectHeight)
 
 ### FreeType Integration
 
-- [ ] **Face Handle Memory Write**
+- [x] **Face Handle Memory Write**
   - Locations: `crates/oc-hle/src/cell_font_ft.rs:420`, `444`
-  - Write face handle to memory after loading
+  - Write face handle to memory after loading via write_be32()
 
 ---
 
