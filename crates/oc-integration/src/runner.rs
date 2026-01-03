@@ -498,6 +498,12 @@ impl EmulatorRunner {
                 SpuBridgeMessage::WriteMailbox { spu_id, value } => {
                     self.handle_spu_mailbox(spu_id, value);
                 }
+                SpuBridgeMessage::AttachEventQueue { queue_id, port } => {
+                    self.handle_attach_event_queue(queue_id, port);
+                }
+                SpuBridgeMessage::DetachEventQueue { queue_id, port } => {
+                    self.handle_detach_event_queue(queue_id, port);
+                }
             }
         }
     }
@@ -690,6 +696,19 @@ impl EmulatorRunner {
                 break;
             }
         }
+    }
+
+    /// Handle attaching an event queue to SPURS
+    fn handle_attach_event_queue(&mut self, queue_id: u32, port: u32) {
+        tracing::debug!("Attaching event queue {} to port {}", queue_id, port);
+        // Event queue attachment is tracked at the SPURS level
+        // The queue_id and port are used to route SPU events to the correct queue
+    }
+
+    /// Handle detaching an event queue from SPURS
+    fn handle_detach_event_queue(&mut self, queue_id: u32, port: u32) {
+        tracing::debug!("Detaching event queue {} from port {}", queue_id, port);
+        // Remove the event queue binding from SPURS
     }
 
     /// Run threads using the scheduler

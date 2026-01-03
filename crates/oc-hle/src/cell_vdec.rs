@@ -414,6 +414,7 @@ impl<'a> BitstreamReader<'a> {
     }
     
     /// Check if more data is available
+    #[allow(dead_code)]
     fn has_more_data(&self) -> bool {
         self.bit_pos < self.data.len() * 8
     }
@@ -1323,6 +1324,7 @@ impl<'a> Mpeg2BitstreamReader<'a> {
     }
     
     /// Align to next byte boundary
+    #[allow(dead_code)]
     fn byte_align(&mut self) {
         if self.bit_pos > 0 {
             self.bit_pos = 0;
@@ -1331,11 +1333,13 @@ impl<'a> Mpeg2BitstreamReader<'a> {
     }
     
     /// Check if more data is available
+    #[allow(dead_code)]
     fn has_more_data(&self) -> bool {
         self.byte_pos < self.data.len()
     }
     
     /// Get current byte position
+    #[allow(dead_code)]
     fn position(&self) -> usize {
         self.byte_pos
     }
@@ -1649,6 +1653,7 @@ impl Mpeg2Decoder {
     }
     
     /// Decode quantizer scale from code
+    #[allow(dead_code)]
     fn decode_quantizer_scale(&self, code: u8, q_scale_type: bool) -> u8 {
         if q_scale_type {
             // Non-linear quantizer scale
@@ -1664,6 +1669,7 @@ impl Mpeg2Decoder {
     }
     
     /// Apply 8x8 IDCT to a block
+    #[allow(dead_code)]
     fn idct_8x8(&self, block: &mut [i32; 64]) {
         // MPEG-2 uses a specific IDCT. This is a reference implementation.
         // The constants are derived from cos(pi * n / 16) scaled.

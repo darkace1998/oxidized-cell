@@ -497,7 +497,7 @@ impl ColorConverter {
         // Average the chroma values from each 2x2 block of pixels
         let chroma_width = width / 2;
         let chroma_height = height / 2;
-        let chroma_size = (chroma_width * chroma_height) as usize;
+        let _chroma_size = (chroma_width * chroma_height) as usize;
         
         for cy in 0..chroma_height {
             for cx in 0..chroma_width {

@@ -362,7 +362,7 @@ impl ContainerParser {
         }
         
         let mut pts: u64 = 0;
-        let mut dts: u64 = 0;
+        let dts: u64;
         
         // PTS is present (flags == 2 or 3)
         if pts_dts_flags >= 2 && data.len() >= 14 {
@@ -381,11 +381,12 @@ impl ContainerParser {
         // DTS is present (flags == 3)
         if pts_dts_flags == 3 && data.len() >= 19 {
             let dts_bytes = &data[14..19];
-            dts = (((dts_bytes[0] as u64 >> 1) & 0x07) << 30)
+            let parsed_dts = (((dts_bytes[0] as u64 >> 1) & 0x07) << 30)
                 | ((dts_bytes[1] as u64) << 22)
                 | (((dts_bytes[2] as u64 >> 1) & 0x7F) << 15)
                 | ((dts_bytes[3] as u64) << 7)
                 | ((dts_bytes[4] as u64 >> 1) & 0x7F);
+            dts = parsed_dts;
         } else {
             dts = pts; // DTS defaults to PTS if not present
         }

@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use tracing::{debug, trace};
-use crate::memory::{write_be32, read_bytes};
+use crate::memory::write_be32;
 
 // Error codes
 pub const CELL_HTTP_ERROR_NOT_INITIALIZED: i32 = 0x80710001u32 as i32;
