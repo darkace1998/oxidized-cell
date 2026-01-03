@@ -308,9 +308,12 @@ pub fn check_rounding_occurred(operands: &[f64], result: f64, operation: &str) -
         "divide" if operands.len() >= 2 => {
             let a = operands[0];
             let b = operands[1];
-            // For division, check if a = b * result exactly
-            let check = b * result;
-            let is_inexact = check != a;
+            // For division, check if the result can represent a/b exactly
+            // We use fused multiply-add to detect rounding error:
+            // If result * b == a exactly, then no rounding occurred
+            // The fma gives us: (result * b) - a, which should be 0 for exact results
+            let error = result.mul_add(b, -a);
+            let is_inexact = error != 0.0;
             let rounded_away = is_inexact && result.abs() > (a / b).abs();
             (is_inexact, rounded_away)
         }

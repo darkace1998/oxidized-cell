@@ -455,9 +455,17 @@ This document tracks development tasks, improvements, and known issues for the o
 
 ## 🧮 PPU Floating Point
 
-- [ ] **FPSCR Rounding Tracking**
-  - Location: `crates/oc-ppu/src/instructions/float.rs:274`
-  - Track actual rounding during operations instead of checking fractional part
+- [x] **FPSCR Rounding Tracking**
+  - Location: `crates/oc-ppu/src/instructions/float.rs:249`
+  - Implemented proper rounding detection during floating-point operations
+  - Features:
+    - `check_rounding_occurred()` function for detecting inexact results
+    - Uses fused multiply-add (FMA) to precisely detect rounding error in division
+    - Kahan summation technique for addition/subtraction rounding detection
+    - FMA-based error detection for multiplication
+    - Proper FR (Fraction Rounded) and FI (Fraction Inexact) flag setting
+    - Enhanced `_with_flags` functions for add, sub, mul, div, sqrt, frsp, fma
+  - Full FPSCR exception handling for all operations
 
 ---
 
