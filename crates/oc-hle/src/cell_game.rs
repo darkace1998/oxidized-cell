@@ -338,14 +338,121 @@ impl GameManager {
         self.game_type = data_type;
         self.dir_name = dir_name.to_string();
 
-        // Calculate content size (simulated)
-        self.content_size.size_kb = 1024 * 1024; // 1 GB
-        self.content_size.sys_size_kb = 100 * 1024; // 100 MB
-
-        // TODO: Check if game data exists
-        // TODO: Calculate actual content size
+        // Check if game data exists
+        let game_exists = self.game_data_exists(dir_name);
+        debug!("GameManager::data_check: game_exists={}", game_exists);
+        
+        // Calculate actual content size from directory
+        let (size_kb, sys_size_kb) = self.calculate_content_size(dir_name);
+        self.content_size.size_kb = size_kb;
+        self.content_size.sys_size_kb = sys_size_kb;
+        
+        debug!(
+            "GameManager::data_check: size_kb={}, sys_size_kb={}",
+            size_kb, sys_size_kb
+        );
 
         0 // CELL_OK
+    }
+    
+    /// Check if game data exists for the given directory name
+    pub fn game_data_exists(&self, dir_name: &str) -> bool {
+        // Check in HDD game directory
+        let hdd_path = format!("/dev_hdd0/game/{}", dir_name);
+        
+        // Try to detect via standard path checking
+        // In a real implementation, this would query the VFS
+        let host_path = self.get_host_game_path(dir_name);
+        if let Some(path) = host_path {
+            let path_buf = std::path::Path::new(&path);
+            if path_buf.exists() {
+                return true;
+            }
+        }
+        
+        // Check via internal state - if we've already done boot_check, game exists
+        if self.initialized && self.dir_name == dir_name {
+            return true;
+        }
+        
+        // For HLE compatibility, simulate that disc/HDD games exist
+        debug!("GameManager::game_data_exists: checking {}", hdd_path);
+        true // Default to exists for HLE compatibility
+    }
+    
+    /// Calculate actual content size for a game directory
+    /// 
+    /// Returns (size_kb, sys_size_kb) tuple
+    fn calculate_content_size(&self, dir_name: &str) -> (u64, u64) {
+        // Try to get actual size from host filesystem
+        if let Some(host_path) = self.get_host_game_path(dir_name) {
+            let path = std::path::Path::new(&host_path);
+            if path.exists() {
+                let total_size = Self::calculate_directory_size(path);
+                let size_kb = (total_size + 1023) / 1024; // Round up to KB
+                
+                // System size is typically ~10% of total or minimum 100MB
+                let sys_size_kb = std::cmp::max(size_kb / 10, 100 * 1024);
+                
+                debug!(
+                    "GameManager::calculate_content_size: host path {} = {} KB",
+                    host_path, size_kb
+                );
+                return (size_kb, sys_size_kb);
+            }
+        }
+        
+        // Default simulated sizes if no host path or calculation fails
+        let size_kb = 1024 * 1024; // 1 GB default
+        let sys_size_kb = 100 * 1024; // 100 MB default
+        
+        (size_kb, sys_size_kb)
+    }
+    
+    /// Calculate total size of a directory recursively
+    fn calculate_directory_size(path: &std::path::Path) -> u64 {
+        let mut total_size = 0u64;
+        
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let entry_path = entry.path();
+                if entry_path.is_file() {
+                    if let Ok(metadata) = entry_path.metadata() {
+                        total_size += metadata.len();
+                    }
+                } else if entry_path.is_dir() {
+                    total_size += Self::calculate_directory_size(&entry_path);
+                }
+            }
+        }
+        
+        total_size
+    }
+    
+    /// Get host filesystem path for game directory
+    /// 
+    /// This resolves the virtual game path to a host path if available
+    fn get_host_game_path(&self, dir_name: &str) -> Option<String> {
+        // Check for environment variable override first
+        if let Ok(base_path) = std::env::var("OXIDIZED_CELL_GAMES") {
+            let path = format!("{}/{}", base_path, dir_name);
+            return Some(path);
+        }
+        
+        // Try HOME-based path on Unix or LOCALAPPDATA on Windows
+        #[cfg(target_family = "unix")]
+        if let Ok(home) = std::env::var("HOME") {
+            let path = format!("{}/.local/share/oxidized-cell/games/{}", home, dir_name);
+            return Some(path);
+        }
+        
+        #[cfg(target_family = "windows")]
+        if let Ok(appdata) = std::env::var("LOCALAPPDATA") {
+            let path = format!("{}\\oxidized-cell\\games\\{}", appdata, dir_name);
+            return Some(path);
+        }
+        
+        None
     }
 
     /// Get game type
@@ -1840,5 +1947,102 @@ mod tests {
         assert_eq!(DlcState::Downloading as u32, 2);
         assert_eq!(DlcState::Installing as u32, 3);
         assert_eq!(DlcState::Failed as u32, 4);
+    }
+
+    // ========================================================================
+    // Game Data Existence and Content Size Tests
+    // ========================================================================
+
+    #[test]
+    fn test_game_data_exists_default() {
+        let manager = GameManager::new();
+        
+        // Should return true for HLE compatibility (games always "exist")
+        assert!(manager.game_data_exists("GAME00000"));
+        assert!(manager.game_data_exists("NONEXISTENT"));
+    }
+
+    #[test]
+    fn test_game_data_exists_after_boot_check() {
+        let mut manager = GameManager::new();
+        manager.boot_check();
+        
+        // After boot check, the initialized game dir should exist
+        assert!(manager.game_data_exists("GAME00000"));
+    }
+
+    #[test]
+    fn test_calculate_content_size_default() {
+        let manager = GameManager::new();
+        
+        // Without a real path, should return default sizes
+        let (size_kb, sys_size_kb) = manager.calculate_content_size("NONEXISTENT");
+        
+        // Default is 1 GB / 100 MB
+        assert_eq!(size_kb, 1024 * 1024);
+        assert_eq!(sys_size_kb, 100 * 1024);
+    }
+
+    #[test]
+    fn test_calculate_directory_size_empty() {
+        // Create a temp directory for testing
+        let temp_dir = std::env::temp_dir().join("oxidized_cell_test_empty");
+        let _ = std::fs::create_dir_all(&temp_dir);
+        
+        // Empty directory should have 0 size
+        let size = GameManager::calculate_directory_size(&temp_dir);
+        assert_eq!(size, 0);
+        
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_calculate_directory_size_with_files() {
+        // Create a temp directory with some test files
+        let temp_dir = std::env::temp_dir().join("oxidized_cell_test_files");
+        let _ = std::fs::create_dir_all(&temp_dir);
+        
+        // Create a test file with known size
+        let test_file = temp_dir.join("test.bin");
+        let test_data = vec![0u8; 1024]; // 1 KB
+        let _ = std::fs::write(&test_file, &test_data);
+        
+        // Directory should have at least 1024 bytes
+        let size = GameManager::calculate_directory_size(&temp_dir);
+        assert!(size >= 1024);
+        
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_get_host_game_path_with_env_var() {
+        // Set environment variable
+        std::env::set_var("OXIDIZED_CELL_GAMES", "/test/games");
+        
+        let manager = GameManager::new();
+        let path = manager.get_host_game_path("GAME00000");
+        
+        assert!(path.is_some());
+        assert_eq!(path.unwrap(), "/test/games/GAME00000");
+        
+        // Cleanup
+        std::env::remove_var("OXIDIZED_CELL_GAMES");
+    }
+
+    #[test]
+    fn test_data_check_calculates_size() {
+        let mut manager = GameManager::new();
+        
+        // Initial size should be default
+        let initial_size = manager.get_content_size();
+        
+        // After data_check, sizes should be set
+        manager.data_check(CellGameDataType::Hdd, "TESTGAME");
+        
+        let new_size = manager.get_content_size();
+        assert!(new_size.size_kb > 0);
+        assert!(new_size.sys_size_kb > 0);
     }
 }

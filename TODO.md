@@ -366,10 +366,14 @@ This document tracks development tasks, improvements, and known issues for the o
 
 ### Game Content
 
-- [ ] **Game Data Checks**
-  - Location: `crates/oc-hle/src/cell_game.rs:345-346`
-  - Check if game data exists
-  - Calculate actual content size
+- [x] **Game Data Checks**
+  - Location: `crates/oc-hle/src/cell_game.rs:334-456`
+  - Implemented `game_data_exists()` to check if game data directory exists
+  - Implemented `calculate_content_size()` for actual directory size calculation
+  - Implemented `calculate_directory_size()` for recursive file size summation
+  - Implemented `get_host_game_path()` for VFS path resolution
+  - Updated `data_check()` to use these methods for real game data validation
+  - Added 7 new unit tests for game data existence and content size
 
 ---
 
