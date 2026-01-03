@@ -758,6 +758,177 @@ static void generate_llvm_ir(BasicBlock* block, oc_ppu_jit_t* jit = nullptr) {
 }
 
 #ifdef HAVE_LLVM
+
+// XER Register bit positions
+// In the 64-bit XER register, the flag bits are stored in the lower 32-bit portion:
+// - Bit 31 (0x80000000): SO (Summary Overflow)
+// - Bit 30 (0x40000000): OV (Overflow)
+// - Bit 29 (0x20000000): CA (Carry)
+// These correspond to bits 0, 1, 2 in PowerPC documentation which uses
+// big-endian bit numbering (bit 0 = MSB).
+static constexpr uint64_t XER_SO_MASK = 0x80000000ULL;  // Bit 31 in little-endian terms
+static constexpr uint64_t XER_OV_MASK = 0x40000000ULL;  // Bit 30 in little-endian terms
+static constexpr uint64_t XER_CA_MASK = 0x20000000ULL;  // Bit 29 in little-endian terms
+
+/**
+ * Update CR0 based on the result value
+ * 
+ * CR0 is set based on the signed comparison of the result with zero:
+ * - CR0[LT] (bit 0): Result is negative (bit 0 = 1 if result < 0)
+ * - CR0[GT] (bit 1): Result is positive (bit 1 = 1 if result > 0)
+ * - CR0[EQ] (bit 2): Result is zero (bit 2 = 1 if result == 0)
+ * - CR0[SO] (bit 3): Copy of XER[SO]
+ */
+static void update_cr0(llvm::IRBuilder<>& builder, llvm::Value* result,
+                       llvm::Value* cr_ptr, llvm::Value* xer_ptr) {
+    auto& ctx = builder.getContext();
+    auto i32_ty = llvm::Type::getInt32Ty(ctx);
+    auto i64_ty = llvm::Type::getInt64Ty(ctx);
+    
+    // Compare result with zero
+    llvm::Value* zero = llvm::ConstantInt::get(i64_ty, 0);
+    llvm::Value* lt = builder.CreateICmpSLT(result, zero);
+    llvm::Value* gt = builder.CreateICmpSGT(result, zero);
+    llvm::Value* eq = builder.CreateICmpEQ(result, zero);
+    
+    // Build CR0 field value
+    llvm::Value* cr_field = llvm::ConstantInt::get(i32_ty, 0);
+    cr_field = builder.CreateSelect(lt, llvm::ConstantInt::get(i32_ty, 8), cr_field);
+    cr_field = builder.CreateSelect(gt, llvm::ConstantInt::get(i32_ty, 4), cr_field);
+    cr_field = builder.CreateSelect(eq, llvm::ConstantInt::get(i32_ty, 2), cr_field);
+    
+    // Add SO bit from XER
+    llvm::Value* xer = builder.CreateLoad(i64_ty, xer_ptr);
+    llvm::Value* so_bit = builder.CreateAnd(xer, llvm::ConstantInt::get(i64_ty, XER_SO_MASK));
+    llvm::Value* has_so = builder.CreateICmpNE(so_bit, llvm::ConstantInt::get(i64_ty, 0));
+    llvm::Value* so_val = builder.CreateSelect(has_so, llvm::ConstantInt::get(i32_ty, 1), llvm::ConstantInt::get(i32_ty, 0));
+    cr_field = builder.CreateOr(cr_field, so_val);
+    
+    // Update CR (field 0 = bits 28-31)
+    llvm::Value* cr = builder.CreateLoad(i32_ty, cr_ptr);
+    llvm::Value* cr_masked = builder.CreateAnd(cr, llvm::ConstantInt::get(i32_ty, 0x0FFFFFFF));
+    llvm::Value* shifted = builder.CreateShl(cr_field, llvm::ConstantInt::get(i32_ty, 28));
+    llvm::Value* new_cr = builder.CreateOr(cr_masked, shifted);
+    builder.CreateStore(new_cr, cr_ptr);
+}
+
+/**
+ * Set CA flag in XER based on unsigned overflow for addition
+ * 
+ * For addition: CA = 1 if (result < a) (unsigned overflow occurred)
+ * This detects if the addition wrapped around.
+ * 
+ * Note: Parameter 'b' is included for interface consistency with set_ca_add_extended
+ * which needs all operands. For simple addition, only 'a' and 'result' are needed.
+ */
+static void set_ca_add(llvm::IRBuilder<>& builder, llvm::Value* a, [[maybe_unused]] llvm::Value* b,
+                       llvm::Value* result, llvm::Value* xer_ptr) {
+    auto& ctx = builder.getContext();
+    auto i64_ty = llvm::Type::getInt64Ty(ctx);
+    
+    // Carry occurred if result < a (unsigned comparison)
+    llvm::Value* carry = builder.CreateICmpULT(result, a);
+    
+    // Load XER, clear CA bit, set if carry occurred
+    llvm::Value* xer = builder.CreateLoad(i64_ty, xer_ptr);
+    llvm::Value* xer_cleared = builder.CreateAnd(xer, llvm::ConstantInt::get(i64_ty, ~XER_CA_MASK));
+    llvm::Value* ca_bit = builder.CreateSelect(carry,
+        llvm::ConstantInt::get(i64_ty, XER_CA_MASK),
+        llvm::ConstantInt::get(i64_ty, 0));
+    llvm::Value* new_xer = builder.CreateOr(xer_cleared, ca_bit);
+    builder.CreateStore(new_xer, xer_ptr);
+}
+
+/**
+ * Set CA flag in XER for subtraction (a - b)
+ * 
+ * For subtraction a - b: CA = 1 if there is NO borrow, i.e., a >= b (unsigned)
+ * PowerPC uses the convention: CA = NOT borrow
+ */
+static void set_ca_sub(llvm::IRBuilder<>& builder, llvm::Value* a, llvm::Value* b,
+                       llvm::Value* xer_ptr) {
+    auto& ctx = builder.getContext();
+    auto i64_ty = llvm::Type::getInt64Ty(ctx);
+    
+    // No borrow if a >= b (unsigned comparison)
+    llvm::Value* no_borrow = builder.CreateICmpUGE(a, b);
+    
+    // Load XER, clear CA bit, set if no borrow
+    llvm::Value* xer = builder.CreateLoad(i64_ty, xer_ptr);
+    llvm::Value* xer_cleared = builder.CreateAnd(xer, llvm::ConstantInt::get(i64_ty, ~XER_CA_MASK));
+    llvm::Value* ca_bit = builder.CreateSelect(no_borrow,
+        llvm::ConstantInt::get(i64_ty, XER_CA_MASK),
+        llvm::ConstantInt::get(i64_ty, 0));
+    llvm::Value* new_xer = builder.CreateOr(xer_cleared, ca_bit);
+    builder.CreateStore(new_xer, xer_ptr);
+}
+
+/**
+ * Get CA bit from XER as a 64-bit value (0 or 1)
+ */
+static llvm::Value* get_ca_bit(llvm::IRBuilder<>& builder, llvm::Value* xer_ptr) {
+    auto& ctx = builder.getContext();
+    auto i64_ty = llvm::Type::getInt64Ty(ctx);
+    
+    llvm::Value* xer = builder.CreateLoad(i64_ty, xer_ptr);
+    llvm::Value* ca_masked = builder.CreateAnd(xer, llvm::ConstantInt::get(i64_ty, XER_CA_MASK));
+    llvm::Value* has_ca = builder.CreateICmpNE(ca_masked, llvm::ConstantInt::get(i64_ty, 0));
+    return builder.CreateSelect(has_ca,
+        llvm::ConstantInt::get(i64_ty, 1),
+        llvm::ConstantInt::get(i64_ty, 0));
+}
+
+/**
+ * Get SO bit from XER as a 32-bit value (0 or 1) for CR field
+ */
+static llvm::Value* get_so_bit_for_cr(llvm::IRBuilder<>& builder, llvm::Value* xer_ptr) {
+    auto& ctx = builder.getContext();
+    auto i32_ty = llvm::Type::getInt32Ty(ctx);
+    auto i64_ty = llvm::Type::getInt64Ty(ctx);
+    
+    llvm::Value* xer = builder.CreateLoad(i64_ty, xer_ptr);
+    llvm::Value* so_masked = builder.CreateAnd(xer, llvm::ConstantInt::get(i64_ty, XER_SO_MASK));
+    llvm::Value* has_so = builder.CreateICmpNE(so_masked, llvm::ConstantInt::get(i64_ty, 0));
+    return builder.CreateSelect(has_so,
+        llvm::ConstantInt::get(i32_ty, 1),
+        llvm::ConstantInt::get(i32_ty, 0));
+}
+
+/**
+ * Set CA flag for extended add operations (adde, addze, addme)
+ * These need to account for the incoming carry bit
+ * 
+ * For adde: result = a + b + CA
+ * Carry out = (a + b overflows) OR ((a + b) + CA overflows)
+ */
+static void set_ca_add_extended(llvm::IRBuilder<>& builder, llvm::Value* a, llvm::Value* b,
+                                llvm::Value* ca_in, llvm::Value* xer_ptr) {
+    auto& ctx = builder.getContext();
+    auto i64_ty = llvm::Type::getInt64Ty(ctx);
+    
+    // First addition: temp = a + b
+    llvm::Value* temp = builder.CreateAdd(a, b);
+    // First carry: carry1 = (temp < a)
+    llvm::Value* carry1 = builder.CreateICmpULT(temp, a);
+    
+    // Second addition: result = temp + ca_in
+    llvm::Value* result = builder.CreateAdd(temp, ca_in);
+    // Second carry: carry2 = (result < temp)
+    llvm::Value* carry2 = builder.CreateICmpULT(result, temp);
+    
+    // Final carry = carry1 OR carry2
+    llvm::Value* final_carry = builder.CreateOr(carry1, carry2);
+    
+    // Update XER CA bit
+    llvm::Value* xer = builder.CreateLoad(i64_ty, xer_ptr);
+    llvm::Value* xer_cleared = builder.CreateAnd(xer, llvm::ConstantInt::get(i64_ty, ~XER_CA_MASK));
+    llvm::Value* ca_bit = builder.CreateSelect(final_carry,
+        llvm::ConstantInt::get(i64_ty, XER_CA_MASK),
+        llvm::ConstantInt::get(i64_ty, 0));
+    llvm::Value* new_xer = builder.CreateOr(xer_cleared, ca_bit);
+    builder.CreateStore(new_xer, xer_ptr);
+}
+
 /**
  * Emit LLVM IR for PPU instructions
  * 
@@ -819,7 +990,7 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                 llvm::ConstantInt::get(i64_ty, (uint64_t)uimm));
             builder.CreateStore(result, gprs[rt]);
             // Update CR0 for record form
-            // TODO: Add CR0 update
+            update_cr0(builder, result, cr_ptr, xer_ptr);
             break;
         }
         case 29: { // andis. rt, ra, uimm
@@ -827,6 +998,8 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             llvm::Value* result = builder.CreateAnd(ra_val,
                 llvm::ConstantInt::get(i64_ty, (uint64_t)uimm << 16));
             builder.CreateStore(result, gprs[rt]);
+            // Update CR0 for record form
+            update_cr0(builder, result, cr_ptr, xer_ptr);
             break;
         }
         case 25: { // oris rt, ra, uimm
@@ -859,25 +1032,30 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
         }
         case 8: { // subfic rt, ra, simm
             llvm::Value* ra_val = builder.CreateLoad(i64_ty, gprs[ra]);
-            llvm::Value* result = builder.CreateSub(
-                llvm::ConstantInt::get(i64_ty, (int64_t)simm), ra_val);
+            llvm::Value* simm_val = llvm::ConstantInt::get(i64_ty, (int64_t)simm);
+            llvm::Value* result = builder.CreateSub(simm_val, ra_val);
             builder.CreateStore(result, gprs[rt]);
+            // Set CA flag: subfic computes (simm - ra), CA = 1 if no borrow (simm >= ra unsigned)
+            set_ca_sub(builder, simm_val, ra_val, xer_ptr);
             break;
         }
         case 12: { // addic rt, ra, simm
             llvm::Value* ra_val = builder.CreateLoad(i64_ty, gprs[ra]);
-            llvm::Value* result = builder.CreateAdd(ra_val,
-                llvm::ConstantInt::get(i64_ty, (int64_t)simm));
+            llvm::Value* simm_val = llvm::ConstantInt::get(i64_ty, (int64_t)simm);
+            llvm::Value* result = builder.CreateAdd(ra_val, simm_val);
             builder.CreateStore(result, gprs[rt]);
-            // TODO: Set CA flag in XER
+            // Set CA flag in XER
+            set_ca_add(builder, ra_val, simm_val, result, xer_ptr);
             break;
         }
         case 13: { // addic. rt, ra, simm
             llvm::Value* ra_val = builder.CreateLoad(i64_ty, gprs[ra]);
-            llvm::Value* result = builder.CreateAdd(ra_val,
-                llvm::ConstantInt::get(i64_ty, (int64_t)simm));
+            llvm::Value* simm_val = llvm::ConstantInt::get(i64_ty, (int64_t)simm);
+            llvm::Value* result = builder.CreateAdd(ra_val, simm_val);
             builder.CreateStore(result, gprs[rt]);
-            // TODO: Set CA flag in XER and update CR0
+            // Set CA flag in XER and update CR0
+            set_ca_add(builder, ra_val, simm_val, result, xer_ptr);
+            update_cr0(builder, result, cr_ptr, xer_ptr);
             break;
         }
         
@@ -1320,7 +1498,8 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                     llvm::Value* rb_val = builder.CreateLoad(i64_ty, gprs[rb]);
                     llvm::Value* result = builder.CreateSub(rb_val, ra_val);
                     builder.CreateStore(result, gprs[rt]);
-                    // TODO: Set CA flag
+                    // Set CA flag: subfc computes (rb - ra), CA = 1 if no borrow (rb >= ra unsigned)
+                    set_ca_sub(builder, rb_val, ra_val, xer_ptr);
                     break;
                 }
                 case 10: { // addc rt, ra, rb - Add Carrying
@@ -1328,7 +1507,8 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                     llvm::Value* rb_val = builder.CreateLoad(i64_ty, gprs[rb]);
                     llvm::Value* result = builder.CreateAdd(ra_val, rb_val);
                     builder.CreateStore(result, gprs[rt]);
-                    // TODO: Set CA flag
+                    // Set CA flag
+                    set_ca_add(builder, ra_val, rb_val, result, xer_ptr);
                     break;
                 }
                 case 104: { // neg rt, ra - Negate
@@ -1340,48 +1520,83 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                 case 138: { // adde rt, ra, rb - Add Extended
                     llvm::Value* ra_val = builder.CreateLoad(i64_ty, gprs[ra]);
                     llvm::Value* rb_val = builder.CreateLoad(i64_ty, gprs[rb]);
-                    llvm::Value* result = builder.CreateAdd(ra_val, rb_val);
-                    // TODO: Add CA bit from XER
+                    // Get CA bit from XER
+                    llvm::Value* ca_in = get_ca_bit(builder, xer_ptr);
+                    // Compute ra + rb + CA
+                    llvm::Value* temp = builder.CreateAdd(ra_val, rb_val);
+                    llvm::Value* result = builder.CreateAdd(temp, ca_in);
                     builder.CreateStore(result, gprs[rt]);
+                    // Update CA flag for extended add
+                    set_ca_add_extended(builder, ra_val, rb_val, ca_in, xer_ptr);
                     break;
                 }
                 case 136: { // subfe rt, ra, rb - Subtract From Extended
+                    // subfe: rt = ~ra + rb + CA
                     llvm::Value* ra_val = builder.CreateLoad(i64_ty, gprs[ra]);
                     llvm::Value* rb_val = builder.CreateLoad(i64_ty, gprs[rb]);
                     llvm::Value* not_ra = builder.CreateNot(ra_val);
-                    llvm::Value* result = builder.CreateAdd(rb_val, not_ra);
-                    // TODO: Add CA bit from XER
+                    // Get CA bit from XER
+                    llvm::Value* ca_in = get_ca_bit(builder, xer_ptr);
+                    // Compute ~ra + rb + CA
+                    llvm::Value* temp = builder.CreateAdd(rb_val, not_ra);
+                    llvm::Value* result = builder.CreateAdd(temp, ca_in);
                     builder.CreateStore(result, gprs[rt]);
+                    // Update CA flag for extended add
+                    set_ca_add_extended(builder, not_ra, rb_val, ca_in, xer_ptr);
                     break;
                 }
                 case 202: { // addze rt, ra - Add to Zero Extended
+                    // addze: rt = ra + CA
                     llvm::Value* ra_val = builder.CreateLoad(i64_ty, gprs[ra]);
-                    // TODO: Add CA bit from XER
-                    builder.CreateStore(ra_val, gprs[rt]);
+                    // Get CA bit from XER
+                    llvm::Value* ca_in = get_ca_bit(builder, xer_ptr);
+                    llvm::Value* result = builder.CreateAdd(ra_val, ca_in);
+                    builder.CreateStore(result, gprs[rt]);
+                    // Update CA flag: set if ra + CA overflows
+                    llvm::Value* zero = llvm::ConstantInt::get(i64_ty, 0);
+                    set_ca_add_extended(builder, ra_val, zero, ca_in, xer_ptr);
                     break;
                 }
                 case 200: { // subfze rt, ra - Subtract From Zero Extended
+                    // subfze: rt = ~ra + CA
                     llvm::Value* ra_val = builder.CreateLoad(i64_ty, gprs[ra]);
                     llvm::Value* not_ra = builder.CreateNot(ra_val);
-                    // TODO: Add CA bit from XER
-                    builder.CreateStore(not_ra, gprs[rt]);
+                    // Get CA bit from XER
+                    llvm::Value* ca_in = get_ca_bit(builder, xer_ptr);
+                    llvm::Value* result = builder.CreateAdd(not_ra, ca_in);
+                    builder.CreateStore(result, gprs[rt]);
+                    // Update CA flag
+                    llvm::Value* zero = llvm::ConstantInt::get(i64_ty, 0);
+                    set_ca_add_extended(builder, not_ra, zero, ca_in, xer_ptr);
                     break;
                 }
                 case 234: { // addme rt, ra - Add to Minus One Extended
+                    // addme: rt = ra + CA - 1 = ra + CA + 0xFFFFFFFF_FFFFFFFF
                     llvm::Value* ra_val = builder.CreateLoad(i64_ty, gprs[ra]);
                     llvm::Value* minus_one = llvm::ConstantInt::get(i64_ty, -1);
-                    llvm::Value* result = builder.CreateAdd(ra_val, minus_one);
-                    // TODO: Add CA bit from XER
+                    // Get CA bit from XER
+                    llvm::Value* ca_in = get_ca_bit(builder, xer_ptr);
+                    // Compute ra + (-1) + CA
+                    llvm::Value* temp = builder.CreateAdd(ra_val, minus_one);
+                    llvm::Value* result = builder.CreateAdd(temp, ca_in);
                     builder.CreateStore(result, gprs[rt]);
+                    // Update CA flag
+                    set_ca_add_extended(builder, ra_val, minus_one, ca_in, xer_ptr);
                     break;
                 }
                 case 232: { // subfme rt, ra - Subtract From Minus One Extended
+                    // subfme: rt = ~ra + CA - 1 = ~ra + CA + 0xFFFFFFFF_FFFFFFFF
                     llvm::Value* ra_val = builder.CreateLoad(i64_ty, gprs[ra]);
                     llvm::Value* not_ra = builder.CreateNot(ra_val);
                     llvm::Value* minus_one = llvm::ConstantInt::get(i64_ty, -1);
-                    llvm::Value* result = builder.CreateAdd(not_ra, minus_one);
-                    // TODO: Add CA bit from XER
+                    // Get CA bit from XER
+                    llvm::Value* ca_in = get_ca_bit(builder, xer_ptr);
+                    // Compute ~ra + (-1) + CA
+                    llvm::Value* temp = builder.CreateAdd(not_ra, minus_one);
+                    llvm::Value* result = builder.CreateAdd(temp, ca_in);
                     builder.CreateStore(result, gprs[rt]);
+                    // Update CA flag
+                    set_ca_add_extended(builder, not_ra, minus_one, ca_in, xer_ptr);
                     break;
                 }
                 case 235: { // mullw rt, ra, rb
@@ -1659,7 +1874,9 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                         llvm::ConstantInt::get(i32_ty, 4), cr_field);
                     cr_field = builder.CreateSelect(eq,
                         llvm::ConstantInt::get(i32_ty, 2), cr_field);
-                    // TODO: Add SO bit from XER
+                    // Add SO bit from XER
+                    llvm::Value* so_bit = get_so_bit_for_cr(builder, xer_ptr);
+                    cr_field = builder.CreateOr(cr_field, so_bit);
                     
                     // Update CR (bf field)
                     llvm::Value* cr = builder.CreateLoad(i32_ty, cr_ptr);
@@ -1687,6 +1904,9 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                         llvm::ConstantInt::get(i32_ty, 4), cr_field);
                     cr_field = builder.CreateSelect(eq,
                         llvm::ConstantInt::get(i32_ty, 2), cr_field);
+                    // Add SO bit from XER
+                    llvm::Value* so_bit = get_so_bit_for_cr(builder, xer_ptr);
+                    cr_field = builder.CreateOr(cr_field, so_bit);
                     
                     llvm::Value* cr = builder.CreateLoad(i32_ty, cr_ptr);
                     uint32_t mask = ~(0xFu << (28 - bf * 4));
@@ -2300,6 +2520,9 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                 llvm::ConstantInt::get(i32_ty, 4), cr_field);
             cr_field = builder.CreateSelect(eq,
                 llvm::ConstantInt::get(i32_ty, 2), cr_field);
+            // Add SO bit from XER
+            llvm::Value* so_bit = get_so_bit_for_cr(builder, xer_ptr);
+            cr_field = builder.CreateOr(cr_field, so_bit);
             
             llvm::Value* cr = builder.CreateLoad(i32_ty, cr_ptr);
             uint32_t mask = ~(0xFu << (28 - bf * 4));
@@ -2326,6 +2549,9 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                 llvm::ConstantInt::get(i32_ty, 4), cr_field);
             cr_field = builder.CreateSelect(eq,
                 llvm::ConstantInt::get(i32_ty, 2), cr_field);
+            // Add SO bit from XER
+            llvm::Value* so_bit = get_so_bit_for_cr(builder, xer_ptr);
+            cr_field = builder.CreateOr(cr_field, so_bit);
             
             llvm::Value* cr = builder.CreateLoad(i32_ty, cr_ptr);
             uint32_t mask = ~(0xFu << (28 - bf * 4));

@@ -8,9 +8,9 @@ A comprehensive task list for the oxidized-cell PlayStation 3 emulator project.
 
 ### JIT Compiler Improvements
 
-- [ ] **PPU JIT: Add CR0 update for arithmetic instructions** - `cpp/src/ppu_jit.cpp:822`
-- [ ] **PPU JIT: Implement CA flag handling in XER for adde/addze/addme instructions** - `cpp/src/ppu_jit.cpp:872-880`
-- [ ] **PPU JIT: Set CA flag for carry-based arithmetic operations**
+- [x] **PPU JIT: Add CR0 update for arithmetic instructions** - `cpp/src/ppu_jit.cpp:822` ✅ Implemented
+- [x] **PPU JIT: Implement CA flag handling in XER for adde/addze/addme instructions** - `cpp/src/ppu_jit.cpp:872-880` ✅ Implemented
+- [x] **PPU JIT: Set CA flag for carry-based arithmetic operations** ✅ Implemented
   - subfic instruction - `cpp/src/ppu_jit.cpp:1323`
   - subfc instruction - `cpp/src/ppu_jit.cpp:1331`
   - adde instruction - `cpp/src/ppu_jit.cpp:1344`
@@ -19,7 +19,7 @@ A comprehensive task list for the oxidized-cell PlayStation 3 emulator project.
   - subfe instruction - `cpp/src/ppu_jit.cpp:1366`
   - subfze instruction - `cpp/src/ppu_jit.cpp:1374`
   - subfme instruction - `cpp/src/ppu_jit.cpp:1383`
-- [ ] **PPU JIT: Add SO (Summary Overflow) bit from XER** - `cpp/src/ppu_jit.cpp:1662`
+- [x] **PPU JIT: Add SO (Summary Overflow) bit from XER** - `cpp/src/ppu_jit.cpp:1662` ✅ Implemented
 - [ ] **Complete PPU JIT instruction coverage** - Currently supports ~20+ instructions, need full PowerPC ISA
 - [ ] **Complete SPU JIT instruction coverage** - Currently supports ~15+ instructions, need full SPU ISA
 
