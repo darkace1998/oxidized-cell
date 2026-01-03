@@ -4,6 +4,7 @@
 //! It extends cellFont with FreeType-specific functionality.
 
 use tracing::{debug, trace};
+use crate::memory::write_be32;
 
 /// Error codes
 pub const CELL_FONT_FT_ERROR_NOT_INITIALIZED: i32 = 0x80540201u32 as i32;
@@ -410,14 +411,20 @@ pub fn cell_font_ft_open_font_memory(
     data_addr: u32,
     data_size: u32,
     face_index: u32,
-    _face_addr: u32,
+    face_addr: u32,
 ) -> i32 {
     debug!("cellFontFtOpenFontMemory(addr=0x{:08X}, size={}, index={})", 
         data_addr, data_size, face_index);
 
     match crate::context::get_hle_context_mut().font_ft.open_font_memory(data_addr, data_size, face_index) {
-        Ok(_face) => {
-            // TODO: Write face handle to memory at _face_addr
+        Ok(face) => {
+            // Write face handle to memory
+            if face_addr != 0 {
+                if let Err(e) = write_be32(face_addr, face) {
+                    debug!("cellFontFtOpenFontMemory: Failed to write face handle to memory: {}", e);
+                    return e;
+                }
+            }
             0 // CELL_OK
         }
         Err(e) => e,
@@ -433,15 +440,24 @@ pub fn cell_font_ft_open_font_memory(
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_font_ft_open_font_file(_path_addr: u32, face_index: u32, _face_addr: u32) -> i32 {
+pub fn cell_font_ft_open_font_file(path_addr: u32, face_index: u32, face_addr: u32) -> i32 {
     debug!("cellFontFtOpenFontFile(index={})", face_index);
 
-    // Note: Actual path reading from memory at _path_addr will be implemented
-    // when memory read interface is available
-    const PLACEHOLDER_PATH: &str = "font.ttf";
-    match crate::context::get_hle_context_mut().font_ft.open_font_file(PLACEHOLDER_PATH, face_index) {
-        Ok(_face) => {
-            // TODO: Write face handle to memory at _face_addr
+    // Read path from memory
+    let font_path = match crate::memory::read_string(path_addr, 256) {
+        Ok(p) => p,
+        Err(_) => "font.ttf".to_string(),
+    };
+
+    match crate::context::get_hle_context_mut().font_ft.open_font_file(&font_path, face_index) {
+        Ok(face) => {
+            // Write face handle to memory
+            if face_addr != 0 {
+                if let Err(e) = write_be32(face_addr, face) {
+                    debug!("cellFontFtOpenFontFile: Failed to write face handle to memory: {}", e);
+                    return e;
+                }
+            }
             0 // CELL_OK
         }
         Err(e) => e,

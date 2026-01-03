@@ -10,6 +10,7 @@ use once_cell::sync::Lazy;
 use tracing::{debug, info, trace};
 
 use crate::context::get_hle_context_mut;
+use crate::memory::write_be32;
 
 /// HLE function result codes
 pub mod error {
@@ -235,8 +236,13 @@ fn hle_sysutil_get_system_param_int(ctx: &HleCallContext) -> i64 {
         _ => 0,
     };
     
-    // TODO: Write value to memory at value_ptr
-    // For now, just return success
+    // Write value to memory at value_ptr
+    if value_ptr != 0 {
+        if let Err(_) = write_be32(value_ptr, value as u32) {
+            return error::CELL_EFAULT;
+        }
+    }
+    
     trace!("  returning value={}", value);
     error::CELL_OK
 }
@@ -262,8 +268,21 @@ fn hle_pad_get_info(ctx: &HleCallContext) -> i64 {
     let info_ptr = ctx.args[0] as u32;
     trace!("cellPadGetInfo(info_ptr=0x{:08x})", info_ptr);
     
-    // Return info indicating 1 controller connected
-    // TODO: Actually write to memory
+    // Write pad info structure indicating 1 controller connected
+    // CellPadInfo: max_connect, now_connect, system_info, port_status[7], port_setting[7], device_capability[7], device_type[7]
+    if info_ptr != 0 {
+        // max_connect: 7 (max ports)
+        if let Err(_) = write_be32(info_ptr, 7) { return error::CELL_EFAULT; }
+        // now_connect: 1 (one controller connected)
+        if let Err(_) = write_be32(info_ptr + 4, 1) { return error::CELL_EFAULT; }
+        // system_info: 0
+        if let Err(_) = write_be32(info_ptr + 8, 0) { return error::CELL_EFAULT; }
+        // port_status[0]: CELL_PAD_STATUS_CONNECTED | CELL_PAD_STATUS_ASSIGN_CHANGES = 0x11
+        if let Err(_) = write_be32(info_ptr + 12, 0x11) { return error::CELL_EFAULT; }
+        // port_setting[0]: 0
+        if let Err(_) = write_be32(info_ptr + 40, 0) { return error::CELL_EFAULT; }
+    }
+    
     error::CELL_OK
 }
 
@@ -278,8 +297,25 @@ fn hle_pad_get_data(ctx: &HleCallContext) -> i64 {
     let data_ptr = ctx.args[1] as u32;
     trace!("cellPadGetData(port={}, data_ptr=0x{:08x})", port, data_ptr);
     
-    // Return empty pad data (no buttons pressed)
-    // TODO: Actually write to memory
+    // Write empty pad data (no buttons pressed)
+    // CellPadData: len, reserved[6], button[24]
+    if data_ptr != 0 {
+        // len: 24 (number of buttons in data)
+        if let Err(_) = write_be32(data_ptr, 24) { return error::CELL_EFAULT; }
+        // button[0]: digital buttons 1 (D-pad) = all released (0xFF)
+        if let Err(_) = write_be32(data_ptr + 28, 0x00FF) { return error::CELL_EFAULT; }
+        // button[1]: digital buttons 2 (face/shoulder) = all released (0xFF)
+        if let Err(_) = write_be32(data_ptr + 32, 0x00FF) { return error::CELL_EFAULT; }
+        // button[2]: analog right stick X = centered (0x80)
+        if let Err(_) = write_be32(data_ptr + 36, 0x0080) { return error::CELL_EFAULT; }
+        // button[3]: analog right stick Y = centered (0x80)
+        if let Err(_) = write_be32(data_ptr + 40, 0x0080) { return error::CELL_EFAULT; }
+        // button[4]: analog left stick X = centered (0x80)
+        if let Err(_) = write_be32(data_ptr + 44, 0x0080) { return error::CELL_EFAULT; }
+        // button[5]: analog left stick Y = centered (0x80)
+        if let Err(_) = write_be32(data_ptr + 48, 0x0080) { return error::CELL_EFAULT; }
+    }
+    
     error::CELL_OK
 }
 
@@ -319,8 +355,26 @@ fn hle_gcm_get_configuration(ctx: &HleCallContext) -> i64 {
     let config_ptr = ctx.args[0] as u32;
     debug!("cellGcmGetConfiguration(config_ptr=0x{:08x})", config_ptr);
     
-    // TODO: Write configuration to memory
-    // CellGcmConfig: localAddress, ioSize, memoryFrequency, coreFrequency
+    // Write CellGcmConfig structure to memory
+    // Structure: localAddress, ioSize, memoryFrequency, coreFrequency, localSize, ioAddress
+    if config_ptr != 0 {
+        let hle_ctx = get_hle_context_mut();
+        let config = hle_ctx.gcm.get_configuration();
+        
+        // localAddress (offset 0)
+        if let Err(_) = write_be32(config_ptr, config.local_addr) { return error::CELL_EFAULT; }
+        // localSize (offset 4)
+        if let Err(_) = write_be32(config_ptr + 4, config.local_size) { return error::CELL_EFAULT; }
+        // ioAddress (offset 8)
+        if let Err(_) = write_be32(config_ptr + 8, config.io_addr) { return error::CELL_EFAULT; }
+        // ioSize (offset 12)
+        if let Err(_) = write_be32(config_ptr + 12, config.io_size) { return error::CELL_EFAULT; }
+        // memoryFrequency (offset 16)
+        if let Err(_) = write_be32(config_ptr + 16, config.mem_frequency) { return error::CELL_EFAULT; }
+        // coreFrequency (offset 20)
+        if let Err(_) = write_be32(config_ptr + 20, config.core_frequency) { return error::CELL_EFAULT; }
+    }
+    
     error::CELL_OK
 }
 
@@ -477,8 +531,24 @@ fn hle_audio_port_open(ctx: &HleCallContext) -> i64 {
     
     debug!("cellAudioPortOpen(config=0x{:08x}, port_num_ptr=0x{:08x})", config_ptr, port_num_ptr);
     
-    // TODO: Create audio port and return port number
-    error::CELL_OK
+    // Create audio port with default config and return port number
+    let mut hle_ctx = get_hle_context_mut();
+    
+    // Open port with default parameters: 2 channels, 8 blocks, no special attributes, 1.0 volume
+    let port_result = hle_ctx.audio.port_open(2, 8, 0, 1.0);
+    
+    match port_result {
+        Ok(port_num) => {
+            // Write port number to output pointer
+            if port_num_ptr != 0 {
+                if let Err(_) = write_be32(port_num_ptr, port_num) {
+                    return error::CELL_EFAULT;
+                }
+            }
+            error::CELL_OK
+        }
+        Err(e) => e as i64,
+    }
 }
 
 fn hle_audio_port_close(ctx: &HleCallContext) -> i64 {
@@ -520,8 +590,29 @@ fn hle_game_boot_check(ctx: &HleCallContext) -> i64 {
         type_ptr, attr_ptr, size_ptr, dir_name_ptr
     );
     
-    // Return that this is a disc game
-    // TODO: Write values to memory
+    // Write game type (disc game = 1)
+    if type_ptr != 0 {
+        if let Err(_) = write_be32(type_ptr, 1) { return error::CELL_EFAULT; }
+    }
+    
+    // Write attributes (0 = normal)
+    if attr_ptr != 0 {
+        if let Err(_) = write_be32(attr_ptr, 0) { return error::CELL_EFAULT; }
+    }
+    
+    // Write CellGameContentSize structure (hddFreeSizeKB, sizeKB, sysSizeKB)
+    if size_ptr != 0 {
+        // hddFreeSizeKB: 10GB free space
+        if let Err(_) = write_be32(size_ptr, 10 * 1024 * 1024) { return error::CELL_EFAULT; }
+        // sizeKB: current game data size = 0
+        if let Err(_) = write_be32(size_ptr + 4, 0) { return error::CELL_EFAULT; }
+        // sysSizeKB: system size = 0
+        if let Err(_) = write_be32(size_ptr + 8, 0) { return error::CELL_EFAULT; }
+    }
+    
+    // Write directory name if needed (empty string)
+    // dir_name_ptr is a char[CELL_GAME_DIRNAME_SIZE] buffer
+    
     error::CELL_OK
 }
 

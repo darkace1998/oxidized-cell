@@ -492,7 +492,18 @@ impl KbManager {
 
         trace!("KbManager::clear_buf: port={}", port);
 
-        // TODO: Clear actual input buffer
+        // Clear the keyboard data buffer for the specified port
+        let port_idx = port as usize;
+        self.keyboard_data[port_idx] = CellKbData::default();
+
+        // If backend is connected, request it to clear its buffer as well
+        if let Some(backend) = &self.input_backend {
+            if let Ok(mut keyboards) = backend.write() {
+                if let Some(keyboard) = keyboards.get_mut(port_idx) {
+                    keyboard.state.pressed_keys.clear();
+                }
+            }
+        }
 
         0 // CELL_OK
     }
@@ -851,9 +862,9 @@ pub fn cell_kb_set_led_status(port: u32, led: u32) -> i32 {
         return CELL_KB_ERROR_INVALID_PARAMETER;
     }
 
-    // TODO: Set actual LED status
-
-    0 // CELL_OK
+    // Set LED status through the manager which updates both internal state
+    // and forwards to the oc-input backend if connected
+    crate::context::get_hle_context_mut().kb.set_led(port, led)
 }
 
 /// cellKbClearBuf - Clear keyboard input buffer

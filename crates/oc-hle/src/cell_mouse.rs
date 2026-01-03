@@ -282,11 +282,20 @@ impl MouseManager {
 
         trace!("MouseManager::get_data: port={}", port);
 
-        // TODO: Get actual mouse data from oc-input subsystem
-        let mut data = CellMouseData::default();
-        data.x_pos = self.positions[port as usize].0;
-        data.y_pos = self.positions[port as usize].1;
-        data.buttons = self.button_states[port as usize];
+        // Return the cached mouse data which is updated by poll_input()
+        // when the oc-input backend is connected, or manually via update methods
+        let port_idx = port as usize;
+        
+        // Build current mouse data from cached state
+        let data = CellMouseData {
+            update: self.mouse_data[port_idx].update,
+            x_pos: self.positions[port_idx].0,
+            y_pos: self.positions[port_idx].1,
+            buttons: self.button_states[port_idx],
+            wheel: self.mouse_data[port_idx].wheel,
+            tilt_x: self.mouse_data[port_idx].tilt_x,
+            tilt_y: self.mouse_data[port_idx].tilt_y,
+        };
 
         Ok(data)
     }
@@ -307,14 +316,26 @@ impl MouseManager {
 
         trace!("MouseManager::get_data_list: port={}", port);
 
-        // TODO: Get buffered mouse data from oc-input subsystem
-        // For now, return a single entry with current state
+        // Return buffered mouse data from oc-input subsystem
+        // The mouse_data array is updated by poll_input() when the backend is connected
+        let port_idx = port as usize;
         let mut list = CellMouseDataList::default();
         
-        if let Ok(data) = self.get_data(port) {
-            list.list[0] = data;
-            list.list_num = 1;
-        }
+        // Get current state as a single entry in the list
+        // Note: For full buffering, the oc-input backend would maintain a ring buffer
+        // of mouse events. Currently we return the most recent state.
+        let data = CellMouseData {
+            update: self.mouse_data[port_idx].update,
+            x_pos: self.positions[port_idx].0,
+            y_pos: self.positions[port_idx].1,
+            buttons: self.button_states[port_idx],
+            wheel: self.mouse_data[port_idx].wheel,
+            tilt_x: self.mouse_data[port_idx].tilt_x,
+            tilt_y: self.mouse_data[port_idx].tilt_y,
+        };
+        
+        list.list[0] = data;
+        list.list_num = 1;
 
         Ok(list)
     }

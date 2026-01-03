@@ -4,6 +4,7 @@
 //! It handles resolution conversion, aspect ratio handling, and upscaling/downscaling.
 
 use tracing::{debug, trace};
+use crate::memory::{write_be32, write_be64};
 
 /// Error codes
 pub const CELL_RESC_ERROR_NOT_INITIALIZED: i32 = 0x80210301u32 as i32;
@@ -626,14 +627,8 @@ pub fn cell_resc_set_pal_temporal_mode(mode: u32) -> i32 {
 pub fn cell_resc_set_convert_and_flip(idx: u32) -> i32 {
     trace!("cellRescSetConvertAndFlip(idx={})", idx);
 
-    // Check if initialized through global manager
-    if !crate::context::get_hle_context().resc.is_initialized() {
-        return CELL_RESC_ERROR_NOT_INITIALIZED;
-    }
-
-    // TODO: Perform actual scaling and flip through RSX backend
-
-    0 // CELL_OK
+    // Perform actual scaling and flip through RSX backend
+    crate::context::get_hle_context_mut().resc.convert_and_flip(idx)
 }
 
 /// cellRescSetWaitFlip - Set wait for flip
@@ -644,11 +639,21 @@ pub fn cell_resc_set_wait_flip() -> i32 {
     trace!("cellRescSetWaitFlip()");
 
     // Check if initialized through global manager
-    if !crate::context::get_hle_context().resc.is_initialized() {
+    let ctx = crate::context::get_hle_context();
+    if !ctx.resc.is_initialized() {
         return CELL_RESC_ERROR_NOT_INITIALIZED;
     }
 
-    // TODO: Wait for flip to complete
+    // Wait for flip operation to complete - in a real implementation
+    // this would block until the GPU finishes the flip.
+    // For now, we treat it as immediate since convert_and_flip already
+    // increments flip_count synchronously.
+    let _flip_count = ctx.resc.get_flip_count();
+    
+    // In a proper async implementation, we would spin or yield until
+    // the current flip is complete. Since our flip is synchronous, 
+    // we can return immediately.
+    debug!("cellRescSetWaitFlip: flip completed (flip_count={})", _flip_count);
 
     0 // CELL_OK
 }
@@ -660,12 +665,18 @@ pub fn cell_resc_set_wait_flip() -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_resc_get_num_display_buffers(_num_addr: u32) -> i32 {
-    trace!("cellRescGetNumDisplayBuffers()");
+pub fn cell_resc_get_num_display_buffers(num_addr: u32) -> i32 {
+    trace!("cellRescGetNumDisplayBuffers(num_addr=0x{:08X})", num_addr);
 
     match crate::context::get_hle_context().resc.get_num_display_buffers() {
-        Ok(_num) => {
-            // TODO: Write num to memory at _num_addr
+        Ok(num) => {
+            // Write num to memory at num_addr
+            if num_addr != 0 {
+                if let Err(e) = write_be32(num_addr, num) {
+                    debug!("cellRescGetNumDisplayBuffers: failed to write to memory");
+                    return e;
+                }
+            }
             0 // CELL_OK
         }
         Err(e) => e,
@@ -679,12 +690,18 @@ pub fn cell_resc_get_num_display_buffers(_num_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_resc_get_display_buffer_size(_size_addr: u32) -> i32 {
-    trace!("cellRescGetDisplayBufferSize()");
+pub fn cell_resc_get_display_buffer_size(size_addr: u32) -> i32 {
+    trace!("cellRescGetDisplayBufferSize(size_addr=0x{:08X})", size_addr);
 
     match crate::context::get_hle_context().resc.get_display_buffer_size() {
-        Ok(_size) => {
-            // TODO: Write size to memory at _size_addr
+        Ok(size) => {
+            // Write size to memory at size_addr
+            if size_addr != 0 {
+                if let Err(e) = write_be32(size_addr, size) {
+                    debug!("cellRescGetDisplayBufferSize: failed to write to memory");
+                    return e;
+                }
+            }
             0 // CELL_OK
         }
         Err(e) => e,
@@ -698,12 +715,18 @@ pub fn cell_resc_get_display_buffer_size(_size_addr: u32) -> i32 {
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_resc_get_last_flip_time(_time_addr: u32) -> i32 {
-    trace!("cellRescGetLastFlipTime()");
+pub fn cell_resc_get_last_flip_time(time_addr: u32) -> i32 {
+    trace!("cellRescGetLastFlipTime(time_addr=0x{:08X})", time_addr);
 
     match crate::context::get_hle_context().resc.get_last_flip_time() {
-        Ok(_time) => {
-            // TODO: Write time to memory at _time_addr
+        Ok(time) => {
+            // Write time to memory at time_addr
+            if time_addr != 0 {
+                if let Err(e) = write_be64(time_addr, time) {
+                    debug!("cellRescGetLastFlipTime: failed to write to memory");
+                    return e;
+                }
+            }
             0 // CELL_OK
         }
         Err(e) => e,

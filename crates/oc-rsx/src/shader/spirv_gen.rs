@@ -1821,15 +1821,15 @@ mod tests {
         builder.add_memory_model();
         builder.add_basic_types();
         
+        // Verify types were allocated before consuming builder
+        assert!(builder.type_void != 0);
+        assert!(builder.type_float != 0);
+        assert!(builder.type_vec4 != 0);
+        
         let spirv = builder.build();
         
         // Should have header (5 words) + capability + memory model + types
         assert!(spirv.len() > 10, "Should have generated type definitions");
-        
-        // Verify types were allocated
-        assert!(builder.type_void != 0);
-        assert!(builder.type_float != 0);
-        assert!(builder.type_vec4 != 0);
     }
 
     #[test]

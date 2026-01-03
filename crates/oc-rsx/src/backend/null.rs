@@ -53,6 +53,10 @@ impl GraphicsBackend for NullBackend {
 
     fn set_scissor(&mut self, _x: u32, _y: u32, _width: u32, _height: u32) {}
     
+    fn submit_vertex_buffer(&mut self, _binding: u32, _data: &[u8], _stride: u32) {}
+    
+    fn submit_index_buffer(&mut self, _data: &[u8], _index_type: u32) {}
+    
     fn get_framebuffer(&self) -> Option<FramebufferData> {
         // Return an animated test pattern for the null backend
         let mut fb = FramebufferData::new(self.width, self.height);

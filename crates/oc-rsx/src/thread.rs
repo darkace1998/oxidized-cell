@@ -355,9 +355,86 @@ impl RsxThread {
 
     /// Flush accumulated vertices
     fn flush_vertices(&mut self) {
-        // Draw accumulated vertices
         tracing::trace!("Flush vertices");
-        // TODO: Implement vertex buffer submission to backend
+        
+        // Read vertex data from memory and submit to the backend
+        // This reads vertex attributes configured via NV4097_SET_VERTEX_DATA_ARRAY_FORMAT/OFFSET
+        // and submits them as vertex buffers to the Vulkan backend
+        
+        let input_mask = self.gfx_state.vertex_attrib_input_mask;
+        
+        // Process each enabled vertex attribute
+        for i in 0..16u32 {
+            // Check if this attribute is enabled in the input mask
+            if (input_mask & (1 << i)) == 0 {
+                continue;
+            }
+            
+            let format = self.gfx_state.vertex_attrib_format[i as usize];
+            let offset = self.gfx_state.vertex_attrib_offset[i as usize];
+            
+            // Skip if format is 0 (not configured)
+            if format == 0 {
+                continue;
+            }
+            
+            // Parse the vertex attribute format
+            // Format bits:
+            // [3:0]   - type (1=f32, 2=f16, 3=fixed16.16, 4=u8n, 5=s16, 6=cmp, 7=u8)
+            // [7:4]   - size (1-4 components)
+            // [15:8]  - stride
+            let type_bits = format & 0xF;
+            let size = ((format >> 4) & 0xF) as u8;
+            let stride = ((format >> 8) & 0xFF) as u16;
+            
+            // Calculate the byte size for this attribute type
+            let type_byte_size = match type_bits {
+                1 => 4u32, // f32
+                2 => 2,    // f16
+                3 => 4,    // fixed16.16
+                4 => 1,    // u8 normalized
+                5 => 2,    // s16
+                6 => 4,    // compressed
+                7 => 1,    // u8
+                _ => 4,    // default to f32
+            };
+            
+            let attr_size = (size as u32).max(1) * type_byte_size;
+            let effective_stride = if stride == 0 { attr_size as u16 } else { stride };
+            
+            // Read vertex data from RSX local memory
+            // The offset is relative to the RSX local memory base
+            // We read enough data for a reasonable number of vertices
+            // (typically the draw call count, but we use 256 vertices as a reasonable max)
+            const MAX_VERTEX_COUNT: u32 = 256;
+            
+            let data_size = (effective_stride as u32) * MAX_VERTEX_COUNT;
+            let max_size = 4096u32; // 4KB max per attribute
+            let read_size = data_size.min(max_size);
+            
+            if offset != 0 {
+                // Try to read vertex data from RSX local memory
+                match self.memory.read_rsx(offset, read_size) {
+                    Ok(vertex_data) => {
+                        // Submit vertex buffer to the backend
+                        self.backend.submit_vertex_buffer(i, &vertex_data, effective_stride as u32);
+                        
+                        tracing::trace!(
+                            "Submitted vertex buffer: attr={}, offset=0x{:08x}, stride={}, size={}",
+                            i, offset, effective_stride, vertex_data.len()
+                        );
+                    }
+                    Err(e) => {
+                        tracing::trace!(
+                            "Could not read vertex data for attr {} at offset 0x{:08x}: {:?}",
+                            i, offset, e
+                        );
+                    }
+                }
+            }
+        }
+        
+        tracing::trace!("Vertex flush complete");
     }
 
     /// Get memory manager reference
