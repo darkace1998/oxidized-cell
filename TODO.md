@@ -483,9 +483,16 @@ The following HLE modules use temporary local instances where global managers ar
 
 ## 📊 Dispatcher Memory Operations
 
-- [ ] **Memory Parameter Writing**
+- [x] **Memory Parameter Writing**
   - Locations: `crates/oc-hle/src/dispatcher.rs:238`, `266`, `282`, `322`, `480`, `524`
   - Write various values (params, configs, port numbers) to memory
+  - Implemented memory writes for:
+    - `hle_sysutil_get_system_param_int()`: writes system param value to memory
+    - `hle_pad_get_info()`: writes CellPadInfo structure (max_connect, now_connect, port_status)
+    - `hle_pad_get_data()`: writes CellPadData structure (len, button values, analog sticks)
+    - `hle_gcm_get_configuration()`: writes CellGcmConfig structure
+    - `hle_audio_port_open()`: opens audio port and writes port number to memory
+    - `hle_game_boot_check()`: writes game type, attributes, and CellGameContentSize structure
 
 ---
 
