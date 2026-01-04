@@ -25,13 +25,13 @@ A comprehensive task list for the oxidized-cell PlayStation 3 emulator project.
 
 ### HLE Module Global Context
 
-- [ ] **cellAdec: Implement PCM item retrieval through global context** - `crates/oc-hle/src/cell_adec.rs:545`
-- [ ] **cellDmux: Implement global manager instance** - `crates/oc-hle/src/cell_dmux.rs:1711`
-- [ ] **cellDmux: Implement global manager instance for ES handling** - `crates/oc-hle/src/cell_dmux.rs:1741`
-- [ ] **cellVpost: Use global manager instead of temporary instance** - `crates/oc-hle/src/cell_vpost.rs:1069`
-- [ ] **cellVdec: Store frame rate configuration** - `crates/oc-hle/src/cell_vdec.rs:2523`
-- [ ] **cellVdec: Implement picture item retrieval through global context** - `crates/oc-hle/src/cell_vdec.rs:2662`
-- [ ] **libsre: Implement global regex manager** - `crates/oc-hle/src/libsre.rs:530`
+- [x] **cellAdec: Implement PCM item retrieval through global context** - `crates/oc-hle/src/cell_adec.rs:545` ✅ Implemented
+- [x] **cellDmux: Implement global manager instance** - `crates/oc-hle/src/cell_dmux.rs:1711` ✅ Already implemented
+- [x] **cellDmux: Implement global manager instance for ES handling** - `crates/oc-hle/src/cell_dmux.rs:1741` ✅ Already implemented
+- [x] **cellVpost: Use global manager instead of temporary instance** - `crates/oc-hle/src/cell_vpost.rs:1069` ✅ Already implemented
+- [x] **cellVdec: Store frame rate configuration** - `crates/oc-hle/src/cell_vdec.rs:2523` ✅ Implemented
+- [x] **cellVdec: Implement picture item retrieval through global context** - `crates/oc-hle/src/cell_vdec.rs:2662` ✅ Implemented
+- [x] **libsre: Implement global regex manager** - `crates/oc-hle/src/libsre.rs:530` ✅ Already implemented
 
 ---
 
@@ -192,4 +192,4 @@ A comprehensive task list for the oxidized-cell PlayStation 3 emulator project.
 
 ---
 
-*Last updated: 2026-01-03*
+*Last updated: 2026-01-04*

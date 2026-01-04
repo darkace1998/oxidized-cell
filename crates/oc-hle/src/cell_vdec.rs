@@ -145,6 +145,8 @@ struct VdecEntry {
     au_count: u32,
     /// Video decoder backend
     decoder: Option<VideoDecoderBackend>,
+    /// Frame rate configuration (in units of 1/90000 seconds per frame)
+    frame_rate: u32,
 }
 
 /// H.264/AVC profile types
@@ -2407,6 +2409,8 @@ impl VdecEntry {
             picture_queue: VecDeque::new(),
             au_count: 0,
             decoder: Some(decoder),
+            // Frame duration in 90kHz clock units (3003 units ≈ 33.37ms, giving ~29.97fps)
+            frame_rate: 3003,
         }
     }
 }
@@ -2517,10 +2521,23 @@ impl VdecManager {
         entry.picture_queue.pop_front().ok_or(CELL_VDEC_ERROR_EMPTY)
     }
 
-    pub fn set_frame_rate(&mut self, handle: VdecHandle, _frame_rate: u32) -> Result<(), i32> {
-        let _entry = self.decoders.get_mut(&handle).ok_or(CELL_VDEC_ERROR_ARG)?;
+    /// Peek at the next picture item without removing it from the queue
+    pub fn peek_picture(&self, handle: VdecHandle) -> Result<CellVdecPicItem, i32> {
+        let entry = self.decoders.get(&handle).ok_or(CELL_VDEC_ERROR_ARG)?;
         
-        // TODO: Store frame rate configuration
+        if !entry.is_seq_started {
+            return Err(CELL_VDEC_ERROR_SEQ);
+        }
+        
+        entry.picture_queue.front().cloned().ok_or(CELL_VDEC_ERROR_EMPTY)
+    }
+
+    pub fn set_frame_rate(&mut self, handle: VdecHandle, frame_rate: u32) -> Result<(), i32> {
+        let entry = self.decoders.get_mut(&handle).ok_or(CELL_VDEC_ERROR_ARG)?;
+        
+        // Store frame rate configuration
+        entry.frame_rate = frame_rate;
+        trace!("VdecManager::set_frame_rate: handle={}, frame_rate={}", handle, frame_rate);
         Ok(())
     }
 }
@@ -2650,18 +2667,27 @@ pub unsafe fn cell_vdec_get_picture(
 
 /// cellVdecGetPicItem - Get picture item
 pub fn cell_vdec_get_pic_item(
-    _handle: VdecHandle,
+    handle: VdecHandle,
     pic_item_addr: *mut u32,
 ) -> i32 {
-    trace!("cellVdecGetPicItem called");
+    trace!("cellVdecGetPicItem called with handle: {}", handle);
     
     if pic_item_addr.is_null() {
         return CELL_VDEC_ERROR_ARG;
     }
     
-    // TODO: Implement picture item retrieval through global context
-    
-    CELL_VDEC_ERROR_EMPTY
+    // Get picture item through global context (peek, don't consume)
+    match crate::context::get_hle_context().vdec.peek_picture(handle) {
+        Ok(pic_item) => {
+            // Write the picture item address (in real implementation, this would be
+            // the address of the picture data in emulated memory)
+            unsafe {
+                *pic_item_addr = pic_item.start_addr;
+            }
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
 }
 
 /// cellVdecSetFrameRate - Set frame rate

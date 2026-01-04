@@ -533,18 +533,27 @@ pub unsafe fn cell_adec_get_pcm(
 
 /// cellAdecGetPcmItem - Get PCM item
 pub fn cell_adec_get_pcm_item(
-    _handle: AdecHandle,
+    handle: AdecHandle,
     pcm_item_addr: *mut u32,
 ) -> i32 {
-    trace!("cellAdecGetPcmItem called");
+    trace!("cellAdecGetPcmItem called with handle: {}", handle);
     
     if pcm_item_addr.is_null() {
         return CELL_ADEC_ERROR_ARG;
     }
     
-    // TODO: Implement PCM item retrieval through global context
-    
-    CELL_ADEC_ERROR_EMPTY
+    // Get PCM item through global context
+    match crate::context::get_hle_context_mut().adec.get_pcm(handle) {
+        Ok(pcm_item) => {
+            // Write the PCM item address (in real implementation, this would be
+            // the address of the PCM data in emulated memory)
+            unsafe {
+                *pcm_item_addr = pcm_item.start_addr;
+            }
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
 }
 
 #[cfg(test)]
