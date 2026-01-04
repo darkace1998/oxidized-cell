@@ -44,6 +44,21 @@ pub struct GameInfo {
     pub icon0_data: Option<Vec<u8>>,
     /// PIC1 background image data (PNG format)
     pub pic1_data: Option<Vec<u8>>,
+    /// Update information (if available)
+    pub update_info: Option<GameUpdateInfo>,
+}
+
+/// Game update information
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct GameUpdateInfo {
+    /// Update version (e.g., "01.02")
+    pub version: String,
+    /// Path to the update directory
+    pub path: PathBuf,
+    /// Whether the update is installed
+    pub installed: bool,
+    /// Update size in bytes
+    pub size: u64,
 }
 
 /// Game scanner for discovering PS3 games
@@ -453,6 +468,9 @@ impl GameScanner {
         // Extract icon and background images
         let (icon0_data, pic1_data) = self.extract_images(game_dir);
 
+        // Check for game update
+        let update_info = self.detect_game_update(&title_id, game_dir);
+
         Ok(GameInfo {
             title,
             title_id,
@@ -464,7 +482,159 @@ impl GameScanner {
             sound_format,
             icon0_data,
             pic1_data,
+            update_info,
         })
+    }
+
+    /// Detect if a game update is available/installed
+    fn detect_game_update(&self, title_id: &str, game_dir: &Path) -> Option<GameUpdateInfo> {
+        // PS3 updates are typically stored in:
+        // 1. Same directory as the game with "_UPDATE" suffix
+        // 2. In dev_hdd0/game/<TITLE_ID>_UPDATE/
+        // 3. In the PS3_UPDATE folder inside the game
+
+        let update_paths = [
+            // Update in same parent directory
+            game_dir.parent().map(|p| p.join(format!("{}_UPDATE", title_id))),
+            // Update in PS3_UPDATE subfolder
+            Some(game_dir.join("PS3_UPDATE")),
+            // Update alongside game
+            Some(game_dir.with_file_name(format!("{}_UPDATE", title_id))),
+        ];
+
+        for update_path in update_paths.iter().flatten() {
+            if update_path.exists() && update_path.is_dir() {
+                // Check for PARAM.SFO in update
+                let update_sfo = update_path.join("PARAM.SFO");
+                if update_sfo.exists() {
+                    // Try to read update version from PARAM.SFO
+                    if let Ok(version) = self.read_update_version(&update_sfo) {
+                        let size = self.calculate_directory_size(update_path);
+                        
+                        debug!(
+                            "Found game update for {}: version={}, path={:?}, size={}",
+                            title_id, version, update_path, size
+                        );
+                        
+                        return Some(GameUpdateInfo {
+                            version,
+                            path: update_path.clone(),
+                            installed: true,
+                            size,
+                        });
+                    }
+                }
+                
+                // Check for EBOOT.BIN in update (indicates installed update)
+                let update_eboot = update_path.join("USRDIR").join("EBOOT.BIN");
+                if update_eboot.exists() {
+                    let size = self.calculate_directory_size(update_path);
+                    
+                    debug!(
+                        "Found installed update for {} at {:?}",
+                        title_id, update_path
+                    );
+                    
+                    return Some(GameUpdateInfo {
+                        version: "Unknown".to_string(),
+                        path: update_path.clone(),
+                        installed: true,
+                        size,
+                    });
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Read update version from PARAM.SFO
+    fn read_update_version(&self, sfo_path: &Path) -> Result<String> {
+        /// Maximum search range for version pattern after VERSION key
+        const VERSION_SEARCH_RANGE: usize = 100;
+        
+        let file = File::open(sfo_path).map_err(|e| {
+            EmulatorError::Loader(LoaderError::InvalidElf(format!(
+                "Failed to open update PARAM.SFO: {}",
+                e
+            )))
+        })?;
+        let mut reader = BufReader::new(file);
+
+        // Read and verify magic
+        let mut magic = [0u8; 4];
+        reader.read_exact(&mut magic).map_err(|e| {
+            EmulatorError::Loader(LoaderError::InvalidElf(format!(
+                "Failed to read update SFO magic: {}",
+                e
+            )))
+        })?;
+
+        if &magic != b"\x00PSF" {
+            return Err(EmulatorError::Loader(LoaderError::InvalidElf(
+                "Invalid update SFO magic".to_string(),
+            )));
+        }
+
+        // Simple version extraction - look for VERSION field
+        // Read full file to search for VERSION
+        let mut data = Vec::new();
+        reader.seek(std::io::SeekFrom::Start(0)).map_err(|e| {
+            EmulatorError::Loader(LoaderError::InvalidElf(format!(
+                "Failed to seek SFO file: {}",
+                e
+            )))
+        })?;
+        reader.read_to_end(&mut data).map_err(|e| {
+            EmulatorError::Loader(LoaderError::InvalidElf(format!(
+                "Failed to read update SFO: {}",
+                e
+            )))
+        })?;
+
+        // Search for "VERSION" string followed by version number
+        // This is a simplified approach - full SFO parsing is in parse_param_sfo
+        if let Some(pos) = data.windows(7).position(|w| w == b"VERSION") {
+            // Version string typically starts after some offset
+            let search_start = pos + 7;
+            if search_start + 10 < data.len() {
+                // Look for version pattern like "01.00" in the data section
+                for i in search_start..data.len().min(search_start + VERSION_SEARCH_RANGE) {
+                    if data[i].is_ascii_digit() && i + 5 <= data.len() {
+                        let potential = &data[i..i + 5];
+                        if potential.len() == 5 
+                            && potential[0].is_ascii_digit()
+                            && potential[1].is_ascii_digit()
+                            && potential[2] == b'.'
+                            && potential[3].is_ascii_digit()
+                            && potential[4].is_ascii_digit()
+                        {
+                            return Ok(String::from_utf8_lossy(potential).to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok("Unknown".to_string())
+    }
+
+    /// Calculate total size of a directory
+    fn calculate_directory_size(&self, dir: &Path) -> u64 {
+        let mut total = 0u64;
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Ok(meta) = path.metadata() {
+                        total += meta.len();
+                    }
+                } else if path.is_dir() {
+                    total += self.calculate_directory_size(&path);
+                }
+            }
+        }
+        total
     }
 
     /// Extract ICON0.PNG and PIC1.PNG from game directory

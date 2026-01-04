@@ -3,7 +3,35 @@
 //! This module provides parsing and extraction of PlayStation Store package files.
 
 use oc_core::error::LoaderError;
+use std::path::Path;
 use tracing::{debug, info, warn};
+
+/// Progress callback for PKG installation
+///
+/// The callback receives:
+/// - `current_file`: Index of the current file being extracted
+/// - `total_files`: Total number of files to extract
+/// - `current_bytes`: Bytes extracted so far
+/// - `total_bytes`: Total bytes to extract
+/// - `file_name`: Name of the current file
+pub type PkgProgressCallback = Box<dyn Fn(usize, usize, u64, u64, &str) + Send>;
+
+/// PKG installation progress information
+#[derive(Debug, Clone)]
+pub struct PkgInstallProgress {
+    /// Current file index (0-based)
+    pub current_file: usize,
+    /// Total number of files
+    pub total_files: usize,
+    /// Bytes extracted so far
+    pub bytes_extracted: u64,
+    /// Total bytes to extract
+    pub total_bytes: u64,
+    /// Current file name
+    pub current_file_name: String,
+    /// Installation progress as a percentage (0.0 - 1.0)
+    pub progress: f32,
+}
 
 /// PKG file magic
 pub const PKG_MAGIC: u32 = 0x7F504B47; // "\x7FPKG"
@@ -401,6 +429,118 @@ impl PkgLoader {
     pub fn title_id(&self) -> Option<String> {
         self.get_metadata(PkgMetadataId::TitleId)
             .map(|e| String::from_utf8_lossy(&e.data).trim_end_matches('\0').to_string())
+    }
+
+    /// Extract all files from PKG to a directory with progress reporting
+    ///
+    /// # Arguments
+    /// * `data` - The PKG file data
+    /// * `output_dir` - Directory to extract files to
+    /// * `progress_callback` - Optional callback for progress updates
+    ///
+    /// # Returns
+    /// * `Ok(Vec<String>)` - List of extracted file paths
+    /// * `Err(LoaderError)` - If extraction fails
+    pub fn extract_all_with_progress<P: AsRef<Path>>(
+        &self,
+        data: &[u8],
+        output_dir: P,
+        progress_callback: Option<PkgProgressCallback>,
+    ) -> Result<Vec<String>, LoaderError> {
+        // Verify header is parsed (needed for extract_raw)
+        let _header = self.header.as_ref()
+            .ok_or_else(|| LoaderError::InvalidPkg("Header not parsed".to_string()))?;
+
+        let output_path = output_dir.as_ref();
+
+        // Create output directory if it doesn't exist
+        std::fs::create_dir_all(output_path).map_err(|e| {
+            LoaderError::InvalidPkg(format!("Failed to create output directory: {}", e))
+        })?;
+
+        let total_files = self.files.len();
+        let total_bytes: u64 = self.files.iter().map(|f| f.data_size).sum();
+        let mut bytes_extracted: u64 = 0;
+        let mut extracted_paths = Vec::new();
+
+        info!(
+            "Extracting {} files ({} bytes) from PKG to {:?}",
+            total_files, total_bytes, output_path
+        );
+
+        for (idx, file_entry) in self.files.iter().enumerate() {
+            // Report progress before extracting each file
+            if let Some(ref callback) = progress_callback {
+                callback(idx, total_files, bytes_extracted, total_bytes, &file_entry.name);
+            }
+
+            // Extract the file
+            let file_data = self.extract_raw(data, file_entry)?;
+
+            // Create subdirectories if needed
+            let file_path = output_path.join(&file_entry.name);
+            if let Some(parent) = file_path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    LoaderError::InvalidPkg(format!(
+                        "Failed to create directory for {}: {}",
+                        file_entry.name, e
+                    ))
+                })?;
+            }
+
+            // Write file
+            std::fs::write(&file_path, &file_data).map_err(|e| {
+                LoaderError::InvalidPkg(format!("Failed to write {}: {}", file_entry.name, e))
+            })?;
+
+            bytes_extracted += file_entry.data_size;
+            extracted_paths.push(file_path.to_string_lossy().to_string());
+
+            debug!(
+                "Extracted file {}/{}: {} ({} bytes)",
+                idx + 1,
+                total_files,
+                file_entry.name,
+                file_entry.data_size
+            );
+        }
+
+        // Final progress report
+        if let Some(ref callback) = progress_callback {
+            callback(total_files, total_files, total_bytes, total_bytes, "complete");
+        }
+
+        info!(
+            "PKG extraction complete: {} files, {} bytes",
+            extracted_paths.len(),
+            total_bytes
+        );
+
+        Ok(extracted_paths)
+    }
+
+    /// Get installation progress information
+    pub fn get_install_progress(
+        current_file: usize,
+        total_files: usize,
+        bytes_extracted: u64,
+        total_bytes: u64,
+        file_name: &str,
+    ) -> PkgInstallProgress {
+        let progress = if total_bytes > 0 {
+            bytes_extracted as f32 / total_bytes as f32
+        } else {
+            0.0
+        };
+
+        PkgInstallProgress {
+            current_file,
+            total_files,
+            bytes_extracted,
+            total_bytes,
+            current_file_name: file_name.to_string(),
+            progress,
+        }
     }
 }
 

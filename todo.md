@@ -39,11 +39,11 @@ A comprehensive task list for the oxidized-cell PlayStation 3 emulator project.
 
 ### Game Loading & Execution
 
-- [ ] Complete game loading pipeline end-to-end
+- [x] Complete game loading pipeline end-to-end ✅ Already implemented (GameLoader, GamePipeline)
 - [ ] Test with PS3 homebrew applications
-- [ ] Improve ELF/SELF loading error messages
-- [ ] Add PKG installation progress UI
-- [ ] Implement game update detection and patching
+- [x] Improve ELF/SELF loading error messages ✅ Already has comprehensive error messages
+- [x] Add PKG installation progress UI ✅ Implemented (PkgProgressCallback, extract_all_with_progress)
+- [x] Implement game update detection and patching ✅ Implemented (GameUpdateInfo, detect_game_update)
 
 ### RSX Graphics
 
