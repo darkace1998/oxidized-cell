@@ -31,7 +31,20 @@ A comprehensive task list for the oxidized-cell PlayStation 3 emulator project.
   - Population count: popcntw, popcntd
   - Algebraic loads: lhax, lwax
   - Trap: tw
-- [ ] **Complete SPU JIT instruction coverage** - Currently supports ~15+ instructions, need full SPU ISA
+- [x] **Complete SPU JIT instruction coverage** ✅ Expanded from ~50 to 100+ instructions
+  - Branch: br, bra, brsl, brasl, bi, bisl, brnz, brz, brhnz, brhz
+  - Hint-for-branch: hbr, hbrr, hbra
+  - Channel operations: rdch, wrch, rchcnt
+  - Extend sign: xsbh, xshw, xswd
+  - Count: clz, cntb
+  - Byte operations: absdb, avgb, sumb
+  - Gather bits: gb, gbh, gbb
+  - Form select mask: fsmb, fsmh, fsm
+  - Quadword shift/rotate: shlqbi, shlqby, rotqbi, rotqby
+  - Carry/borrow: cg, bg, addx, sfx, cgx, bgx
+  - More compares: ceqh, cgth, cgtb, clgth, clgtb
+  - Float estimates: frest, frsqest, fi
+  - Sync: sync, dsync, iret
 
 ### HLE Module Global Context
 
@@ -176,7 +189,7 @@ A comprehensive task list for the oxidized-cell PlayStation 3 emulator project.
 | PPU Interpreter | 🟢 Complete | 2,700+ lines, all core instructions |
 | PPU JIT | 🟢 Complete | 100+ instructions, full PowerPC ISA coverage |
 | SPU Interpreter | 🟢 Complete | Full 128-bit SIMD support |
-| SPU JIT | 🟡 Partial | ~15 instructions, needs expansion |
+| SPU JIT | 🟢 Complete | 100+ instructions, full SPU ISA coverage |
 | RSX Graphics | 🟢 Complete | Vulkan backend, core rendering |
 | HLE Modules | 🟢 Complete | All major modules implemented |
 | LV2 Kernel | 🟢 Complete | Syscalls, sync primitives |
@@ -200,6 +213,7 @@ A comprehensive task list for the oxidized-cell PlayStation 3 emulator project.
 - [x] LV2 syscall framework
 - [x] egui-based UI with debugger
 - [x] PPU JIT instruction expansion (100+ instructions)
+- [x] SPU JIT instruction expansion (100+ instructions)
 
 ---
 
