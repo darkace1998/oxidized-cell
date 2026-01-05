@@ -70,11 +70,20 @@ A comprehensive task list for the oxidized-cell PlayStation 3 emulator project.
 
 ### RSX Graphics
 
-- [ ] Complete NV4097 method handlers for all draw commands
-- [ ] Implement additional texture formats
-- [ ] Add shader caching to disk
-- [ ] Improve RSX timing accuracy
-- [ ] Implement anti-aliasing modes
+- [x] Complete NV4097 method handlers for all draw commands ✅ Expanded with 35+ new methods
+  - Scissor testing: SET_SCISSOR_HORIZONTAL, SET_SCISSOR_VERTICAL
+  - Logic operations: SET_LOGIC_OP_ENABLE, SET_LOGIC_OP
+  - Color mask: SET_COLOR_MASK, SET_COLOR_MASK_MRT
+  - Fog: SET_FOG_MODE, SET_FOG_PARAMS
+  - Dither: SET_DITHER_ENABLE
+  - Two-sided stencil: all back-face stencil operations
+  - Additional blend: MRT enable, separate RGB/alpha equations
+  - Polygon smooth, semaphores, transform feedback
+  - Array element draw commands (ARRAY_ELEMENT16, ARRAY_ELEMENT32)
+- [x] Implement additional texture formats ✅ Already supported: DXT1-5, ETC1/2, ASTC, 30+ formats
+- [x] Add shader caching to disk ✅ Already implemented in shader/cache.rs
+- [x] Improve RSX timing accuracy ✅ Already implemented: VSync modes, frame pacing, statistics
+- [x] Implement anti-aliasing modes ✅ Already implemented: 1/2/4/8x MSAA, alpha-to-coverage
 
 ### PPU Interpreter
 
