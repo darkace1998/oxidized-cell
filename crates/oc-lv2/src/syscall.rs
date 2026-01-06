@@ -68,17 +68,26 @@ impl SyscallHandler {
     }
 
     /// Read a null-terminated string from emulator memory
+    /// 
+    /// PS3 strings are typically null-terminated C strings. This function reads up to
+    /// MAX_STRING_LEN bytes and searches for the null terminator.
     fn read_string(&self, addr: u64) -> Result<String, KernelError> {
         let mem = self.emulator_memory.as_ref()
             .ok_or(KernelError::InvalidArgument)?;
         
-        // Read a chunk of bytes and find the null terminator
-        const MAX_STRING_LEN: u32 = 4096;
+        // Maximum length for PS3 file paths and strings (matches PS3 MAX_PATH)
+        const MAX_STRING_LEN: u32 = 1024;
+        
         let bytes = mem.read_bytes(addr as u32, MAX_STRING_LEN)
             .map_err(|_| KernelError::MemoryAccess)?;
         
-        // Find null terminator
-        let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+        // Find null terminator - return error if not found (unterminated string)
+        let len = bytes.iter().position(|&b| b == 0)
+            .ok_or_else(|| {
+                tracing::warn!("read_string: no null terminator found at 0x{:08x} within {} bytes", 
+                              addr, MAX_STRING_LEN);
+                KernelError::InvalidArgument
+            })?;
         
         String::from_utf8(bytes[..len].to_vec()).map_err(|_| KernelError::InvalidArgument)
     }
@@ -638,7 +647,12 @@ impl SyscallHandler {
                 let bytes_read = fs::syscalls::sys_fs_read(&self.object_manager, fd, &mut buffer)?;
                 // Write data back to emulator memory
                 if bytes_read > 0 {
-                    let _ = self.write_bytes(buf_addr, &buffer[..bytes_read]);
+                    self.write_bytes(buf_addr, &buffer[..bytes_read])
+                        .map_err(|e| {
+                            tracing::error!("sys_fs_read: failed to write {} bytes to 0x{:08x}: {:?}", 
+                                           bytes_read, buf_addr, e);
+                            e
+                        })?;
                 }
                 Ok(bytes_read as i64)
             }
@@ -647,8 +661,12 @@ impl SyscallHandler {
                 let fd = args[0] as u32;
                 let buf_addr = args[1];
                 let size = args[2] as usize;
-                // Read data from emulator memory
-                let buffer = self.read_bytes(buf_addr, size).unwrap_or_else(|_| vec![0u8; size]);
+                // Read data from emulator memory - fail if memory read fails
+                let buffer = self.read_bytes(buf_addr, size).map_err(|e| {
+                    tracing::error!("sys_fs_write: failed to read {} bytes from 0x{:08x}: {:?}",
+                                   size, buf_addr, e);
+                    e
+                })?;
                 let bytes_written = fs::syscalls::sys_fs_write(&self.object_manager, fd, &buffer)?;
                 Ok(bytes_written as i64)
             }
