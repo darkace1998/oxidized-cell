@@ -68,6 +68,8 @@ A comprehensive task list for the oxidized-cell PlayStation 3 emulator project.
 - [x] Add PKG installation progress UI ✅ Implemented (PkgProgressCallback, extract_all_with_progress)
 - [x] Implement game update detection and patching ✅ Implemented (GameUpdateInfo, detect_game_update)
 - [x] Fix ELF segment loading for arbitrary addresses ✅ Memory is now dynamically committed for ELF segments at any address (e.g., 0x10000000)
+- [x] Use configured GPU backend (Vulkan/Null) ✅ EmulatorRunner now respects gpu.backend config setting
+- [x] Initialize graphics backend before game launch ✅ UI app now calls init_graphics() when launching games
 
 ### RSX Graphics
 

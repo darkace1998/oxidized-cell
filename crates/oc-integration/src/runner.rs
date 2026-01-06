@@ -10,10 +10,11 @@
 
 use crate::loader::{GameLoader, LoadedGame};
 use oc_core::{Config, EmulatorError, Result, Scheduler, ThreadId, ThreadState, create_rsx_bridge, create_spu_bridge, SpuBridgeReceiver, SpuBridgeMessage, SpuWorkload, SpuDmaRequest};
+use oc_core::config::GpuBackend;
 use oc_memory::MemoryManager;
 use oc_ppu::{PpuInterpreter, PpuThread};
 use oc_spu::{SpuInterpreter, SpuThread, SpuPriority, SpuThreadGroup};
-use oc_rsx::RsxThread;
+use oc_rsx::{RsxThread, NullBackend, VulkanBackend};
 use oc_lv2::SyscallHandler;
 use std::path::Path;
 use std::sync::Arc;
@@ -90,8 +91,18 @@ impl EmulatorRunner {
         // Create SPU interpreter
         let spu_interpreter = Arc::new(SpuInterpreter::new());
 
-        // Create RSX thread
-        let mut rsx_thread_inner = RsxThread::new(memory.clone());
+        // Create RSX thread with configured backend
+        let rsx_backend: Box<dyn oc_rsx::backend::GraphicsBackend> = match config.gpu.backend {
+            GpuBackend::Vulkan => {
+                tracing::info!("Using Vulkan graphics backend");
+                Box::new(VulkanBackend::new())
+            }
+            GpuBackend::Null => {
+                tracing::info!("Using Null graphics backend (test pattern only)");
+                Box::new(NullBackend::new())
+            }
+        };
+        let mut rsx_thread_inner = RsxThread::with_backend(memory.clone(), rsx_backend);
         
         // Create RSX bridge for GCM -> RSX communication
         let (bridge_sender, bridge_receiver) = create_rsx_bridge();
