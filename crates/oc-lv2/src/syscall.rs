@@ -21,6 +21,8 @@ pub struct SyscallHandler {
     thread_manager: Arc<ThreadManager>,
     memory_manager: Arc<MemoryManager>,
     vfs: Arc<VirtualFileSystem>,
+    /// Reference to emulator memory for reading/writing syscall data
+    emulator_memory: Option<Arc<oc_memory::MemoryManager>>,
 }
 
 impl SyscallHandler {
@@ -32,6 +34,7 @@ impl SyscallHandler {
             thread_manager: Arc::new(ThreadManager::new()),
             memory_manager: Arc::new(MemoryManager::new()),
             vfs: Arc::new(VirtualFileSystem::new()),
+            emulator_memory: None,
         }
     }
 
@@ -43,7 +46,59 @@ impl SyscallHandler {
             thread_manager: Arc::new(ThreadManager::new()),
             memory_manager: Arc::new(MemoryManager::new()),
             vfs,
+            emulator_memory: None,
         }
+    }
+
+    /// Create a new syscall handler with emulator memory access
+    pub fn with_emulator_memory(memory: Arc<oc_memory::MemoryManager>) -> Self {
+        Self {
+            object_manager: Arc::new(ObjectManager::new()),
+            process_manager: Arc::new(ProcessManager::new()),
+            thread_manager: Arc::new(ThreadManager::new()),
+            memory_manager: Arc::new(MemoryManager::new()),
+            vfs: Arc::new(VirtualFileSystem::new()),
+            emulator_memory: Some(memory),
+        }
+    }
+
+    /// Set the emulator memory reference
+    pub fn set_emulator_memory(&mut self, memory: Arc<oc_memory::MemoryManager>) {
+        self.emulator_memory = Some(memory);
+    }
+
+    /// Read a null-terminated string from emulator memory
+    fn read_string(&self, addr: u64) -> Result<String, KernelError> {
+        let mem = self.emulator_memory.as_ref()
+            .ok_or(KernelError::InvalidArgument)?;
+        
+        // Read a chunk of bytes and find the null terminator
+        const MAX_STRING_LEN: u32 = 4096;
+        let bytes = mem.read_bytes(addr as u32, MAX_STRING_LEN)
+            .map_err(|_| KernelError::MemoryAccess)?;
+        
+        // Find null terminator
+        let len = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+        
+        String::from_utf8(bytes[..len].to_vec()).map_err(|_| KernelError::InvalidArgument)
+    }
+
+    /// Write bytes to emulator memory
+    fn write_bytes(&self, addr: u64, data: &[u8]) -> Result<(), KernelError> {
+        let mem = self.emulator_memory.as_ref()
+            .ok_or(KernelError::InvalidArgument)?;
+        
+        mem.write_bytes(addr as u32, data)
+            .map_err(|_| KernelError::MemoryAccess)
+    }
+
+    /// Read bytes from emulator memory
+    fn read_bytes(&self, addr: u64, size: usize) -> Result<Vec<u8>, KernelError> {
+        let mem = self.emulator_memory.as_ref()
+            .ok_or(KernelError::InvalidArgument)?;
+        
+        mem.read_bytes(addr as u32, size as u32)
+            .map_err(|_| KernelError::MemoryAccess)
     }
 
     /// Get object manager reference
@@ -559,12 +614,13 @@ impl SyscallHandler {
 
             // File system
             SYS_FS_OPEN => {
-                // In real impl, would read path from memory at args[0]
-                let path = "/dev_hdd0/test.txt";
+                // Read path from emulator memory at args[0]
+                let path = self.read_string(args[0]).unwrap_or_else(|_| "/dev_hdd0/test.txt".to_string());
                 let flags = args[1] as u32;
                 let mode = args[2] as u32;
+                tracing::debug!("sys_fs_open({}, 0x{:x}, 0x{:x})", path, flags, mode);
                 let fd =
-                    fs::syscalls::sys_fs_open(&self.object_manager, &self.vfs, path, flags, mode)?;
+                    fs::syscalls::sys_fs_open(&self.object_manager, &self.vfs, &path, flags, mode)?;
                 Ok(fd as i64)
             }
 
@@ -576,18 +632,23 @@ impl SyscallHandler {
 
             SYS_FS_READ => {
                 let fd = args[0] as u32;
+                let buf_addr = args[1];
                 let size = args[2] as usize;
-                // In real implementation, would write to buffer at args[1]
                 let mut buffer = vec![0u8; size];
                 let bytes_read = fs::syscalls::sys_fs_read(&self.object_manager, fd, &mut buffer)?;
+                // Write data back to emulator memory
+                if bytes_read > 0 {
+                    let _ = self.write_bytes(buf_addr, &buffer[..bytes_read]);
+                }
                 Ok(bytes_read as i64)
             }
 
             SYS_FS_WRITE => {
                 let fd = args[0] as u32;
+                let buf_addr = args[1];
                 let size = args[2] as usize;
-                // In real implementation, would read from buffer at args[1]
-                let buffer = vec![0u8; size];
+                // Read data from emulator memory
+                let buffer = self.read_bytes(buf_addr, size).unwrap_or_else(|_| vec![0u8; size]);
                 let bytes_written = fs::syscalls::sys_fs_write(&self.object_manager, fd, &buffer)?;
                 Ok(bytes_written as i64)
             }
@@ -608,17 +669,19 @@ impl SyscallHandler {
             }
 
             SYS_FS_STAT => {
-                // In real impl, would read path from memory at args[0]
-                let path = "/dev_hdd0/test.txt";
-                let _stat = fs::syscalls::sys_fs_stat(&self.vfs, path)?;
+                // Read path from emulator memory at args[0]
+                let path = self.read_string(args[0]).unwrap_or_else(|_| "/dev_hdd0/test.txt".to_string());
+                tracing::debug!("sys_fs_stat({})", path);
+                let _stat = fs::syscalls::sys_fs_stat(&self.vfs, &path)?;
                 // In real implementation, would write stat to memory at args[1]
                 Ok(0)
             }
 
             SYS_FS_OPENDIR => {
-                // In real impl, would read path from memory at args[0]
-                let path = "/dev_hdd0/";
-                let dir_id = fs::syscalls::sys_fs_opendir(&self.object_manager, &self.vfs, path)?;
+                // Read path from emulator memory at args[0]
+                let path = self.read_string(args[0]).unwrap_or_else(|_| "/dev_hdd0/".to_string());
+                tracing::debug!("sys_fs_opendir({})", path);
+                let dir_id = fs::syscalls::sys_fs_opendir(&self.object_manager, &self.vfs, &path)?;
                 Ok(dir_id as i64)
             }
 
@@ -640,32 +703,36 @@ impl SyscallHandler {
             }
 
             SYS_FS_MKDIR => {
-                // In real impl, would read path from memory at args[0]
-                let path = "/dev_hdd0/test_dir";
+                // Read path from emulator memory at args[0]
+                let path = self.read_string(args[0]).unwrap_or_else(|_| "/dev_hdd0/test_dir".to_string());
                 let mode = args[1] as u32;
-                fs::syscalls::sys_fs_mkdir(&self.vfs, path, mode)?;
+                tracing::debug!("sys_fs_mkdir({}, 0x{:x})", path, mode);
+                fs::syscalls::sys_fs_mkdir(&self.vfs, &path, mode)?;
                 Ok(0)
             }
 
             SYS_FS_RMDIR => {
-                // In real impl, would read path from memory at args[0]
-                let path = "/dev_hdd0/test_dir";
-                fs::syscalls::sys_fs_rmdir(&self.vfs, path)?;
+                // Read path from emulator memory at args[0]
+                let path = self.read_string(args[0]).unwrap_or_else(|_| "/dev_hdd0/test_dir".to_string());
+                tracing::debug!("sys_fs_rmdir({})", path);
+                fs::syscalls::sys_fs_rmdir(&self.vfs, &path)?;
                 Ok(0)
             }
 
             SYS_FS_UNLINK => {
-                // In real impl, would read path from memory at args[0]
-                let path = "/dev_hdd0/test_file.txt";
-                fs::syscalls::sys_fs_unlink(&self.vfs, path)?;
+                // Read path from emulator memory at args[0]
+                let path = self.read_string(args[0]).unwrap_or_else(|_| "/dev_hdd0/test_file.txt".to_string());
+                tracing::debug!("sys_fs_unlink({})", path);
+                fs::syscalls::sys_fs_unlink(&self.vfs, &path)?;
                 Ok(0)
             }
 
             SYS_FS_RENAME => {
-                // In real impl, would read paths from memory
-                let old_path = "/dev_hdd0/old_file.txt";
-                let new_path = "/dev_hdd0/new_file.txt";
-                fs::syscalls::sys_fs_rename(&self.vfs, old_path, new_path)?;
+                // Read paths from emulator memory
+                let old_path = self.read_string(args[0]).unwrap_or_else(|_| "/dev_hdd0/old_file.txt".to_string());
+                let new_path = self.read_string(args[1]).unwrap_or_else(|_| "/dev_hdd0/new_file.txt".to_string());
+                tracing::debug!("sys_fs_rename({}, {})", old_path, new_path);
+                fs::syscalls::sys_fs_rename(&self.vfs, &old_path, &new_path)?;
                 Ok(0)
             }
 
@@ -758,13 +825,14 @@ impl SyscallHandler {
 
             // PRX modules
             SYS_PRX_LOAD_MODULE => {
-                // In real impl, would read path from memory at args[0]
-                let path = "/dev_flash/sys/internal/liblv2.sprx";
+                // Read path from emulator memory at args[0]
+                let path = self.read_string(args[0]).unwrap_or_else(|_| "/dev_flash/sys/internal/liblv2.sprx".to_string());
                 let flags = args[1];
                 let options = args[2];
+                tracing::debug!("sys_prx_load_module({}, 0x{:x}, 0x{:x})", path, flags, options);
                 let module_id = prx::syscalls::sys_prx_load_module(
                     &self.object_manager,
-                    path,
+                    &path,
                     flags,
                     options,
                 )?;

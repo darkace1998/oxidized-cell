@@ -121,8 +121,8 @@ impl EmulatorRunner {
         
         tracing::info!("Input backend connected: cellPad HLE <-> DualShock3Manager");
 
-        // Create syscall handler
-        let syscall_handler = Arc::new(SyscallHandler::new());
+        // Create syscall handler with emulator memory access
+        let syscall_handler = Arc::new(SyscallHandler::with_emulator_memory(memory.clone()));
 
         // Create scheduler
         let scheduler = Arc::new(RwLock::new(Scheduler::new()));
@@ -713,7 +713,9 @@ impl EmulatorRunner {
 
     /// Run threads using the scheduler
     fn run_threads(&mut self) -> Result<()> {
-        const MAX_CYCLES_PER_FRAME: u64 = 100000;
+        // Increased from 100,000 to 1,000,000 for better game compatibility
+        // PS3 games often need more CPU cycles per frame to progress
+        const MAX_CYCLES_PER_FRAME: u64 = 1000000;
         let mut cycles = 0;
 
         while cycles < MAX_CYCLES_PER_FRAME {

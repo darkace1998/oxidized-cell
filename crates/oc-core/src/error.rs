@@ -207,6 +207,15 @@ pub enum KernelError {
 
     #[error("Timeout")]
     Timeout,
+
+    #[error("Invalid argument")]
+    InvalidArgument,
+
+    #[error("No such file or directory")]
+    NoSuchFile,
+
+    #[error("Memory access error")]
+    MemoryAccess,
 }
 
 /// Loader errors

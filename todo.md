@@ -101,7 +101,12 @@ A comprehensive task list for the oxidized-cell PlayStation 3 emulator project.
 
 ### LV2 Kernel
 
-- [ ] Implement additional syscalls for game compatibility
+- [x] Implement syscall memory access for proper argument reading ✅ Implemented
+  - sys_fs_open, sys_fs_stat, etc. now read paths from emulator memory
+  - sys_fs_read/write now transfer data through emulator memory
+  - sys_prx_load_module reads path from emulator memory
+- [x] Increased instruction execution loop (100K → 1M cycles/frame) ✅ Implemented
+- [x] Added new KernelError variants (InvalidArgument, NoSuchFile, MemoryAccess) ✅ Implemented
 - [ ] Improve PRX module loading
 - [ ] Add event queue debugging
 - [ ] Implement remaining sync primitives edge cases
