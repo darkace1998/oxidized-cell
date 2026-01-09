@@ -100,6 +100,54 @@ pub struct RsxState {
     pub occlusion_query_enable: bool,
     pub occlusion_query_offset: u32,
     
+    // Scissor state
+    pub scissor_x: u16,
+    pub scissor_y: u16,
+    pub scissor_width: u16,
+    pub scissor_height: u16,
+    
+    // Logic operation state
+    pub logic_op_enable: bool,
+    pub logic_op: u32,
+    
+    // Color mask state
+    pub color_mask: u32,
+    pub color_mask_mrt: u32,
+    
+    // Fog state
+    pub fog_mode: u32,
+    pub fog_params: [f32; 2],
+    
+    // Dither state
+    pub dither_enable: bool,
+    
+    // Two-sided stencil state
+    pub two_sided_stencil_enable: bool,
+    pub back_stencil_func: u32,
+    pub back_stencil_ref: u8,
+    pub back_stencil_mask: u8,
+    pub back_stencil_op_fail: u32,
+    pub back_stencil_op_zfail: u32,
+    pub back_stencil_op_zpass: u32,
+    pub back_stencil_write_mask: u8,
+    
+    // Additional blend state
+    pub blend_enable_mrt: u32,
+    pub blend_equation_rgb: u32,
+    pub blend_equation_alpha: u32,
+    
+    // Polygon smooth state
+    pub polygon_smooth_enable: bool,
+    
+    // Semaphore state
+    pub semaphore_offset: u32,
+    
+    // Transform feedback state
+    pub transform_feedback_enable: bool,
+    
+    // Shader control state
+    pub shader_control: u32,
+    
     // Vertex program constants (512 vec4 registers)
     pub vertex_constants: [[f32; 4]; 512],
     /// Currently loading VP constant index
@@ -184,6 +232,43 @@ impl RsxState {
             primitive_restart_index: 0xFFFFFFFF,
             occlusion_query_enable: false,
             occlusion_query_offset: 0,
+            // Scissor state
+            scissor_x: 0,
+            scissor_y: 0,
+            scissor_width: 4096,
+            scissor_height: 4096,
+            // Logic operation state
+            logic_op_enable: false,
+            logic_op: 0,
+            // Color mask state
+            color_mask: 0xFFFFFFFF,
+            color_mask_mrt: 0xFFFFFFFF,
+            // Fog state
+            fog_mode: 0,
+            fog_params: [0.0, 1.0],
+            // Dither state
+            dither_enable: true,
+            // Two-sided stencil state
+            two_sided_stencil_enable: false,
+            back_stencil_func: 0,
+            back_stencil_ref: 0,
+            back_stencil_mask: 0xFF,
+            back_stencil_op_fail: 0,
+            back_stencil_op_zfail: 0,
+            back_stencil_op_zpass: 0,
+            back_stencil_write_mask: 0xFF,
+            // Additional blend state
+            blend_enable_mrt: 0,
+            blend_equation_rgb: 0,
+            blend_equation_alpha: 0,
+            // Polygon smooth state
+            polygon_smooth_enable: false,
+            // Semaphore state
+            semaphore_offset: 0,
+            // Transform feedback state
+            transform_feedback_enable: false,
+            // Shader control state
+            shader_control: 0,
             vertex_constants: [[0.0; 4]; 512],
             vertex_constant_load_slot: 0,
             fragment_constants: Vec::new(),

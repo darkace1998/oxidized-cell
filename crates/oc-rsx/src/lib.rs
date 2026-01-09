@@ -16,5 +16,7 @@ pub mod timing;
 pub mod vertex;
 
 pub use backend::FramebufferData;
+pub use backend::null::NullBackend;
+pub use backend::vulkan::VulkanBackend;
 pub use state::RsxState;
 pub use thread::RsxThread;

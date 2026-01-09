@@ -93,6 +93,53 @@ pub const NV4097_SET_RESTART_INDEX: u32 = 0x0DF0;
 pub const NV4097_SET_ZPASS_PIXEL_COUNT_ENABLE: u32 = 0x1DA0;
 pub const NV4097_SET_REPORT_SEMAPHORE_OFFSET: u32 = 0x1D00;
 
+// Scissor methods
+pub const NV4097_SET_SCISSOR_HORIZONTAL: u32 = 0x08C0;
+pub const NV4097_SET_SCISSOR_VERTICAL: u32 = 0x08C4;
+
+// Logic operation methods
+pub const NV4097_SET_LOGIC_OP_ENABLE: u32 = 0x09C0;
+pub const NV4097_SET_LOGIC_OP: u32 = 0x09C4;
+
+// Color mask methods
+pub const NV4097_SET_COLOR_MASK: u32 = 0x0328;
+pub const NV4097_SET_COLOR_MASK_MRT: u32 = 0x032C;
+
+// Fog methods
+pub const NV4097_SET_FOG_MODE: u32 = 0x0420;
+pub const NV4097_SET_FOG_PARAMS: u32 = 0x0424;  // Fog parameter 0 (start)
+pub const NV4097_SET_FOG_PARAMS_1: u32 = 0x0428;  // Fog parameter 1 (end)
+
+// Dither methods
+pub const NV4097_SET_DITHER_ENABLE: u32 = 0x0334;
+
+// Two-sided stencil methods
+pub const NV4097_SET_TWO_SIDED_STENCIL_TEST_ENABLE: u32 = 0x038C;
+pub const NV4097_SET_BACK_STENCIL_FUNC: u32 = 0x0390;
+pub const NV4097_SET_BACK_STENCIL_FUNC_REF: u32 = 0x0394;
+pub const NV4097_SET_BACK_STENCIL_FUNC_MASK: u32 = 0x0398;
+pub const NV4097_SET_BACK_STENCIL_OP_FAIL: u32 = 0x039C;
+pub const NV4097_SET_BACK_STENCIL_OP_ZFAIL: u32 = 0x03A0;
+pub const NV4097_SET_BACK_STENCIL_OP_ZPASS: u32 = 0x03A4;
+pub const NV4097_SET_BACK_STENCIL_MASK: u32 = 0x03A8;
+
+// Additional blend methods
+pub const NV4097_SET_BLEND_ENABLE_MRT: u32 = 0x0338;
+pub const NV4097_SET_BLEND_EQUATION_RGB: u32 = 0x0344;
+// Note: Separate alpha equation uses a different register
+pub const NV4097_SET_BLEND_EQUATION_ALPHA: u32 = 0x0346;
+
+// Polygon mode methods  
+pub const NV4097_SET_POLYGON_SMOOTH_ENABLE: u32 = 0x0440;
+
+// Semaphore methods
+pub const NV4097_SET_SEMAPHORE_OFFSET: u32 = 0x0D64;
+pub const NV4097_BACK_END_WRITE_SEMAPHORE_RELEASE: u32 = 0x0D6C;
+pub const NV4097_TEXTURE_READ_SEMAPHORE_RELEASE: u32 = 0x0D70;
+
+// Transform feedback methods
+pub const NV4097_SET_TRANSFORM_FEEDBACK_ENABLE: u32 = 0x1D88;
+
 // Vertex program methods
 pub const NV4097_SET_VERTEX_PROGRAM_START_SLOT: u32 = 0x0480;
 pub const NV4097_SET_VERTEX_PROGRAM_LOAD_SLOT: u32 = 0x0484;
@@ -106,12 +153,15 @@ pub const NV4097_SET_TRANSFORM_CONSTANT_END: u32 = 0x0EFC;
 
 // Fragment program methods
 pub const NV4097_SET_SHADER_PROGRAM: u32 = 0x0848;
+pub const NV4097_SET_SHADER_CONTROL: u32 = 0x084C;
 
 // Draw methods
 pub const NV4097_SET_BEGIN_END: u32 = 0x1808;
 pub const NV4097_DRAW_ARRAYS: u32 = 0x1810;
 pub const NV4097_DRAW_INDEX_ARRAY: u32 = 0x1814;
 pub const NV4097_INLINE_ARRAY: u32 = 0x1818;
+pub const NV4097_ARRAY_ELEMENT16: u32 = 0x181C;
+pub const NV4097_ARRAY_ELEMENT32: u32 = 0x1820;
 
 // Vertex attribute methods
 pub const NV4097_SET_VERTEX_DATA_ARRAY_FORMAT: u32 = 0x1900;
@@ -322,6 +372,111 @@ impl MethodHandler {
                 state.occlusion_query_offset = data;
             }
 
+            // Scissor
+            NV4097_SET_SCISSOR_HORIZONTAL => {
+                state.scissor_x = (data & 0xFFFF) as u16;
+                state.scissor_width = ((data >> 16) & 0xFFFF) as u16;
+            }
+            NV4097_SET_SCISSOR_VERTICAL => {
+                state.scissor_y = (data & 0xFFFF) as u16;
+                state.scissor_height = ((data >> 16) & 0xFFFF) as u16;
+            }
+
+            // Logic operations
+            NV4097_SET_LOGIC_OP_ENABLE => {
+                state.logic_op_enable = data != 0;
+            }
+            NV4097_SET_LOGIC_OP => {
+                state.logic_op = data;
+            }
+
+            // Color mask
+            NV4097_SET_COLOR_MASK => {
+                state.color_mask = data;
+            }
+            NV4097_SET_COLOR_MASK_MRT => {
+                state.color_mask_mrt = data;
+            }
+
+            // Fog
+            NV4097_SET_FOG_MODE => {
+                state.fog_mode = data;
+            }
+            NV4097_SET_FOG_PARAMS => {
+                // Fog parameter 0 (typically fog start/scale)
+                state.fog_params[0] = f32::from_bits(data);
+            }
+            NV4097_SET_FOG_PARAMS_1 => {
+                // Fog parameter 1 (typically fog end/bias)
+                state.fog_params[1] = f32::from_bits(data);
+            }
+
+            // Dither
+            NV4097_SET_DITHER_ENABLE => {
+                state.dither_enable = data != 0;
+            }
+
+            // Two-sided stencil
+            NV4097_SET_TWO_SIDED_STENCIL_TEST_ENABLE => {
+                state.two_sided_stencil_enable = data != 0;
+            }
+            NV4097_SET_BACK_STENCIL_FUNC => {
+                state.back_stencil_func = data;
+            }
+            NV4097_SET_BACK_STENCIL_FUNC_REF => {
+                state.back_stencil_ref = data as u8;
+            }
+            NV4097_SET_BACK_STENCIL_FUNC_MASK => {
+                state.back_stencil_mask = data as u8;
+            }
+            NV4097_SET_BACK_STENCIL_OP_FAIL => {
+                state.back_stencil_op_fail = data;
+            }
+            NV4097_SET_BACK_STENCIL_OP_ZFAIL => {
+                state.back_stencil_op_zfail = data;
+            }
+            NV4097_SET_BACK_STENCIL_OP_ZPASS => {
+                state.back_stencil_op_zpass = data;
+            }
+            NV4097_SET_BACK_STENCIL_MASK => {
+                state.back_stencil_write_mask = data as u8;
+            }
+
+            // Additional blend methods
+            NV4097_SET_BLEND_ENABLE_MRT => {
+                state.blend_enable_mrt = data;
+            }
+            NV4097_SET_BLEND_EQUATION_RGB => {
+                state.blend_equation_rgb = data;
+            }
+            NV4097_SET_BLEND_EQUATION_ALPHA => {
+                state.blend_equation_alpha = data;
+            }
+
+            // Polygon smooth
+            NV4097_SET_POLYGON_SMOOTH_ENABLE => {
+                state.polygon_smooth_enable = data != 0;
+            }
+
+            // Semaphore
+            NV4097_SET_SEMAPHORE_OFFSET => {
+                state.semaphore_offset = data;
+            }
+            NV4097_BACK_END_WRITE_SEMAPHORE_RELEASE | NV4097_TEXTURE_READ_SEMAPHORE_RELEASE => {
+                // Signal semaphore - handled by RSX thread
+                tracing::trace!("Semaphore release: method=0x{:04X}, data=0x{:08X}", method, data);
+            }
+
+            // Transform feedback
+            NV4097_SET_TRANSFORM_FEEDBACK_ENABLE => {
+                state.transform_feedback_enable = data != 0;
+            }
+
+            // Shader control
+            NV4097_SET_SHADER_CONTROL => {
+                state.shader_control = data;
+            }
+
             // Shader programs
             NV4097_SET_SHADER_PROGRAM => {
                 state.fragment_program_addr = data;
@@ -334,7 +489,8 @@ impl MethodHandler {
             }
 
             // Draw commands - These need special handling
-            NV4097_DRAW_ARRAYS | NV4097_DRAW_INDEX_ARRAY | NV4097_INLINE_ARRAY => {
+            NV4097_DRAW_ARRAYS | NV4097_DRAW_INDEX_ARRAY | NV4097_INLINE_ARRAY |
+            NV4097_ARRAY_ELEMENT16 | NV4097_ARRAY_ELEMENT32 => {
                 // These are handled by the RSX thread, not just state updates
                 tracing::trace!("Draw command: method=0x{:04X}, data=0x{:08X}", method, data);
             }

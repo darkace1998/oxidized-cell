@@ -280,6 +280,42 @@ impl ElfLoader {
             flags |= PageFlags::EXECUTE;
         }
 
+        // Calculate the total memory size to commit for this segment
+        // memsz includes BSS (uninitialized data), filesz is just the file data
+        // PS3 uses 32-bit addresses, so segment sizes should fit in u32
+        let commit_size = u32::try_from(if memsz > 0 { memsz } else { filesz })
+            .map_err(|_| LoaderError::InvalidElf(format!(
+                "Segment {} size 0x{:x} exceeds 32-bit address space",
+                index, if memsz > 0 { memsz } else { filesz }
+            )))?;
+        
+        // Determine if we need temporary write permissions for loading
+        // We need WRITE if we're going to write file data or zero-fill BSS
+        let has_file_data = filesz > 0;
+        let has_bss = memsz > filesz;  // BSS = uninitialized data that needs zeroing
+        let needs_write = has_file_data || has_bss;
+        let segment_has_write = flags.contains(PageFlags::WRITE);
+        let needs_temp_write = needs_write && !segment_has_write;
+
+        // Commit the memory region for this segment before writing
+        // This ensures the pages are allocated and have the correct permissions
+        // PS3 games can load segments at various addresses (e.g., 0x10000000)
+        // that may not be pre-allocated during memory manager initialization
+        if commit_size > 0 {
+            // Add WRITE permission temporarily for loading if the segment doesn't already have it
+            let load_flags = if needs_temp_write { flags | PageFlags::WRITE } else { flags };
+            memory.set_page_flags(vaddr, commit_size, load_flags)
+                .map_err(|e| LoaderError::InvalidElf(format!(
+                    "Failed to commit memory region for segment {} at 0x{:08x} (size: 0x{:x}): {}",
+                    index, vaddr, commit_size, e
+                )))?;
+            
+            debug!(
+                "Committed memory region: vaddr=0x{:08x}, size=0x{:x}, flags={:?}",
+                vaddr, commit_size, load_flags
+            );
+        }
+
         // Read segment data from file
         if filesz > 0 {
             // Get file size for error context
@@ -331,12 +367,21 @@ impl ElfLoader {
         }
 
         // Zero out remaining memory (BSS section)
-        if memsz > filesz {
+        if has_bss {
             let zero_size = memsz - filesz;
             let zeros = vec![0u8; zero_size];
             memory
                 .write_bytes(vaddr + filesz as u32, &zeros)
                 .map_err(|e| LoaderError::InvalidElf(format!("Failed to zero BSS: {}", e)))?;
+        }
+
+        // Apply final page permissions only if we added temporary WRITE
+        if needs_temp_write {
+            memory.set_page_flags(vaddr, commit_size, flags)
+                .map_err(|e| LoaderError::InvalidElf(format!(
+                    "Failed to set final page permissions for segment {} at 0x{:08x}: {}",
+                    index, vaddr, e
+                )))?;
         }
 
         Ok(())

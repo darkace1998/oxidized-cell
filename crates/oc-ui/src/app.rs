@@ -202,6 +202,15 @@ impl OxidizedCellApp {
         self.init_emulator();
         
         if let Some(ref emulator) = self.emulator {
+            // Initialize graphics backend first
+            if let Err(e) = emulator.write().init_graphics() {
+                let msg = format!("Failed to initialize graphics: {}", e);
+                self.log_viewer.log(LogLevel::Warn, "oc-ui", &msg);
+                // Continue anyway - null backend will be used as fallback
+            } else {
+                self.log_viewer.log(LogLevel::Info, "oc-ui", "Graphics backend initialized");
+            }
+            
             // Load the game (uses interior mutability via RwLock for thread management)
             let load_result = emulator.read().load_game(&game_path);
             match load_result {

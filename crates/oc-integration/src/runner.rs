@@ -10,10 +10,11 @@
 
 use crate::loader::{GameLoader, LoadedGame};
 use oc_core::{Config, EmulatorError, Result, Scheduler, ThreadId, ThreadState, create_rsx_bridge, create_spu_bridge, SpuBridgeReceiver, SpuBridgeMessage, SpuWorkload, SpuDmaRequest};
+use oc_core::config::GpuBackend;
 use oc_memory::MemoryManager;
 use oc_ppu::{PpuInterpreter, PpuThread};
 use oc_spu::{SpuInterpreter, SpuThread, SpuPriority, SpuThreadGroup};
-use oc_rsx::RsxThread;
+use oc_rsx::{RsxThread, NullBackend, VulkanBackend};
 use oc_lv2::SyscallHandler;
 use std::path::Path;
 use std::sync::Arc;
@@ -90,8 +91,18 @@ impl EmulatorRunner {
         // Create SPU interpreter
         let spu_interpreter = Arc::new(SpuInterpreter::new());
 
-        // Create RSX thread
-        let mut rsx_thread_inner = RsxThread::new(memory.clone());
+        // Create RSX thread with configured backend
+        let rsx_backend: Box<dyn oc_rsx::backend::GraphicsBackend> = match config.gpu.backend {
+            GpuBackend::Vulkan => {
+                tracing::info!("Using Vulkan graphics backend");
+                Box::new(VulkanBackend::new())
+            }
+            GpuBackend::Null => {
+                tracing::info!("Using Null graphics backend (test pattern only)");
+                Box::new(NullBackend::new())
+            }
+        };
+        let mut rsx_thread_inner = RsxThread::with_backend(memory.clone(), rsx_backend);
         
         // Create RSX bridge for GCM -> RSX communication
         let (bridge_sender, bridge_receiver) = create_rsx_bridge();
@@ -121,8 +132,8 @@ impl EmulatorRunner {
         
         tracing::info!("Input backend connected: cellPad HLE <-> DualShock3Manager");
 
-        // Create syscall handler
-        let syscall_handler = Arc::new(SyscallHandler::new());
+        // Create syscall handler with emulator memory access
+        let syscall_handler = Arc::new(SyscallHandler::with_emulator_memory(memory.clone()));
 
         // Create scheduler
         let scheduler = Arc::new(RwLock::new(Scheduler::new()));
@@ -713,7 +724,9 @@ impl EmulatorRunner {
 
     /// Run threads using the scheduler
     fn run_threads(&mut self) -> Result<()> {
-        const MAX_CYCLES_PER_FRAME: u64 = 100000;
+        // Increased from 100,000 to 1,000,000 for better game compatibility
+        // PS3 games often need more CPU cycles per frame to progress
+        const MAX_CYCLES_PER_FRAME: u64 = 1000000;
         let mut cycles = 0;
 
         while cycles < MAX_CYCLES_PER_FRAME {
