@@ -8,11 +8,75 @@ This document tracks pending tasks, improvements, and future features for the ox
 
 ### CPU & Execution Core
 
+#### PPU Interpreter Improvements
+
+- [ ] **Complete 64-bit Instruction Set**: Add missing doubleword operations
+  - `mulld`, `divd`, `divdu` - 64-bit multiply/divide (partial)
+  - `rldic`, `rldicl`, `rldicr` - 64-bit rotate operations
+  - `rldimi`, `rldcl`, `rldcr` - 64-bit rotate and mask insert
+  - `srad`, `sradi` - Shift right algebraic doubleword
+  - Location: `crates/oc-ppu/src/instructions/integer.rs`, `crates/oc-ppu/src/decoder.rs`
+
+- [ ] **VMX/AltiVec Completion**: Implement remaining vector instructions
+  - **Byte/Halfword Operations**: `vaddubm`, `vadduhm`, `vsububm`, `vsubuhm` (modulo variants)
+  - **Pack Operations**: `vpkswss`, `vpkshss`, `vpkshus` (signed to smaller with saturation)
+  - **Unpack Operations**: `vupkhsb`, `vupklsb`, `vupkhsh`, `vupklsh` (sign-extend expand)
+  - **Multiply High**: `vmulhuw`, `vmulhsw` (high 32-bits of 64-bit product)
+  - **Sum Across**: `vsum4ubs`, `vsum4sbs`, `vsum4shs`, `vsum2sws`, `vsumsws`
+  - **Average**: `vavgub`, `vavguh`, `vavguw`, `vavgsb`, `vavgsh`, `vavgsw`
+  - **Min/Max Integer**: `vminub`, `vminuh`, `vminuw`, `vmaxub`, `vmaxuh`, `vmaxuw`
+  - **Reciprocal/RSQRT**: `vrsqrtefp` (reciprocal square root estimate)
+  - Location: `crates/oc-ppu/src/instructions/vector.rs`, `crates/oc-ppu/src/vmx.rs`
+
+- [ ] **FPSCR Full Accuracy**: Complete floating-point exception handling
+  - Enable exception bits (`VE`, `OE`, `UE`, `ZE`, `XE`) for trapping
+  - Implement `mcrfs` (Move to CR from FPSCR)
+  - Full FPRF (Floating-Point Result Flags) update for all FP ops
+  - Denormalized number handling per IEEE 754
+  - Location: `crates/oc-ppu/src/instructions/float.rs`
+
+- [ ] **System Instruction Stubs**: Implement missing SPR handling
+  - `mftb`, `mftbu` - Move from Time Base (currently approximate)
+  - Accurate decrementer (`DEC`) handling for timed operations
+  - `mtmsr`, `mfmsr` - Machine State Register (for privilege level)
+  - Location: `crates/oc-ppu/src/instructions/system.rs`
+
+#### PPU JIT Compilation
+
 - [ ] **PPU JIT Instruction Coverage**: Extend LLVM IR generation for remaining PowerPC instructions
   - Branch instructions with link register handling
   - VMX/AltiVec SIMD instructions (128-bit vectors)
   - All floating-point edge cases and FPSCR flag handling
   - Location: `cpp/src/ppu_jit.cpp`, `crates/oc-ppu/src/`
+
+- [ ] **JIT Integer Instructions**: Add LLVM IR generation
+  - `mullw`, `mulhw`, `mulhwu` - Multiply word
+  - `divw`, `divwu` - Divide word
+  - `rlwinm`, `rlwimi`, `rlwnm` - Rotate and mask
+  - `cntlzw`, `cntlzd` - Count leading zeros
+  - `extsb`, `extsh`, `extsw` - Sign extension
+  - Location: `cpp/src/ppu_jit.cpp`
+
+- [ ] **JIT Branch Instructions**: Complete branch compilation
+  - `bc`, `bca`, `bcl`, `bcla` - Conditional branch with CTR
+  - `bclr`, `bclrl` - Branch to LR
+  - `bcctr`, `bcctrl` - Branch to CTR
+  - Link register save/restore for function calls
+  - Location: `cpp/src/ppu_jit.cpp`
+
+- [ ] **JIT Load/Store Instructions**: Implement memory access IR
+  - `lhz`, `lha`, `sth` - Halfword operations
+  - `ld`, `std` - Doubleword operations
+  - `lmw`, `stmw` - Multiple word operations
+  - Update forms (`lwzu`, `stwu`, etc.)
+  - Location: `cpp/src/ppu_jit.cpp`
+
+- [ ] **JIT VMX Instructions**: Add vector operation compilation
+  - `vaddfp`, `vsubfp`, `vmaddfp` - Vector float arithmetic
+  - `vand`, `vor`, `vxor`, `vnor` - Vector logical
+  - `vperm`, `vsel` - Vector permute/select
+  - `vcmpequw`, `vcmpgtsw` - Vector compare
+  - Location: `cpp/src/ppu_jit.cpp`
 
 - [ ] **SPU JIT Instruction Coverage**: Complete SPU SIMD instruction compilation
   - Memory Flow Controller (MFC) DMA operations
@@ -172,6 +236,13 @@ This document tracks pending tasks, improvements, and future features for the ox
 
 ### Testing & CI
 
+- [ ] **PPU Instruction Tests**: Expand test coverage for CPU instructions
+  - **64-bit Operations**: Tests for `mulld`, `divd`, `rldic`, `srad`
+  - **VMX Edge Cases**: NaN handling, denormal numbers, saturation boundaries
+  - **Atomic Operations**: Multi-threaded `lwarx`/`stwcx.` stress tests
+  - **FPSCR Flags**: Verify all exception bits set correctly
+  - Location: `crates/oc-ppu/src/tests/`, `crates/oc-ppu/src/interpreter.rs`
+
 - [ ] **Integration Tests**: Add game-level integration tests
   - Homebrew test suite
   - Known-working game tests
@@ -307,6 +378,35 @@ This document tracks pending tasks, improvements, and future features for the ox
 | JIT Compilation | ~30% | ~20% | ~50% |
 | Input Devices | ~50% | ~30% | ~20% |
 
+### PPU Instruction Coverage Details
+
+| Instruction Category | Status | Notes |
+|----------------------|--------|-------|
+| Integer Arithmetic (32-bit) | ✅ Complete | `add`, `subf`, `mullw`, `divw`, etc. |
+| Integer Arithmetic (64-bit) | 🟡 Partial | Basic ops done, rotate/mask need work |
+| Integer Logical | ✅ Complete | `and`, `or`, `xor`, `nand`, `nor`, `eqv` |
+| Shift/Rotate (32-bit) | ✅ Complete | `slw`, `srw`, `sraw`, `rlwinm`, `rlwimi` |
+| Shift/Rotate (64-bit) | 🟡 Partial | `sld`, `srd` done; `rldic`, `rldimi` needed |
+| Branch Instructions | ✅ Complete | All branch forms implemented |
+| Load/Store (Basic) | ✅ Complete | All sizes, indexed, update forms |
+| Load/Store (Atomic) | ✅ Complete | `lwarx`, `stwcx.`, `ldarx`, `stdcx.` |
+| Floating-Point Arithmetic | ✅ Complete | All basic ops with single/double |
+| Floating-Point FMA | ✅ Complete | `fmadd`, `fmsub`, `fnmadd`, `fnmsub` |
+| Floating-Point Convert | ✅ Complete | All integer <-> float conversions |
+| FPSCR Handling | 🟡 Partial | Basic flags done, exception trapping incomplete |
+| VMX Integer Add/Sub | 🟡 Partial | Saturating done, modulo variants partial |
+| VMX Logical | ✅ Complete | `vand`, `vor`, `vxor`, `vnor`, `vsel` |
+| VMX Float | 🟡 Partial | Basic ops done, estimates incomplete |
+| VMX Pack/Unpack | 🟡 Partial | Basic pack done, signed variants needed |
+| VMX Compare | 🟡 Partial | Basic compare done, Rc forms incomplete |
+| VMX Permute | ✅ Complete | `vperm`, `vsplt*`, `vmrgh*`, `vmrgl*` |
+| System Instructions | ✅ Complete | SPR access, sync, cache hints |
+| JIT Integer | 🟡 Partial | Basic arithmetic in LLVM IR |
+| JIT Branch | 🔴 Minimal | Only unconditional branches |
+| JIT Load/Store | 🟡 Partial | `lwz`, `stw` done; others needed |
+| JIT Floating-Point | 🟡 Partial | Basic ops; FMA needs completion |
+| JIT VMX | 🔴 Minimal | Framework exists, few instructions |
+
 ---
 
 ## 📝 Notes
@@ -318,4 +418,4 @@ This document tracks pending tasks, improvements, and future features for the ox
 
 ---
 
-*Last updated: 2026-01-16*
+*Last updated: 2026-01-21*
