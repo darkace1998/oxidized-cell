@@ -167,6 +167,158 @@ This document tracks pending tasks, improvements, and future features for the ox
   - Add function-level optimization
   - Location: `cpp/src/ppu_jit.cpp`, `cpp/src/spu_jit.cpp`
 
+#### JIT Infrastructure
+
+- [ ] **LLVM Backend Improvements**: Complete LLVM integration
+  - **ORC JIT v2**: Migrate from MCJIT to ORC for better performance
+  - **Target Machine Configuration**: Optimize for host CPU features (AVX2, AVX-512)
+  - **Module Management**: Proper module ownership and memory management
+  - **Error Handling**: Comprehensive LLVM error propagation
+  - Location: `cpp/src/ppu_jit.cpp`, `cpp/src/spu_jit.cpp`
+
+- [ ] **Code Cache Management**: Improve compiled code storage
+  - **LRU Eviction**: Implement least-recently-used cache eviction
+  - **Size Limits**: Configurable cache size limits per processor type
+  - **Invalidation**: Proper code invalidation on self-modifying code
+  - **Statistics**: Cache hit/miss tracking for profiling
+  - Location: `cpp/src/ppu_jit.cpp` (CodeCache struct)
+
+- [ ] **Basic Block Detection**: Improve block boundary identification
+  - **PPU**: Handle complex branch patterns (indirect, conditional)
+  - **SPU**: Detect all branch types (br, bra, brsl, bi, bisl, brnz/brz)
+  - **Block Merging**: Merge consecutive blocks for better optimization
+  - Location: `cpp/src/ppu_jit.cpp`, `cpp/src/spu_jit.cpp`
+
+#### Branch Prediction
+
+- [ ] **Branch Prediction Enhancement**: Complete prediction infrastructure
+  - **Hint Types**: Likely, Unlikely, Static (backward=taken)
+  - **Runtime Updates**: Update predictions based on execution history
+  - **Threshold Tuning**: Configurable taken/not-taken thresholds
+  - **Prediction Stats**: Track prediction accuracy per branch
+  - Location: `cpp/src/ppu_jit.cpp` (BranchPredictor struct)
+
+- [ ] **Branch Target Cache**: Implement indirect branch optimization
+  - **BTB (Branch Target Buffer)**: Cache indirect branch targets
+  - **Polymorphic Inline Cache**: Multiple targets per call site
+  - **Target Validation**: Validate cached targets before use
+  - Location: `cpp/src/ppu_jit.cpp`
+
+#### Inline Caching
+
+- [ ] **Call Site Inline Caching**: Complete IC implementation
+  - **Monomorphic IC**: Single target call site caching
+  - **Polymorphic IC**: Multiple target call site handling
+  - **Megamorphic Fallback**: Fallback for highly polymorphic sites
+  - **IC Invalidation**: Invalidate on code modification
+  - Location: `cpp/src/ppu_jit.cpp` (InlineCacheManager struct)
+
+- [ ] **Constant Propagation Cache**: Cache constant values
+  - **Immediate Values**: Cache frequently used immediate values
+  - **Memory Load Caching**: Cache repeated memory loads
+  - **Register Value Tracking**: Track known register values
+  - Location: `cpp/src/ppu_jit.cpp`
+
+#### Register Allocation
+
+- [ ] **Register Allocation Optimization**: Complete register allocator
+  - **Liveness Analysis**: Track live GPR/FPR/VR across blocks
+  - **Spill/Fill Optimization**: Minimize stack spills
+  - **Register Hints**: Caller-saved vs callee-saved preferences
+  - **Cross-Block Allocation**: Preserve registers across basic blocks
+  - Location: `cpp/src/ppu_jit.cpp` (RegisterAllocator struct)
+
+- [ ] **Register Coalescing**: Reduce move instructions
+  - **Copy Elimination**: Eliminate unnecessary register copies
+  - **Phi Elimination**: Handle SSA phi nodes efficiently
+  - **Argument Passing**: Optimize function call register usage
+  - Location: `cpp/src/ppu_jit.cpp`
+
+#### Lazy Compilation
+
+- [ ] **Lazy Compilation Manager**: Complete lazy JIT implementation
+  - **Threshold Tuning**: Configurable execution count threshold (default: 10)
+  - **State Machine**: NotCompiled → Pending → Compiling → Compiled/Failed
+  - **Stub Generation**: Generate interpreter stubs for uncompiled code
+  - **Hot Path Detection**: Identify and prioritize hot code paths
+  - Location: `cpp/src/ppu_jit.cpp` (LazyCompilationManager struct)
+
+- [ ] **Tiered Compilation**: Implement multi-tier compilation
+  - **Tier 0**: Interpreter (immediate execution)
+  - **Tier 1**: Baseline JIT (fast compilation, low optimization)
+  - **Tier 2**: Optimizing JIT (slow compilation, high optimization)
+  - **Tier Transition**: Automatic tier promotion based on execution count
+  - Location: `cpp/src/ppu_jit.cpp`
+
+#### Multi-threaded Compilation
+
+- [ ] **Compilation Thread Pool**: Complete parallel compilation
+  - **Worker Threads**: Configurable thread count
+  - **Priority Queue**: Priority-based task scheduling
+  - **Task Completion**: Track pending/completed compilation tasks
+  - **Thread Synchronization**: Proper mutex/condition variable usage
+  - Location: `cpp/src/ppu_jit.cpp` (CompilationThreadPool struct)
+
+- [ ] **Background Compilation**: Compile ahead of execution
+  - **Speculative Compilation**: Compile likely-to-execute blocks
+  - **Branch Target Precompilation**: Compile branch targets in advance
+  - **Idle Compilation**: Compile during idle time
+  - Location: `cpp/src/ppu_jit.cpp`
+
+#### SPU-Specific JIT Features
+
+- [ ] **Loop Optimization**: Complete SPU loop handling
+  - **Loop Detection**: Identify loop headers and back edges
+  - **Iteration Count**: Determine compile-time iteration count
+  - **Vectorization Check**: Mark loops as vectorizable
+  - **Loop Unrolling**: Unroll small loops for performance
+  - Location: `cpp/src/spu_jit.cpp` (LoopOptimizer struct)
+
+- [ ] **Channel Operation JIT**: Compile channel I/O
+  - **Channel Read/Write**: JIT `rdch`, `wrch`, `rchcnt` instructions
+  - **Blocking Semantics**: Handle blocking channel operations
+  - **Callback Integration**: Channel callbacks for interpreter fallback
+  - **All 32 Channels**: Support all SPU/MFC channels
+  - Location: `cpp/src/spu_jit.cpp` (ChannelManager struct)
+
+- [ ] **MFC DMA JIT**: Compile DMA operations
+  - **GET/PUT Commands**: All DMA command variants (GET, PUT, GETB, PUTB, GETF, PUTF)
+  - **Atomic Operations**: GETLLAR, PUTLLC, PUTLLUC
+  - **Tag Management**: DMA tag tracking and completion
+  - **Transfer Callbacks**: DMA transfer callbacks
+  - Location: `cpp/src/spu_jit.cpp` (MfcDmaManager struct)
+
+- [ ] **SIMD Intrinsics**: Native SIMD code generation
+  - **Integer Ops**: VecAddI8/16/32, VecSubI8/16/32, VecMulI16
+  - **Float Ops**: VecAddF32, VecSubF32, VecMulF32, VecMaddF32
+  - **Logical Ops**: VecAndV, VecOrV, VecXorV, VecNotV
+  - **Shuffle Ops**: VecShuffle, VecRotateBytes, VecShiftBytes, VecSelect
+  - **Instruction Mapping**: Map SPU opcodes to native SIMD intrinsics
+  - Location: `cpp/src/spu_jit.cpp` (SimdIntrinsicManager struct)
+
+#### JIT Execution & Debugging
+
+- [ ] **Execution Context**: Complete context management
+  - **PPU Context**: All 32 GPR, 32 FPR, 32 VR, CR, LR, CTR, XER, FPSCR, VSCR
+  - **SPU Context**: 128 128-bit registers, local storage pointer
+  - **Exit Reason Codes**: Normal, Branch, Syscall, Breakpoint, Error
+  - **Memory Base**: Memory pointer for load/store operations
+  - Location: `crates/oc-ffi/src/jit.rs` (PpuContext, SpuContext)
+
+- [ ] **Breakpoint Integration**: Complete debugger support
+  - **Software Breakpoints**: Insert breakpoints in compiled code
+  - **Breakpoint Tracking**: Per-address breakpoint management
+  - **Code Patching**: Patch compiled code for breakpoints
+  - **Breakpoint Exit**: Exit JIT execution on breakpoint hit
+  - Location: `cpp/src/ppu_jit.cpp` (BreakpointManager struct)
+
+- [ ] **JIT Profiling**: Add performance profiling
+  - **Execution Counting**: Count block executions
+  - **Time Measurement**: Measure compilation and execution time
+  - **Hot Block Detection**: Identify performance-critical blocks
+  - **IR Dump**: Dump LLVM IR for debugging
+  - Location: `cpp/src/ppu_jit.cpp`, `cpp/src/spu_jit.cpp`
+
 ### Graphics (RSX)
 
 #### NV4097 Method Handlers
@@ -481,6 +633,17 @@ This document tracks pending tasks, improvements, and future features for the ox
   - **Vulkan Backend**: Render output comparison tests
   - Location: `crates/oc-rsx/src/`, `crates/oc-rsx/src/shader/`
 
+- [ ] **JIT Compilation Tests**: Expand test coverage for JIT compilers
+  - **PPU JIT**: Compiled code correctness vs interpreter
+  - **SPU JIT**: Compiled code correctness vs interpreter
+  - **Branch Prediction**: Prediction accuracy tests
+  - **Inline Caching**: Cache hit/miss behavior tests
+  - **Lazy Compilation**: Threshold and state transition tests
+  - **Multi-threaded**: Thread pool stress tests
+  - **Loop Optimization**: Loop detection accuracy (SPU)
+  - **SIMD Intrinsics**: Intrinsic mapping correctness
+  - Location: `cpp/src/`, `crates/oc-ffi/src/jit.rs`
+
 - [ ] **Integration Tests**: Add game-level integration tests
   - Homebrew test suite
   - Known-working game tests
@@ -687,6 +850,65 @@ This document tracks pending tasks, improvements, and future features for the ox
 | JIT Load/Store | 🔴 Minimal | Not implemented |
 | JIT Channel | 🟡 Partial | Channel framework in C++; incomplete coverage |
 | JIT Float | 🔴 Minimal | Not implemented |
+
+### JIT Compilation Coverage Details
+
+| Component Category | Status | Notes |
+|--------------------|--------|-------|
+| LLVM Context | ✅ Complete | Context and module creation |
+| LLVM ORC JIT | 🟡 Partial | Basic ORC v2 setup; optimization passes incomplete |
+| Target Machine | ✅ Complete | Native target selection |
+| IR Builder | ✅ Complete | Basic LLVM IR generation |
+| Code Cache (PPU) | ✅ Complete | Block caching with 64MB limit |
+| Code Cache (SPU) | ✅ Complete | Block caching with 64MB limit |
+| Cache Eviction | 🔴 Minimal | Size-based only; LRU not implemented |
+| Cache Statistics | 🔴 Minimal | Not implemented |
+| Basic Block Detection (PPU) | ✅ Complete | Branch-based block boundaries |
+| Basic Block Detection (SPU) | ✅ Complete | All branch types detected |
+| Block Merging | 🔴 Minimal | Not implemented |
+| Branch Prediction | ✅ Complete | Likely/Unlikely/Static hints |
+| Branch History | ✅ Complete | Taken/not-taken counters |
+| Prediction Updates | ✅ Complete | Runtime prediction updates |
+| Branch Target Cache | 🔴 Minimal | Not implemented |
+| Inline Cache (PPU) | ✅ Complete | Call site caching with eviction |
+| IC Lookup | ✅ Complete | Hit counting, validation |
+| IC Invalidation | ✅ Complete | Target-based invalidation |
+| Polymorphic IC | 🔴 Minimal | Single-target only |
+| Register Liveness | ✅ Complete | GPR/FPR/VR liveness analysis |
+| Register Hints | ✅ Complete | Caller/callee preference hints |
+| Spill/Fill | 🔴 Minimal | Not optimized |
+| Register Coalescing | 🔴 Minimal | Not implemented |
+| Lazy Compilation | ✅ Complete | Threshold-based triggering |
+| Lazy State Machine | ✅ Complete | NotCompiled → Pending → Compiling → Compiled |
+| Lazy Threshold | ✅ Complete | Configurable threshold (default: 10) |
+| Tiered Compilation | 🔴 Minimal | Single tier only |
+| Compilation Thread Pool | ✅ Complete | Multi-threaded worker pool |
+| Priority Queue | ✅ Complete | Priority-based task scheduling |
+| Task Tracking | ✅ Complete | Pending/completed counters |
+| Background Compilation | 🔴 Minimal | Not implemented |
+| Loop Detection (SPU) | ✅ Complete | Header/back-edge/exit detection |
+| Loop Iteration Count | ✅ Complete | Compile-time count tracking |
+| Loop Vectorization Flag | ✅ Complete | Vectorizable marking |
+| Loop Unrolling | 🔴 Minimal | Not implemented |
+| Channel Manager (SPU) | ✅ Complete | All 32 channels supported |
+| Channel Callbacks | ✅ Complete | Read/write callback registration |
+| Channel Blocking JIT | 🟡 Partial | Basic operations, blocking incomplete |
+| MFC DMA Manager | ✅ Complete | DMA operation queuing |
+| MFC Tag Groups | ✅ Complete | Tag-based operation tracking |
+| MFC GET/PUT | ✅ Complete | All command variants |
+| MFC Atomic | ✅ Complete | GETLLAR, PUTLLC, PUTLLUC |
+| DMA Callbacks | ✅ Complete | Transfer callback registration |
+| SIMD Intrinsic Map | ✅ Complete | SPU opcode to intrinsic mapping |
+| SIMD Integer Ops | 🟡 Partial | Add/Sub/And/Or/Xor mapped |
+| SIMD Float Ops | 🟡 Partial | Add/Sub/Mul mapped |
+| SIMD Shuffle | 🔴 Minimal | Not implemented |
+| PPU Context | ✅ Complete | 32 GPR, 32 FPR, 32 VR, CR, LR, CTR, XER, FPSCR, VSCR |
+| SPU Context | 🟡 Partial | 128 registers, LS pointer; some fields incomplete |
+| Exit Reason Codes | ✅ Complete | Normal, Branch, Syscall, Breakpoint, Error |
+| Breakpoint Manager | ✅ Complete | Add/remove/check breakpoints |
+| Breakpoint Code Patch | 🔴 Minimal | Not implemented |
+| JIT Profiling | 🔴 Minimal | Not implemented |
+| IR Dump | 🔴 Minimal | Not implemented |
 
 ### RSX Method & Shader Coverage Details
 
