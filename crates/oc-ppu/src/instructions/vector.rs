@@ -1198,6 +1198,286 @@ pub fn vmulouh(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
     result
 }
 
+// ============================================================================
+// Additional VMX/AltiVec Instructions - Completion
+// ============================================================================
+
+/// Vector Pack Signed Halfword Unsigned Saturate
+/// Packs 8 halfwords from two vectors into 16 unsigned bytes with saturation
+pub fn vpkshus(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    let pack = |val: i16| -> u8 {
+        if val < 0 {
+            0
+        } else if val > u8::MAX as i16 {
+            u8::MAX
+        } else {
+            val as u8
+        }
+    };
+    
+    // Pack 8 halfwords from a and b into 16 bytes
+    let mut all_bytes = [0u8; 16];
+    let mut byte_idx = 0;
+    
+    // Pack from vector a (4 words = 8 halfwords)
+    for i in 0..4 {
+        let hi = (a[i] >> 16) as i16;
+        let lo = a[i] as i16;
+        all_bytes[byte_idx] = pack(hi);
+        all_bytes[byte_idx + 1] = pack(lo);
+        byte_idx += 2;
+    }
+    
+    // Pack from vector b (4 words = 8 halfwords)
+    for i in 0..4 {
+        let hi = (b[i] >> 16) as i16;
+        let lo = b[i] as i16;
+        all_bytes[byte_idx] = pack(hi);
+        all_bytes[byte_idx + 1] = pack(lo);
+        byte_idx += 2;
+    }
+    
+    // Convert bytes back to words
+    for i in 0..4 {
+        result[i] = u32::from_be_bytes([
+            all_bytes[i * 4],
+            all_bytes[i * 4 + 1],
+            all_bytes[i * 4 + 2],
+            all_bytes[i * 4 + 3],
+        ]);
+    }
+    
+    result
+}
+
+/// Vector Unpack High Signed Halfword to Signed Word
+/// Unpacks the high 4 halfwords from a vector into 4 signed words
+pub fn vupkhsh(a: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    // Extract high 4 halfwords (from words 0 and 1)
+    let halfwords = [
+        ((a[0] >> 16) & 0xFFFF) as i16,
+        (a[0] & 0xFFFF) as i16,
+        ((a[1] >> 16) & 0xFFFF) as i16,
+        (a[1] & 0xFFFF) as i16,
+    ];
+    
+    for i in 0..4 {
+        result[i] = halfwords[i] as i32 as u32;
+    }
+    
+    result
+}
+
+/// Vector Unpack Low Signed Halfword to Signed Word
+/// Unpacks the low 4 halfwords from a vector into 4 signed words
+pub fn vupklsh(a: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    // Extract low 4 halfwords (from words 2 and 3)
+    let halfwords = [
+        ((a[2] >> 16) & 0xFFFF) as i16,
+        (a[2] & 0xFFFF) as i16,
+        ((a[3] >> 16) & 0xFFFF) as i16,
+        (a[3] & 0xFFFF) as i16,
+    ];
+    
+    for i in 0..4 {
+        result[i] = halfwords[i] as i32 as u32;
+    }
+    
+    result
+}
+
+/// Vector Multiply High Signed Word
+/// Returns the high 32 bits of a 64-bit signed product
+pub fn vmulhsw(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let prod = (a[i] as i32 as i64) * (b[i] as i32 as i64);
+        result[i] = (prod >> 32) as u32;
+    }
+    result
+}
+
+/// Vector Sum Across Signed Byte Saturate
+/// Sums 4 signed bytes per word element and adds to b, with saturation
+pub fn vsum4sbs(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let bytes = a[i].to_be_bytes();
+        let sum: i32 = (bytes[0] as i8 as i32) + (bytes[1] as i8 as i32) 
+                     + (bytes[2] as i8 as i32) + (bytes[3] as i8 as i32);
+        let total = (b[i] as i32).saturating_add(sum);
+        result[i] = total as u32;
+    }
+    result
+}
+
+/// Vector Sum Across Signed Halfword Saturate
+/// Sums 2 signed halfwords per word element and adds to b, with saturation
+pub fn vsum4shs(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let hi = (a[i] >> 16) as i16 as i32;
+        let lo = a[i] as i16 as i32;
+        let sum = hi + lo;
+        let total = (b[i] as i32).saturating_add(sum);
+        result[i] = total as u32;
+    }
+    result
+}
+
+/// Vector Sum Across 2 Signed Words Saturate
+/// Sums pairs of signed words and adds to even elements of b
+pub fn vsum2sws(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    // Sum words 0,1 of a and add to b[1], result in word 1
+    let sum01 = (a[0] as i32 as i64) + (a[1] as i32 as i64) + (b[1] as i32 as i64);
+    result[1] = sum01.clamp(i32::MIN as i64, i32::MAX as i64) as i32 as u32;
+    
+    // Sum words 2,3 of a and add to b[3], result in word 3
+    let sum23 = (a[2] as i32 as i64) + (a[3] as i32 as i64) + (b[3] as i32 as i64);
+    result[3] = sum23.clamp(i32::MIN as i64, i32::MAX as i64) as i32 as u32;
+    
+    result
+}
+
+/// Vector Sum Across Signed Word Saturate
+/// Sums all 4 signed words and adds to b[3], result in word 3
+pub fn vsumsws(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    let sum: i64 = (a[0] as i32 as i64) + (a[1] as i32 as i64) 
+                 + (a[2] as i32 as i64) + (a[3] as i32 as i64) 
+                 + (b[3] as i32 as i64);
+    result[3] = sum.clamp(i32::MIN as i64, i32::MAX as i64) as i32 as u32;
+    result
+}
+
+/// Vector Minimum Unsigned Byte
+pub fn vminub(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_bytes = a[i].to_be_bytes();
+        let b_bytes = b[i].to_be_bytes();
+        result[i] = u32::from_be_bytes([
+            std::cmp::min(a_bytes[0], b_bytes[0]),
+            std::cmp::min(a_bytes[1], b_bytes[1]),
+            std::cmp::min(a_bytes[2], b_bytes[2]),
+            std::cmp::min(a_bytes[3], b_bytes[3]),
+        ]);
+    }
+    result
+}
+
+/// Vector Maximum Unsigned Byte
+pub fn vmaxub(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_bytes = a[i].to_be_bytes();
+        let b_bytes = b[i].to_be_bytes();
+        result[i] = u32::from_be_bytes([
+            std::cmp::max(a_bytes[0], b_bytes[0]),
+            std::cmp::max(a_bytes[1], b_bytes[1]),
+            std::cmp::max(a_bytes[2], b_bytes[2]),
+            std::cmp::max(a_bytes[3], b_bytes[3]),
+        ]);
+    }
+    result
+}
+
+/// Vector Minimum Signed Byte
+pub fn vminsb(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_bytes = a[i].to_be_bytes();
+        let b_bytes = b[i].to_be_bytes();
+        result[i] = u32::from_be_bytes([
+            std::cmp::min(a_bytes[0] as i8, b_bytes[0] as i8) as u8,
+            std::cmp::min(a_bytes[1] as i8, b_bytes[1] as i8) as u8,
+            std::cmp::min(a_bytes[2] as i8, b_bytes[2] as i8) as u8,
+            std::cmp::min(a_bytes[3] as i8, b_bytes[3] as i8) as u8,
+        ]);
+    }
+    result
+}
+
+/// Vector Maximum Signed Byte
+pub fn vmaxsb(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_bytes = a[i].to_be_bytes();
+        let b_bytes = b[i].to_be_bytes();
+        result[i] = u32::from_be_bytes([
+            std::cmp::max(a_bytes[0] as i8, b_bytes[0] as i8) as u8,
+            std::cmp::max(a_bytes[1] as i8, b_bytes[1] as i8) as u8,
+            std::cmp::max(a_bytes[2] as i8, b_bytes[2] as i8) as u8,
+            std::cmp::max(a_bytes[3] as i8, b_bytes[3] as i8) as u8,
+        ]);
+    }
+    result
+}
+
+/// Vector Minimum Unsigned Halfword
+pub fn vminuh(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_hi = (a[i] >> 16) as u16;
+        let a_lo = a[i] as u16;
+        let b_hi = (b[i] >> 16) as u16;
+        let b_lo = b[i] as u16;
+        let min_hi = std::cmp::min(a_hi, b_hi);
+        let min_lo = std::cmp::min(a_lo, b_lo);
+        result[i] = ((min_hi as u32) << 16) | (min_lo as u32);
+    }
+    result
+}
+
+/// Vector Maximum Unsigned Halfword
+pub fn vmaxuh(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_hi = (a[i] >> 16) as u16;
+        let a_lo = a[i] as u16;
+        let b_hi = (b[i] >> 16) as u16;
+        let b_lo = b[i] as u16;
+        let max_hi = std::cmp::max(a_hi, b_hi);
+        let max_lo = std::cmp::max(a_lo, b_lo);
+        result[i] = ((max_hi as u32) << 16) | (max_lo as u32);
+    }
+    result
+}
+
+/// Vector Minimum Signed Halfword
+pub fn vminsh(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_hi = (a[i] >> 16) as i16;
+        let a_lo = a[i] as i16;
+        let b_hi = (b[i] >> 16) as i16;
+        let b_lo = b[i] as i16;
+        let min_hi = std::cmp::min(a_hi, b_hi) as u16;
+        let min_lo = std::cmp::min(a_lo, b_lo) as u16;
+        result[i] = ((min_hi as u32) << 16) | (min_lo as u32);
+    }
+    result
+}
+
+/// Vector Maximum Signed Halfword
+pub fn vmaxsh(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let mut result = [0u32; 4];
+    for i in 0..4 {
+        let a_hi = (a[i] >> 16) as i16;
+        let a_lo = a[i] as i16;
+        let b_hi = (b[i] >> 16) as i16;
+        let b_lo = b[i] as i16;
+        let max_hi = std::cmp::max(a_hi, b_hi) as u16;
+        let max_lo = std::cmp::max(a_lo, b_lo) as u16;
+        result[i] = ((max_hi as u32) << 16) | (max_lo as u32);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1291,5 +1571,158 @@ mod tests {
         assert_eq!(f32::from_bits(result[1]), 2.0);
         assert_eq!(f32::from_bits(result[2]), 4.0);
         assert_eq!(f32::from_bits(result[3]), 4.0);
+    }
+    
+    #[test]
+    fn test_vpkshus() {
+        // Test packing signed halfwords to unsigned bytes with saturation
+        // Positive values within range
+        let a = [0x00100020, 0x00300040, 0x00500060, 0x00700080];
+        // Negative and overflow values
+        let b = [0xFFFF0000, 0x01000200, 0xFFFFFFFE, 0x00FF00FF];
+        let result = vpkshus(a, b);
+        // First byte from a[0] high halfword (0x0010 = 16) -> 16
+        assert_eq!((result[0] >> 24) & 0xFF, 16);
+        // Negative values should saturate to 0
+        assert_eq!((result[2] >> 24) & 0xFF, 0);
+    }
+    
+    #[test]
+    fn test_vupkhsh() {
+        // High halfwords: 0xFF80 (=-128), 0x0010, 0xFF00, 0x007F
+        let a = [0xFF800010, 0xFF00007F, 0x12345678, 0x9ABCDEF0];
+        let result = vupkhsh(a);
+        // Should sign-extend to words
+        assert_eq!(result[0], 0xFFFFFF80); // -128 sign-extended
+        assert_eq!(result[1], 0x00000010); // 16 positive
+        assert_eq!(result[2], 0xFFFFFF00); // -256 sign-extended
+        assert_eq!(result[3], 0x0000007F); // 127 positive
+    }
+    
+    #[test]
+    fn test_vupklsh() {
+        // Low halfwords are in words 2 and 3
+        let a = [0x12345678, 0x9ABCDEF0, 0xFF800010, 0xFF00007F];
+        let result = vupklsh(a);
+        // Should sign-extend to words
+        assert_eq!(result[0], 0xFFFFFF80); // -128 sign-extended
+        assert_eq!(result[1], 0x00000010); // 16 positive
+        assert_eq!(result[2], 0xFFFFFF00); // -256 sign-extended
+        assert_eq!(result[3], 0x0000007F); // 127 positive
+    }
+    
+    #[test]
+    fn test_vmulhsw() {
+        // Test high word of signed multiply
+        let a = [0x00010000, 0xFFFF0000, 0x7FFFFFFF, 0x80000000];
+        let b = [0x00010000, 0x00020000, 0x00000002, 0x00000002];
+        let result = vmulhsw(a, b);
+        // 0x10000 * 0x10000 = 0x100000000, high word = 1
+        assert_eq!(result[0], 1);
+        // 0xFFFF0000 (-65536) * 0x20000 (131072), high word should be negative
+        assert_eq!(result[1] as i32, -2);
+    }
+    
+    #[test]
+    fn test_vsum4sbs() {
+        // 4 signed bytes summed with saturation
+        let a = [0x01020304, 0, 0, 0]; // 1+2+3+4 = 10
+        let b = [5, 0, 0, 0];
+        let result = vsum4sbs(a, b);
+        assert_eq!(result[0], 15); // 10 + 5
+    }
+    
+    #[test]
+    fn test_vsum4shs() {
+        // 2 signed halfwords summed per word
+        let a = [0x00010002, 0, 0, 0]; // 1 + 2 = 3
+        let b = [5, 0, 0, 0];
+        let result = vsum4shs(a, b);
+        assert_eq!(result[0], 8); // 3 + 5
+    }
+    
+    #[test]
+    fn test_vsumsws() {
+        // Sum all 4 words to element 3
+        let a = [1, 2, 3, 4];
+        let b = [0, 0, 0, 10];
+        let result = vsumsws(a, b);
+        assert_eq!(result[3], 20); // 1+2+3+4+10
+        assert_eq!(result[0], 0);
+        assert_eq!(result[1], 0);
+        assert_eq!(result[2], 0);
+    }
+    
+    #[test]
+    fn test_vminub() {
+        let a = [0x10203040, 0x50607080, 0x00000000, 0xFFFFFFFF];
+        let b = [0x05251545, 0x60708090, 0xFFFFFFFF, 0x00000000];
+        let result = vminub(a, b);
+        // Min of each byte
+        assert_eq!((result[0] >> 24) & 0xFF, 5);  // min(0x10, 0x05)
+        assert_eq!((result[0] >> 16) & 0xFF, 0x20); // min(0x20, 0x25)
+    }
+    
+    #[test]
+    fn test_vmaxub() {
+        let a = [0x10203040, 0, 0, 0];
+        let b = [0x05251545, 0, 0, 0];
+        let result = vmaxub(a, b);
+        assert_eq!((result[0] >> 24) & 0xFF, 0x10); // max(0x10, 0x05)
+        assert_eq!((result[0] >> 16) & 0xFF, 0x25); // max(0x20, 0x25)
+    }
+    
+    #[test]
+    fn test_vminsb() {
+        // Signed byte comparison: 0x80 (-128) < 0x7F (127)
+        let a = [0x80000000, 0, 0, 0];
+        let b = [0x7F000000, 0, 0, 0];
+        let result = vminsb(a, b);
+        assert_eq!((result[0] >> 24) & 0xFF, 0x80); // -128 is min
+    }
+    
+    #[test]
+    fn test_vmaxsb() {
+        // Signed byte comparison: 0x7F (127) > 0x80 (-128)
+        let a = [0x80000000, 0, 0, 0];
+        let b = [0x7F000000, 0, 0, 0];
+        let result = vmaxsb(a, b);
+        assert_eq!((result[0] >> 24) & 0xFF, 0x7F); // 127 is max
+    }
+    
+    #[test]
+    fn test_vminuh() {
+        let a = [0x10002000, 0, 0, 0];
+        let b = [0x05003000, 0, 0, 0];
+        let result = vminuh(a, b);
+        assert_eq!((result[0] >> 16) & 0xFFFF, 0x0500); // min(0x1000, 0x0500)
+        assert_eq!(result[0] & 0xFFFF, 0x2000); // min(0x2000, 0x3000)
+    }
+    
+    #[test]
+    fn test_vmaxuh() {
+        let a = [0x10002000, 0, 0, 0];
+        let b = [0x05003000, 0, 0, 0];
+        let result = vmaxuh(a, b);
+        assert_eq!((result[0] >> 16) & 0xFFFF, 0x1000); // max(0x1000, 0x0500)
+        assert_eq!(result[0] & 0xFFFF, 0x3000); // max(0x2000, 0x3000)
+    }
+    
+    #[test]
+    fn test_vminsh() {
+        // Signed halfword: 0x8000 (-32768) < 0x7FFF (32767)
+        let a = [0x80000000, 0, 0, 0];
+        let b = [0x7FFF0000, 0, 0, 0];
+        let result = vminsh(a, b);
+        assert_eq!((result[0] >> 16) & 0xFFFF, 0x8000); // -32768 is min
+    }
+    
+    #[test]
+    fn test_vmaxsh() {
+        // Signed halfword: 0x7FFF (32767) > 0x8000 (-32768)
+        let a = [0x80000000, 0, 0, 0];
+        let b = [0x7FFF0000, 0, 0, 0];
+        let result = vmaxsh(a, b);
+        assert_eq!((result[0] >> 16) & 0xFFFF, 0x7FFF); // 32767 is max
     }
 }

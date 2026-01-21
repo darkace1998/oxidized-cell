@@ -18,15 +18,15 @@ This document tracks pending tasks, improvements, and future features for the ox
   - `srawi` - Shift right algebraic word immediate ✅
   - Location: `crates/oc-ppu/src/instructions/integer.rs`, `crates/oc-ppu/src/decoder.rs`
 
-- [ ] **VMX/AltiVec Completion**: Implement remaining vector instructions
-  - **Byte/Halfword Operations**: `vaddubm`, `vadduhm`, `vsububm`, `vsubuhm` (modulo variants)
-  - **Pack Operations**: `vpkswss`, `vpkshss`, `vpkshus` (signed to smaller with saturation)
-  - **Unpack Operations**: `vupkhsb`, `vupklsb`, `vupkhsh`, `vupklsh` (sign-extend expand)
-  - **Multiply High**: `vmulhuw`, `vmulhsw` (high 32-bits of 64-bit product)
-  - **Sum Across**: `vsum4ubs`, `vsum4sbs`, `vsum4shs`, `vsum2sws`, `vsumsws`
-  - **Average**: `vavgub`, `vavguh`, `vavguw`, `vavgsb`, `vavgsh`, `vavgsw`
-  - **Min/Max Integer**: `vminub`, `vminuh`, `vminuw`, `vmaxub`, `vmaxuh`, `vmaxuw`
-  - **Reciprocal/RSQRT**: `vrsqrtefp` (reciprocal square root estimate)
+- [x] **VMX/AltiVec Completion**: Implement remaining vector instructions
+  - **Byte/Halfword Operations**: `vaddubm`, `vadduhm`, `vsububm`, `vsubuhm` (modulo variants) ✅
+  - **Pack Operations**: `vpkswss`, `vpkshss`, `vpkshus` (signed to smaller with saturation) ✅
+  - **Unpack Operations**: `vupkhsb`, `vupklsb`, `vupkhsh`, `vupklsh` (sign-extend expand) ✅
+  - **Multiply High**: `vmulhuw`, `vmulhsw` (high 32-bits of 64-bit product) ✅
+  - **Sum Across**: `vsum4ubs`, `vsum4sbs`, `vsum4shs`, `vsum2sws`, `vsumsws` ✅
+  - **Average**: `vavgub`, `vavguh`, `vavguw`, `vavgsb`, `vavgsh`, `vavgsw` ✅
+  - **Min/Max Integer**: `vminub`, `vminuh`, `vminuw`, `vmaxub`, `vmaxuh`, `vmaxuw`, `vminsb`, `vminsh`, `vmaxsb`, `vmaxsh` ✅
+  - **Reciprocal/RSQRT**: `vrsqrtefp` (reciprocal square root estimate) ✅
   - Location: `crates/oc-ppu/src/instructions/vector.rs`, `crates/oc-ppu/src/vmx.rs`
 
 - [ ] **FPSCR Full Accuracy**: Complete floating-point exception handling
