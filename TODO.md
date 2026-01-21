@@ -10,11 +10,12 @@ This document tracks pending tasks, improvements, and future features for the ox
 
 #### PPU Interpreter Improvements
 
-- [ ] **Complete 64-bit Instruction Set**: Add missing doubleword operations
-  - `mulld`, `divd`, `divdu` - 64-bit multiply/divide (partial)
-  - `rldic`, `rldicl`, `rldicr` - 64-bit rotate operations
-  - `rldimi`, `rldcl`, `rldcr` - 64-bit rotate and mask insert
-  - `srad`, `sradi` - Shift right algebraic doubleword
+- [x] **Complete 64-bit Instruction Set**: Add missing doubleword operations
+  - `mulld`, `divd`, `divdu` - 64-bit multiply/divide ✅
+  - `rldic`, `rldicl`, `rldicr` - 64-bit rotate operations ✅
+  - `rldimi`, `rldcl`, `rldcr` - 64-bit rotate and mask insert ✅
+  - `srad`, `sradi` - Shift right algebraic doubleword ✅
+  - `srawi` - Shift right algebraic word immediate ✅
   - Location: `crates/oc-ppu/src/instructions/integer.rs`, `crates/oc-ppu/src/decoder.rs`
 
 - [ ] **VMX/AltiVec Completion**: Implement remaining vector instructions
