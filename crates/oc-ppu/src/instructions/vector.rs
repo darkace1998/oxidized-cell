@@ -1329,7 +1329,7 @@ pub fn vsum4shs(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
 }
 
 /// Vector Sum Across 2 Signed Words Saturate
-/// Sums pairs of signed words and adds to even elements of b
+/// Sums pairs of signed words and adds to odd elements of b (b[1] and b[3])
 pub fn vsum2sws(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
     let mut result = [0u32; 4];
     // Sum words 0,1 of a and add to b[1], result in word 1
