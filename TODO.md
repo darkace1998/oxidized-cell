@@ -169,10 +169,60 @@ This document tracks pending tasks, improvements, and future features for the ox
 
 ### Graphics (RSX)
 
+#### NV4097 Method Handlers
+
 - [ ] **Complete NV4097 Method Handlers**: Implement remaining RSX draw commands
   - Handle unknown/unimplemented methods (see `crates/oc-rsx/src/methods.rs:590`)
   - Add more texture format support
   - Location: `crates/oc-rsx/src/methods.rs`
+
+- [ ] **Draw Command Methods**: Complete primitive rendering
+  - `NV4097_DRAW_ARRAYS` - Indexed draw calls with proper primitive restart
+  - `NV4097_DRAW_INDEX_ARRAY` - Vertex index buffer handling
+  - `NV4097_CLEAR_SURFACE` - Multi-render target clearing
+  - `NV4097_SET_PRIMITIVE_TYPE` - All primitive types (fans, strips, quads)
+  - Location: `crates/oc-rsx/src/methods.rs`
+
+- [ ] **Render Target Methods**: Complete surface and framebuffer handling
+  - `NV4097_SET_SURFACE_COLOR_TARGET` - MRT (Multiple Render Targets) support
+  - `NV4097_SET_SURFACE_FORMAT` - All depth/color format combinations
+  - `NV4097_SET_SURFACE_PITCH_*` - Pitch calculation for non-linear surfaces
+  - Tile/swizzle surface layouts
+  - Location: `crates/oc-rsx/src/methods.rs`, `crates/oc-rsx/src/state.rs`
+
+- [ ] **Blend State Methods**: Complete blend mode support
+  - `NV4097_SET_BLEND_ENABLE_MRT` - Per-render target blend enable
+  - `NV4097_SET_BLEND_EQUATION_RGB/ALPHA` - Separate RGB/Alpha equations
+  - `NV4097_SET_BLEND_COLOR` - Constant blend color
+  - All blend factor combinations
+  - Location: `crates/oc-rsx/src/methods.rs`
+
+- [ ] **Stencil Methods**: Complete two-sided stencil
+  - `NV4097_SET_TWO_SIDED_STENCIL_TEST_ENABLE` - Two-sided stencil
+  - `NV4097_SET_BACK_STENCIL_*` - All back face stencil operations
+  - Stencil write mask per face
+  - Location: `crates/oc-rsx/src/methods.rs`
+
+- [ ] **Texture Sampling Methods**: Complete texture unit configuration
+  - `NV4097_SET_TEXTURE_CONTROL3` - Anisotropic filtering levels
+  - `NV4097_SET_TEXTURE_BORDER_COLOR` - Border color sampling
+  - `NV4097_SET_TEXTURE_CONTROL0` - LOD bias and clamping
+  - Cube map and 3D texture addressing
+  - Location: `crates/oc-rsx/src/methods.rs`
+
+- [ ] **Transform Feedback Methods**: Implement stream output
+  - `NV4097_SET_TRANSFORM_FEEDBACK_ENABLE` - Enable/disable
+  - Buffer binding and offset handling
+  - Primitive counting
+  - Location: `crates/oc-rsx/src/methods.rs`
+
+- [ ] **Occlusion Query Methods**: Complete query support
+  - `NV4097_SET_ZPASS_PIXEL_COUNT_ENABLE` - Z-pass counting
+  - `NV4097_SET_REPORT_SEMAPHORE_OFFSET` - Query result writing
+  - Conditional rendering based on query results
+  - Location: `crates/oc-rsx/src/methods.rs`
+
+#### Shader System
 
 - [ ] **Shader Compilation Improvements**: Enhance RSX shader handling
   - Complete fragment program decoder
@@ -180,11 +230,105 @@ This document tracks pending tasks, improvements, and future features for the ox
   - Improve SPIR-V generation for edge cases
   - Location: `crates/oc-rsx/src/shader/`
 
+- [ ] **Vertex Program Opcodes**: Complete VP instruction coverage
+  - **Vector Ops**: `TXL` (texture lookup with LOD), `SSG` (sign of source)
+  - **Scalar Ops**: `BRA`, `BRI`, `CAL`, `CLI`, `RET` (flow control)
+  - **Push/Pop**: `PSH`, `POP` (address stack operations)
+  - Indexed constant/input access with ARL
+  - Location: `crates/oc-rsx/src/shader/vp_decode.rs`, `crates/oc-rsx/src/shader/types.rs`
+
+- [ ] **Fragment Program Opcodes**: Complete FP instruction coverage
+  - **Texture Ops**: `TEX`, `TXP`, `TXD`, `TXB`, `TXL` with all addressing modes
+  - **Flow Control**: `BRK`, `LOOP`, `REP`, `RET`, `IF`, `ELSE`, `ENDIF`
+  - **Special Ops**: `DDX`, `DDY` (derivatives), `KIL` (pixel kill)
+  - Half-precision operations
+  - Location: `crates/oc-rsx/src/shader/fp_decode.rs`
+
+- [ ] **SPIR-V Generation**: Complete shader translation
+  - All VP/FP opcodes to SPIR-V mapping
+  - Proper handling of RSX-specific semantics
+  - Texture coordinate projection
+  - Fragment program fog integration
+  - Location: `crates/oc-rsx/src/shader/spirv_gen.rs`
+
+- [ ] **Shader Cache**: Implement persistent shader caching
+  - Hash-based shader lookup
+  - Disk cache for compiled SPIR-V
+  - Cache invalidation on driver updates
+  - Location: `crates/oc-rsx/src/shader/cache.rs`
+
+#### Texture System
+
+- [ ] **Texture Format Support**: Complete format handling
+  - **Standard Formats**: All ARGB/RGBA/BGR variants
+  - **Compressed Formats**: DXT1/3/5 decompression fallback
+  - **HDR Formats**: `W16_Z16_Y16_X16_FLOAT`, `W32_Z32_Y32_X32_FLOAT`
+  - **Depth Formats**: `DEPTH24_D8`, `DEPTH16`, `DEPTH24_D8_FLOAT`
+  - Location: `crates/oc-rsx/src/texture.rs`
+
+- [ ] **Texture Swizzle/Tile**: Implement memory layout conversion
+  - Linear to tiled conversion
+  - Morton/Z-order swizzling
+  - Pitch calculation for arbitrary widths
+  - Location: `crates/oc-rsx/src/texture.rs`
+
+- [ ] **Mipmap Generation**: Complete mipmap handling
+  - Automatic mipmap generation
+  - Proper LOD selection
+  - Trilinear filtering
+  - Location: `crates/oc-rsx/src/texture.rs`
+
+#### Vulkan Backend
+
 - [ ] **Vulkan Backend Enhancements**: Complete Vulkan graphics implementation
   - Multi-sample anti-aliasing (MSAA)
   - More texture compression formats
   - Compute shader support for RSX emulation
   - Location: `crates/oc-rsx/src/backend/vulkan.rs`
+
+- [ ] **Pipeline State Management**: Optimize pipeline creation
+  - Pipeline caching and reuse
+  - Dynamic state for viewport/scissor
+  - Separate blend state per attachment
+  - Location: `crates/oc-rsx/src/backend/vulkan.rs`
+
+- [ ] **Memory Management**: Improve GPU memory handling
+  - Suballocation for small buffers
+  - Staging buffer pooling
+  - Memory type selection optimization
+  - Location: `crates/oc-rsx/src/backend/vulkan.rs`
+
+- [ ] **Synchronization**: Complete sync primitive handling
+  - Fence management for frame pacing
+  - Semaphore-based GPU/CPU sync
+  - Timeline semaphores for RSX semaphores
+  - Location: `crates/oc-rsx/src/backend/vulkan.rs`
+
+- [ ] **MSAA Support**: Implement multi-sample anti-aliasing
+  - Sample count selection (2x, 4x, 8x)
+  - MSAA resolve to non-MSAA targets
+  - Sample mask handling
+  - Location: `crates/oc-rsx/src/backend/vulkan.rs`
+
+#### Rendering Features
+
+- [ ] **Post-Processing**: Complete post-process effects
+  - Gamma correction
+  - Color space conversion
+  - FXAA/SMAA anti-aliasing
+  - Location: `crates/oc-rsx/src/postprocess.rs`
+
+- [ ] **Upscaling/Downscaling**: Improve scaling quality
+  - Bilinear/bicubic scaling
+  - FSR/DLSS support (future)
+  - Aspect ratio handling
+  - Location: `crates/oc-rsx/src/scaling.rs`
+
+- [ ] **Frame Timing**: Improve frame pacing
+  - VSync modes (off, on, adaptive)
+  - Frame limiter
+  - GPU profiling
+  - Location: `crates/oc-rsx/src/timing.rs`
 
 ### Game Loading & Compatibility
 
@@ -328,6 +472,14 @@ This document tracks pending tasks, improvements, and future features for the ox
   - **MFC Timing**: Verify DMA completion timing is accurate
   - **Atomic Operations**: GETLLAR/PUTLLC reservation stress tests
   - Location: `crates/oc-spu/src/`, `crates/oc-spu/src/atomics.rs`
+
+- [ ] **RSX/Graphics Tests**: Expand test coverage for graphics
+  - **Method Handlers**: Tests for all NV4097 method categories
+  - **Shader Decoding**: VP/FP instruction decode/encode round-trip tests
+  - **SPIR-V Generation**: Validate generated shaders against reference
+  - **Texture Formats**: Format conversion accuracy tests
+  - **Vulkan Backend**: Render output comparison tests
+  - Location: `crates/oc-rsx/src/`, `crates/oc-rsx/src/shader/`
 
 - [ ] **Integration Tests**: Add game-level integration tests
   - Homebrew test suite
@@ -535,6 +687,66 @@ This document tracks pending tasks, improvements, and future features for the ox
 | JIT Load/Store | 🔴 Minimal | Not implemented |
 | JIT Channel | 🟡 Partial | Channel framework in C++; incomplete coverage |
 | JIT Float | 🔴 Minimal | Not implemented |
+
+### RSX Method & Shader Coverage Details
+
+| Component Category | Status | Notes |
+|--------------------|--------|-------|
+| Surface/Render Target | ✅ Complete | `SET_SURFACE_FORMAT`, `SET_SURFACE_PITCH`, color/depth targets |
+| Viewport/Scissor | ✅ Complete | `SET_VIEWPORT_*`, `SET_SCISSOR_*`, clip ranges |
+| Clear Operations | ✅ Complete | `CLEAR_SURFACE`, color/depth/stencil clear values |
+| Blend State | ✅ Complete | Enable, src/dst factors, equation, color |
+| Blend MRT | 🟡 Partial | Per-target blend enable, separate RGB/Alpha equations incomplete |
+| Depth Test | ✅ Complete | Enable, function, mask |
+| Stencil Test (Front) | ✅ Complete | Func, ref, mask, ops |
+| Stencil Test (Back) | 🟡 Partial | Two-sided stencil, back face ops incomplete |
+| Cull Face | ✅ Complete | Enable, mode, front face |
+| Alpha Test | ✅ Complete | Enable, function, reference |
+| Polygon Offset | ✅ Complete | Fill/line/point enable, factor, bias |
+| Line/Point Size | ✅ Complete | Width, size, point sprite |
+| Color Mask | ✅ Complete | RGBA masks, MRT masks |
+| Logic Op | ✅ Complete | Enable, operation |
+| Fog | ✅ Complete | Mode, params |
+| Dither | ✅ Complete | Enable |
+| Anti-Aliasing | 🟡 Partial | Sample count, alpha-to-coverage incomplete |
+| Primitive Restart | ✅ Complete | Enable, restart index |
+| Occlusion Query | 🟡 Partial | Z-pass enable, semaphore offset |
+| Vertex Attrib Format | ✅ Complete | 16 attributes, format/offset |
+| Vertex Constants | ✅ Complete | 512 vec4 constants, load slot |
+| Transform Feedback | 🔴 Minimal | Enable only, buffer binding incomplete |
+| Texture Offset/Format | ✅ Complete | 16 textures, offset/format/rect |
+| Texture Filter | ✅ Complete | Min/mag filter, LOD |
+| Texture Address | ✅ Complete | Wrap modes |
+| Texture Control | 🟡 Partial | Control0 done, anisotropic incomplete |
+| Texture Border | 🟡 Partial | Border color, cube maps incomplete |
+| Semaphore Methods | ✅ Complete | Offset, release |
+| Draw Arrays/Index | 🟡 Partial | Basic draw, primitive restart incomplete |
+| VP Vector Opcodes | ✅ Complete | MOV, MUL, ADD, MAD, DP3, DP4, MIN, MAX, etc. |
+| VP Scalar Opcodes | 🟡 Partial | MOV, RCP, RSQ, EXP, LOG done; flow control incomplete |
+| VP Flow Control | 🔴 Minimal | BRA, CAL, RET not implemented |
+| VP Texture Lookup | 🟡 Partial | TXL incomplete |
+| FP Arithmetic Opcodes | ✅ Complete | ADD, MUL, MAD, DP3, DP4, etc. |
+| FP Texture Opcodes | 🟡 Partial | TEX, TXP done; TXD, TXB, TXL incomplete |
+| FP Flow Control | 🔴 Minimal | BRK, LOOP, IF/ELSE not implemented |
+| FP Derivative Opcodes | 🔴 Minimal | DDX, DDY not implemented |
+| FP Kill | 🟡 Partial | Basic KIL done |
+| SPIR-V Arithmetic | ✅ Complete | FADD, FSUB, FMUL, FDIV, DOT |
+| SPIR-V Texture | 🟡 Partial | Basic sampling, projection incomplete |
+| SPIR-V Flow Control | 🔴 Minimal | Not implemented |
+| Shader Cache | 🟡 Partial | Runtime cache, disk cache incomplete |
+| Texture DXT | ✅ Complete | DXT1/3/5 via Vulkan |
+| Texture ARGB | ✅ Complete | All ARGB variants |
+| Texture HDR | 🟡 Partial | Float16 done, Float32 incomplete |
+| Texture Depth | 🟡 Partial | DEPTH24_D8, DEPTH16 done; float depth incomplete |
+| Texture Swizzle | 🔴 Minimal | Linear only, tiled incomplete |
+| Vulkan Pipeline | ✅ Complete | Basic pipeline creation, layout |
+| Vulkan Descriptor | ✅ Complete | Set layout, pool, sets |
+| Vulkan Sync | 🟡 Partial | Fences, semaphores; timeline incomplete |
+| Vulkan MSAA | 🔴 Minimal | Sample count only, resolve incomplete |
+| Vulkan Memory | 🟡 Partial | Allocator, suballocation incomplete |
+| Post-Processing | 🟡 Partial | Basic present, gamma incomplete |
+| Upscaling | 🟡 Partial | Basic resize, bicubic incomplete |
+| Frame Timing | 🟡 Partial | Basic VSync, limiter incomplete |
 
 ---
 
