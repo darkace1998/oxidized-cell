@@ -84,6 +84,84 @@ This document tracks pending tasks, improvements, and future features for the ox
   - All vector operation variants
   - Location: `cpp/src/spu_jit.cpp`, `crates/oc-spu/src/`
 
+#### SPU Interpreter Improvements
+
+- [ ] **Double-Precision Floating-Point**: Complete f64 instruction coverage
+  - `dfa`, `dfs`, `dfm` - Double-precision add/subtract/multiply
+  - `dfma`, `dfms`, `dfnma`, `dfnms` - Double-precision FMA variants
+  - `dfceq`, `dfcgt`, `dfcmeq`, `dfcmgt` - Double-precision comparisons
+  - `fesd`, `frds` - Float to double / double to float conversion
+  - Location: `crates/oc-spu/src/instructions/float.rs`
+
+- [ ] **Byte/Halfword Operations Completion**: Implement remaining element-wise ops
+  - **Carry/Borrow**: `cg`, `bg`, `cgx`, `bgx` - Carry/borrow generation with extended
+  - **Extended Arithmetic**: `addx`, `sfx` - Add/subtract extended
+  - **Absolute Difference**: `absdb` - Absolute difference of bytes
+  - **Byte Sum**: `sumb` - Sum bytes into halfwords
+  - Location: `crates/oc-spu/src/instructions/arithmetic.rs`
+
+- [ ] **Hint and Scheduling Instructions**: Implement branch hints
+  - `hbr`, `hbra`, `hbrr` - Hint for branch (absolute/relative)
+  - `hbrp` - Hint for branch pair
+  - Location: `crates/oc-spu/src/instructions/control.rs`
+
+- [ ] **Channel Blocking Behavior**: Implement proper stalling semantics
+  - `rdch` should stall when channel is empty (not return 0)
+  - `wrch` should stall when channel is full
+  - Proper timeout handling for channel operations
+  - Location: `crates/oc-spu/src/instructions/channel.rs`, `crates/oc-spu/src/channels.rs`
+
+- [ ] **MFC List DMA Operations**: Complete DMA list transfer support
+  - `GETL`, `PUTL` - DMA list transfer commands
+  - List element parsing and execution
+  - List stall handling and resumption
+  - Location: `crates/oc-spu/src/mfc.rs`
+
+#### SPU JIT Compilation
+
+- [ ] **JIT Arithmetic Instructions**: Add LLVM IR generation
+  - `a`, `ah`, `ai`, `ahi` - Word/halfword add
+  - `sf`, `sfh`, `sfi`, `sfhi` - Word/halfword subtract from
+  - `mpy`, `mpyu`, `mpyh`, `mpys`, `mpyui`, `mpyi` - Multiply variants
+  - Location: `cpp/src/spu_jit.cpp`
+
+- [ ] **JIT Shift/Rotate Instructions**: Complete shift compilation
+  - `shl`, `shlh`, `shlhi`, `shli` - Shift left (word/halfword)
+  - `rot`, `roth`, `rothi`, `roti` - Rotate (word/halfword)
+  - `rotm`, `rothm`, `rotmahi`, `rotmai` - Rotate and mask
+  - Location: `cpp/src/spu_jit.cpp`
+
+- [ ] **JIT Quadword Operations**: Compile 128-bit operations
+  - `shlqby`, `shlqbyi`, `shlqbi`, `shlqbii` - Quadword shift left
+  - `rotqby`, `rotqbyi`, `rotqbi`, `rotqbii` - Quadword rotate
+  - `rotqmby`, `rotqmbyi`, `rotqmbi` - Quadword rotate and mask
+  - Location: `cpp/src/spu_jit.cpp`
+
+- [ ] **JIT Memory Operations**: Implement load/store IR
+  - `lqd`, `lqa`, `lqr`, `lqx` - Load quadword variants
+  - `stqd`, `stqa`, `stqr`, `stqx` - Store quadword variants
+  - Proper 16-byte alignment handling
+  - Location: `cpp/src/spu_jit.cpp`
+
+- [ ] **JIT Channel Operations**: Compile channel I/O
+  - `rdch`, `wrch`, `rchcnt` - Channel read/write/count
+  - Blocking behavior with fallback to interpreter
+  - MFC command channel (channel 25) handling
+  - Location: `cpp/src/spu_jit.cpp`
+
+- [ ] **JIT Compare Instructions**: Add comparison IR
+  - `ceq`, `ceqb`, `ceqh`, `ceqi`, `ceqbi`, `ceqhi` - Compare equal
+  - `cgt`, `cgtb`, `cgth`, `cgti`, `cgtbi`, `cgthi` - Compare greater than
+  - `clgt`, `clgtb`, `clgth`, `clgti` - Compare logical greater than
+  - Location: `cpp/src/spu_jit.cpp`
+
+- [ ] **JIT Floating-Point Instructions**: Complete FP compilation
+  - `fa`, `fs`, `fm` - Basic float arithmetic
+  - `fma`, `fms`, `fnms` - Fused multiply-add variants
+  - `frest`, `frsqest` - Reciprocal estimates
+  - `fi` - Floating interpolate
+  - Location: `cpp/src/spu_jit.cpp`
+
 - [ ] **Cross-Block Optimization**: Implement interprocedural JIT optimization
   - Currently each basic block is compiled independently
   - Add function-level optimization
@@ -242,6 +320,14 @@ This document tracks pending tasks, improvements, and future features for the ox
   - **Atomic Operations**: Multi-threaded `lwarx`/`stwcx.` stress tests
   - **FPSCR Flags**: Verify all exception bits set correctly
   - Location: `crates/oc-ppu/src/tests/`, `crates/oc-ppu/src/interpreter.rs`
+
+- [ ] **SPU Instruction Tests**: Expand test coverage for SPU instructions
+  - **Double-Precision**: Tests for `dfa`, `dfm`, `dfma`, `fesd`, `frds`
+  - **Quadword Operations**: Tests for `shlqby`, `rotqby`, `rotqmby` edge cases
+  - **Channel Blocking**: Multi-threaded channel stall/resume tests
+  - **MFC Timing**: Verify DMA completion timing is accurate
+  - **Atomic Operations**: GETLLAR/PUTLLC reservation stress tests
+  - Location: `crates/oc-spu/src/`, `crates/oc-spu/src/atomics.rs`
 
 - [ ] **Integration Tests**: Add game-level integration tests
   - Homebrew test suite
@@ -406,6 +492,49 @@ This document tracks pending tasks, improvements, and future features for the ox
 | JIT Load/Store | 🟡 Partial | `lwz`, `stw` done; others needed |
 | JIT Floating-Point | 🟡 Partial | Basic ops; FMA needs completion |
 | JIT VMX | 🔴 Minimal | Framework exists, few instructions |
+
+### SPU Instruction Coverage Details
+
+| Instruction Category | Status | Notes |
+|----------------------|--------|-------|
+| Integer Add/Subtract | ✅ Complete | `a`, `ah`, `ai`, `ahi`, `sf`, `sfh`, `sfi`, `sfhi` |
+| Integer Multiply | ✅ Complete | `mpy`, `mpyu`, `mpyh`, `mpys`, `mpyi`, `mpyui` |
+| Shift Word | ✅ Complete | `shl`, `shlh`, `shlhi`, `shli` |
+| Rotate Word | ✅ Complete | `rot`, `roth`, `rothi`, `roti` |
+| Quadword Shift | ✅ Complete | `shlqby`, `shlqbyi`, `shlqbi`, `shlqbii` |
+| Quadword Rotate | ✅ Complete | `rotqby`, `rotqbyi`, `rotqbi`, `rotqbii` |
+| Quadword Rotate/Mask | ✅ Complete | `rotqmby`, `rotqmbyi`, `rotqmbi` |
+| Logical Operations | ✅ Complete | `and`, `or`, `xor`, `nand`, `nor`, `eqv`, `andc`, `orc` |
+| Logical Immediate | ✅ Complete | `andi`, `ori`, `xori`, `andbi`, `orbi`, `xorbi` |
+| Select Bits | ✅ Complete | `selb` - conditional bit selection |
+| Branch Relative | ✅ Complete | `br`, `bra`, `brsl`, `brasl` |
+| Branch Indirect | ✅ Complete | `bi`, `bisl`, `biz`, `binz`, `bihz`, `bihnz` |
+| Branch Conditional | ✅ Complete | `brz`, `brnz`, `brhz`, `brhnz` |
+| Compare Equal | ✅ Complete | `ceq`, `ceqb`, `ceqh`, `ceqi`, `ceqbi`, `ceqhi` |
+| Compare Greater Than | ✅ Complete | `cgt`, `cgtb`, `cgth`, `cgti`, `cgtbi`, `cgthi` |
+| Compare Logical GT | ✅ Complete | `clgt`, `clgtb`, `clgth`, `clgti`, `clgtbi`, `clgthi` |
+| Float Add/Sub/Mul | ✅ Complete | `fa`, `fs`, `fm` - 4-way SIMD float |
+| Float FMA | ✅ Complete | `fma`, `fms`, `fnms` - fused multiply-add |
+| Float Estimates | ✅ Complete | `frest`, `frsqest` - reciprocal estimates |
+| Float Conversion | 🟡 Partial | `csflt`, `cuflt`, `cflts`, `cfltu` done; `fi` incomplete |
+| Double-Precision | 🔴 Minimal | Framework only; `dfa`, `dfm`, `dfma` not implemented |
+| Load Quadword | ✅ Complete | `lqd`, `lqa`, `lqr`, `lqx` |
+| Store Quadword | ✅ Complete | `stqd`, `stqa`, `stqr`, `stqx` |
+| Immediate Load | ✅ Complete | `il`, `ilh`, `ilhu`, `ila`, `iohl` |
+| Channel Read/Write | ✅ Complete | `rdch`, `wrch`, `rchcnt` |
+| Channel Blocking | 🟡 Partial | Basic ops done; proper stalling incomplete |
+| Shuffle Bytes | ✅ Complete | `shufb` - arbitrary byte permutation |
+| Copy-to-Insert | ✅ Complete | `cbd`, `chd`, `cwd`, `cdd`, `cbx`, `chx`, `cwx`, `cdx` |
+| Carry/Borrow | 🟡 Partial | `cg`, `bg` done; `cgx`, `bgx` incomplete |
+| Control/Hints | 🟡 Partial | `nop`, `lnop`, `stop`, `sync` done; `hbr*` incomplete |
+| MFC DMA | ✅ Complete | GET, PUT, GETB, PUTB, GETF, PUTF with timing |
+| MFC Atomic | ✅ Complete | GETLLAR, PUTLLC, PUTLLUC with reservation |
+| MFC List DMA | 🟡 Partial | Basic list parsing; stall handling incomplete |
+| JIT Arithmetic | 🔴 Minimal | Framework exists, few instructions |
+| JIT Quadword | 🔴 Minimal | Not implemented |
+| JIT Load/Store | 🔴 Minimal | Not implemented |
+| JIT Channel | 🟡 Partial | Channel framework in C++; incomplete coverage |
+| JIT Float | 🔴 Minimal | Not implemented |
 
 ---
 
