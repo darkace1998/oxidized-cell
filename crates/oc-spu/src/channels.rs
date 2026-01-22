@@ -319,6 +319,18 @@ impl SpuChannels {
         }
     }
 
+    /// Check if a channel is full (write would block)
+    pub fn is_channel_full(&self, channel: u32) -> bool {
+        match channel {
+            // These write channels are never full (always consume writes immediately)
+            SPU_WR_EVENT_MASK | SPU_WR_EVENT_ACK | SPU_WR_DECR | MFC_WR_TAG_MASK => false,
+            _ if (channel as usize) < NUM_CHANNELS => {
+                self.channels[channel as usize].is_full()
+            }
+            _ => true, // Invalid channel is always "full"
+        }
+    }
+
     /// Get outbound mailbox
     pub fn get_outbound_mailbox(&mut self) -> Option<u32> {
         self.channels[SPU_WR_OUT_MBOX as usize].pop()

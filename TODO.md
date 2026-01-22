@@ -125,10 +125,14 @@ This document tracks pending tasks, improvements, and future features for the ox
   - `mfspr` - Move from special purpose register ✅
   - Location: `crates/oc-spu/src/instructions/hints.rs`
 
-- [ ] **Channel Blocking Behavior**: Implement proper stalling semantics
-  - `rdch` should stall when channel is empty (not return 0)
-  - `wrch` should stall when channel is full
-  - Proper timeout handling for channel operations
+- [x] **Channel Blocking Behavior**: Implement proper stalling semantics ✅
+  - `rdch` stalls when channel is empty (returns WouldBlock, not 0) ✅
+  - `wrch` stalls when channel is full ✅
+  - `BlockingBehavior` enum for tracking blocking state ✅
+  - `ChannelContext` for save/restore of blocked operations ✅
+  - `is_channel_stalled()` / `is_channel_write_stalled()` helpers ✅
+  - `rdch_blocking()` / `wrch_blocking()` with automatic state management ✅
+  - `save_channel_context()` / `restore_and_resume()` for context switching ✅
   - Location: `crates/oc-spu/src/instructions/channel.rs`, `crates/oc-spu/src/channels.rs`
 
 - [ ] **MFC List DMA Operations**: Complete DMA list transfer support
