@@ -546,6 +546,96 @@ pub fn fesd(thread: &mut SpuThread, ra: u8, rt: u8) -> Result<(), SpuError> {
     Ok(())
 }
 
+/// Double Floating Compare Equal - dfceq rt, ra, rb
+/// Compares two pairs of double-precision floats for equality
+pub fn dfceq(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let b = thread.regs.read_u32x4(rb as usize);
+    // Extract two doubles from each register
+    let a0 = f64::from_bits(((a[0] as u64) << 32) | (a[1] as u64));
+    let a1 = f64::from_bits(((a[2] as u64) << 32) | (a[3] as u64));
+    let b0 = f64::from_bits(((b[0] as u64) << 32) | (b[1] as u64));
+    let b1 = f64::from_bits(((b[2] as u64) << 32) | (b[3] as u64));
+    // Compare: all bits set if equal, 0 otherwise
+    let m0: u64 = if a0 == b0 { 0xFFFFFFFFFFFFFFFF } else { 0 };
+    let m1: u64 = if a1 == b1 { 0xFFFFFFFFFFFFFFFF } else { 0 };
+    let result = [
+        (m0 >> 32) as u32,
+        m0 as u32,
+        (m1 >> 32) as u32,
+        m1 as u32,
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Double Floating Compare Greater Than - dfcgt rt, ra, rb
+/// Compares two pairs of double-precision floats for greater than
+pub fn dfcgt(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let b = thread.regs.read_u32x4(rb as usize);
+    let a0 = f64::from_bits(((a[0] as u64) << 32) | (a[1] as u64));
+    let a1 = f64::from_bits(((a[2] as u64) << 32) | (a[3] as u64));
+    let b0 = f64::from_bits(((b[0] as u64) << 32) | (b[1] as u64));
+    let b1 = f64::from_bits(((b[2] as u64) << 32) | (b[3] as u64));
+    let m0: u64 = if a0 > b0 { 0xFFFFFFFFFFFFFFFF } else { 0 };
+    let m1: u64 = if a1 > b1 { 0xFFFFFFFFFFFFFFFF } else { 0 };
+    let result = [
+        (m0 >> 32) as u32,
+        m0 as u32,
+        (m1 >> 32) as u32,
+        m1 as u32,
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Double Floating Compare Magnitude Equal - dfcmeq rt, ra, rb
+/// Compares absolute values of two pairs of double-precision floats for equality
+pub fn dfcmeq(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let b = thread.regs.read_u32x4(rb as usize);
+    let a0 = f64::from_bits(((a[0] as u64) << 32) | (a[1] as u64));
+    let a1 = f64::from_bits(((a[2] as u64) << 32) | (a[3] as u64));
+    let b0 = f64::from_bits(((b[0] as u64) << 32) | (b[1] as u64));
+    let b1 = f64::from_bits(((b[2] as u64) << 32) | (b[3] as u64));
+    let m0: u64 = if a0.abs() == b0.abs() { 0xFFFFFFFFFFFFFFFF } else { 0 };
+    let m1: u64 = if a1.abs() == b1.abs() { 0xFFFFFFFFFFFFFFFF } else { 0 };
+    let result = [
+        (m0 >> 32) as u32,
+        m0 as u32,
+        (m1 >> 32) as u32,
+        m1 as u32,
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
+/// Double Floating Compare Magnitude Greater Than - dfcmgt rt, ra, rb
+/// Compares absolute values of two pairs of double-precision floats for greater than
+pub fn dfcmgt(thread: &mut SpuThread, rb: u8, ra: u8, rt: u8) -> Result<(), SpuError> {
+    let a = thread.regs.read_u32x4(ra as usize);
+    let b = thread.regs.read_u32x4(rb as usize);
+    let a0 = f64::from_bits(((a[0] as u64) << 32) | (a[1] as u64));
+    let a1 = f64::from_bits(((a[2] as u64) << 32) | (a[3] as u64));
+    let b0 = f64::from_bits(((b[0] as u64) << 32) | (b[1] as u64));
+    let b1 = f64::from_bits(((b[2] as u64) << 32) | (b[3] as u64));
+    let m0: u64 = if a0.abs() > b0.abs() { 0xFFFFFFFFFFFFFFFF } else { 0 };
+    let m1: u64 = if a1.abs() > b1.abs() { 0xFFFFFFFFFFFFFFFF } else { 0 };
+    let result = [
+        (m0 >> 32) as u32,
+        m0 as u32,
+        (m1 >> 32) as u32,
+        m1 as u32,
+    ];
+    thread.regs.write_u32x4(rt as usize, result);
+    thread.advance_pc();
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -598,5 +688,124 @@ mod tests {
         assert!((f32::from_bits(result[1]) - 0.25).abs() < 0.001);
         assert!((f32::from_bits(result[2]) - 0.125).abs() < 0.001);
         assert!((f32::from_bits(result[3]) - 0.1).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_dfa() {
+        let mut thread = create_test_thread();
+        // Set up two doubles: 1.5 and 2.5 in ra, 0.5 and 1.0 in rb
+        let d1 = 1.5f64.to_bits();
+        let d2 = 2.5f64.to_bits();
+        let d3 = 0.5f64.to_bits();
+        let d4 = 1.0f64.to_bits();
+        thread.regs.write_u32x4(1, [
+            (d1 >> 32) as u32, d1 as u32,
+            (d2 >> 32) as u32, d2 as u32,
+        ]);
+        thread.regs.write_u32x4(2, [
+            (d3 >> 32) as u32, d3 as u32,
+            (d4 >> 32) as u32, d4 as u32,
+        ]);
+        
+        dfa(&mut thread, 2, 1, 3).unwrap();
+        
+        let result = thread.regs.read_u32x4(3);
+        let r0 = f64::from_bits(((result[0] as u64) << 32) | (result[1] as u64));
+        let r1 = f64::from_bits(((result[2] as u64) << 32) | (result[3] as u64));
+        assert!((r0 - 2.0).abs() < 0.0001);  // 1.5 + 0.5 = 2.0
+        assert!((r1 - 3.5).abs() < 0.0001);  // 2.5 + 1.0 = 3.5
+    }
+
+    #[test]
+    fn test_dfceq() {
+        let mut thread = create_test_thread();
+        let d1 = 1.5f64.to_bits();
+        let d2 = 2.5f64.to_bits();
+        let d3 = 1.5f64.to_bits(); // Same as d1
+        let d4 = 3.0f64.to_bits(); // Different
+        thread.regs.write_u32x4(1, [
+            (d1 >> 32) as u32, d1 as u32,
+            (d2 >> 32) as u32, d2 as u32,
+        ]);
+        thread.regs.write_u32x4(2, [
+            (d3 >> 32) as u32, d3 as u32,
+            (d4 >> 32) as u32, d4 as u32,
+        ]);
+        
+        dfceq(&mut thread, 2, 1, 3).unwrap();
+        
+        let result = thread.regs.read_u32x4(3);
+        // First double should be equal (all ones)
+        assert_eq!(result[0], 0xFFFFFFFF);
+        assert_eq!(result[1], 0xFFFFFFFF);
+        // Second double should not be equal (all zeros)
+        assert_eq!(result[2], 0);
+        assert_eq!(result[3], 0);
+    }
+
+    #[test]
+    fn test_dfcgt() {
+        let mut thread = create_test_thread();
+        let d1 = 2.0f64.to_bits();  // 2.0 > 1.0
+        let d2 = 1.0f64.to_bits();  // 1.0 < 2.0
+        let d3 = 1.0f64.to_bits();
+        let d4 = 2.0f64.to_bits();
+        thread.regs.write_u32x4(1, [
+            (d1 >> 32) as u32, d1 as u32,
+            (d2 >> 32) as u32, d2 as u32,
+        ]);
+        thread.regs.write_u32x4(2, [
+            (d3 >> 32) as u32, d3 as u32,
+            (d4 >> 32) as u32, d4 as u32,
+        ]);
+        
+        dfcgt(&mut thread, 2, 1, 3).unwrap();
+        
+        let result = thread.regs.read_u32x4(3);
+        // 2.0 > 1.0 is true
+        assert_eq!(result[0], 0xFFFFFFFF);
+        assert_eq!(result[1], 0xFFFFFFFF);
+        // 1.0 > 2.0 is false
+        assert_eq!(result[2], 0);
+        assert_eq!(result[3], 0);
+    }
+
+    #[test]
+    fn test_fesd() {
+        let mut thread = create_test_thread();
+        // Single precision floats in slots 0 and 2
+        thread.regs.write_u32x4(1, [
+            1.5f32.to_bits(),
+            0,  // ignored
+            2.5f32.to_bits(),
+            0,  // ignored
+        ]);
+        
+        fesd(&mut thread, 1, 2).unwrap();
+        
+        let result = thread.regs.read_u32x4(2);
+        let r0 = f64::from_bits(((result[0] as u64) << 32) | (result[1] as u64));
+        let r1 = f64::from_bits(((result[2] as u64) << 32) | (result[3] as u64));
+        assert!((r0 - 1.5).abs() < 0.0001);
+        assert!((r1 - 2.5).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_frds() {
+        let mut thread = create_test_thread();
+        let d1 = 1.5f64.to_bits();
+        let d2 = 2.5f64.to_bits();
+        thread.regs.write_u32x4(1, [
+            (d1 >> 32) as u32, d1 as u32,
+            (d2 >> 32) as u32, d2 as u32,
+        ]);
+        
+        frds(&mut thread, 1, 2).unwrap();
+        
+        let result = thread.regs.read_u32x4(2);
+        assert!((f32::from_bits(result[0]) - 1.5).abs() < 0.0001);
+        assert_eq!(result[1], 0); // Low word of first slot is 0
+        assert!((f32::from_bits(result[2]) - 2.5).abs() < 0.0001);
+        assert_eq!(result[3], 0); // Low word of second slot is 0
     }
 }

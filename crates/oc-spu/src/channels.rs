@@ -178,6 +178,10 @@ pub struct SpuChannels {
     cycle_counter: u64,
     /// Last decrementer update cycle
     last_decr_update: u64,
+    /// List stall tag (set when a DMA list stalls on stall-and-notify)
+    list_stall_tag: Option<u8>,
+    /// List stall acknowledged (set when SPU writes to MFC_WR_LIST_STALL_ACK)
+    list_stall_ack_pending: bool,
 }
 
 impl SpuChannels {
@@ -207,6 +211,8 @@ impl SpuChannels {
             decrementer_event_pending: false,
             cycle_counter: 0,
             last_decr_update: 0,
+            list_stall_tag: None,
+            list_stall_ack_pending: false,
         }
     }
 
@@ -235,6 +241,10 @@ impl SpuChannels {
             SPU_RD_SIGNAL1 => self.read_signal1(),
             SPU_RD_SIGNAL2 => self.read_signal2(),
             MFC_RD_TAG_STAT => Some(0xFFFFFFFF), // All tags complete (simplified)
+            MFC_RD_LIST_STALL => {
+                // Return the stalled list tag, or 0 if no stall
+                Some(self.list_stall_tag.map_or(0, |tag| 1 << tag))
+            }
             _ if (channel as usize) < NUM_CHANNELS => {
                 let ch = &mut self.channels[channel as usize];
                 let result = ch.pop();
@@ -258,6 +268,10 @@ impl SpuChannels {
             SPU_RD_SIGNAL1 => self.read_signal1().ok_or(()),
             SPU_RD_SIGNAL2 => self.read_signal2().ok_or(()),
             MFC_RD_TAG_STAT => Ok(0xFFFFFFFF),
+            MFC_RD_LIST_STALL => {
+                // Return the stalled list tag bitmask, or 0 if no stall
+                Ok(self.list_stall_tag.map_or(0, |tag| 1 << tag))
+            }
             _ if (channel as usize) < NUM_CHANNELS => {
                 self.channels[channel as usize].pop().ok_or(())
             }
@@ -282,6 +296,16 @@ impl SpuChannels {
             }
             MFC_WR_TAG_MASK => {
                 self.tag_mask = value;
+                true
+            }
+            MFC_WR_LIST_STALL_ACK => {
+                // Acknowledge list stall - clears the stall for tags in the bitmask
+                if let Some(tag) = self.list_stall_tag {
+                    if (value & (1 << tag)) != 0 {
+                        self.list_stall_tag = None;
+                        self.list_stall_ack_pending = true;
+                    }
+                }
                 true
             }
             _ if (channel as usize) < NUM_CHANNELS => {
@@ -312,10 +336,23 @@ impl SpuChannels {
             SPU_RD_EVENT_STAT => 1,
             SPU_RD_DECR => 1,
             MFC_RD_TAG_STAT => 1,
+            MFC_RD_LIST_STALL => if self.list_stall_tag.is_some() { 1 } else { 0 },
             _ if (channel as usize) < NUM_CHANNELS => {
                 self.channels[channel as usize].count()
             }
             _ => 0,
+        }
+    }
+
+    /// Check if a channel is full (write would block)
+    pub fn is_channel_full(&self, channel: u32) -> bool {
+        match channel {
+            // These write channels are never full (always consume writes immediately)
+            SPU_WR_EVENT_MASK | SPU_WR_EVENT_ACK | SPU_WR_DECR | MFC_WR_TAG_MASK | MFC_WR_LIST_STALL_ACK => false,
+            _ if (channel as usize) < NUM_CHANNELS => {
+                self.channels[channel as usize].is_full()
+            }
+            _ => true, // Invalid channel is always "full"
         }
     }
 
@@ -487,6 +524,36 @@ impl SpuChannels {
     /// Check if any channel events are pending
     pub fn has_pending_events(&self) -> bool {
         self.get_event_status() != 0
+    }
+
+    /// Set list stall tag (called by MFC when list element has stall-and-notify flag)
+    pub fn set_list_stall(&mut self, tag: u8) {
+        self.list_stall_tag = Some(tag);
+    }
+
+    /// Clear list stall
+    pub fn clear_list_stall(&mut self) {
+        self.list_stall_tag = None;
+    }
+
+    /// Get list stall tag (returns None if no stall)
+    pub fn get_list_stall_tag(&self) -> Option<u8> {
+        self.list_stall_tag
+    }
+
+    /// Check if list stall acknowledgment is pending
+    pub fn has_list_stall_ack_pending(&self) -> bool {
+        self.list_stall_ack_pending
+    }
+
+    /// Clear list stall acknowledgment pending flag
+    pub fn clear_list_stall_ack(&mut self) {
+        self.list_stall_ack_pending = false;
+    }
+
+    /// Check if there's a list stall
+    pub fn has_list_stall(&self) -> bool {
+        self.list_stall_tag.is_some()
     }
 }
 

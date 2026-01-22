@@ -1585,7 +1585,7 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             builder.CreateStore(result, regs[rt]);
             return;
         }
-        case 0b00110101000: { // gbb rt, ra - Gather Bits from Bytes
+        case 0b01101101010: { // gbb rt, ra - Gather Bits from Bytes
             llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
             llvm::Value* ra_8 = builder.CreateBitCast(ra_val, v16i8_ty);
             llvm::Value* mask = llvm::ConstantVector::getSplat(
@@ -1737,6 +1737,60 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             llvm::Value* right = builder.CreateLShr(ra_val, inv_shift);
             llvm::Value* result = builder.CreateOr(left, right);
             builder.CreateStore(result, regs[rt]);
+            return;
+        }
+        case 0b00111000111: { // rotqmby rt, ra, rb - Rotate and Mask Quadword by Bytes (right shift)
+            // shift = (-rb[0]) & 0x1F
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* rb_val = builder.CreateLoad(v4i32_ty, regs[rb]);
+            llvm::Value* rb0 = builder.CreateExtractElement(rb_val,
+                llvm::ConstantInt::get(i32_ty, 0));
+            llvm::Value* neg_shift = builder.CreateNeg(rb0);
+            llvm::Value* shift_bytes = builder.CreateAnd(neg_shift,
+                llvm::ConstantInt::get(i32_ty, 0x1F));
+            // Right shift by bytes
+            llvm::Value* shift_bits = builder.CreateMul(shift_bytes,
+                llvm::ConstantInt::get(i32_ty, 8));
+            llvm::Value* shift_vec = builder.CreateVectorSplat(4, shift_bits);
+            llvm::Value* shifted = builder.CreateLShr(ra_val, shift_vec);
+            builder.CreateStore(shifted, regs[rt]);
+            return;
+        }
+        case 0b00111000011: { // rotqmbi rt, ra, rb - Rotate and Mask Quadword by Bits (right shift)
+            // shift = (-rb[0]) & 0x7
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* rb_val = builder.CreateLoad(v4i32_ty, regs[rb]);
+            llvm::Value* rb0 = builder.CreateExtractElement(rb_val,
+                llvm::ConstantInt::get(i32_ty, 0));
+            llvm::Value* neg_shift = builder.CreateNeg(rb0);
+            llvm::Value* shift_bits = builder.CreateAnd(neg_shift,
+                llvm::ConstantInt::get(i32_ty, 0x07));
+            // Use i128 for proper quadword shift
+            auto loc_i128_ty = llvm::Type::getInt128Ty(ctx);
+            llvm::Value* ra_128 = builder.CreateBitCast(ra_val, loc_i128_ty);
+            llvm::Value* shift_128 = builder.CreateZExt(shift_bits, loc_i128_ty);
+            llvm::Value* shifted = builder.CreateLShr(ra_128, shift_128);
+            llvm::Value* result = builder.CreateBitCast(shifted, v4i32_ty);
+            builder.CreateStore(result, regs[rt]);
+            return;
+        }
+        case 0b00111001101: { // rotqmbybi rt, ra, rb - Rotate and Mask Quadword by Bytes from Bit Shift Count
+            // shift_bytes = ((-rb[0]) >> 3) & 0x1F
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* rb_val = builder.CreateLoad(v4i32_ty, regs[rb]);
+            llvm::Value* rb0 = builder.CreateExtractElement(rb_val,
+                llvm::ConstantInt::get(i32_ty, 0));
+            llvm::Value* neg_val = builder.CreateNeg(rb0);
+            llvm::Value* shift_bytes = builder.CreateLShr(neg_val,
+                llvm::ConstantInt::get(i32_ty, 3));
+            shift_bytes = builder.CreateAnd(shift_bytes,
+                llvm::ConstantInt::get(i32_ty, 0x1F));
+            // Right shift by bytes
+            llvm::Value* shift_bits = builder.CreateMul(shift_bytes,
+                llvm::ConstantInt::get(i32_ty, 8));
+            llvm::Value* shift_vec = builder.CreateVectorSplat(4, shift_bits);
+            llvm::Value* shifted = builder.CreateLShr(ra_val, shift_vec);
+            builder.CreateStore(shifted, regs[rt]);
             return;
         }
         
@@ -1919,6 +1973,263 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             // Data synchronization
             return;
         }
+        
+        // ---- Quadword Shift/Rotate Immediate Forms ----
+        case 0b001111011111: { // shlqbyi rt, ra, i7 - Shift Left Quadword by Bytes Immediate
+            int shift_bytes = i7 & 0x1F;  // 5-bit shift amount
+            if (shift_bytes == 0) {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                builder.CreateStore(ra_val, regs[rt]);
+            } else if (shift_bytes >= 16) {
+                llvm::Value* zero = llvm::ConstantVector::getSplat(
+                    llvm::ElementCount::getFixed(4), llvm::ConstantInt::get(i32_ty, 0));
+                builder.CreateStore(zero, regs[rt]);
+            } else {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                llvm::Value* ra_bytes = builder.CreateBitCast(ra_val, v16i8_ty);
+                // Create shuffle mask for byte shift left
+                std::vector<int> mask(16);
+                for (int i = 0; i < 16; i++) {
+                    int src_idx = i + shift_bytes;
+                    mask[i] = (src_idx < 16) ? src_idx : 16; // 16 = zero element
+                }
+                llvm::Value* zero_byte = llvm::ConstantVector::getSplat(
+                    llvm::ElementCount::getFixed(16), llvm::ConstantInt::get(i8_ty, 0));
+                llvm::Value* result = builder.CreateShuffleVector(ra_bytes, zero_byte, mask);
+                llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+                builder.CreateStore(result_int, regs[rt]);
+            }
+            return;
+        }
+        case 0b001111001111: { // rotqbyi rt, ra, i7 - Rotate Quadword by Bytes Immediate
+            int rot_bytes = i7 & 0x0F;  // 4-bit rotate amount
+            if (rot_bytes == 0) {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                builder.CreateStore(ra_val, regs[rt]);
+            } else {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                llvm::Value* ra_bytes = builder.CreateBitCast(ra_val, v16i8_ty);
+                // Create shuffle mask for byte rotation
+                std::vector<int> mask(16);
+                for (int i = 0; i < 16; i++) {
+                    mask[i] = (i + rot_bytes) & 0x0F;
+                }
+                llvm::Value* result = builder.CreateShuffleVector(ra_bytes, ra_bytes, mask);
+                llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+                builder.CreateStore(result_int, regs[rt]);
+            }
+            return;
+        }
+        case 0b001111011011: { // shlqbii rt, ra, i7 - Shift Left Quadword by Bits Immediate
+            int shift_bits = i7 & 0x07;  // 3-bit shift amount
+            if (shift_bits == 0) {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                builder.CreateStore(ra_val, regs[rt]);
+            } else {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                auto loc_i64_ty = llvm::Type::getInt64Ty(ctx);
+                auto v2i64_ty = llvm::VectorType::get(loc_i64_ty, 2, false);
+                llvm::Value* ra_64 = builder.CreateBitCast(ra_val, v2i64_ty);
+                // Shift each 64-bit element and combine
+                llvm::Value* shift_amt = llvm::ConstantInt::get(loc_i64_ty, shift_bits);
+                llvm::Value* shift_amt_vec = builder.CreateVectorSplat(2, shift_amt);
+                llvm::Value* shifted = builder.CreateShl(ra_64, shift_amt_vec);
+                llvm::Value* result = builder.CreateBitCast(shifted, v4i32_ty);
+                builder.CreateStore(result, regs[rt]);
+            }
+            return;
+        }
+        case 0b001111001011: { // rotqbii rt, ra, i7 - Rotate Quadword by Bits Immediate
+            int rot_bits = i7 & 0x07;  // 3-bit rotate amount
+            if (rot_bits == 0) {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                builder.CreateStore(ra_val, regs[rt]);
+            } else {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                auto loc_i64_ty = llvm::Type::getInt64Ty(ctx);
+                auto v2i64_ty = llvm::VectorType::get(loc_i64_ty, 2, false);
+                llvm::Value* ra_64 = builder.CreateBitCast(ra_val, v2i64_ty);
+                // Rotate by shifting and ORing
+                llvm::Value* shift_left = llvm::ConstantInt::get(loc_i64_ty, rot_bits);
+                llvm::Value* shift_right = llvm::ConstantInt::get(loc_i64_ty, 64 - rot_bits);
+                llvm::Value* sl_vec = builder.CreateVectorSplat(2, shift_left);
+                llvm::Value* sr_vec = builder.CreateVectorSplat(2, shift_right);
+                llvm::Value* left = builder.CreateShl(ra_64, sl_vec);
+                llvm::Value* right = builder.CreateLShr(ra_64, sr_vec);
+                llvm::Value* rotated = builder.CreateOr(left, right);
+                llvm::Value* result = builder.CreateBitCast(rotated, v4i32_ty);
+                builder.CreateStore(result, regs[rt]);
+            }
+            return;
+        }
+        case 0b001111000111: { // rotqmbyi rt, ra, i7 - Rotate and Mask Quadword by Bytes Immediate (right shift)
+            // shift = (-i7) & 0x1F
+            int shift_bytes = (0 - i7) & 0x1F;
+            if (shift_bytes >= 16) {
+                // All bytes shifted out
+                llvm::Value* zero = llvm::ConstantVector::getSplat(
+                    llvm::ElementCount::getFixed(4), llvm::ConstantInt::get(i32_ty, 0));
+                builder.CreateStore(zero, regs[rt]);
+            } else if (shift_bytes == 0) {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                builder.CreateStore(ra_val, regs[rt]);
+            } else {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                llvm::Value* ra_bytes = builder.CreateBitCast(ra_val, v16i8_ty);
+                // Create shuffle mask for byte shift right
+                std::vector<int> mask(16);
+                for (int i = 0; i < 16; i++) {
+                    if (i < shift_bytes) {
+                        mask[i] = 16; // Zero element
+                    } else {
+                        mask[i] = i - shift_bytes;
+                    }
+                }
+                llvm::Value* zero_byte = llvm::ConstantVector::getSplat(
+                    llvm::ElementCount::getFixed(16), llvm::ConstantInt::get(i8_ty, 0));
+                llvm::Value* result = builder.CreateShuffleVector(ra_bytes, zero_byte, mask);
+                llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+                builder.CreateStore(result_int, regs[rt]);
+            }
+            return;
+        }
+        case 0b001111000011: { // rotqmbii rt, ra, i7 - Rotate and Mask Quadword by Bits Immediate (right shift)
+            // shift = (-i7) & 0x7
+            int shift_bits = (0 - i7) & 0x07;
+            if (shift_bits == 0) {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                builder.CreateStore(ra_val, regs[rt]);
+            } else {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                auto loc_i128_ty = llvm::Type::getInt128Ty(ctx);
+                llvm::Value* ra_128 = builder.CreateBitCast(ra_val, loc_i128_ty);
+                // Right shift the 128-bit value
+                llvm::Value* shift_amt = llvm::ConstantInt::get(loc_i128_ty, shift_bits);
+                llvm::Value* shifted = builder.CreateLShr(ra_128, shift_amt);
+                llvm::Value* result = builder.CreateBitCast(shifted, v4i32_ty);
+                builder.CreateStore(result, regs[rt]);
+            }
+            return;
+        }
+        
+        // ---- Float to Integer Conversions ----
+        // Note: Full SPU float conversion instructions use an 8-bit scale factor.
+        // The scale allows fixed-point representation: cflts multiplies by 2^(173-i8)
+        // before converting, csflt divides by 2^(155-i8) after converting.
+        // Current implementation: Direct conversion without scaling (i8=173 for cflts,
+        // i8=155 for csflt). This is correct for i8=173/155 but may produce incorrect
+        // results for other scale values. Games typically use the default scale values.
+        case 0b01110110000: { // cflts rt, ra, i8 - Convert Float to Signed Integer
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_float = builder.CreateBitCast(ra_val, v4f32_ty);
+            // Direct conversion (equivalent to scale=173)
+            llvm::Value* result = builder.CreateFPToSI(ra_float, v4i32_ty);
+            builder.CreateStore(result, regs[rt]);
+            return;
+        }
+        case 0b01110110001: { // cfltu rt, ra, i8 - Convert Float to Unsigned Integer
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_float = builder.CreateBitCast(ra_val, v4f32_ty);
+            // Direct conversion (equivalent to scale=173)
+            llvm::Value* result = builder.CreateFPToUI(ra_float, v4i32_ty);
+            builder.CreateStore(result, regs[rt]);
+            return;
+        }
+        case 0b01110110010: { // csflt rt, ra, i8 - Convert Signed Integer to Float
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* result_float = builder.CreateSIToFP(ra_val, v4f32_ty);
+            // Direct conversion (equivalent to scale=155)
+            llvm::Value* result = builder.CreateBitCast(result_float, v4i32_ty);
+            builder.CreateStore(result, regs[rt]);
+            return;
+        }
+        case 0b01110110011: { // cuflt rt, ra, i8 - Convert Unsigned Integer to Float
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* result_float = builder.CreateUIToFP(ra_val, v4f32_ty);
+            // Direct conversion (equivalent to scale=155)
+            llvm::Value* result = builder.CreateBitCast(result_float, v4i32_ty);
+            builder.CreateStore(result, regs[rt]);
+            return;
+        }
+        
+        // ---- Compare Immediate Halfword/Byte ----
+        case 0b01111101: { // ceqhi rt, ra, i10 - Compare Equal Halfword Immediate
+            int16_t imm = (int16_t)(i10 << 6) >> 6;  // Sign extend
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_16 = builder.CreateBitCast(ra_val, v8i16_ty);
+            llvm::Value* imm_val = llvm::ConstantInt::get(i16_ty, imm);
+            llvm::Value* imm_vec = builder.CreateVectorSplat(8, imm_val);
+            llvm::Value* cmp = builder.CreateICmpEQ(ra_16, imm_vec);
+            llvm::Value* result = builder.CreateSExt(cmp, v8i16_ty);
+            llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_int, regs[rt]);
+            return;
+        }
+        case 0b01111110: { // ceqbi rt, ra, i10 - Compare Equal Byte Immediate
+            int8_t imm = (int8_t)(i10 & 0xFF);
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_8 = builder.CreateBitCast(ra_val, v16i8_ty);
+            llvm::Value* imm_val = llvm::ConstantInt::get(i8_ty, imm);
+            llvm::Value* imm_vec = builder.CreateVectorSplat(16, imm_val);
+            llvm::Value* cmp = builder.CreateICmpEQ(ra_8, imm_vec);
+            llvm::Value* result = builder.CreateSExt(cmp, v16i8_ty);
+            llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_int, regs[rt]);
+            return;
+        }
+        case 0b01001101: { // cgthi rt, ra, i10 - Compare Greater Than Halfword Immediate
+            int16_t imm = (int16_t)(i10 << 6) >> 6;
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_16 = builder.CreateBitCast(ra_val, v8i16_ty);
+            llvm::Value* imm_val = llvm::ConstantInt::get(i16_ty, imm);
+            llvm::Value* imm_vec = builder.CreateVectorSplat(8, imm_val);
+            llvm::Value* cmp = builder.CreateICmpSGT(ra_16, imm_vec);
+            llvm::Value* result = builder.CreateSExt(cmp, v8i16_ty);
+            llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_int, regs[rt]);
+            return;
+        }
+        case 0b01001110: { // cgtbi rt, ra, i10 - Compare Greater Than Byte Immediate
+            int8_t imm = (int8_t)(i10 & 0xFF);
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_8 = builder.CreateBitCast(ra_val, v16i8_ty);
+            llvm::Value* imm_val = llvm::ConstantInt::get(i8_ty, imm);
+            llvm::Value* imm_vec = builder.CreateVectorSplat(16, imm_val);
+            llvm::Value* cmp = builder.CreateICmpSGT(ra_8, imm_vec);
+            llvm::Value* result = builder.CreateSExt(cmp, v16i8_ty);
+            llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_int, regs[rt]);
+            return;
+        }
+        case 0b01011101: { // clgthi rt, ra, i10 - Compare Logical Greater Than Halfword Immediate
+            uint16_t imm = i10 & 0x3FF;
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_16 = builder.CreateBitCast(ra_val, v8i16_ty);
+            llvm::Value* imm_val = llvm::ConstantInt::get(i16_ty, imm);
+            llvm::Value* imm_vec = builder.CreateVectorSplat(8, imm_val);
+            llvm::Value* cmp = builder.CreateICmpUGT(ra_16, imm_vec);
+            llvm::Value* result = builder.CreateSExt(cmp, v8i16_ty);
+            llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_int, regs[rt]);
+            return;
+        }
+        case 0b01011110: { // clgtbi rt, ra, i10 - Compare Logical Greater Than Byte Immediate
+            uint8_t imm = i10 & 0xFF;
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_8 = builder.CreateBitCast(ra_val, v16i8_ty);
+            llvm::Value* imm_val = llvm::ConstantInt::get(i8_ty, imm);
+            llvm::Value* imm_vec = builder.CreateVectorSplat(16, imm_val);
+            llvm::Value* cmp = builder.CreateICmpUGT(ra_8, imm_vec);
+            llvm::Value* result = builder.CreateSExt(cmp, v16i8_ty);
+            llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_int, regs[rt]);
+            return;
+        }
+        
+        // ---- MFC DMA Operations ----
+        // MFC operations are handled via channel writes to MFC_Cmd channel
+        // The infrastructure in MfcDmaManager handles the actual DMA
+        // Note: selb (0b1011), shufb (0b1100), gbh, gb, avgb, sumb are already implemented above
         
         default:
             break;

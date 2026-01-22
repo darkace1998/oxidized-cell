@@ -146,6 +146,9 @@ impl PpuDecoder {
                            (InstructionForm::XO, xo_9bit),
                     491 => // divw - Divide Word
                            (InstructionForm::XO, xo_9bit),
+                    // XS-form: Shift double with immediate (sradi)
+                    // xo=826/827 corresponds to 9-bit xo=413 with sh[5]=0/1
+                    826 | 827 => (InstructionForm::XS, xo_9bit),
                     _ => {
                         // X-form and other variants (10-bit xo)
                         (InstructionForm::X, xo)
@@ -341,6 +344,22 @@ impl PpuDecoder {
         let xo = ((opcode >> 1) & 0xF) as u8;
         let rc = (opcode & 1) != 0;
         (rs, ra, rb, mb, xo, rc)
+    }
+    
+    /// Extract XS-form fields (64-bit shift with immediate)
+    /// Returns (rs, ra, sh, xo, rc)
+    /// sh is 6-bit (sh[0:4] from bits 11-15, sh[5] from bit 30)
+    /// xo is 9-bit from bits 21-29
+    #[inline]
+    pub fn xs_form(opcode: u32) -> (u8, u8, u8, u16, bool) {
+        let rs = ((opcode >> 21) & 0x1F) as u8;
+        let ra = ((opcode >> 16) & 0x1F) as u8;
+        let sh_lo = ((opcode >> 11) & 0x1F) as u8;
+        let sh_hi = ((opcode >> 1) & 0x1) as u8;
+        let sh = sh_lo | (sh_hi << 5);
+        let xo = ((opcode >> 2) & 0x1FF) as u16;
+        let rc = (opcode & 1) != 0;
+        (rs, ra, sh, xo, rc)
     }
     
     /// Get a human-readable mnemonic for the instruction (best effort)

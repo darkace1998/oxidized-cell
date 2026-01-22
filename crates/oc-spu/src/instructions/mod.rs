@@ -9,3 +9,4 @@ pub mod float;
 pub mod channel;
 pub mod quadword;
 pub mod control;
+pub mod hints;
