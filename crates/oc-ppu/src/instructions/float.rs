@@ -844,17 +844,17 @@ mod tests {
     
     #[test]
     fn test_fpscr_exception_enable_bits() {
-        // Verify the enable bit constants are correct
-        assert_eq!(fpscr::VE, 0x80, "VE should be bit 7");
-        assert_eq!(fpscr::OE, 0x40, "OE should be bit 6");
-        assert_eq!(fpscr::UE, 0x20, "UE should be bit 5");
-        assert_eq!(fpscr::ZE, 0x10, "ZE should be bit 4");
-        assert_eq!(fpscr::XE, 0x08, "XE should be bit 3");
+        // Verify the enable bit constants are correct (checking bit positions)
+        assert_eq!(fpscr::VE, 0x0000_0000_0000_0080u64, "VE should be bit 7");
+        assert_eq!(fpscr::OE, 0x0000_0000_0000_0040u64, "OE should be bit 6");
+        assert_eq!(fpscr::UE, 0x0000_0000_0000_0020u64, "UE should be bit 5");
+        assert_eq!(fpscr::ZE, 0x0000_0000_0000_0010u64, "ZE should be bit 4");
+        assert_eq!(fpscr::XE, 0x0000_0000_0000_0008u64, "XE should be bit 3");
     }
     
     #[test]
     fn test_fpscr_ni_mode() {
-        assert_eq!(fpscr::NI, 0x04, "NI should be bit 2");
+        assert_eq!(fpscr::NI, 0x0000_0000_0000_0004u64, "NI should be bit 2");
     }
     
     #[test]

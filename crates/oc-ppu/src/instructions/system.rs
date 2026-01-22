@@ -192,7 +192,7 @@ pub fn mtfsb1(thread: &mut PpuThread, bt: u8) {
 /// Copies a 4-bit field from FPSCR to the specified CR field
 /// bf specifies which CR field (0-7) to write
 /// bfa specifies which FPSCR field (0-7) to read
-/// After copying, some exception bits in the source FPSCR field are cleared
+/// After copying, sticky exception bits in the source FPSCR field are cleared
 pub fn mcrfs(thread: &mut PpuThread, bf: u8, bfa: u8) {
     // FPSCR fields are numbered 0-7, each 4 bits
     // Field 0 is bits 32-35 (FX, FEX, VX, OX), etc.
@@ -202,22 +202,22 @@ pub fn mcrfs(thread: &mut PpuThread, bf: u8, bfa: u8) {
     // Set the CR field
     thread.set_cr_field(bf as usize, fpscr_field);
     
-    // Clear exception bits in the copied FPSCR field
-    // Only sticky exception bits are cleared (FX, OX, UX, ZX, XX, and VXSNAN/VXISI/etc.)
-    // The reset bits depend on which field is being read
+    // Clear only sticky exception bits in the copied FPSCR field
+    // FEX and VX are summary bits and should NOT be cleared directly
+    // Per PowerPC specification, only specific sticky bits are cleared:
     let clear_mask: u64 = match bfa {
-        0 => 0xF, // Field 0: FX, FEX, VX, OX - clear FX, OX
-        1 => 0xF, // Field 1: UX, ZX, XX, VXSNAN - clear all except summary bits
-        2 => 0xF, // Field 2: VXISI, VXIDI, VXZDZ, VXIMZ - clear all
-        3 => 0xF, // Field 3: VXVC, FR, FI, FPRF[C] - clear VXVC
-        _ => 0x0, // Fields 4-7: no sticky bits to clear
+        0 => 0b1001, // Field 0: FX, FEX, VX, OX - clear FX (bit 0) and OX (bit 3) only
+        1 => 0b1111, // Field 1: UX, ZX, XX, VXSNAN - clear all (all are sticky)
+        2 => 0b1111, // Field 2: VXISI, VXIDI, VXZDZ, VXIMZ - clear all (all are sticky)
+        3 => 0b1000, // Field 3: VXVC, FR, FI, FPRF[C] - clear only VXVC (bit 0)
+        4 => 0b0100, // Field 4: VXSQRT (bit 1), VXCVI (bit 0) - clear VXSQRT only
+        5 => 0b0001, // Field 5: VE, OE, UE, ZE - no sticky bits here, but VXCVI extends here
+        _ => 0x0,    // Fields 6-7: no sticky bits to clear
     };
     
     if clear_mask != 0 {
         let clear_bits = clear_mask << (32 + shift);
-        // Don't clear FEX and VX summary bits directly (they're computed)
-        let actual_clear = clear_bits & !0x6000_0000_0000_0000; // Preserve FEX, VX
-        thread.regs.fpscr &= !actual_clear;
+        thread.regs.fpscr &= !clear_bits;
     }
 }
 
