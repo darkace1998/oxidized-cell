@@ -1,6 +1,7 @@
 //! SPU interpreter implementation
 
 use crate::decoder::SpuDecoder;
+use crate::instructions::float;
 use crate::thread::SpuThread;
 use oc_core::error::SpuError;
 
@@ -65,12 +66,68 @@ impl SpuInterpreter {
                                         // nop
                                         thread.advance_pc();
                                     }
+                                    // Double-precision floating-point (RR form, 10-bit opcodes)
+                                    0b0101100100 => { // dfa (0x2cc >> 1)
+                                        let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                        float::dfa(thread, rb, ra, rt)?;
+                                    }
+                                    0b0101100101 => { // dfs (0x2cd >> 1)
+                                        let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                        float::dfs(thread, rb, ra, rt)?;
+                                    }
+                                    0b0101100110 => { // dfm (0x2ce >> 1)
+                                        let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                        float::dfm(thread, rb, ra, rt)?;
+                                    }
                                     _ => {
                                         match op11 {
                                             0b01111000100 => self.execute_shufb(thread, opcode)?,
                                             0b01010100101 | 0b01010110101 | 0b01111010101 => {
                                                 // FMA-type instructions
                                                 thread.advance_pc();
+                                            }
+                                            // Double-precision FMA variants (11-bit opcodes)
+                                            0b01101011100 => { // dfma (0x35c)
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                float::dfma(thread, rb, ra, rt)?;
+                                            }
+                                            0b01101011101 => { // dfms (0x35d)
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                float::dfms(thread, rb, ra, rt)?;
+                                            }
+                                            0b01101011110 => { // dfnms (0x35e)
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                float::dfnms(thread, rb, ra, rt)?;
+                                            }
+                                            0b01101011111 => { // dfnma (0x35f)
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                float::dfnma(thread, rb, ra, rt)?;
+                                            }
+                                            // Double-precision comparisons
+                                            0b01011000011 => { // dfcgt (0x2c3)
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                float::dfcgt(thread, rb, ra, rt)?;
+                                            }
+                                            0b01011001011 => { // dfcmgt (0x2cb)
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                float::dfcmgt(thread, rb, ra, rt)?;
+                                            }
+                                            0b01111000011 => { // dfceq (0x3c3)
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                float::dfceq(thread, rb, ra, rt)?;
+                                            }
+                                            0b01111001011 => { // dfcmeq (0x3cb)
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                float::dfcmeq(thread, rb, ra, rt)?;
+                                            }
+                                            // Float/double conversion
+                                            0b01110111000 => { // fesd (0x3b8)
+                                                let (_rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                float::fesd(thread, ra, rt)?;
+                                            }
+                                            0b01110111001 => { // frds (0x3b9)
+                                                let (_rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                float::frds(thread, ra, rt)?;
                                             }
                                             _ => {
                                                 tracing::warn!(

@@ -103,7 +103,7 @@ This document tracks pending tasks, improvements, and future features for the ox
 
 #### SPU Interpreter Improvements
 
-- [ ] **Double-Precision Floating-Point**: Complete f64 instruction coverage
+- [x] **Double-Precision Floating-Point**: Complete f64 instruction coverage
   - `dfa`, `dfs`, `dfm` - Double-precision add/subtract/multiply
   - `dfma`, `dfms`, `dfnma`, `dfnms` - Double-precision FMA variants
   - `dfceq`, `dfcgt`, `dfcmeq`, `dfcmgt` - Double-precision comparisons
@@ -811,8 +811,8 @@ This document tracks pending tasks, improvements, and future features for the ox
   - **FPSCR Flags**: Verify all exception bits set correctly
   - Location: `crates/oc-ppu/src/tests/`, `crates/oc-ppu/src/interpreter.rs`
 
-- [ ] **SPU Instruction Tests**: Expand test coverage for SPU instructions
-  - **Double-Precision**: Tests for `dfa`, `dfm`, `dfma`, `fesd`, `frds`
+- [x] **SPU Instruction Tests**: Expand test coverage for SPU instructions
+  - **Double-Precision**: Tests for `dfa`, `dfm`, `dfma`, `fesd`, `frds`, `dfceq`, `dfcgt` ✅
   - **Quadword Operations**: Tests for `shlqby`, `rotqby`, `rotqmby` edge cases
   - **Channel Blocking**: Multi-threaded channel stall/resume tests
   - **MFC Timing**: Verify DMA completion timing is accurate
@@ -1037,7 +1037,7 @@ This document tracks pending tasks, improvements, and future features for the ox
 | Float FMA | ✅ Complete | `fma`, `fms`, `fnms` - fused multiply-add |
 | Float Estimates | ✅ Complete | `frest`, `frsqest` - reciprocal estimates |
 | Float Conversion | 🟡 Partial | `csflt`, `cuflt`, `cflts`, `cfltu` done; `fi` incomplete |
-| Double-Precision | 🔴 Minimal | Framework only; `dfa`, `dfm`, `dfma` not implemented |
+| Double-Precision | ✅ Complete | `dfa`, `dfs`, `dfm`, `dfma`, `dfms`, `dfnms`, `dfnma`, `dfceq`, `dfcgt`, `dfcmeq`, `dfcmgt`, `fesd`, `frds` |
 | Load Quadword | ✅ Complete | `lqd`, `lqa`, `lqr`, `lqx` |
 | Store Quadword | ✅ Complete | `stqd`, `stqa`, `stqr`, `stqx` |
 | Immediate Load | ✅ Complete | `il`, `ilh`, `ilhu`, `ila`, `iohl` |
