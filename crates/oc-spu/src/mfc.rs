@@ -16,6 +16,12 @@ pub enum MfcCommand {
     PutF = 0x22,
     /// Put unconditional
     PutU = 0x28,
+    /// Put list (local to main, list of elements)
+    PutL = 0x24,
+    /// Put list with barrier
+    PutLB = 0x25,
+    /// Put list with fence
+    PutLF = 0x26,
     /// Get (main to local)
     Get = 0x40,
     /// Get with barrier
@@ -24,6 +30,12 @@ pub enum MfcCommand {
     GetF = 0x42,
     /// Get unconditional
     GetU = 0x48,
+    /// Get list (main to local, list of elements)
+    GetL = 0x44,
+    /// Get list with barrier
+    GetLB = 0x45,
+    /// Get list with fence
+    GetLF = 0x46,
     /// Get Lock Line Unconditional (atomic reservation)
     GetLLAR = 0xD0,
     /// Put Lock Line Conditional (atomic store)
@@ -42,8 +54,12 @@ impl MfcCommand {
         match self {
             Self::Get | Self::GetU => 100,
             Self::GetB | Self::GetF => 120,
+            Self::GetL => 150, // List commands have higher overhead
+            Self::GetLB | Self::GetLF => 170,
             Self::Put | Self::PutU => 80,
             Self::PutB | Self::PutF => 100,
+            Self::PutL => 130, // List commands have higher overhead
+            Self::PutLB | Self::PutLF => 150,
             Self::GetLLAR => 150,
             Self::PutLLC | Self::PutLLUC => 120,
             Self::Barrier => 50,
@@ -56,6 +72,25 @@ impl MfcCommand {
         let blocks = size.div_ceil(128);
         blocks as u64 * 10 // 10 cycles per 128-byte block
     }
+
+    /// Check if this is a list command
+    pub fn is_list_command(&self) -> bool {
+        matches!(self, Self::GetL | Self::GetLB | Self::GetLF |
+                       Self::PutL | Self::PutLB | Self::PutLF)
+    }
+
+    /// Check if this is a GET command (including list variants)
+    pub fn is_get(&self) -> bool {
+        matches!(self, Self::Get | Self::GetB | Self::GetF | Self::GetU |
+                       Self::GetL | Self::GetLB | Self::GetLF | Self::GetLLAR)
+    }
+
+    /// Check if this is a PUT command (including list variants)
+    pub fn is_put(&self) -> bool {
+        matches!(self, Self::Put | Self::PutB | Self::PutF | Self::PutU |
+                       Self::PutL | Self::PutLB | Self::PutLF |
+                       Self::PutLLC | Self::PutLLUC)
+    }
 }
 
 impl From<u8> for MfcCommand {
@@ -64,10 +99,16 @@ impl From<u8> for MfcCommand {
             0x20 => Self::Put,
             0x21 => Self::PutB,
             0x22 => Self::PutF,
+            0x24 => Self::PutL,
+            0x25 => Self::PutLB,
+            0x26 => Self::PutLF,
             0x28 => Self::PutU,
             0x40 => Self::Get,
             0x41 => Self::GetB,
             0x42 => Self::GetF,
+            0x44 => Self::GetL,
+            0x45 => Self::GetLB,
+            0x46 => Self::GetLF,
             0x48 => Self::GetU,
             0xD0 => Self::GetLLAR,
             0xB4 => Self::PutLLC,
@@ -98,12 +139,40 @@ pub struct MfcDmaCommand {
 }
 
 /// DMA list element for list transfers
+/// Each element is 8 bytes in local storage (big-endian):
+/// - Bytes 0-3: Local Storage Address (LSA)
+/// - Bytes 4-5: Transfer size (max 16KB per element)
+/// - Byte 6: Reserved (stall-and-notify flag in bit 7)
+/// - Byte 7: Reserved
 #[derive(Debug, Clone)]
 pub struct MfcListElement {
     /// Local storage address
     pub lsa: u32,
     /// Transfer size
     pub size: u16,
+    /// Stall-and-notify flag (if set, SPU stalls after this element)
+    pub stall_notify: bool,
+}
+
+/// List transfer state for tracking in-progress list DMA operations
+#[derive(Debug, Clone)]
+pub struct ListTransferState {
+    /// List address in local storage
+    pub list_addr: u32,
+    /// Total list size in bytes
+    pub list_size: u32,
+    /// Base effective address
+    pub ea: u64,
+    /// Tag for this transfer
+    pub tag: u8,
+    /// Command type (GetL, PutL, etc.)
+    pub cmd: MfcCommand,
+    /// Current element index (0-based)
+    pub current_element: usize,
+    /// Total number of elements
+    pub total_elements: usize,
+    /// Whether the list is currently stalled
+    pub stalled: bool,
 }
 
 /// MFC state
@@ -128,6 +197,8 @@ pub struct Mfc {
     stall_notify_tag: u8,
     /// List stall flag
     list_stall: bool,
+    /// Active list transfer state (if any)
+    list_transfer: Option<ListTransferState>,
 }
 
 impl Mfc {
@@ -144,6 +215,7 @@ impl Mfc {
             pending_tags: 0,
             stall_notify_tag: 0,
             list_stall: false,
+            list_transfer: None,
         }
     }
 
@@ -369,38 +441,140 @@ impl Mfc {
     }
 
     /// Execute DMA list operation
-    /// List is in local storage, each element is 8 bytes: 4 bytes LSA, 2 bytes size, 2 bytes reserved
+    /// List is in local storage, each element is 8 bytes: 4 bytes LSA, 2 bytes size, 2 bytes reserved (with stall flag)
+    /// Returns true if completed, false if stalled
     pub fn execute_list_get(&mut self, list_addr: u32, ea: u64, list_size: u32, tag: u8,
                             local_storage: &mut [u8], main_memory: &[u8]) -> bool {
         let elements = self.parse_list(list_addr, list_size, local_storage);
+        let total_elements = elements.len();
         
-        for elem in elements {
+        for (idx, elem) in elements.iter().enumerate() {
             if elem.size > 0 {
                 let elem_ea = ea.wrapping_add(elem.lsa as u64);
                 self.perform_get_transfer(elem.lsa, elem_ea, elem.size as u32, 
                                         local_storage, main_memory);
             }
+            
+            // Check for stall-and-notify flag
+            if elem.stall_notify {
+                self.set_list_stall(tag);
+                // Save list transfer state for resumption
+                self.list_transfer = Some(ListTransferState {
+                    list_addr,
+                    list_size,
+                    ea,
+                    tag,
+                    cmd: MfcCommand::GetL,
+                    current_element: idx + 1,
+                    total_elements,
+                    stalled: true,
+                });
+                return false; // Stalled
+            }
         }
         
         self.complete_tag(tag);
+        self.list_transfer = None;
         true
     }
 
     /// Execute DMA list PUT operation
+    /// Returns true if completed, false if stalled
     pub fn execute_list_put(&mut self, list_addr: u32, ea: u64, list_size: u32, tag: u8,
                             local_storage: &[u8], main_memory: &mut [u8]) -> bool {
         let elements = self.parse_list(list_addr, list_size, local_storage);
+        let total_elements = elements.len();
         
-        for elem in elements {
+        for (idx, elem) in elements.iter().enumerate() {
             if elem.size > 0 {
                 let elem_ea = ea.wrapping_add(elem.lsa as u64);
                 self.perform_put_transfer(elem.lsa, elem_ea, elem.size as u32,
                                         local_storage, main_memory);
             }
+            
+            // Check for stall-and-notify flag
+            if elem.stall_notify {
+                self.set_list_stall(tag);
+                // Save list transfer state for resumption
+                self.list_transfer = Some(ListTransferState {
+                    list_addr,
+                    list_size,
+                    ea,
+                    tag,
+                    cmd: MfcCommand::PutL,
+                    current_element: idx + 1,
+                    total_elements,
+                    stalled: true,
+                });
+                return false; // Stalled
+            }
         }
         
         self.complete_tag(tag);
+        self.list_transfer = None;
         true
+    }
+
+    /// Resume a stalled list transfer after acknowledgment
+    /// Returns true if resumed successfully, false if no stalled transfer
+    pub fn resume_list_transfer(&mut self, local_storage: &mut [u8], main_memory: &mut [u8]) -> bool {
+        let state = match self.list_transfer.take() {
+            Some(s) if s.stalled => s,
+            other => {
+                self.list_transfer = other;
+                return false;
+            }
+        };
+
+        // Parse remaining elements
+        let elements = self.parse_list(state.list_addr, state.list_size, local_storage);
+        
+        for (idx, elem) in elements.iter().enumerate().skip(state.current_element) {
+            if elem.size > 0 {
+                let elem_ea = state.ea.wrapping_add(elem.lsa as u64);
+                
+                if state.cmd.is_get() {
+                    self.perform_get_transfer(elem.lsa, elem_ea, elem.size as u32,
+                                            local_storage, main_memory);
+                } else {
+                    self.perform_put_transfer(elem.lsa, elem_ea, elem.size as u32,
+                                            local_storage, main_memory);
+                }
+            }
+            
+            // Check for another stall-and-notify flag
+            if elem.stall_notify {
+                self.set_list_stall(state.tag);
+                self.list_transfer = Some(ListTransferState {
+                    list_addr: state.list_addr,
+                    list_size: state.list_size,
+                    ea: state.ea,
+                    tag: state.tag,
+                    cmd: state.cmd,
+                    current_element: idx + 1,
+                    total_elements: state.total_elements,
+                    stalled: true,
+                });
+                return true; // Resumed but stalled again
+            }
+        }
+        
+        // List completed
+        self.complete_tag(state.tag);
+        self.clear_list_stall();
+        true
+    }
+
+    /// Check if there's a stalled list transfer
+    pub fn has_stalled_list_transfer(&self) -> bool {
+        self.list_transfer.as_ref().map_or(false, |s| s.stalled)
+    }
+
+    /// Get the stalled list transfer tag (for MFC_RD_LIST_STALL channel)
+    pub fn get_stalled_list_tag(&self) -> Option<u8> {
+        self.list_transfer.as_ref()
+            .filter(|s| s.stalled)
+            .map(|s| s.tag)
     }
 
     /// Parse DMA list from local storage
@@ -425,9 +599,11 @@ impl Mfc {
                 local_storage[offset + 4],
                 local_storage[offset + 5],
             ]);
+            // Byte 6 bit 7 is the stall-and-notify flag
+            let stall_notify = (local_storage[offset + 6] & 0x80) != 0;
 
             if size > 0 {
-                elements.push(MfcListElement { lsa, size });
+                elements.push(MfcListElement { lsa, size, stall_notify });
             }
         }
 

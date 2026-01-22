@@ -135,11 +135,13 @@ This document tracks pending tasks, improvements, and future features for the ox
   - `save_channel_context()` / `restore_and_resume()` for context switching ✅
   - Location: `crates/oc-spu/src/instructions/channel.rs`, `crates/oc-spu/src/channels.rs`
 
-- [ ] **MFC List DMA Operations**: Complete DMA list transfer support
-  - `GETL`, `PUTL` - DMA list transfer commands
-  - List element parsing and execution
-  - List stall handling and resumption
-  - Location: `crates/oc-spu/src/mfc.rs`
+- [x] **MFC List DMA Operations**: Complete DMA list transfer support ✅
+  - `GETL`, `PUTL`, `GETLB`, `PUTLB`, `GETLF`, `PUTLF` - DMA list transfer commands ✅
+  - `MfcListElement` with stall-and-notify flag parsing ✅
+  - `ListTransferState` for tracking in-progress list transfers ✅
+  - List stall handling via `MFC_RD_LIST_STALL` and `MFC_WR_LIST_STALL_ACK` channels ✅
+  - `resume_list_transfer()` for resuming after stall acknowledgment ✅
+  - Location: `crates/oc-spu/src/mfc.rs`, `crates/oc-spu/src/channels.rs`
 
 #### SPU JIT Compilation
 
@@ -1052,11 +1054,11 @@ This document tracks pending tasks, improvements, and future features for the ox
 | Channel Blocking | 🟡 Partial | Basic ops done; proper stalling incomplete |
 | Shuffle Bytes | ✅ Complete | `shufb` - arbitrary byte permutation |
 | Copy-to-Insert | ✅ Complete | `cbd`, `chd`, `cwd`, `cdd`, `cbx`, `chx`, `cwx`, `cdx` |
-| Carry/Borrow | 🟡 Partial | `cg`, `bg` done; `cgx`, `bgx` incomplete |
-| Control/Hints | 🟡 Partial | `nop`, `lnop`, `stop`, `sync` done; `hbr*` incomplete |
+| Carry/Borrow | ✅ Complete | `cg`, `bg`, `cgx`, `bgx`, `addx`, `sfx` |
+| Control/Hints | ✅ Complete | `nop`, `lnop`, `sync`, `dsync`, `hbra`, `hbrr`, `hbrp`, `mfspr` |
 | MFC DMA | ✅ Complete | GET, PUT, GETB, PUTB, GETF, PUTF with timing |
 | MFC Atomic | ✅ Complete | GETLLAR, PUTLLC, PUTLLUC with reservation |
-| MFC List DMA | 🟡 Partial | Basic list parsing; stall handling incomplete |
+| MFC List DMA | ✅ Complete | GETL, PUTL with stall-and-notify, resume support |
 | JIT Arithmetic | 🔴 Minimal | Framework exists, few instructions |
 | JIT Quadword | 🔴 Minimal | Not implemented |
 | JIT Load/Store | 🔴 Minimal | Not implemented |
