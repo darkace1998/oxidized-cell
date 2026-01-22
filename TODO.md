@@ -117,10 +117,13 @@ This document tracks pending tasks, improvements, and future features for the ox
   - **Byte Sum**: `sumb` - Sum bytes into halfwords ✅
   - Location: `crates/oc-spu/src/instructions/arithmetic.rs`
 
-- [ ] **Hint and Scheduling Instructions**: Implement branch hints
-  - `hbr`, `hbra`, `hbrr` - Hint for branch (absolute/relative)
-  - `hbrp` - Hint for branch pair
-  - Location: `crates/oc-spu/src/instructions/control.rs`
+- [x] **Hint and Scheduling Instructions**: Implement branch hints ✅
+  - `hbra`, `hbrr` - Hint for branch (absolute/relative) ✅
+  - `hbrp` - Hint for branch predict ✅
+  - `nop`, `lnop` - No operation ✅
+  - `sync`, `dsync` - Synchronize (data) ✅
+  - `mfspr` - Move from special purpose register ✅
+  - Location: `crates/oc-spu/src/instructions/hints.rs`
 
 - [ ] **Channel Blocking Behavior**: Implement proper stalling semantics
   - `rdch` should stall when channel is empty (not return 0)

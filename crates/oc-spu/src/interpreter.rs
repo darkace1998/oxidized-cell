@@ -1,7 +1,7 @@
 //! SPU interpreter implementation
 
 use crate::decoder::SpuDecoder;
-use crate::instructions::{arithmetic, float};
+use crate::instructions::{arithmetic, float, hints};
 use crate::thread::SpuThread;
 use oc_core::error::SpuError;
 
@@ -47,6 +47,16 @@ impl SpuInterpreter {
                 // Check other opcode lengths
                 match op7 {
                     0b0100000..=0b0100001 => self.execute_immediate_load(thread, opcode)?,
+                    // hbra - Hint for Branch (a-form), 7-bit patterns 0b0001000 to 0b0001111
+                    0b0001000..=0b0001111 => {
+                        hints::hbra(thread, opcode);
+                        thread.advance_pc();
+                    }
+                    // hbrr - Hint for Branch (relative), 7-bit patterns 0b0011000 to 0b0011111
+                    0b0011000..=0b0011111 => {
+                        hints::hbrr(thread, opcode);
+                        thread.advance_pc();
+                    }
                     _ => {
                         match op8 {
                             0b00011100 => self.execute_ai(thread, opcode)?,
@@ -63,7 +73,8 @@ impl SpuInterpreter {
                                     0b0001001101 => self.execute_nor(thread, opcode)?,
                                     0b0000100000 => self.execute_stop(thread, opcode)?,
                                     0b0000000000 => {
-                                        // nop
+                                        // sync - Synchronize
+                                        hints::sync(thread, opcode);
                                         thread.advance_pc();
                                     }
                                     // Double-precision floating-point (RR form, 10-bit opcodes)
@@ -161,6 +172,27 @@ impl SpuInterpreter {
                                             0b01001010011 => { // sumb - Sum Bytes into Halfwords
                                                 let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
                                                 arithmetic::sumb(thread, rb, ra, rt)?;
+                                            }
+                                            // Hint and Scheduling Instructions
+                                            0b01000000010 => { // nop
+                                                hints::nop(thread, opcode);
+                                                thread.advance_pc();
+                                            }
+                                            0b00000000010 => { // lnop
+                                                hints::lnop(thread, opcode);
+                                                thread.advance_pc();
+                                            }
+                                            0b00000000110 => { // dsync
+                                                hints::dsync(thread, opcode);
+                                                thread.advance_pc();
+                                            }
+                                            0b00010000110 => { // hbrp
+                                                hints::hbrp(thread, opcode);
+                                                thread.advance_pc();
+                                            }
+                                            0b00000110000 => { // mfspr
+                                                hints::mfspr(thread, opcode);
+                                                thread.advance_pc();
                                             }
                                             _ => {
                                                 tracing::warn!(
