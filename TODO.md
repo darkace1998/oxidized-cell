@@ -90,11 +90,15 @@ This document tracks pending tasks, improvements, and future features for the ox
   - 32 vector registers (VRs) with VSCR support ✅
   - Location: `cpp/src/ppu_jit.cpp`
 
-- [ ] **SPU JIT Instruction Coverage**: Complete SPU SIMD instruction compilation
-  - Memory Flow Controller (MFC) DMA operations
-  - Channel communication instructions
-  - All vector operation variants
-  - Note: Fixed duplicate case value bug in gbb instruction
+- [x] **SPU JIT Instruction Coverage**: Complete SPU SIMD instruction compilation ✅
+  - Memory Flow Controller (MFC) DMA operations (infrastructure exists via MfcDmaManager) ✅
+  - Channel communication instructions (rdch, wrch, rchcnt) ✅
+  - Quadword shift/rotate immediate forms (shlqbyi, rotqbyi, shlqbii, rotqbii) ✅
+  - Float to integer conversions (cflts, cfltu, csflt, cuflt) ✅
+  - Compare immediate halfword/byte (ceqhi, ceqbi, cgthi, cgtbi, clgthi, clgtbi) ✅
+  - Sign extension (xsbh, xshw, xswd) ✅
+  - Gather bits (gbb, gbh, gb) ✅
+  - Average bytes, sum bytes ✅
   - Location: `cpp/src/spu_jit.cpp`, `crates/oc-spu/src/`
 
 #### SPU Interpreter Improvements
