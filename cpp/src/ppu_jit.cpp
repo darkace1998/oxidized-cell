@@ -3487,9 +3487,11 @@ static llvm::Function* create_llvm_function(llvm::Module* module, BasicBlock* bl
     llvm::Value* memory_base = func->getArg(1);
     
     // Emit IR for each instruction
+    uint64_t current_pc = block->start_address;
     for (uint32_t instr : block->instructions) {
         emit_ppu_instruction(builder, instr, gprs, fprs, memory_base,
-                            cr_ptr, lr_ptr, ctr_ptr, xer_ptr);
+                            cr_ptr, lr_ptr, ctr_ptr, xer_ptr, current_pc);
+        current_pc += 4; // PowerPC instructions are 4 bytes
     }
     
     // Return
