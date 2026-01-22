@@ -145,10 +145,13 @@ This document tracks pending tasks, improvements, and future features for the ox
 
 #### SPU JIT Compilation
 
-- [ ] **JIT Arithmetic Instructions**: Add LLVM IR generation
-  - `a`, `ah`, `ai`, `ahi` - Word/halfword add
-  - `sf`, `sfh`, `sfi`, `sfhi` - Word/halfword subtract from
-  - `mpy`, `mpyu`, `mpyh`, `mpys`, `mpyui`, `mpyi` - Multiply variants
+- [x] **JIT Arithmetic Instructions**: Add LLVM IR generation ✅
+  - `a`, `ah`, `ai`, `ahi` - Word/halfword add ✅
+  - `sf`, `sfh`, `sfi`, `sfhi` - Word/halfword subtract from ✅
+  - `mpy`, `mpyu`, `mpyh` - Multiply variants ✅
+  - `addx`, `sfx` - Extended add/subtract with carry/borrow ✅
+  - `cg`, `bg`, `cgx`, `bgx` - Carry/borrow generate ✅
+  - `absdb` - Absolute difference of bytes ✅
   - Location: `cpp/src/spu_jit.cpp`
 
 - [ ] **JIT Shift/Rotate Instructions**: Complete shift compilation
@@ -1059,7 +1062,7 @@ This document tracks pending tasks, improvements, and future features for the ox
 | MFC DMA | ✅ Complete | GET, PUT, GETB, PUTB, GETF, PUTF with timing |
 | MFC Atomic | ✅ Complete | GETLLAR, PUTLLC, PUTLLUC with reservation |
 | MFC List DMA | ✅ Complete | GETL, PUTL with stall-and-notify, resume support |
-| JIT Arithmetic | 🔴 Minimal | Framework exists, few instructions |
+| JIT Arithmetic | ✅ Complete | a, ah, ai, ahi, sf, sfh, sfi, sfhi, mpy, mpyu, mpyh, addx, sfx, cg, bg, cgx, bgx, absdb |
 | JIT Quadword | 🔴 Minimal | Not implemented |
 | JIT Load/Store | 🔴 Minimal | Not implemented |
 | JIT Channel | 🟡 Partial | Channel framework in C++; incomplete coverage |
