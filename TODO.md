@@ -160,10 +160,10 @@ This document tracks pending tasks, improvements, and future features for the ox
   - `rotm`, `rothm`, `rotmahi`, `rotmai` - Rotate and mask
   - Location: `cpp/src/spu_jit.cpp`
 
-- [ ] **JIT Quadword Operations**: Compile 128-bit operations
+- [x] **JIT Quadword Operations**: Compile 128-bit operations
   - `shlqby`, `shlqbyi`, `shlqbi`, `shlqbii` - Quadword shift left
   - `rotqby`, `rotqbyi`, `rotqbi`, `rotqbii` - Quadword rotate
-  - `rotqmby`, `rotqmbyi`, `rotqmbi` - Quadword rotate and mask
+  - `rotqmby`, `rotqmbyi`, `rotqmbi`, `rotqmbii`, `rotqmbybi` - Quadword rotate and mask (right shift)
   - Location: `cpp/src/spu_jit.cpp`
 
 - [ ] **JIT Memory Operations**: Implement load/store IR
