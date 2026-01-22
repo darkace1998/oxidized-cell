@@ -1786,8 +1786,19 @@ impl PpuInterpreter {
             // Same implementation as mtcrf
             // mfmsr - Move From Machine State Register (privileged)
             83 => {
-                // For emulation, return a fixed MSR value
-                thread.set_gpr(rt as usize, 0x8000_0000_0000_0000); // 64-bit mode
+                // Return the actual MSR value
+                thread.set_gpr(rt as usize, system::mfmsr(thread));
+            }
+            // mtmsr - Move To Machine State Register (privileged)
+            146 => {
+                let value = thread.gpr(rt as usize);
+                system::mtmsr(thread, value);
+            }
+            // mtmsrd - Move To Machine State Register Doubleword (privileged)
+            178 => {
+                let value = thread.gpr(rt as usize);
+                let l = (opcode >> 16) & 1 != 0; // L bit
+                system::mtmsrd(thread, value, l);
             }
             // XO-form arithmetic instructions (dispatched as X-form by decoder)
             // Note: These have a 10-bit XO in the decoder, but only 9-bit in the instruction

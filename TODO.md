@@ -40,9 +40,14 @@ This document tracks pending tasks, improvements, and future features for the ox
   - Location: `crates/oc-ppu/src/instructions/float.rs`
 
 - [ ] **System Instruction Stubs**: Implement missing SPR handling
-  - `mftb`, `mftbu` - Move from Time Base (currently approximate)
-  - Accurate decrementer (`DEC`) handling for timed operations
-  - `mtmsr`, `mfmsr` - Machine State Register (for privilege level)
+- [x] **System Instruction Stubs**: Implement missing SPR handling
+  - `mftb`, `mftbu` - Move from Time Base ✅
+  - Accurate decrementer (`DEC`) handling for timed operations ✅
+  - `mtmsr`, `mfmsr` - Machine State Register (for privilege level) ✅
+  - `mtmsrd` - Move To Machine State Register Doubleword ✅
+  - MSR bit constants (SF, HV, VEC, EE, PR, FP, ME, etc.) ✅
+  - Time base frequency constant (79.8 MHz for Cell BE) ✅
+  - Decrementer update and interrupt checking ✅
   - Location: `crates/oc-ppu/src/instructions/system.rs`
 
 #### PPU JIT Compilation
