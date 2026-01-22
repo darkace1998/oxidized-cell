@@ -110,11 +110,11 @@ This document tracks pending tasks, improvements, and future features for the ox
   - `fesd`, `frds` - Float to double / double to float conversion
   - Location: `crates/oc-spu/src/instructions/float.rs`
 
-- [ ] **Byte/Halfword Operations Completion**: Implement remaining element-wise ops
-  - **Carry/Borrow**: `cg`, `bg`, `cgx`, `bgx` - Carry/borrow generation with extended
-  - **Extended Arithmetic**: `addx`, `sfx` - Add/subtract extended
-  - **Absolute Difference**: `absdb` - Absolute difference of bytes
-  - **Byte Sum**: `sumb` - Sum bytes into halfwords
+- [x] **Byte/Halfword Operations Completion**: Implement remaining element-wise ops
+  - **Carry/Borrow**: `cg`, `bg`, `cgx`, `bgx` - Carry/borrow generation with extended ✅
+  - **Extended Arithmetic**: `addx`, `sfx` - Add/subtract extended ✅
+  - **Absolute Difference**: `absdb` - Absolute difference of bytes ✅
+  - **Byte Sum**: `sumb` - Sum bytes into halfwords ✅
   - Location: `crates/oc-spu/src/instructions/arithmetic.rs`
 
 - [ ] **Hint and Scheduling Instructions**: Implement branch hints

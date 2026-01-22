@@ -1,7 +1,7 @@
 //! SPU interpreter implementation
 
 use crate::decoder::SpuDecoder;
-use crate::instructions::float;
+use crate::instructions::{arithmetic, float};
 use crate::thread::SpuThread;
 use oc_core::error::SpuError;
 
@@ -128,6 +128,39 @@ impl SpuInterpreter {
                                             0b01110111001 => { // frds (0x3b9)
                                                 let (_rb, ra, rt) = SpuDecoder::rr_form(opcode);
                                                 float::frds(thread, ra, rt)?;
+                                            }
+                                            // Byte/Halfword Operations
+                                            0b00011000010 => { // cg - Carry Generate
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                arithmetic::cg(thread, rb, ra, rt)?;
+                                            }
+                                            0b00001000010 => { // bg - Borrow Generate
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                arithmetic::bg(thread, rb, ra, rt)?;
+                                            }
+                                            0b01101000000 => { // addx - Add Extended
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                arithmetic::addx(thread, rb, ra, rt)?;
+                                            }
+                                            0b01101000001 => { // sfx - Subtract From Extended
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                arithmetic::sfx(thread, rb, ra, rt)?;
+                                            }
+                                            0b01101100010 => { // cgx - Carry Generate Extended
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                arithmetic::cgx(thread, rb, ra, rt)?;
+                                            }
+                                            0b01101000010 => { // bgx - Borrow Generate Extended
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                arithmetic::bgx(thread, rb, ra, rt)?;
+                                            }
+                                            0b00001010011 => { // absdb - Absolute Difference of Bytes
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                arithmetic::absdb(thread, rb, ra, rt)?;
+                                            }
+                                            0b01001010011 => { // sumb - Sum Bytes into Halfwords
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                arithmetic::sumb(thread, rb, ra, rt)?;
                                             }
                                             _ => {
                                                 tracing::warn!(
