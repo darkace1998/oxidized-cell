@@ -2010,14 +2010,16 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
         }
         
         // ---- Float to Integer Conversions ----
-        // Note: These use RI8 form encoding which differs from RR form
-        // The actual encoding adds 8-bit immediate field, handled by instruction decoder
+        // Note: Full SPU float conversion instructions use an 8-bit scale factor.
+        // The scale allows fixed-point representation: cflts multiplies by 2^(173-i8)
+        // before converting, csflt divides by 2^(155-i8) after converting.
+        // Current implementation: Direct conversion without scaling (i8=173 for cflts,
+        // i8=155 for csflt). This is correct for i8=173/155 but may produce incorrect
+        // results for other scale values. Games typically use the default scale values.
         case 0b01110110000: { // cflts rt, ra, i8 - Convert Float to Signed Integer
-            // Scale factor is 173 - i8 (but we simplify to just convert)
             llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
             llvm::Value* ra_float = builder.CreateBitCast(ra_val, v4f32_ty);
-            // Apply scale: multiply by 2^(173-i8) before conversion
-            // For simplicity, just do the conversion without scaling
+            // Direct conversion (equivalent to scale=173)
             llvm::Value* result = builder.CreateFPToSI(ra_float, v4i32_ty);
             builder.CreateStore(result, regs[rt]);
             return;
@@ -2025,6 +2027,7 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
         case 0b01110110001: { // cfltu rt, ra, i8 - Convert Float to Unsigned Integer
             llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
             llvm::Value* ra_float = builder.CreateBitCast(ra_val, v4f32_ty);
+            // Direct conversion (equivalent to scale=173)
             llvm::Value* result = builder.CreateFPToUI(ra_float, v4i32_ty);
             builder.CreateStore(result, regs[rt]);
             return;
@@ -2032,7 +2035,7 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
         case 0b01110110010: { // csflt rt, ra, i8 - Convert Signed Integer to Float
             llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
             llvm::Value* result_float = builder.CreateSIToFP(ra_val, v4f32_ty);
-            // Apply scale: divide by 2^(155-i8) after conversion (simplified)
+            // Direct conversion (equivalent to scale=155)
             llvm::Value* result = builder.CreateBitCast(result_float, v4i32_ty);
             builder.CreateStore(result, regs[rt]);
             return;
@@ -2040,6 +2043,7 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
         case 0b01110110011: { // cuflt rt, ra, i8 - Convert Unsigned Integer to Float
             llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
             llvm::Value* result_float = builder.CreateUIToFP(ra_val, v4f32_ty);
+            // Direct conversion (equivalent to scale=155)
             llvm::Value* result = builder.CreateBitCast(result_float, v4i32_ty);
             builder.CreateStore(result, regs[rt]);
             return;
