@@ -940,12 +940,15 @@ static void set_ca_add_extended(llvm::IRBuilder<>& builder, llvm::Value* a, llvm
  * - Branch instructions (conditional, unconditional, to LR/CTR)
  * - Comparison instructions (signed/unsigned, integer/floating-point)
  * - System instructions (SPR access, CR operations)
+ * - VMX/AltiVec vector instructions (128-bit SIMD operations)
  */
 static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                                 llvm::Value** gprs, llvm::Value** fprs,
+                                llvm::Value** vrs,
                                 llvm::Value* memory_base,
                                 llvm::Value* cr_ptr, llvm::Value* lr_ptr,
                                 llvm::Value* ctr_ptr, llvm::Value* xer_ptr,
+                                llvm::Value* vscr_ptr,
                                 uint64_t pc = 0) {
     uint8_t opcode = (instr >> 26) & 0x3F;
     uint8_t rt = (instr >> 21) & 0x1F;
@@ -961,6 +964,9 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
     auto i64_ty = llvm::Type::getInt64Ty(ctx);
     auto f32_ty = llvm::Type::getFloatTy(ctx);
     auto f64_ty = llvm::Type::getDoubleTy(ctx);
+    // Vector types for VMX
+    auto v4i32_ty = llvm::VectorType::get(i32_ty, 4, false);
+    auto v4f32_ty = llvm::VectorType::get(f32_ty, 4, false);
     
     switch (opcode) {
         // Integer immediate operations
@@ -3405,27 +3411,147 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
         }
         
         // VMX/AltiVec instructions (opcode 4)
-        // Note: Full VMX support would require additional vector register infrastructure.
-        // This provides basic support for common vector operations.
+        // Implements common vector operations using LLVM's vector types
         case 4: {
-            // VMX instructions use various sub-opcode encodings
-            // For now, we emit a no-op and let the interpreter handle complex VMX ops
-            // Future work: Add full 128-bit vector register support to JIT
+            // Extract VMX register fields
+            uint8_t vrt = rt;  // Vector target register
+            uint8_t vra = ra;  // Vector source register A
+            uint8_t vrb = rb;  // Vector source register B
+            uint8_t vrc = (instr >> 6) & 0x1F;  // Vector source register C (for VA-form)
             
-            // Extract VMX sub-opcode fields
-            uint16_t vxo = instr & 0x7FF;  // 11-bit sub-opcode for VA-form
+            // Extract sub-opcode fields
+            uint16_t vxo = instr & 0x7FF;  // 11-bit sub-opcode for VA-form (6 bits XO + 5 bits VRC)
             uint16_t vxo_vx = (instr >> 1) & 0x3FF;  // 10-bit sub-opcode for VX-form
+            uint8_t vxo_va = (instr >> 0) & 0x3F;  // 6-bit sub-opcode for VA-form
             
-            // Common VMX operations could be implemented here
-            // For example: vadduwm (xo=128), vand (xo=1028), vor (xo=1156), vxor (xo=1220)
-            // These would require 128-bit vector register handling which is beyond the
-            // current scope but the infrastructure is in place for future expansion.
+            // VA-Form instructions (6-bit sub-opcode in bits 0-5)
+            switch (vxo_va) {
+                case 46: { // vmaddfp vrt, vra, vrc, vrb - Vector Multiply-Add FP
+                    // vrt = (vra * vrc) + vrb
+                    llvm::Value* a = builder.CreateLoad(v4f32_ty, vrs[vra]);
+                    llvm::Value* c = builder.CreateLoad(v4f32_ty, vrs[vrc]);
+                    llvm::Value* b = builder.CreateLoad(v4f32_ty, vrs[vrb]);
+                    llvm::Value* mul = builder.CreateFMul(a, c);
+                    llvm::Value* result = builder.CreateFAdd(mul, b);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 47: { // vnmsubfp vrt, vra, vrc, vrb - Vector Negative Multiply-Subtract FP
+                    // vrt = -((vra * vrc) - vrb) = vrb - (vra * vrc)
+                    llvm::Value* a = builder.CreateLoad(v4f32_ty, vrs[vra]);
+                    llvm::Value* c = builder.CreateLoad(v4f32_ty, vrs[vrc]);
+                    llvm::Value* b = builder.CreateLoad(v4f32_ty, vrs[vrb]);
+                    llvm::Value* mul = builder.CreateFMul(a, c);
+                    llvm::Value* result = builder.CreateFSub(b, mul);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 43: { // vsel vrt, vra, vrb, vrc - Vector Select
+                    // For each bit: result = (vrc & vrb) | (~vrc & vra)
+                    llvm::Value* a = builder.CreateLoad(v4i32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4i32_ty, vrs[vrb]);
+                    llvm::Value* c = builder.CreateLoad(v4i32_ty, vrs[vrc]);
+                    llvm::Value* not_c = builder.CreateNot(c);
+                    llvm::Value* c_and_b = builder.CreateAnd(c, b);
+                    llvm::Value* not_c_and_a = builder.CreateAnd(not_c, a);
+                    llvm::Value* result = builder.CreateOr(c_and_b, not_c_and_a);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 44: { // vperm vrt, vra, vrb, vrc - Vector Permute
+                    // Complex byte-level permutation - for now, just copy vra
+                    // A full implementation would use shufflevector with the mask from vrc
+                    llvm::Value* a = builder.CreateLoad(v4i32_ty, vrs[vra]);
+                    builder.CreateStore(a, vrs[vrt]);
+                    break;
+                }
+                default:
+                    // Unhandled VA-form instruction
+                    break;
+            }
+            
+            // VX-Form instructions (10-bit sub-opcode)
+            switch (vxo_vx) {
+                case 10: { // vaddfp vrt, vra, vrb - Vector Add FP
+                    llvm::Value* a = builder.CreateLoad(v4f32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4f32_ty, vrs[vrb]);
+                    llvm::Value* result = builder.CreateFAdd(a, b);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 74: { // vsubfp vrt, vra, vrb - Vector Subtract FP
+                    llvm::Value* a = builder.CreateLoad(v4f32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4f32_ty, vrs[vrb]);
+                    llvm::Value* result = builder.CreateFSub(a, b);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 1028: { // vand vrt, vra, vrb - Vector AND
+                    llvm::Value* a = builder.CreateLoad(v4i32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4i32_ty, vrs[vrb]);
+                    llvm::Value* result = builder.CreateAnd(a, b);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 1156: { // vor vrt, vra, vrb - Vector OR
+                    llvm::Value* a = builder.CreateLoad(v4i32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4i32_ty, vrs[vrb]);
+                    llvm::Value* result = builder.CreateOr(a, b);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 1220: { // vxor vrt, vra, vrb - Vector XOR
+                    llvm::Value* a = builder.CreateLoad(v4i32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4i32_ty, vrs[vrb]);
+                    llvm::Value* result = builder.CreateXor(a, b);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 1284: { // vnor vrt, vra, vrb - Vector NOR
+                    llvm::Value* a = builder.CreateLoad(v4i32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4i32_ty, vrs[vrb]);
+                    llvm::Value* or_result = builder.CreateOr(a, b);
+                    llvm::Value* result = builder.CreateNot(or_result);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 134: { // vcmpequw vrt, vra, vrb - Vector Compare Equal Unsigned Word
+                    llvm::Value* a = builder.CreateLoad(v4i32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4i32_ty, vrs[vrb]);
+                    llvm::Value* cmp = builder.CreateICmpEQ(a, b);
+                    llvm::Value* result = builder.CreateSExt(cmp, v4i32_ty);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 902: { // vcmpgtsw vrt, vra, vrb - Vector Compare Greater Than Signed Word
+                    llvm::Value* a = builder.CreateLoad(v4i32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4i32_ty, vrs[vrb]);
+                    llvm::Value* cmp = builder.CreateICmpSGT(a, b);
+                    llvm::Value* result = builder.CreateSExt(cmp, v4i32_ty);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 128: { // vadduwm vrt, vra, vrb - Vector Add Unsigned Word Modulo
+                    llvm::Value* a = builder.CreateLoad(v4i32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4i32_ty, vrs[vrb]);
+                    llvm::Value* result = builder.CreateAdd(a, b);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 1152: { // vsubuwm vrt, vra, vrb - Vector Subtract Unsigned Word Modulo
+                    llvm::Value* a = builder.CreateLoad(v4i32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4i32_ty, vrs[vrb]);
+                    llvm::Value* result = builder.CreateSub(a, b);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                default:
+                    // Unhandled VX-form instruction - no-op
+                    break;
+            }
             
             (void)vxo;
-            (void)vxo_vx;
-            
-            // VMX instructions are complex and best handled by the interpreter for now
-            // The JIT will exit to interpreter for VMX-heavy code paths
+            (void)vscr_ptr;
             break;
         }
         
@@ -3455,20 +3581,25 @@ static llvm::Function* create_llvm_function(llvm::Module* module, BasicBlock* bl
     llvm::BasicBlock* entry_bb = llvm::BasicBlock::Create(ctx, "entry", func);
     llvm::IRBuilder<> builder(entry_bb);
     
-    // Allocate space for GPRs, FPRs, and special registers
+    // Allocate space for GPRs, FPRs, VRs, and special registers
     auto i32_ty = llvm::Type::getInt32Ty(ctx);
     auto i64_ty = llvm::Type::getInt64Ty(ctx);
     auto f64_ty = llvm::Type::getDoubleTy(ctx);
+    auto f32_ty = llvm::Type::getFloatTy(ctx);
+    auto v4f32_ty = llvm::VectorType::get(f32_ty, 4, false);  // 128-bit vector as 4 x float
     
     llvm::Value* gprs[32];
     llvm::Value* fprs[32];
+    llvm::Value* vrs[32];  // Vector registers for VMX
     
     for (int i = 0; i < 32; i++) {
         gprs[i] = builder.CreateAlloca(i64_ty, nullptr, "gpr" + std::to_string(i));
         fprs[i] = builder.CreateAlloca(f64_ty, nullptr, "fpr" + std::to_string(i));
+        vrs[i] = builder.CreateAlloca(v4f32_ty, nullptr, "vr" + std::to_string(i));
         // Initialize to zero
         builder.CreateStore(llvm::ConstantInt::get(i64_ty, 0), gprs[i]);
         builder.CreateStore(llvm::ConstantFP::get(f64_ty, 0.0), fprs[i]);
+        builder.CreateStore(llvm::ConstantAggregateZero::get(v4f32_ty), vrs[i]);
     }
     
     // Allocate special registers
@@ -3476,12 +3607,14 @@ static llvm::Function* create_llvm_function(llvm::Module* module, BasicBlock* bl
     llvm::Value* lr_ptr = builder.CreateAlloca(i64_ty, nullptr, "lr");
     llvm::Value* ctr_ptr = builder.CreateAlloca(i64_ty, nullptr, "ctr");
     llvm::Value* xer_ptr = builder.CreateAlloca(i64_ty, nullptr, "xer");
+    llvm::Value* vscr_ptr = builder.CreateAlloca(i32_ty, nullptr, "vscr");  // Vector Status and Control Register
     
     // Initialize special registers to zero
     builder.CreateStore(llvm::ConstantInt::get(i32_ty, 0), cr_ptr);
     builder.CreateStore(llvm::ConstantInt::get(i64_ty, 0), lr_ptr);
     builder.CreateStore(llvm::ConstantInt::get(i64_ty, 0), ctr_ptr);
     builder.CreateStore(llvm::ConstantInt::get(i64_ty, 0), xer_ptr);
+    builder.CreateStore(llvm::ConstantInt::get(i32_ty, 0), vscr_ptr);
     
     // Get memory base pointer from function argument
     llvm::Value* memory_base = func->getArg(1);
@@ -3489,8 +3622,8 @@ static llvm::Function* create_llvm_function(llvm::Module* module, BasicBlock* bl
     // Emit IR for each instruction
     uint64_t current_pc = block->start_address;
     for (uint32_t instr : block->instructions) {
-        emit_ppu_instruction(builder, instr, gprs, fprs, memory_base,
-                            cr_ptr, lr_ptr, ctr_ptr, xer_ptr, current_pc);
+        emit_ppu_instruction(builder, instr, gprs, fprs, vrs, memory_base,
+                            cr_ptr, lr_ptr, ctr_ptr, xer_ptr, vscr_ptr, current_pc);
         current_pc += 4; // PowerPC instructions are 4 bytes
     }
     

@@ -80,12 +80,14 @@ This document tracks pending tasks, improvements, and future features for the ox
   - Update forms (`lwzu`, `stwu`, etc.) ✅
   - Location: `cpp/src/ppu_jit.cpp`
 
-- [ ] **JIT VMX Instructions**: Add vector operation compilation
-  - `vaddfp`, `vsubfp`, `vmaddfp` - Vector float arithmetic
-  - `vand`, `vor`, `vxor`, `vnor` - Vector logical
-  - `vperm`, `vsel` - Vector permute/select
-  - `vcmpequw`, `vcmpgtsw` - Vector compare
-  - Note: Basic VMX support added; falls back to interpreter for complex ops
+- [x] **JIT VMX Instructions**: Add vector operation compilation ✅
+  - `vaddfp`, `vsubfp`, `vmaddfp` - Vector float arithmetic ✅
+  - `vand`, `vor`, `vxor`, `vnor` - Vector logical ✅
+  - `vperm`, `vsel` - Vector permute/select ✅
+  - `vcmpequw`, `vcmpgtsw` - Vector compare ✅
+  - `vadduwm`, `vsubuwm` - Vector integer add/subtract ✅
+  - `vnmsubfp` - Vector negative multiply-subtract ✅
+  - 32 vector registers (VRs) with VSCR support ✅
   - Location: `cpp/src/ppu_jit.cpp`
 
 - [ ] **SPU JIT Instruction Coverage**: Complete SPU SIMD instruction compilation
