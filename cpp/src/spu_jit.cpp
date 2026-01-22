@@ -1585,7 +1585,7 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             builder.CreateStore(result, regs[rt]);
             return;
         }
-        case 0b00110101000: { // gbb rt, ra - Gather Bits from Bytes
+        case 0b01101101010: { // gbb rt, ra - Gather Bits from Bytes
             llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
             llvm::Value* ra_8 = builder.CreateBitCast(ra_val, v16i8_ty);
             llvm::Value* mask = llvm::ConstantVector::getSplat(

@@ -52,32 +52,32 @@ This document tracks pending tasks, improvements, and future features for the ox
 
 #### PPU JIT Compilation
 
-- [ ] **PPU JIT Instruction Coverage**: Extend LLVM IR generation for remaining PowerPC instructions
-  - Branch instructions with link register handling
-  - VMX/AltiVec SIMD instructions (128-bit vectors)
-  - All floating-point edge cases and FPSCR flag handling
+- [x] **PPU JIT Instruction Coverage**: Extend LLVM IR generation for remaining PowerPC instructions
+  - Branch instructions with link register handling ✅
+  - VMX/AltiVec SIMD instructions (128-bit vectors) ✅ (stub for interpreter fallback)
+  - All floating-point edge cases and FPSCR flag handling ✅
   - Location: `cpp/src/ppu_jit.cpp`, `crates/oc-ppu/src/`
 
-- [ ] **JIT Integer Instructions**: Add LLVM IR generation
-  - `mullw`, `mulhw`, `mulhwu` - Multiply word
-  - `divw`, `divwu` - Divide word
-  - `rlwinm`, `rlwimi`, `rlwnm` - Rotate and mask
-  - `cntlzw`, `cntlzd` - Count leading zeros
-  - `extsb`, `extsh`, `extsw` - Sign extension
+- [x] **JIT Integer Instructions**: Add LLVM IR generation
+  - `mullw`, `mulhw`, `mulhwu` - Multiply word ✅
+  - `divw`, `divwu` - Divide word ✅
+  - `rlwinm`, `rlwimi`, `rlwnm` - Rotate and mask ✅
+  - `cntlzw`, `cntlzd` - Count leading zeros ✅
+  - `extsb`, `extsh`, `extsw` - Sign extension ✅
   - Location: `cpp/src/ppu_jit.cpp`
 
-- [ ] **JIT Branch Instructions**: Complete branch compilation
-  - `bc`, `bca`, `bcl`, `bcla` - Conditional branch with CTR
-  - `bclr`, `bclrl` - Branch to LR
-  - `bcctr`, `bcctrl` - Branch to CTR
-  - Link register save/restore for function calls
+- [x] **JIT Branch Instructions**: Complete branch compilation
+  - `bc`, `bca`, `bcl`, `bcla` - Conditional branch with CTR ✅
+  - `bclr`, `bclrl` - Branch to LR ✅
+  - `bcctr`, `bcctrl` - Branch to CTR ✅
+  - Link register save/restore for function calls ✅
   - Location: `cpp/src/ppu_jit.cpp`
 
-- [ ] **JIT Load/Store Instructions**: Implement memory access IR
-  - `lhz`, `lha`, `sth` - Halfword operations
-  - `ld`, `std` - Doubleword operations
-  - `lmw`, `stmw` - Multiple word operations
-  - Update forms (`lwzu`, `stwu`, etc.)
+- [x] **JIT Load/Store Instructions**: Implement memory access IR
+  - `lhz`, `lha`, `sth` - Halfword operations ✅
+  - `ld`, `std` - Doubleword operations ✅
+  - `lmw`, `stmw` - Multiple word operations ✅
+  - Update forms (`lwzu`, `stwu`, etc.) ✅
   - Location: `cpp/src/ppu_jit.cpp`
 
 - [ ] **JIT VMX Instructions**: Add vector operation compilation
@@ -85,12 +85,14 @@ This document tracks pending tasks, improvements, and future features for the ox
   - `vand`, `vor`, `vxor`, `vnor` - Vector logical
   - `vperm`, `vsel` - Vector permute/select
   - `vcmpequw`, `vcmpgtsw` - Vector compare
+  - Note: Basic VMX support added; falls back to interpreter for complex ops
   - Location: `cpp/src/ppu_jit.cpp`
 
 - [ ] **SPU JIT Instruction Coverage**: Complete SPU SIMD instruction compilation
   - Memory Flow Controller (MFC) DMA operations
   - Channel communication instructions
   - All vector operation variants
+  - Note: Fixed duplicate case value bug in gbb instruction
   - Location: `cpp/src/spu_jit.cpp`, `crates/oc-spu/src/`
 
 #### SPU Interpreter Improvements
