@@ -144,18 +144,20 @@ pub fn mtmsrd(thread: &mut PpuThread, value: u64, l: bool) {
 }
 
 /// Update the decrementer value
-/// Returns true if decrementer has reached zero (and would cause an interrupt)
+/// Returns true if decrementer crosses from positive to negative (would cause an interrupt)
 pub fn update_decrementer(thread: &mut PpuThread, cycles: u32) -> bool {
-    if thread.regs.dec == 0 {
-        return false;
-    }
+    let old_dec = thread.regs.dec;
     
     // Decrement by the number of cycles
-    let (new_dec, overflow) = thread.regs.dec.overflowing_sub(cycles);
+    let (new_dec, overflow) = old_dec.overflowing_sub(cycles);
     thread.regs.dec = new_dec;
     
-    // Decrementer exception occurs when it goes negative (overflows)
-    overflow
+    // Decrementer exception occurs when it transitions from positive to negative
+    // This happens when: old was positive (high bit 0) and new is negative (high bit 1)
+    let was_positive = (old_dec as i32) >= 0;
+    let now_negative = (new_dec as i32) < 0;
+    
+    was_positive && (overflow || now_negative)
 }
 
 /// Check if decrementer interrupt should fire
@@ -697,6 +699,11 @@ mod tests {
         // Decrement by another 600 cycles - should overflow
         let overflow = update_decrementer(&mut thread, 600);
         assert!(overflow, "Overflow expected when going negative");
+        
+        // Test decrementing from zero - should also trigger
+        thread.regs.dec = 0;
+        let overflow = update_decrementer(&mut thread, 1);
+        assert!(overflow, "Overflow expected when decrementing from zero");
     }
     
     #[test]
