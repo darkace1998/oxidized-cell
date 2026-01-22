@@ -1733,6 +1733,12 @@ impl PpuInterpreter {
                 thread.set_fpr(rt as usize, result);
                 if rc { float::update_cr1(thread); }
             }
+            // mcrfs - Move to CR from FPSCR
+            64 => {
+                let bf = (rt >> 2) & 7;
+                let bfa = (ra >> 2) & 7;
+                system::mcrfs(thread, bf, bfa);
+            }
             // sync - Synchronize
             598 => {
                 std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);

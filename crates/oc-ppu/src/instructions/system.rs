@@ -188,6 +188,39 @@ pub fn mtfsb1(thread: &mut PpuThread, bt: u8) {
     thread.regs.fpscr |= 1u64 << (31 - bt);
 }
 
+/// Move to CR from FPSCR (mcrfs)
+/// Copies a 4-bit field from FPSCR to the specified CR field
+/// bf specifies which CR field (0-7) to write
+/// bfa specifies which FPSCR field (0-7) to read
+/// After copying, some exception bits in the source FPSCR field are cleared
+pub fn mcrfs(thread: &mut PpuThread, bf: u8, bfa: u8) {
+    // FPSCR fields are numbered 0-7, each 4 bits
+    // Field 0 is bits 32-35 (FX, FEX, VX, OX), etc.
+    let shift = (7 - bfa) * 4;
+    let fpscr_field = ((thread.regs.fpscr >> (32 + shift)) & 0xF) as u32;
+    
+    // Set the CR field
+    thread.set_cr_field(bf as usize, fpscr_field);
+    
+    // Clear exception bits in the copied FPSCR field
+    // Only sticky exception bits are cleared (FX, OX, UX, ZX, XX, and VXSNAN/VXISI/etc.)
+    // The reset bits depend on which field is being read
+    let clear_mask: u64 = match bfa {
+        0 => 0xF, // Field 0: FX, FEX, VX, OX - clear FX, OX
+        1 => 0xF, // Field 1: UX, ZX, XX, VXSNAN - clear all except summary bits
+        2 => 0xF, // Field 2: VXISI, VXIDI, VXZDZ, VXIMZ - clear all
+        3 => 0xF, // Field 3: VXVC, FR, FI, FPRF[C] - clear VXVC
+        _ => 0x0, // Fields 4-7: no sticky bits to clear
+    };
+    
+    if clear_mask != 0 {
+        let clear_bits = clear_mask << (32 + shift);
+        // Don't clear FEX and VX summary bits directly (they're computed)
+        let actual_clear = clear_bits & !0x6000_0000_0000_0000; // Preserve FEX, VX
+        thread.regs.fpscr &= !actual_clear;
+    }
+}
+
 /// Condition Register AND
 pub fn crand(thread: &mut PpuThread, bt: u8, ba: u8, bb: u8) {
     let a = (thread.regs.cr >> (31 - ba)) & 1;
@@ -436,5 +469,30 @@ mod tests {
         // Trap if a < b (signed, immediate, 64-bit)
         assert!(tdi(&thread, 0x10, (-1i64) as u64, 0));
         assert!(!tdi(&thread, 0x10, 5, 3));
+    }
+    
+    #[test]
+    fn test_mcrfs() {
+        let mut thread = create_test_thread();
+        
+        // Set up FPSCR with test values in field 0 (FX, FEX, VX, OX)
+        // Field 0 is bits 32-35 (counting from 0 at MSB)
+        thread.regs.fpscr = 0xF000_0000_0000_0000; // All 4 bits of field 0 set
+        
+        // Copy FPSCR field 0 to CR field 0
+        mcrfs(&mut thread, 0, 0);
+        
+        // Check that CR field 0 has the value
+        let cr_field0 = (thread.regs.cr >> 28) & 0xF;
+        assert_eq!(cr_field0, 0xF, "CR field 0 should have FPSCR field 0 value");
+        
+        // Reset and test field 1 (UX, ZX, XX, VXSNAN)
+        thread.regs.fpscr = 0x0A00_0000_0000_0000; // Some bits in field 1
+        thread.regs.cr = 0;
+        
+        mcrfs(&mut thread, 2, 1); // Copy FPSCR field 1 to CR field 2
+        
+        let cr_field2 = (thread.regs.cr >> 20) & 0xF;
+        assert_eq!(cr_field2, 0xA, "CR field 2 should have FPSCR field 1 value");
     }
 }

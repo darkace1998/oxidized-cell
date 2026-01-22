@@ -29,11 +29,14 @@ This document tracks pending tasks, improvements, and future features for the ox
   - **Reciprocal/RSQRT**: `vrsqrtefp` (reciprocal square root estimate) ✅
   - Location: `crates/oc-ppu/src/instructions/vector.rs`, `crates/oc-ppu/src/vmx.rs`
 
-- [ ] **FPSCR Full Accuracy**: Complete floating-point exception handling
-  - Enable exception bits (`VE`, `OE`, `UE`, `ZE`, `XE`) for trapping
-  - Implement `mcrfs` (Move to CR from FPSCR)
-  - Full FPRF (Floating-Point Result Flags) update for all FP ops
-  - Denormalized number handling per IEEE 754
+- [x] **FPSCR Full Accuracy**: Complete floating-point exception handling
+  - Enable exception bits (`VE`, `OE`, `UE`, `ZE`, `XE`) for trapping ✅
+  - Implement `mcrfs` (Move to CR from FPSCR) ✅
+  - Full FPRF (Floating-Point Result Flags) update for all FP ops ✅
+  - Denormalized number handling per IEEE 754 ✅
+  - FEX (Enabled Exception Summary) automatic update ✅
+  - VX (Invalid Operation Summary) automatic update ✅
+  - NI (Non-IEEE Mode) for denormals-are-zero behavior ✅
   - Location: `crates/oc-ppu/src/instructions/float.rs`
 
 - [ ] **System Instruction Stubs**: Implement missing SPR handling
