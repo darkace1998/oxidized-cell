@@ -171,6 +171,12 @@ Configuration is stored in `config.toml`:
 ppu_decoder = "interpreter"  # or "jit"
 spu_decoder = "interpreter"  # or "jit"
 
+# Hardware specifications (customizable like a PC build)
+ppu_frequency_mhz = 3200    # CPU frequency in MHz (default: 3200 = 3.2 GHz)
+spu_frequency_mhz = 3200    # SPU frequency in MHz (default: 3200 = 3.2 GHz)
+main_memory_mb = 256        # Main memory in MB (default: 256 MB, range: 128-512)
+video_memory_mb = 256       # Video memory in MB (default: 256 MB, range: 128-512)
+
 [graphics]
 backend = "vulkan"
 resolution_scale = 1
@@ -179,6 +185,8 @@ resolution_scale = 1
 backend = "cpal"
 volume = 100
 ```
+
+For detailed information about customizing hardware specifications, see [Hardware Configuration Guide](docs/HARDWARE_CONFIG.md).
 
 ## 📁 Project Structure
 

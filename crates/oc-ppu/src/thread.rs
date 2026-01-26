@@ -285,6 +285,18 @@ impl TimingState {
         }
     }
 
+    /// Create a new timing state with custom frequency
+    pub fn with_frequency(enabled: bool, frequency_mhz: u32) -> Self {
+        Self {
+            cycles: 0,
+            cycles_per_instruction: 1.0,
+            enabled,
+            frequency_hz: (frequency_mhz as u64) * 1_000_000, // Convert MHz to Hz
+            last_sync_time: 0,
+            instructions_since_sync: 0,
+        }
+    }
+
     /// Add cycles for an instruction
     pub fn add_cycles(&mut self, cycles: u64) {
         self.cycles += cycles;
