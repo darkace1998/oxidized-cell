@@ -47,6 +47,16 @@ pub struct CpuConfig {
     pub cache_simulation: bool,
     /// Enable memory access profiling
     pub memory_profiling: bool,
+    /// PPU (PowerPC) CPU frequency in MHz (default: 3200 MHz = 3.2 GHz)
+    pub ppu_frequency_mhz: u32,
+    /// SPU (Synergistic Processing Unit) frequency in MHz (default: 3200 MHz = 3.2 GHz)
+    pub spu_frequency_mhz: u32,
+    /// Main system memory size in MB (default: 256 MB)
+    /// Valid range: 128-512 MB (standard PS3 has 256 MB)
+    pub main_memory_mb: u32,
+    /// RSX video memory size in MB (default: 256 MB)
+    /// Valid range: 128-512 MB (standard PS3 has 256 MB)
+    pub video_memory_mb: u32,
 }
 
 /// PPU decoder type
@@ -212,6 +222,11 @@ impl Default for CpuConfig {
             power_management: false,
             cache_simulation: false,
             memory_profiling: false,
+            // Hardware specifications matching real PS3
+            ppu_frequency_mhz: 3200,  // 3.2 GHz
+            spu_frequency_mhz: 3200,  // 3.2 GHz
+            main_memory_mb: 256,      // 256 MB XDR DRAM
+            video_memory_mb: 256,     // 256 MB GDDR3 VRAM
         }
     }
 }
@@ -307,12 +322,53 @@ impl Config {
 
         if path.exists() {
             let content = std::fs::read_to_string(&path)?;
-            Ok(toml::from_str(&content)?)
+            let mut config: Config = toml::from_str(&content)?;
+            config.validate()?;
+            Ok(config)
         } else {
             let config = Self::default();
             config.save()?;
             Ok(config)
         }
+    }
+
+    /// Validate configuration values
+    pub fn validate(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        // Validate CPU frequency (reasonable range: 1000-4000 MHz)
+        if self.cpu.ppu_frequency_mhz < 1000 || self.cpu.ppu_frequency_mhz > 4000 {
+            eprintln!(
+                "Warning: PPU frequency {} MHz is outside typical range (1000-4000 MHz). Using default 3200 MHz.",
+                self.cpu.ppu_frequency_mhz
+            );
+            self.cpu.ppu_frequency_mhz = 3200;
+        }
+        
+        if self.cpu.spu_frequency_mhz < 1000 || self.cpu.spu_frequency_mhz > 4000 {
+            eprintln!(
+                "Warning: SPU frequency {} MHz is outside typical range (1000-4000 MHz). Using default 3200 MHz.",
+                self.cpu.spu_frequency_mhz
+            );
+            self.cpu.spu_frequency_mhz = 3200;
+        }
+        
+        // Validate memory sizes (reasonable range: 128-512 MB)
+        if self.cpu.main_memory_mb < 128 || self.cpu.main_memory_mb > 512 {
+            eprintln!(
+                "Warning: Main memory {} MB is outside valid range (128-512 MB). Using default 256 MB.",
+                self.cpu.main_memory_mb
+            );
+            self.cpu.main_memory_mb = 256;
+        }
+        
+        if self.cpu.video_memory_mb < 128 || self.cpu.video_memory_mb > 512 {
+            eprintln!(
+                "Warning: Video memory {} MB is outside valid range (128-512 MB). Using default 256 MB.",
+                self.cpu.video_memory_mb
+            );
+            self.cpu.video_memory_mb = 256;
+        }
+        
+        Ok(())
     }
 
     /// Save configuration to file
@@ -350,6 +406,11 @@ mod tests {
         assert_eq!(config.cpu.spu_threads, 6);
         assert_eq!(config.gpu.resolution_scale, 100);
         assert!(config.audio.enable);
+        // Test new hardware configuration defaults
+        assert_eq!(config.cpu.ppu_frequency_mhz, 3200);
+        assert_eq!(config.cpu.spu_frequency_mhz, 3200);
+        assert_eq!(config.cpu.main_memory_mb, 256);
+        assert_eq!(config.cpu.video_memory_mb, 256);
     }
 
     #[test]
@@ -358,5 +419,27 @@ mod tests {
         let toml_str = toml::to_string_pretty(&config).unwrap();
         let parsed: Config = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.cpu.ppu_threads, config.cpu.ppu_threads);
+        assert_eq!(parsed.cpu.ppu_frequency_mhz, config.cpu.ppu_frequency_mhz);
+        assert_eq!(parsed.cpu.main_memory_mb, config.cpu.main_memory_mb);
+    }
+    
+    #[test]
+    fn test_config_validation() {
+        let mut config = Config::default();
+        
+        // Test valid values
+        config.cpu.ppu_frequency_mhz = 3200;
+        config.cpu.main_memory_mb = 256;
+        assert!(config.validate().is_ok());
+        
+        // Test out-of-range CPU frequency (should be clamped)
+        config.cpu.ppu_frequency_mhz = 5000; // Too high
+        assert!(config.validate().is_ok());
+        assert_eq!(config.cpu.ppu_frequency_mhz, 3200); // Should be reset to default
+        
+        // Test out-of-range memory (should be clamped)
+        config.cpu.main_memory_mb = 1024; // Too high
+        assert!(config.validate().is_ok());
+        assert_eq!(config.cpu.main_memory_mb, 256); // Should be reset to default
     }
 }

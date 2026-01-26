@@ -1278,30 +1278,34 @@ impl GamePipeline {
     /// - User memory (256 MB at 0x20000000)
     /// - RSX mapped memory (256 MB at 0x30000000)
     /// - RSX I/O registers (1 MB at 0x40000000)
-    /// - RSX local memory (256 MB at 0xC0000000)
+    /// - RSX local memory (configurable, default 256 MB at 0xC0000000)
     /// - Stack area (256 MB at 0xD0000000)
     /// - SPU local storage (at 0xE0000000)
-    pub fn setup_memory_layout(&self) -> Result<MemoryLayoutInfo> {
+    pub fn setup_memory_layout(&self, main_memory_mb: Option<u32>, video_memory_mb: Option<u32>) -> Result<MemoryLayoutInfo> {
         info!("Setting up PS3 memory layout");
 
         // The memory manager already initializes these regions in its constructor
         // We just need to verify and return the layout info
+        
+        // Use provided values or defaults (256 MB)
+        let main_mem_size = main_memory_mb.unwrap_or(256) * 1024 * 1024; // Convert MB to bytes
+        let video_mem_size = video_memory_mb.unwrap_or(256) * 1024 * 1024; // Convert MB to bytes
 
         let layout = MemoryLayoutInfo {
             main_memory_base: 0x0000_0000,
-            main_memory_size: 0x1000_0000, // 256 MB
+            main_memory_size: main_mem_size, // Configurable
             user_memory_base: 0x2000_0000,
-            user_memory_size: 0x1000_0000, // 256 MB
+            user_memory_size: main_mem_size, // Configurable (matches main memory)
             rsx_map_base: 0x3000_0000,
-            rsx_map_size: 0x1000_0000, // 256 MB
+            rsx_map_size: main_mem_size, // Configurable
             rsx_io_base: 0x4000_0000,
             rsx_io_size: 0x0010_0000, // 1 MB
             rsx_mem_base: 0xC000_0000,
-            rsx_mem_size: 0x1000_0000, // 256 MB
+            rsx_mem_size: video_mem_size, // Configurable
             stack_base: 0xD000_0000,
-            stack_size: 0x1000_0000, // 256 MB
+            stack_size: 0x1000_0000, // 256 MB (fixed)
             spu_base: 0xE000_0000,
-            spu_ls_size: 0x0004_0000, // 256 KB per SPU
+            spu_ls_size: 0x0004_0000, // 256 KB per SPU (fixed)
         };
 
         // Initialize process data area (PDA) at a known location within main memory
@@ -1949,10 +1953,18 @@ mod tests {
         let memory = MemoryManager::new().unwrap();
         let pipeline = GamePipeline::new(memory);
 
-        let layout = pipeline.setup_memory_layout().unwrap();
+        // Test with default memory sizes (256 MB)
+        let layout = pipeline.setup_memory_layout(None, None).unwrap();
         assert_eq!(layout.main_memory_base, 0x0000_0000);
         assert_eq!(layout.user_memory_base, 0x2000_0000);
         assert_eq!(layout.stack_base, 0xD000_0000);
+        assert_eq!(layout.main_memory_size, 256 * 1024 * 1024);
+        assert_eq!(layout.rsx_mem_size, 256 * 1024 * 1024);
+        
+        // Test with custom memory sizes
+        let layout_custom = pipeline.setup_memory_layout(Some(512), Some(512)).unwrap();
+        assert_eq!(layout_custom.main_memory_size, 512 * 1024 * 1024);
+        assert_eq!(layout_custom.rsx_mem_size, 512 * 1024 * 1024);
     }
 
     #[test]
