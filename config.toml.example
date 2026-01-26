@@ -1,0 +1,154 @@
+# oxidized-cell PS3 Emulator Configuration
+#
+# This file allows you to customize the emulator settings, including
+# hardware specifications (CPU frequency and memory size).
+#
+# Location:
+#   Linux/macOS: ~/.config/oxidized-cell/config.toml
+#   Windows: %APPDATA%\oxidized-cell\config.toml
+#
+# For detailed information, see: docs/HARDWARE_CONFIG.md
+
+[general]
+# Start the emulator in a paused state
+start_paused = false
+# Ask for confirmation before exiting
+confirm_exit = true
+# Automatically save state on exit
+auto_save_state = false
+
+[cpu]
+# PPU decoder type: "Interpreter" or "Recompiler"
+ppu_decoder = "Recompiler"
+# SPU decoder type: "Interpreter" or "Recompiler"
+spu_decoder = "Recompiler"
+
+# Number of PPU hardware threads (PS3 has 2)
+ppu_threads = 2
+# Number of SPU threads (PS3 has 6-8, but typically uses 6)
+spu_threads = 6
+
+# Advanced CPU settings
+accurate_dfma = false
+accurate_rsx_reservation = false
+spu_loop_detection = true
+cycle_accurate_timing = false
+pipeline_simulation = false
+power_management = false
+cache_simulation = false
+memory_profiling = false
+
+# ============================================================
+# Hardware Specifications (Customizable like a PC build)
+# ============================================================
+# These settings allow you to customize the emulated PS3's
+# hardware specs, similar to swapping CPU and memory in a PC.
+
+# PPU (PowerPC Processing Unit) frequency in MHz
+# Default: 3200 MHz (3.2 GHz) - matches real PS3 Cell BE
+# Valid range: 1000-4000 MHz
+# Higher values may not improve performance due to accuracy constraints
+ppu_frequency_mhz = 3200
+
+# SPU (Synergistic Processing Unit) frequency in MHz
+# Default: 3200 MHz (3.2 GHz) - matches real PS3 Cell BE
+# Valid range: 1000-4000 MHz
+spu_frequency_mhz = 3200
+
+# Main system memory size in MB (XDR DRAM)
+# Default: 256 MB - matches real PS3
+# Valid range: 128-512 MB
+# Note: Most games expect 256 MB. Changing this may cause issues.
+main_memory_mb = 256
+
+# RSX video memory size in MB (GDDR3 VRAM)
+# Default: 256 MB - matches real PS3
+# Valid range: 128-512 MB
+# Note: Increasing may help with high-resolution rendering
+video_memory_mb = 256
+
+[gpu]
+# Graphics backend: "Vulkan" or "Null"
+backend = "Vulkan"
+# Resolution scale (100 = native, 200 = 2x, etc.)
+resolution_scale = 100
+# Anisotropic filtering level (0-16)
+anisotropic_filter = 8
+# Enable vertical sync
+vsync = true
+# Frame rate limit (0 = unlimited)
+frame_limit = 60
+# Enable shader cache
+shader_cache = true
+# Write color buffers to disk (debugging)
+write_color_buffers = false
+# Write depth buffer to disk (debugging)
+write_depth_buffer = false
+
+[audio]
+# Audio backend: "Auto" or "Null"
+backend = "Auto"
+# Enable audio output
+enable = true
+# Volume level (0.0 - 1.0)
+volume = 1.0
+# Audio buffer duration in milliseconds
+buffer_duration_ms = 100
+# Enable time stretching for smooth audio
+time_stretching = true
+
+[input]
+# Controller configuration for each player
+[input.controller]
+player1 = ""  # Empty = keyboard, or specify controller device
+player2 = ""
+player3 = ""
+player4 = ""
+
+# Keyboard to PS3 button mapping
+[input.keyboard_mapping]
+cross = "X"
+circle = "C"
+square = "Z"
+triangle = "V"
+l1 = "Q"
+l2 = "1"
+l3 = "F"
+r1 = "E"
+r2 = "3"
+r3 = "G"
+start = "Return"
+select = "Backspace"
+dpad_up = "Up"
+dpad_down = "Down"
+dpad_left = "Left"
+dpad_right = "Right"
+
+[paths]
+# Base paths for emulator data
+# These are relative to the system's data directory
+games = "games"
+dev_hdd0 = "dev_hdd0"
+dev_hdd1 = "dev_hdd1"
+dev_flash = "dev_flash"
+save_data = "savedata"
+shader_cache = "cache/shaders"
+firmware = "firmware"
+
+[debug]
+# Logging level: "Off", "Error", "Warn", "Info", "Debug", "Trace"
+log_level = "Info"
+# Write logs to file
+log_to_file = false
+# Log file path
+log_path = "oxidized-cell.log"
+# Dump compiled shaders to disk
+dump_shaders = false
+# Trace PPU execution (very verbose)
+trace_ppu = false
+# Trace SPU execution (very verbose)
+trace_spu = false
+# Trace RSX commands (very verbose)
+trace_rsx = false
+# Breakpoint addresses (for debugging)
+breakpoints = []
