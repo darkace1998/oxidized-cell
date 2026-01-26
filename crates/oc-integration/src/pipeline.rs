@@ -1282,6 +1282,10 @@ impl GamePipeline {
     /// - Stack area (256 MB at 0xD0000000)
     /// - SPU local storage (at 0xE0000000)
     pub fn setup_memory_layout(&self, main_memory_mb: Option<u32>, video_memory_mb: Option<u32>) -> Result<MemoryLayoutInfo> {
+        const MB: u64 = 1024 * 1024;
+        const DEFAULT_MEMORY_SIZE_BYTES: u32 = 256 * 1024 * 1024; // 256 MB
+        const DEFAULT_MEMORY_SIZE_MB: u32 = 256;
+        
         info!("Setting up PS3 memory layout");
 
         // The memory manager already initializes these regions in its constructor
@@ -1289,15 +1293,15 @@ impl GamePipeline {
         
         // Use provided values or defaults (256 MB)
         // Use checked multiplication to prevent overflow
-        let main_mem_size = (main_memory_mb.unwrap_or(256) as u64)
-            .checked_mul(1024 * 1024)
+        let main_mem_size = (main_memory_mb.unwrap_or(DEFAULT_MEMORY_SIZE_MB) as u64)
+            .checked_mul(MB)
             .and_then(|size| u32::try_from(size).ok())
-            .unwrap_or(256 * 1024 * 1024); // Fallback to 256 MB on overflow
+            .unwrap_or(DEFAULT_MEMORY_SIZE_BYTES); // Fallback to 256 MB on overflow
         
-        let video_mem_size = (video_memory_mb.unwrap_or(256) as u64)
-            .checked_mul(1024 * 1024)
+        let video_mem_size = (video_memory_mb.unwrap_or(DEFAULT_MEMORY_SIZE_MB) as u64)
+            .checked_mul(MB)
             .and_then(|size| u32::try_from(size).ok())
-            .unwrap_or(256 * 1024 * 1024); // Fallback to 256 MB on overflow
+            .unwrap_or(DEFAULT_MEMORY_SIZE_BYTES); // Fallback to 256 MB on overflow
 
         let layout = MemoryLayoutInfo {
             main_memory_base: 0x0000_0000,
