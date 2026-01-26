@@ -59,6 +59,23 @@ pub struct CpuConfig {
     pub video_memory_mb: u32,
 }
 
+// Hardware configuration validation constants
+impl CpuConfig {
+    /// Minimum CPU frequency in MHz
+    pub const MIN_CPU_FREQ_MHZ: u32 = 1000;
+    /// Maximum CPU frequency in MHz
+    pub const MAX_CPU_FREQ_MHZ: u32 = 4000;
+    /// Default CPU frequency in MHz (matches PS3)
+    pub const DEFAULT_CPU_FREQ_MHZ: u32 = 3200;
+    
+    /// Minimum memory size in MB
+    pub const MIN_MEMORY_MB: u32 = 128;
+    /// Maximum memory size in MB
+    pub const MAX_MEMORY_MB: u32 = 512;
+    /// Default memory size in MB (matches PS3)
+    pub const DEFAULT_MEMORY_MB: u32 = 256;
+}
+
 /// PPU decoder type
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub enum PpuDecoder {
@@ -223,10 +240,10 @@ impl Default for CpuConfig {
             cache_simulation: false,
             memory_profiling: false,
             // Hardware specifications matching real PS3
-            ppu_frequency_mhz: 3200,  // 3.2 GHz
-            spu_frequency_mhz: 3200,  // 3.2 GHz
-            main_memory_mb: 256,      // 256 MB XDR DRAM
-            video_memory_mb: 256,     // 256 MB GDDR3 VRAM
+            ppu_frequency_mhz: Self::DEFAULT_CPU_FREQ_MHZ,
+            spu_frequency_mhz: Self::DEFAULT_CPU_FREQ_MHZ,
+            main_memory_mb: Self::DEFAULT_MEMORY_MB,
+            video_memory_mb: Self::DEFAULT_MEMORY_MB,
         }
     }
 }
@@ -335,37 +352,53 @@ impl Config {
     /// Validate configuration values
     pub fn validate(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Validate CPU frequency (reasonable range: 1000-4000 MHz)
-        if self.cpu.ppu_frequency_mhz < 1000 || self.cpu.ppu_frequency_mhz > 4000 {
+        if self.cpu.ppu_frequency_mhz < CpuConfig::MIN_CPU_FREQ_MHZ 
+            || self.cpu.ppu_frequency_mhz > CpuConfig::MAX_CPU_FREQ_MHZ {
             eprintln!(
-                "Warning: PPU frequency {} MHz is outside typical range (1000-4000 MHz). Using default 3200 MHz.",
-                self.cpu.ppu_frequency_mhz
+                "Warning: PPU frequency {} MHz is outside typical range ({}-{} MHz). Using default {} MHz.",
+                self.cpu.ppu_frequency_mhz,
+                CpuConfig::MIN_CPU_FREQ_MHZ,
+                CpuConfig::MAX_CPU_FREQ_MHZ,
+                CpuConfig::DEFAULT_CPU_FREQ_MHZ
             );
-            self.cpu.ppu_frequency_mhz = 3200;
+            self.cpu.ppu_frequency_mhz = CpuConfig::DEFAULT_CPU_FREQ_MHZ;
         }
         
-        if self.cpu.spu_frequency_mhz < 1000 || self.cpu.spu_frequency_mhz > 4000 {
+        if self.cpu.spu_frequency_mhz < CpuConfig::MIN_CPU_FREQ_MHZ 
+            || self.cpu.spu_frequency_mhz > CpuConfig::MAX_CPU_FREQ_MHZ {
             eprintln!(
-                "Warning: SPU frequency {} MHz is outside typical range (1000-4000 MHz). Using default 3200 MHz.",
-                self.cpu.spu_frequency_mhz
+                "Warning: SPU frequency {} MHz is outside typical range ({}-{} MHz). Using default {} MHz.",
+                self.cpu.spu_frequency_mhz,
+                CpuConfig::MIN_CPU_FREQ_MHZ,
+                CpuConfig::MAX_CPU_FREQ_MHZ,
+                CpuConfig::DEFAULT_CPU_FREQ_MHZ
             );
-            self.cpu.spu_frequency_mhz = 3200;
+            self.cpu.spu_frequency_mhz = CpuConfig::DEFAULT_CPU_FREQ_MHZ;
         }
         
         // Validate memory sizes (reasonable range: 128-512 MB)
-        if self.cpu.main_memory_mb < 128 || self.cpu.main_memory_mb > 512 {
+        if self.cpu.main_memory_mb < CpuConfig::MIN_MEMORY_MB 
+            || self.cpu.main_memory_mb > CpuConfig::MAX_MEMORY_MB {
             eprintln!(
-                "Warning: Main memory {} MB is outside valid range (128-512 MB). Using default 256 MB.",
-                self.cpu.main_memory_mb
+                "Warning: Main memory {} MB is outside valid range ({}-{} MB). Using default {} MB.",
+                self.cpu.main_memory_mb,
+                CpuConfig::MIN_MEMORY_MB,
+                CpuConfig::MAX_MEMORY_MB,
+                CpuConfig::DEFAULT_MEMORY_MB
             );
-            self.cpu.main_memory_mb = 256;
+            self.cpu.main_memory_mb = CpuConfig::DEFAULT_MEMORY_MB;
         }
         
-        if self.cpu.video_memory_mb < 128 || self.cpu.video_memory_mb > 512 {
+        if self.cpu.video_memory_mb < CpuConfig::MIN_MEMORY_MB 
+            || self.cpu.video_memory_mb > CpuConfig::MAX_MEMORY_MB {
             eprintln!(
-                "Warning: Video memory {} MB is outside valid range (128-512 MB). Using default 256 MB.",
-                self.cpu.video_memory_mb
+                "Warning: Video memory {} MB is outside valid range ({}-{} MB). Using default {} MB.",
+                self.cpu.video_memory_mb,
+                CpuConfig::MIN_MEMORY_MB,
+                CpuConfig::MAX_MEMORY_MB,
+                CpuConfig::DEFAULT_MEMORY_MB
             );
-            self.cpu.video_memory_mb = 256;
+            self.cpu.video_memory_mb = CpuConfig::DEFAULT_MEMORY_MB;
         }
         
         Ok(())

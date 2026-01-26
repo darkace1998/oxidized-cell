@@ -1288,20 +1288,28 @@ impl GamePipeline {
         // We just need to verify and return the layout info
         
         // Use provided values or defaults (256 MB)
-        let main_mem_size = main_memory_mb.unwrap_or(256) * 1024 * 1024; // Convert MB to bytes
-        let video_mem_size = video_memory_mb.unwrap_or(256) * 1024 * 1024; // Convert MB to bytes
+        // Use checked multiplication to prevent overflow
+        let main_mem_size = (main_memory_mb.unwrap_or(256) as u64)
+            .checked_mul(1024 * 1024)
+            .and_then(|size| u32::try_from(size).ok())
+            .unwrap_or(256 * 1024 * 1024); // Fallback to 256 MB on overflow
+        
+        let video_mem_size = (video_memory_mb.unwrap_or(256) as u64)
+            .checked_mul(1024 * 1024)
+            .and_then(|size| u32::try_from(size).ok())
+            .unwrap_or(256 * 1024 * 1024); // Fallback to 256 MB on overflow
 
         let layout = MemoryLayoutInfo {
             main_memory_base: 0x0000_0000,
             main_memory_size: main_mem_size, // Configurable
             user_memory_base: 0x2000_0000,
-            user_memory_size: main_mem_size, // Configurable (matches main memory)
+            user_memory_size: main_mem_size, // Matches main memory (PS3 architecture)
             rsx_map_base: 0x3000_0000,
-            rsx_map_size: main_mem_size, // Configurable
+            rsx_map_size: main_mem_size, // Matches main memory for RSX access
             rsx_io_base: 0x4000_0000,
             rsx_io_size: 0x0010_0000, // 1 MB
             rsx_mem_base: 0xC000_0000,
-            rsx_mem_size: video_mem_size, // Configurable
+            rsx_mem_size: video_mem_size, // Configurable and independent
             stack_base: 0xD000_0000,
             stack_size: 0x1000_0000, // 256 MB (fixed)
             spu_base: 0xE000_0000,
