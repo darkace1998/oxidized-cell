@@ -827,6 +827,46 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             builder.CreateStore(result, regs[rt]);
             return;
         }
+        
+        // ---- Halfword Shift/Rotate Immediate ----
+        case 0b011111111: { // shlhi rt, ra, i7 - Shift Left Halfword Immediate
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_16 = builder.CreateBitCast(ra_val, v8i16_ty);
+            int shift = i7 & 0x1F;
+            llvm::Value* result = builder.CreateShl(ra_16, create_splat_i16(shift));
+            llvm::Value* result_32 = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_32, regs[rt]);
+            return;
+        }
+        case 0b000111111: { // rothi rt, ra, i7 - Rotate Halfword Immediate
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_16 = builder.CreateBitCast(ra_val, v8i16_ty);
+            uint16_t rot = i7 & 0xF;
+            llvm::Value* left = builder.CreateShl(ra_16, create_splat_i16(rot));
+            llvm::Value* right = builder.CreateLShr(ra_16, create_splat_i16(16 - rot));
+            llvm::Value* result = builder.CreateOr(left, right);
+            llvm::Value* result_32 = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_32, regs[rt]);
+            return;
+        }
+        case 0b001111111: { // rotmhi rt, ra, i7 - Rotate and Mask Halfword Immediate
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_16 = builder.CreateBitCast(ra_val, v8i16_ty);
+            int shift = (-i7) & 0x1F;
+            llvm::Value* result = builder.CreateLShr(ra_16, create_splat_i16(shift));
+            llvm::Value* result_32 = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_32, regs[rt]);
+            return;
+        }
+        case 0b001111100: { // rotmahi rt, ra, i7 - Rotate and Mask Algebraic Halfword Immediate
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_16 = builder.CreateBitCast(ra_val, v8i16_ty);
+            int shift = (-i7) & 0x1F;
+            llvm::Value* result = builder.CreateAShr(ra_16, create_splat_i16(shift));
+            llvm::Value* result_32 = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_32, regs[rt]);
+            return;
+        }
         default:
             break;
     }
@@ -1032,7 +1072,7 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             builder.CreateStore(result, regs[rt]);
             return;
         }
-        case 0b0001011111: { // rotm rt, ra, rb - Rotate and Mask Word
+        case 0b0001011001: { // rotm rt, ra, rb - Rotate and Mask Word
             llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
             llvm::Value* rb_val = builder.CreateLoad(v4i32_ty, regs[rb]);
             llvm::Value* neg_rb = builder.CreateNeg(rb_val);
@@ -1041,13 +1081,68 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             builder.CreateStore(result, regs[rt]);
             return;
         }
-        case 0b0001111111: { // rotma rt, ra, rb - Rotate and Mask Algebraic Word
+        case 0b0001011010: { // rotma rt, ra, rb - Rotate and Mask Algebraic Word
             llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
             llvm::Value* rb_val = builder.CreateLoad(v4i32_ty, regs[rb]);
             llvm::Value* neg_rb = builder.CreateNeg(rb_val);
             llvm::Value* shift = builder.CreateAnd(neg_rb, create_splat_i32(0x3F));
             llvm::Value* result = builder.CreateAShr(ra_val, shift);
             builder.CreateStore(result, regs[rt]);
+            return;
+        }
+        
+        // ---- Halfword Shift/Rotate ----
+        case 0b0001011100: { // roth rt, ra, rb - Rotate Halfword
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* rb_val = builder.CreateLoad(v4i32_ty, regs[rb]);
+            llvm::Value* ra_16 = builder.CreateBitCast(ra_val, v8i16_ty);
+            llvm::Value* rb_16 = builder.CreateBitCast(rb_val, v8i16_ty);
+            // Rotate each halfword by (rb & 0xF) bits
+            llvm::Value* shift = builder.CreateAnd(rb_16, create_splat_i16(0xF));
+            llvm::Value* inv_shift = builder.CreateSub(create_splat_i16(16), shift);
+            llvm::Value* left = builder.CreateShl(ra_16, shift);
+            llvm::Value* right = builder.CreateLShr(ra_16, inv_shift);
+            llvm::Value* result = builder.CreateOr(left, right);
+            llvm::Value* result_32 = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_32, regs[rt]);
+            return;
+        }
+        case 0b0001011101: { // rothm rt, ra, rb - Rotate and Mask Halfword (right shift logical)
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* rb_val = builder.CreateLoad(v4i32_ty, regs[rb]);
+            llvm::Value* ra_16 = builder.CreateBitCast(ra_val, v8i16_ty);
+            llvm::Value* rb_16 = builder.CreateBitCast(rb_val, v8i16_ty);
+            // Right shift by (-rb & 0x1F) bits
+            llvm::Value* neg_rb = builder.CreateNeg(rb_16);
+            llvm::Value* shift = builder.CreateAnd(neg_rb, create_splat_i16(0x1F));
+            llvm::Value* result = builder.CreateLShr(ra_16, shift);
+            llvm::Value* result_32 = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_32, regs[rt]);
+            return;
+        }
+        case 0b0001011110: { // rotmah rt, ra, rb - Rotate and Mask Algebraic Halfword (right shift arithmetic)
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* rb_val = builder.CreateLoad(v4i32_ty, regs[rb]);
+            llvm::Value* ra_16 = builder.CreateBitCast(ra_val, v8i16_ty);
+            llvm::Value* rb_16 = builder.CreateBitCast(rb_val, v8i16_ty);
+            // Arithmetic right shift by (-rb & 0x1F) bits
+            llvm::Value* neg_rb = builder.CreateNeg(rb_16);
+            llvm::Value* shift = builder.CreateAnd(neg_rb, create_splat_i16(0x1F));
+            llvm::Value* result = builder.CreateAShr(ra_16, shift);
+            llvm::Value* result_32 = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_32, regs[rt]);
+            return;
+        }
+        case 0b0001011111: { // shlh rt, ra, rb - Shift Left Halfword
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* rb_val = builder.CreateLoad(v4i32_ty, regs[rb]);
+            llvm::Value* ra_16 = builder.CreateBitCast(ra_val, v8i16_ty);
+            llvm::Value* rb_16 = builder.CreateBitCast(rb_val, v8i16_ty);
+            // Shift left by (rb & 0x1F) bits, zero if >= 16
+            llvm::Value* shift = builder.CreateAnd(rb_16, create_splat_i16(0x1F));
+            llvm::Value* result = builder.CreateShl(ra_16, shift);
+            llvm::Value* result_32 = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_32, regs[rt]);
             return;
         }
         

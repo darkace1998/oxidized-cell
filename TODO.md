@@ -154,10 +154,16 @@ This document tracks pending tasks, improvements, and future features for the ox
   - `absdb` - Absolute difference of bytes ✅
   - Location: `cpp/src/spu_jit.cpp`
 
-- [ ] **JIT Shift/Rotate Instructions**: Complete shift compilation
-  - `shl`, `shlh`, `shlhi`, `shli` - Shift left (word/halfword)
-  - `rot`, `roth`, `rothi`, `roti` - Rotate (word/halfword)
-  - `rotm`, `rothm`, `rotmahi`, `rotmai` - Rotate and mask
+- [x] **JIT Shift/Rotate Instructions**: Complete shift compilation ✅
+  - `shl`, `shli` - Shift left word (register and immediate) ✅
+  - `shlh`, `shlhi` - Shift left halfword (register and immediate) ✅
+  - `rot`, `roti` - Rotate word (register and immediate) ✅
+  - `roth`, `rothi` - Rotate halfword (register and immediate) ✅
+  - `rotm`, `rotmi` - Rotate and mask word (right shift logical) ✅
+  - `rothm`, `rotmhi` - Rotate and mask halfword (right shift logical) ✅
+  - `rotma`, `rotmai` - Rotate and mask algebraic word (right shift arithmetic) ✅
+  - `rotmah`, `rotmahi` - Rotate and mask algebraic halfword (right shift arithmetic) ✅
+  - Fixed incorrect opcodes for rotm/rotma (0x59/0x5a per RPCS3)
   - Location: `cpp/src/spu_jit.cpp`
 
 - [x] **JIT Quadword Operations**: Compile 128-bit operations
