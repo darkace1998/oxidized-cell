@@ -191,11 +191,13 @@ This document tracks pending tasks, improvements, and future features for the ox
   - `clgt`, `clgtb`, `clgth`, `clgti`, `clgtbi`, `clgthi` - Compare logical greater than ✅
   - Location: `cpp/src/spu_jit.cpp`
 
-- [ ] **JIT Floating-Point Instructions**: Complete FP compilation
+- [x] **JIT Floating-Point Instructions**: Complete FP compilation
   - `fa`, `fs`, `fm` - Basic float arithmetic
   - `fma`, `fms`, `fnms` - Fused multiply-add variants
   - `frest`, `frsqest` - Reciprocal estimates
   - `fi` - Floating interpolate
+  - `fceq`, `fcgt` - Float compare (equal, greater than)
+  - `fcmeq`, `fcmgt` - Float compare magnitude (absolute value comparison)
   - Location: `cpp/src/spu_jit.cpp`
 
 - [ ] **Cross-Block Optimization**: Implement interprocedural JIT optimization
@@ -1029,7 +1031,7 @@ This document tracks pending tasks, improvements, and future features for the ox
 | JIT Integer | 🟡 Partial | Basic arithmetic in LLVM IR |
 | JIT Branch | 🔴 Minimal | Only unconditional branches |
 | JIT Load/Store | 🟡 Partial | `lwz`, `stw` done; others needed |
-| JIT Floating-Point | 🟡 Partial | Basic ops; FMA needs completion |
+| JIT Floating-Point | 🟢 Complete | FMA, reciprocal estimates, compare magnitude done |
 | JIT VMX | 🔴 Minimal | Framework exists, few instructions |
 
 ### SPU Instruction Coverage Details

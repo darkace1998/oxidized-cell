@@ -1304,6 +1304,38 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             builder.CreateStore(result, regs[rt]);
             return;
         }
+        case 0b0111101110: { // fcmeq rt, ra, rb - Floating Compare Magnitude Equal
+            llvm::Value* ra_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[ra]), v4f32_ty);
+            llvm::Value* rb_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[rb]), v4f32_ty);
+            // Use fabs intrinsic to get absolute values
+            llvm::Function* fabs_fn = llvm::Intrinsic::getDeclaration(
+                builder.GetInsertBlock()->getModule(),
+                llvm::Intrinsic::fabs, {v4f32_ty});
+            llvm::Value* ra_abs = builder.CreateCall(fabs_fn, {ra_val});
+            llvm::Value* rb_abs = builder.CreateCall(fabs_fn, {rb_val});
+            llvm::Value* cmp = builder.CreateFCmpOEQ(ra_abs, rb_abs);
+            llvm::Value* result = builder.CreateSExt(cmp, v4i32_ty);
+            builder.CreateStore(result, regs[rt]);
+            return;
+        }
+        case 0b0101101101: { // fcmgt rt, ra, rb - Floating Compare Magnitude Greater Than
+            llvm::Value* ra_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[ra]), v4f32_ty);
+            llvm::Value* rb_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[rb]), v4f32_ty);
+            // Use fabs intrinsic to get absolute values
+            llvm::Function* fabs_fn = llvm::Intrinsic::getDeclaration(
+                builder.GetInsertBlock()->getModule(),
+                llvm::Intrinsic::fabs, {v4f32_ty});
+            llvm::Value* ra_abs = builder.CreateCall(fabs_fn, {ra_val});
+            llvm::Value* rb_abs = builder.CreateCall(fabs_fn, {rb_val});
+            llvm::Value* cmp = builder.CreateFCmpOGT(ra_abs, rb_abs);
+            llvm::Value* result = builder.CreateSExt(cmp, v4i32_ty);
+            builder.CreateStore(result, regs[rt]);
+            return;
+        }
         
         // ---- Control ----
         case 0b0000000000: { // stop - Stop and Signal
