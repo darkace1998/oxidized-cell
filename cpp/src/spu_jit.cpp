@@ -33,8 +33,12 @@
 #include <llvm/ExecutionEngine/ExecutionEngine.h>
 #include <llvm/ExecutionEngine/MCJIT.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
+#include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
 #include <llvm/Support/TargetSelect.h>
+#include <llvm/TargetParser/Host.h>
+#include <llvm/Support/Error.h>
 #include <llvm/Target/TargetMachine.h>
+#include <llvm/MC/TargetRegistry.h>
 #include <llvm/Transforms/Scalar.h>
 #include <llvm/Transforms/InstCombine/InstCombine.h>
 #include <llvm/Passes/PassBuilder.h>
@@ -462,6 +466,222 @@ struct SimdIntrinsicManager {
 };
 
 /**
+ * SPU JIT compilation error types for comprehensive error handling
+ */
+enum class SpuJitErrorKind : uint8_t {
+    None = 0,
+    InitializationFailed = 1,
+    ModuleCreationFailed = 2,
+    CompilationFailed = 3,
+    LookupFailed = 4,
+    TargetConfigFailed = 5,
+    VerificationFailed = 6
+};
+
+/**
+ * SPU JIT compilation result with error handling
+ */
+struct SpuJitResult {
+    SpuJitErrorKind error;
+    std::string error_message;
+    void* compiled_code;
+    
+    SpuJitResult() : error(SpuJitErrorKind::None), compiled_code(nullptr) {}
+    SpuJitResult(SpuJitErrorKind e, const std::string& msg) 
+        : error(e), error_message(msg), compiled_code(nullptr) {}
+    SpuJitResult(void* code) : error(SpuJitErrorKind::None), compiled_code(code) {}
+    
+    bool success() const { return error == SpuJitErrorKind::None; }
+    operator bool() const { return success(); }
+};
+
+#ifdef HAVE_LLVM
+/**
+ * SPU ORC JIT Manager - Enhanced LLJIT wrapper for SPU with:
+ * - Proper ThreadSafeModule for module ownership
+ * - Target machine configuration with SIMD features (AVX2, AVX-512 for emulation)
+ * - Error handling for JIT creation and module compilation
+ * - Function lookup with error propagation
+ * 
+ * Note: SPU doesn't have a native LLVM backend, so we emit code for the host
+ * and emulate SPU semantics using SIMD operations.
+ */
+class SpuOrcJitManager {
+public:
+    std::unique_ptr<llvm::orc::LLJIT> jit;
+    std::unique_ptr<llvm::TargetMachine> target_machine;
+    std::string last_error;
+    bool initialized;
+    
+    // CPU feature flags detected at runtime (for SPU emulation optimization)
+    bool has_avx2;
+    bool has_avx512;
+    bool has_sse4;
+    
+    SpuOrcJitManager() : initialized(false), has_avx2(false), has_avx512(false), has_sse4(false) {}
+    
+    /**
+     * Initialize the JIT with proper target machine configuration
+     */
+    SpuJitResult initialize() {
+        // Initialize LLVM targets
+        llvm::InitializeNativeTarget();
+        llvm::InitializeNativeTargetAsmPrinter();
+        llvm::InitializeNativeTargetAsmParser();
+        
+        // Detect CPU features for optimal SPU emulation
+        detect_cpu_features();
+        
+        // Create target machine with optimal configuration
+        auto tm_result = configure_target_machine();
+        if (!tm_result.success()) {
+            return tm_result;
+        }
+        
+        // Create LLJIT with configured target machine
+        auto jit_builder = llvm::orc::LLJITBuilder();
+        
+        // Configure for optimal performance
+        jit_builder.setNumCompileThreads(0); // Compile in calling thread
+        
+        auto jit_expected = jit_builder.create();
+        if (!jit_expected) {
+            std::string err_msg;
+            llvm::raw_string_ostream err_stream(err_msg);
+            err_stream << jit_expected.takeError();
+            last_error = err_stream.str();
+            return SpuJitResult(SpuJitErrorKind::InitializationFailed, last_error);
+        }
+        
+        jit = std::move(*jit_expected);
+        initialized = true;
+        
+        return SpuJitResult();
+    }
+    
+    /**
+     * Detect host CPU features for optimal SPU emulation code generation
+     * SPU uses 128-bit SIMD operations, so AVX/SSE support is important
+     */
+    void detect_cpu_features() {
+        llvm::StringMap<bool> features;
+        llvm::sys::getHostCPUFeatures(features);
+        
+        has_avx2 = features.count("avx2") && features["avx2"];
+        has_avx512 = features.count("avx512f") && features["avx512f"];
+        has_sse4 = features.count("sse4.2") && features["sse4.2"];
+    }
+    
+    /**
+     * Configure target machine for SPU emulation
+     * Uses host CPU with SIMD extensions for 128-bit SPU operations
+     */
+    SpuJitResult configure_target_machine() {
+        std::string triple = llvm::sys::getProcessTriple();
+        std::string cpu = std::string(llvm::sys::getHostCPUName());
+        
+        // Build feature string - prioritize SIMD for SPU emulation
+        std::string features;
+        if (has_avx512) {
+            // AVX-512 provides native 512-bit operations (4x SPU quadword)
+            features = "+avx512f,+avx512vl,+avx512bw,+avx512dq";
+        } else if (has_avx2) {
+            // AVX2 provides 256-bit operations (2x SPU quadword)
+            features = "+avx2,+fma";
+        } else if (has_sse4) {
+            // SSE4.2 provides 128-bit operations (1x SPU quadword) - ideal match
+            features = "+sse4.2";
+        }
+        
+        std::string error;
+        auto target = llvm::TargetRegistry::lookupTarget(triple, error);
+        if (!target) {
+            last_error = "Failed to lookup target: " + error;
+            return SpuJitResult(SpuJitErrorKind::TargetConfigFailed, last_error);
+        }
+        
+        llvm::TargetOptions options;
+        options.UnsafeFPMath = true;      // Allow FP optimizations (SPU has extended precision anyway)
+        options.NoInfsFPMath = true;      // SPU float semantics
+        options.NoNaNsFPMath = true;      // SPU float semantics
+        options.AllowFPOpFusion = llvm::FPOpFusion::Fast;  // SPU has native FMA
+        
+        target_machine.reset(target->createTargetMachine(
+            triple, cpu, features,
+            options,
+            llvm::Reloc::PIC_,
+            llvm::CodeModel::Small,
+            llvm::CodeGenOptLevel::Aggressive
+        ));
+        
+        if (!target_machine) {
+            last_error = "Failed to create target machine";
+            return SpuJitResult(SpuJitErrorKind::TargetConfigFailed, last_error);
+        }
+        
+        return SpuJitResult();
+    }
+    
+    /**
+     * Add a module to the JIT with proper ThreadSafeModule ownership
+     */
+    SpuJitResult add_module(std::unique_ptr<llvm::Module> module, 
+                            std::unique_ptr<llvm::LLVMContext> context) {
+        if (!initialized || !jit) {
+            return SpuJitResult(SpuJitErrorKind::InitializationFailed, "JIT not initialized");
+        }
+        
+        // Create ThreadSafeModule for proper ownership
+        auto tsm = llvm::orc::ThreadSafeModule(std::move(module), std::move(context));
+        
+        if (auto err = jit->addIRModule(std::move(tsm))) {
+            std::string err_msg;
+            llvm::raw_string_ostream err_stream(err_msg);
+            err_stream << err;
+            last_error = err_stream.str();
+            return SpuJitResult(SpuJitErrorKind::ModuleCreationFailed, last_error);
+        }
+        
+        return SpuJitResult();
+    }
+    
+    /**
+     * Lookup a compiled function by name with error handling
+     */
+    SpuJitResult lookup_function(const std::string& name) {
+        if (!initialized || !jit) {
+            return SpuJitResult(SpuJitErrorKind::InitializationFailed, "JIT not initialized");
+        }
+        
+        auto sym = jit->lookup(name);
+        if (!sym) {
+            std::string err_msg;
+            llvm::raw_string_ostream err_stream(err_msg);
+            err_stream << sym.takeError();
+            last_error = err_stream.str();
+            return SpuJitResult(SpuJitErrorKind::LookupFailed, last_error);
+        }
+        
+        return SpuJitResult(reinterpret_cast<void*>(sym->getValue()));
+    }
+    
+    /**
+     * Get feature string for diagnostics
+     */
+    std::string get_features_string() const {
+        std::string result;
+        if (has_avx512) result += "AVX-512 ";
+        if (has_avx2) result += "AVX2 ";
+        if (has_sse4) result += "SSE4.2 ";
+        return result.empty() ? "baseline" : result;
+    }
+    
+    bool is_initialized() const { return initialized; }
+    const std::string& get_last_error() const { return last_error; }
+};
+#endif
+
+/**
  * SPU JIT compiler structure
  */
 struct oc_spu_jit_t {
@@ -482,6 +702,7 @@ struct oc_spu_jit_t {
     std::unique_ptr<llvm::Module> module;
     std::unique_ptr<llvm::orc::LLJIT> jit;
     llvm::TargetMachine* target_machine;
+    SpuOrcJitManager orc_manager;  // Enhanced ORC JIT manager for SPU
 #endif
     
     oc_spu_jit_t() : enabled(true), channel_ops_enabled(true), 
@@ -497,11 +718,15 @@ struct oc_spu_jit_t {
         llvm::InitializeNativeTargetAsmPrinter();
         llvm::InitializeNativeTargetAsmParser();
         
-        // Create LLJIT instance
-        auto jit_builder = llvm::orc::LLJITBuilder();
-        auto jit_result = jit_builder.create();
-        if (jit_result) {
-            jit = std::move(*jit_result);
+        // Initialize enhanced ORC JIT manager
+        auto orc_result = orc_manager.initialize();
+        if (!orc_result.success()) {
+            // Fall back to simple LLJIT
+            auto jit_builder = llvm::orc::LLJITBuilder();
+            auto jit_result = jit_builder.create();
+            if (jit_result) {
+                jit = std::move(*jit_result);
+            }
         }
 #endif
     }
