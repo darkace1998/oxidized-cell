@@ -185,10 +185,10 @@ This document tracks pending tasks, improvements, and future features for the ox
   - Added `ChannelCountFunc` type and `count_callback` to ChannelManager ✅
   - Location: `cpp/src/spu_jit.cpp`
 
-- [ ] **JIT Compare Instructions**: Add comparison IR
-  - `ceq`, `ceqb`, `ceqh`, `ceqi`, `ceqbi`, `ceqhi` - Compare equal
-  - `cgt`, `cgtb`, `cgth`, `cgti`, `cgtbi`, `cgthi` - Compare greater than
-  - `clgt`, `clgtb`, `clgth`, `clgti` - Compare logical greater than
+- [x] **JIT Compare Instructions**: Add comparison IR ✅
+  - `ceq`, `ceqb`, `ceqh`, `ceqi`, `ceqbi`, `ceqhi` - Compare equal ✅
+  - `cgt`, `cgtb`, `cgth`, `cgti`, `cgtbi`, `cgthi` - Compare greater than ✅
+  - `clgt`, `clgtb`, `clgth`, `clgti`, `clgtbi`, `clgthi` - Compare logical greater than ✅
   - Location: `cpp/src/spu_jit.cpp`
 
 - [ ] **JIT Floating-Point Instructions**: Complete FP compilation
