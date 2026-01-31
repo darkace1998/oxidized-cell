@@ -223,10 +223,15 @@ This document tracks pending tasks, improvements, and future features for the ox
   - **Statistics**: Cache hit/miss tracking for profiling
   - Location: `cpp/src/ppu_jit.cpp` (CodeCache struct)
 
-- [ ] **Basic Block Detection**: Improve block boundary identification
-  - **PPU**: Handle complex branch patterns (indirect, conditional)
-  - **SPU**: Detect all branch types (br, bra, brsl, bi, bisl, brnz/brz)
-  - **Block Merging**: Merge consecutive blocks for better optimization
+- [x] **Basic Block Detection**: Improve block boundary identification
+  - **PPU**: Handle complex branch patterns (indirect, conditional) ✅
+  - **SPU**: Detect all branch types (br, bra, brsl, bi, bisl, brnz/brz) ✅
+  - **Block Merging**: Merge consecutive blocks for better optimization ✅
+    - Added BlockMerger class for PPU with CFG analysis and block merging
+    - Added SpuBlockMerger class for SPU with all branch type detection
+    - Successor/predecessor tracking for CFG construction
+    - can_merge_blocks() to check merge eligibility
+    - merge_blocks() to combine consecutive blocks
   - Location: `cpp/src/ppu_jit.cpp`, `cpp/src/spu_jit.cpp`
 
 #### Branch Prediction
@@ -1089,11 +1094,11 @@ This document tracks pending tasks, improvements, and future features for the ox
 | IR Builder | ✅ Complete | Basic LLVM IR generation |
 | Code Cache (PPU) | ✅ Complete | Block caching with 64MB limit |
 | Code Cache (SPU) | ✅ Complete | Block caching with 64MB limit |
-| Cache Eviction | 🔴 Minimal | Size-based only; LRU not implemented |
-| Cache Statistics | 🔴 Minimal | Not implemented |
+| Cache Eviction | ✅ Complete | LRU eviction with configurable size |
+| Cache Statistics | ✅ Complete | Hit/miss/eviction tracking |
 | Basic Block Detection (PPU) | ✅ Complete | Branch-based block boundaries |
 | Basic Block Detection (SPU) | ✅ Complete | All branch types detected |
-| Block Merging | 🔴 Minimal | Not implemented |
+| Block Merging | ✅ Complete | CFG analysis and consecutive block merging |
 | Branch Prediction | ✅ Complete | Likely/Unlikely/Static hints |
 | Branch History | ✅ Complete | Taken/not-taken counters |
 | Prediction Updates | ✅ Complete | Runtime prediction updates |

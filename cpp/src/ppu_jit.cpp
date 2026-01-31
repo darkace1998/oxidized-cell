@@ -18,6 +18,7 @@
 #include <cstring>
 #include <unordered_map>
 #include <vector>
+#include <algorithm>
 #include <memory>
 #include <queue>
 #include <atomic>
@@ -58,12 +59,19 @@ struct BasicBlock {
     void* compiled_code;
     size_t code_size;
     
+    // Block merging support: CFG edges
+    std::vector<uint32_t> successors;    // Addresses of successor blocks
+    std::vector<uint32_t> predecessors;  // Addresses of predecessor blocks
+    bool is_fallthrough;                 // True if block falls through to next
+    bool can_merge;                      // True if block can be merged with successor
+    
 #ifdef HAVE_LLVM
     std::unique_ptr<llvm::Function> llvm_func;
 #endif
     
     BasicBlock(uint32_t start) 
-        : start_address(start), end_address(start), compiled_code(nullptr), code_size(0) {}
+        : start_address(start), end_address(start), compiled_code(nullptr), code_size(0),
+          is_fallthrough(false), can_merge(false) {}
 };
 
 /**
@@ -182,6 +190,160 @@ struct CodeCache {
     
     const CacheStatistics& get_statistics() const { return stats; }
     void reset_statistics() { stats = CacheStatistics(); }
+};
+
+/**
+ * Block Merger: Merges consecutive blocks for better optimization
+ * 
+ * Analyzes CFG to identify blocks that can be merged:
+ * - Blocks that fall through to their successor
+ * - Blocks with a single successor that has a single predecessor
+ */
+struct BlockMerger {
+    std::unordered_map<uint32_t, std::vector<uint32_t>> successors;
+    std::unordered_map<uint32_t, std::vector<uint32_t>> predecessors;
+    
+    /**
+     * Analyze a block and determine its successors based on its terminating instruction
+     */
+    void analyze_block(BasicBlock* block) {
+        if (block->instructions.empty()) return;
+        
+        uint32_t last_instr = block->instructions.back();
+        uint8_t opcode = (last_instr >> 26) & 0x3F;
+        
+        // Determine block successors based on branch type
+        bool is_unconditional_branch = false;
+        bool is_conditional_branch = false;
+        uint32_t branch_target = 0;
+        
+        if (opcode == 18) { // b/bl/ba/bla
+            bool aa = (last_instr >> 1) & 1;  // Absolute address bit
+            int32_t li = (last_instr >> 2) & 0xFFFFFF;
+            if (li & 0x800000) li |= 0xFF000000;  // Sign extend
+            li <<= 2;  // LI is in units of words
+            
+            if (aa) {
+                branch_target = static_cast<uint32_t>(li);
+            } else {
+                branch_target = block->end_address - 4 + li;
+            }
+            is_unconditional_branch = true;
+            
+            successors[block->start_address].push_back(branch_target);
+            predecessors[branch_target].push_back(block->start_address);
+        } else if (opcode == 16) { // bc/bcl/bca/bcla (conditional)
+            bool aa = (last_instr >> 1) & 1;
+            int32_t bd = (last_instr >> 2) & 0x3FFF;
+            if (bd & 0x2000) bd |= 0xFFFFC000;  // Sign extend
+            bd <<= 2;
+            
+            if (aa) {
+                branch_target = static_cast<uint32_t>(bd);
+            } else {
+                branch_target = block->end_address - 4 + bd;
+            }
+            is_conditional_branch = true;
+            
+            // Conditional branches have two successors
+            successors[block->start_address].push_back(branch_target);
+            successors[block->start_address].push_back(block->end_address);
+            predecessors[branch_target].push_back(block->start_address);
+            predecessors[block->end_address].push_back(block->start_address);
+        } else if (opcode == 19) { // bclr/bcctr
+            // Indirect branches - target unknown at analysis time
+            // Can't merge across indirect branches
+        } else {
+            // Block falls through to next instruction
+            block->is_fallthrough = true;
+            successors[block->start_address].push_back(block->end_address);
+            predecessors[block->end_address].push_back(block->start_address);
+        }
+        
+        // Update block's successor/predecessor lists
+        block->successors = successors[block->start_address];
+        
+        // Determine if block can be merged with its successor
+        // Conditions: single fallthrough successor, successor has single predecessor
+        if (is_unconditional_branch && !is_conditional_branch) {
+            // Unconditional branch can be merged if target has single predecessor
+            if (predecessors[branch_target].size() == 1) {
+                block->can_merge = true;
+            }
+        } else if (block->is_fallthrough) {
+            block->can_merge = true;
+        }
+    }
+    
+    /**
+     * Check if two blocks can be merged
+     */
+    bool can_merge_blocks(BasicBlock* first, BasicBlock* second) {
+        // First block must end at second block's start
+        if (first->end_address != second->start_address) return false;
+        
+        // First block must fall through or unconditionally branch to second
+        if (!first->is_fallthrough && std::find(first->successors.begin(), 
+            first->successors.end(), second->start_address) == first->successors.end()) {
+            return false;
+        }
+        
+        // Second block must have only one predecessor (the first block)
+        auto it = predecessors.find(second->start_address);
+        if (it != predecessors.end() && it->second.size() != 1) {
+            return false;
+        }
+        
+        return true;
+    }
+    
+    /**
+     * Merge two blocks into one
+     * Returns a new merged block, or nullptr if merge is not possible
+     */
+    std::unique_ptr<BasicBlock> merge_blocks(BasicBlock* first, BasicBlock* second) {
+        if (!can_merge_blocks(first, second)) return nullptr;
+        
+        auto merged = std::make_unique<BasicBlock>(first->start_address);
+        merged->end_address = second->end_address;
+        
+        // Combine instructions
+        merged->instructions = first->instructions;
+        
+        // If first block ends with a fallthrough, remove last instruction if it's just a branch to next
+        // Otherwise, append all instructions from second block
+        if (first->is_fallthrough) {
+            // Just append second block's instructions
+            merged->instructions.insert(merged->instructions.end(),
+                second->instructions.begin(), second->instructions.end());
+        } else {
+            // First block ends with unconditional branch to second - remove the branch
+            if (!merged->instructions.empty()) {
+                uint32_t last = merged->instructions.back();
+                uint8_t op = (last >> 26) & 0x3F;
+                if (op == 18) { // Unconditional branch - remove it
+                    merged->instructions.pop_back();
+                }
+            }
+            merged->instructions.insert(merged->instructions.end(),
+                second->instructions.begin(), second->instructions.end());
+        }
+        
+        // Copy successors from second block
+        merged->successors = second->successors;
+        merged->is_fallthrough = second->is_fallthrough;
+        merged->can_merge = second->can_merge;
+        
+        return merged;
+    }
+    
+    /**
+     * Clear analysis state
+     */
+    void clear() {
+        successors.clear();
+        predecessors.clear();
+    }
 };
 
 /**

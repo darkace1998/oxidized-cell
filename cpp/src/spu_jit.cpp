@@ -56,12 +56,19 @@ struct SpuBasicBlock {
     void* compiled_code;
     size_t code_size;
     
+    // Block merging support: CFG edges
+    std::vector<uint32_t> successors;    // Addresses of successor blocks
+    std::vector<uint32_t> predecessors;  // Addresses of predecessor blocks
+    bool is_fallthrough;                 // True if block falls through to next
+    bool can_merge;                      // True if block can be merged with successor
+    
 #ifdef HAVE_LLVM
     std::unique_ptr<llvm::Function> llvm_func;
 #endif
     
     SpuBasicBlock(uint32_t start) 
-        : start_address(start), end_address(start), compiled_code(nullptr), code_size(0) {}
+        : start_address(start), end_address(start), compiled_code(nullptr), code_size(0),
+          is_fallthrough(false), can_merge(false) {}
 };
 
 /**
@@ -87,6 +94,187 @@ struct SpuCodeCache {
     void clear() {
         blocks.clear();
         total_size = 0;
+    }
+};
+
+/**
+ * SPU Block Merger: Merges consecutive blocks for better optimization
+ * 
+ * Detects all SPU branch types:
+ * - br/bra: Relative/absolute unconditional branch
+ * - brsl: Branch relative and set link
+ * - bi/bisl: Branch indirect / branch indirect and set link
+ * - brnz/brz: Branch if not zero / branch if zero
+ * - brhnz/brhz: Branch halfword if not zero / zero
+ */
+struct SpuBlockMerger {
+    std::unordered_map<uint32_t, std::vector<uint32_t>> successors;
+    std::unordered_map<uint32_t, std::vector<uint32_t>> predecessors;
+    
+    /**
+     * Analyze a block and determine its successors based on its terminating instruction
+     * SPU instruction encoding is different from PPU
+     */
+    void analyze_block(SpuBasicBlock* block) {
+        if (block->instructions.empty()) return;
+        
+        uint32_t last_instr = block->instructions.back();
+        
+        // Extract opcode fields from SPU instruction
+        // SPU uses different encoding than PPU
+        uint8_t op4 = (last_instr >> 28) & 0xF;      // 4-bit primary opcode
+        uint8_t op7 = (last_instr >> 25) & 0x7F;     // 7-bit primary opcode
+        uint8_t op8 = (last_instr >> 24) & 0xFF;     // 8-bit primary opcode
+        uint16_t op9 = (last_instr >> 23) & 0x1FF;   // 9-bit primary opcode
+        uint16_t op11 = (last_instr >> 21) & 0x7FF; // 11-bit primary opcode
+        
+        bool is_unconditional_branch = false;
+        bool is_conditional_branch = false;
+        uint32_t branch_target = 0;
+        
+        // br - Branch Relative (opcode 0b001100100)
+        if (op9 == 0b001100100) {
+            int16_t i16 = (last_instr >> 7) & 0xFFFF;
+            if (i16 & 0x8000) i16 |= 0xFFFF0000;  // Sign extend
+            branch_target = block->end_address - 4 + (i16 << 2);
+            is_unconditional_branch = true;
+        }
+        // bra - Branch Absolute (opcode 0b001100000)
+        else if (op9 == 0b001100000) {
+            int16_t i16 = (last_instr >> 7) & 0xFFFF;
+            branch_target = static_cast<uint32_t>(i16 << 2);
+            is_unconditional_branch = true;
+        }
+        // brsl - Branch Relative and Set Link (opcode 0b001100110)
+        else if (op9 == 0b001100110) {
+            int16_t i16 = (last_instr >> 7) & 0xFFFF;
+            if (i16 & 0x8000) i16 |= 0xFFFF0000;
+            branch_target = block->end_address - 4 + (i16 << 2);
+            is_unconditional_branch = true;
+        }
+        // bi - Branch Indirect (opcode 0b00110101000)
+        else if (op11 == 0b00110101000) {
+            // Target is in register - can't determine statically
+            // Can't merge across indirect branches
+        }
+        // bisl - Branch Indirect and Set Link (opcode 0b00110101001)
+        else if (op11 == 0b00110101001) {
+            // Target is in register - can't determine statically
+        }
+        // brnz - Branch If Not Zero Word (opcode 0b001000010)
+        else if (op9 == 0b001000010) {
+            int16_t i16 = (last_instr >> 7) & 0xFFFF;
+            if (i16 & 0x8000) i16 |= 0xFFFF0000;
+            branch_target = block->end_address - 4 + (i16 << 2);
+            is_conditional_branch = true;
+        }
+        // brz - Branch If Zero Word (opcode 0b001000000)
+        else if (op9 == 0b001000000) {
+            int16_t i16 = (last_instr >> 7) & 0xFFFF;
+            if (i16 & 0x8000) i16 |= 0xFFFF0000;
+            branch_target = block->end_address - 4 + (i16 << 2);
+            is_conditional_branch = true;
+        }
+        // brhnz - Branch If Not Zero Halfword (opcode 0b001000110)
+        else if (op9 == 0b001000110) {
+            int16_t i16 = (last_instr >> 7) & 0xFFFF;
+            if (i16 & 0x8000) i16 |= 0xFFFF0000;
+            branch_target = block->end_address - 4 + (i16 << 2);
+            is_conditional_branch = true;
+        }
+        // brhz - Branch If Zero Halfword (opcode 0b001000100)
+        else if (op9 == 0b001000100) {
+            int16_t i16 = (last_instr >> 7) & 0xFFFF;
+            if (i16 & 0x8000) i16 |= 0xFFFF0000;
+            branch_target = block->end_address - 4 + (i16 << 2);
+            is_conditional_branch = true;
+        }
+        
+        // Record successors
+        if (is_unconditional_branch) {
+            successors[block->start_address].push_back(branch_target);
+            predecessors[branch_target].push_back(block->start_address);
+        } else if (is_conditional_branch) {
+            successors[block->start_address].push_back(branch_target);
+            successors[block->start_address].push_back(block->end_address);
+            predecessors[branch_target].push_back(block->start_address);
+            predecessors[block->end_address].push_back(block->start_address);
+        } else {
+            // Block falls through to next instruction
+            block->is_fallthrough = true;
+            successors[block->start_address].push_back(block->end_address);
+            predecessors[block->end_address].push_back(block->start_address);
+        }
+        
+        block->successors = successors[block->start_address];
+        
+        // Determine if block can be merged
+        if (is_unconditional_branch && !is_conditional_branch) {
+            if (predecessors[branch_target].size() == 1) {
+                block->can_merge = true;
+            }
+        } else if (block->is_fallthrough) {
+            block->can_merge = true;
+        }
+    }
+    
+    /**
+     * Check if two blocks can be merged
+     */
+    bool can_merge_blocks(SpuBasicBlock* first, SpuBasicBlock* second) {
+        if (first->end_address != second->start_address) return false;
+        
+        if (!first->is_fallthrough && std::find(first->successors.begin(), 
+            first->successors.end(), second->start_address) == first->successors.end()) {
+            return false;
+        }
+        
+        auto it = predecessors.find(second->start_address);
+        if (it != predecessors.end() && it->second.size() != 1) {
+            return false;
+        }
+        
+        return true;
+    }
+    
+    /**
+     * Merge two blocks into one
+     */
+    std::unique_ptr<SpuBasicBlock> merge_blocks(SpuBasicBlock* first, SpuBasicBlock* second) {
+        if (!can_merge_blocks(first, second)) return nullptr;
+        
+        auto merged = std::make_unique<SpuBasicBlock>(first->start_address);
+        merged->end_address = second->end_address;
+        
+        merged->instructions = first->instructions;
+        
+        if (first->is_fallthrough) {
+            merged->instructions.insert(merged->instructions.end(),
+                second->instructions.begin(), second->instructions.end());
+        } else {
+            // Remove trailing unconditional branch
+            if (!merged->instructions.empty()) {
+                uint32_t last = merged->instructions.back();
+                uint16_t op9 = (last >> 23) & 0x1FF;
+                // Check for br/bra/brsl opcodes
+                if (op9 == 0b001100100 || op9 == 0b001100000 || op9 == 0b001100110) {
+                    merged->instructions.pop_back();
+                }
+            }
+            merged->instructions.insert(merged->instructions.end(),
+                second->instructions.begin(), second->instructions.end());
+        }
+        
+        merged->successors = second->successors;
+        merged->is_fallthrough = second->is_fallthrough;
+        merged->can_merge = second->can_merge;
+        
+        return merged;
+    }
+    
+    void clear() {
+        successors.clear();
+        predecessors.clear();
     }
 };
 
