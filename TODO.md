@@ -178,10 +178,11 @@ This document tracks pending tasks, improvements, and future features for the ox
   - Proper 16-byte alignment handling ✅
   - Location: `cpp/src/spu_jit.cpp`
 
-- [ ] **JIT Channel Operations**: Compile channel I/O
-  - `rdch`, `wrch`, `rchcnt` - Channel read/write/count
-  - Blocking behavior with fallback to interpreter
-  - MFC command channel (channel 25) handling
+- [x] **JIT Channel Operations**: Compile channel I/O ✅
+  - `rdch`, `wrch`, `rchcnt` - Channel read/write/count with runtime callbacks ✅
+  - Blocking behavior with fallback via rchcnt check before operations ✅
+  - MFC command channel (channel 25) handling via write callback ✅
+  - Added `ChannelCountFunc` type and `count_callback` to ChannelManager ✅
   - Location: `cpp/src/spu_jit.cpp`
 
 - [ ] **JIT Compare Instructions**: Add comparison IR

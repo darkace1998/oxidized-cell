@@ -165,14 +165,16 @@ struct ChannelManager {
     std::vector<ChannelOperation> operations;
     oc_mutex mutex;
     
-    // Channel callback function type
+    // Channel callback function types
     using ChannelReadFunc = uint32_t (*)(void* spu_state, uint8_t channel);
     using ChannelWriteFunc = void (*)(void* spu_state, uint8_t channel, uint32_t value);
+    using ChannelCountFunc = uint32_t (*)(void* spu_state, uint8_t channel);
     
     ChannelReadFunc read_callback;
     ChannelWriteFunc write_callback;
+    ChannelCountFunc count_callback;
     
-    ChannelManager() : read_callback(nullptr), write_callback(nullptr) {}
+    ChannelManager() : read_callback(nullptr), write_callback(nullptr), count_callback(nullptr) {}
     
     void register_operation(SpuChannel channel, bool is_read, uint32_t address, uint8_t reg) {
         oc_lock_guard<oc_mutex> lock(mutex);
@@ -182,6 +184,10 @@ struct ChannelManager {
     void set_callbacks(ChannelReadFunc read_cb, ChannelWriteFunc write_cb) {
         read_callback = read_cb;
         write_callback = write_cb;
+    }
+    
+    void set_count_callback(ChannelCountFunc count_cb) {
+        count_callback = count_cb;
     }
     
     const std::vector<ChannelOperation>& get_operations() const {
@@ -574,7 +580,8 @@ static void allocate_spu_placeholder_code(SpuBasicBlock* block) {
 
 // Forward declarations for LLVM functions
 #ifdef HAVE_LLVM
-static llvm::Function* create_spu_llvm_function(llvm::Module* module, SpuBasicBlock* block);
+static llvm::Function* create_spu_llvm_function(llvm::Module* module, SpuBasicBlock* block,
+                                                 ChannelManager* channel_manager = nullptr);
 static void apply_spu_optimization_passes(llvm::Module* module);
 #endif
 
@@ -595,8 +602,9 @@ static void apply_spu_optimization_passes(llvm::Module* module);
 static void generate_spu_llvm_ir(SpuBasicBlock* block, oc_spu_jit_t* jit = nullptr) {
 #ifdef HAVE_LLVM
     if (jit && jit->module) {
-        // Create LLVM function for this block
-        llvm::Function* func = create_spu_llvm_function(jit->module.get(), block);
+        // Create LLVM function for this block with channel manager for callback support
+        llvm::Function* func = create_spu_llvm_function(jit->module.get(), block, 
+                                                         &jit->channel_manager);
         
         if (func) {
             // Apply optimization passes to the module
@@ -647,7 +655,10 @@ static void generate_spu_llvm_ir(SpuBasicBlock* block, oc_spu_jit_t* jit = nullp
  */
 static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                                 llvm::Value** regs, llvm::Value* local_store,
-                                uint32_t pc) {
+                                uint32_t pc, llvm::Value* spu_state,
+                                llvm::Value* read_callback_ptr,
+                                llvm::Value* write_callback_ptr,
+                                llvm::Value* count_callback_ptr) {
     // Extract all opcode fields
     uint8_t op7 = (instr >> 25) & 0x7F;
     uint8_t op8 = (instr >> 24) & 0xFF;
@@ -1478,21 +1489,84 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
         
         // ---- Channel Instructions ----
         case 0b00000001101: { // rdch rt, ca - Read Channel
-            // Read from SPU channel (channel operations typically handled by runtime)
-            // For JIT, emit placeholder - actual channel access requires runtime support
-            llvm::Value* zero_vec = create_splat_i32(0);
-            builder.CreateStore(zero_vec, regs[rt]);
+            // Read from SPU channel via runtime callback
+            // Channel number is in ra field (bits 7-13)
+            uint8_t channel = ra & 0x7F;
+            
+            if (read_callback_ptr) {
+                // Call read_callback(spu_state, channel) -> uint32_t
+                auto channel_ty = llvm::Type::getInt8Ty(ctx);
+                auto func_ty = llvm::FunctionType::get(i32_ty, 
+                    {builder.getPtrTy(), channel_ty}, false);
+                
+                llvm::Value* channel_val = llvm::ConstantInt::get(channel_ty, channel);
+                llvm::Value* result = builder.CreateCall(
+                    func_ty, read_callback_ptr, {spu_state, channel_val}, "rdch_result");
+                
+                // Store result in rt[0], zero in other slots
+                llvm::Value* result_vec = create_splat_i32(0);
+                result_vec = builder.CreateInsertElement(result_vec, result,
+                    llvm::ConstantInt::get(i32_ty, 0));
+                builder.CreateStore(result_vec, regs[rt]);
+            } else {
+                // Fallback: return zero
+                llvm::Value* zero_vec = create_splat_i32(0);
+                builder.CreateStore(zero_vec, regs[rt]);
+            }
             return;
         }
         case 0b00000001100: { // wrch ca, rt - Write Channel
-            // Write to SPU channel
-            // Placeholder - actual channel access requires runtime support
+            // Write to SPU channel via runtime callback
+            // Channel number is in ra field (bits 7-13)
+            uint8_t channel = ra & 0x7F;
+            
+            if (write_callback_ptr) {
+                // Extract value from rt[0]
+                llvm::Value* rt_val = builder.CreateLoad(v4i32_ty, regs[rt]);
+                llvm::Value* value = builder.CreateExtractElement(rt_val,
+                    llvm::ConstantInt::get(i32_ty, 0));
+                
+                // Call write_callback(spu_state, channel, value) -> void
+                auto channel_ty = llvm::Type::getInt8Ty(ctx);
+                auto void_ty = llvm::Type::getVoidTy(ctx);
+                auto func_ty = llvm::FunctionType::get(void_ty, 
+                    {builder.getPtrTy(), channel_ty, i32_ty}, false);
+                
+                llvm::Value* channel_val = llvm::ConstantInt::get(channel_ty, channel);
+                builder.CreateCall(func_ty, write_callback_ptr, 
+                    {spu_state, channel_val, value});
+            }
+            // If no callback, instruction is a no-op
             return;
         }
         case 0b00000001111: { // rchcnt rt, ca - Read Channel Count
-            // Read available channel count
-            llvm::Value* result = create_splat_i32(1); // Placeholder: always 1 available
-            builder.CreateStore(result, regs[rt]);
+            // Read available channel count via runtime callback
+            // Channel number is in ra field (bits 7-13)
+            uint8_t channel = ra & 0x7F;
+            
+            if (count_callback_ptr) {
+                // Call count_callback(spu_state, channel) -> uint32_t
+                auto channel_ty = llvm::Type::getInt8Ty(ctx);
+                auto func_ty = llvm::FunctionType::get(i32_ty, 
+                    {builder.getPtrTy(), channel_ty}, false);
+                
+                llvm::Value* channel_val = llvm::ConstantInt::get(channel_ty, channel);
+                llvm::Value* count = builder.CreateCall(
+                    func_ty, count_callback_ptr, {spu_state, channel_val}, "rchcnt_result");
+                
+                // Store count in rt[0], zero in other slots
+                llvm::Value* result_vec = create_splat_i32(0);
+                result_vec = builder.CreateInsertElement(result_vec, count,
+                    llvm::ConstantInt::get(i32_ty, 0));
+                builder.CreateStore(result_vec, regs[rt]);
+            } else {
+                // Fallback: return 1 (always available)
+                llvm::Value* result = create_splat_i32(0);
+                result = builder.CreateInsertElement(result, 
+                    llvm::ConstantInt::get(i32_ty, 1),
+                    llvm::ConstantInt::get(i32_ty, 0));
+                builder.CreateStore(result, regs[rt]);
+            }
             return;
         }
         
@@ -2361,7 +2435,8 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
 /**
  * Create LLVM function for SPU basic block
  */
-static llvm::Function* create_spu_llvm_function(llvm::Module* module, SpuBasicBlock* block) {
+static llvm::Function* create_spu_llvm_function(llvm::Module* module, SpuBasicBlock* block,
+                                                 ChannelManager* channel_manager) {
     auto& ctx = module->getContext();
     
     // Function type: void(void* spu_state, void* local_store)
@@ -2392,13 +2467,51 @@ static llvm::Function* create_spu_llvm_function(llvm::Module* module, SpuBasicBl
         builder.CreateStore(zero_vec, regs[i]);
     }
     
-    // Get local store pointer from function argument
+    // Get spu_state and local_store pointers from function arguments
+    llvm::Value* spu_state = func->getArg(0);
     llvm::Value* local_store = func->getArg(1);
+    
+    // Create callback function pointers as LLVM values
+    llvm::Value* read_callback_ptr = nullptr;
+    llvm::Value* write_callback_ptr = nullptr;
+    llvm::Value* count_callback_ptr = nullptr;
+    
+    if (channel_manager) {
+        auto i64_ty = llvm::Type::getInt64Ty(ctx);
+        
+        if (channel_manager->read_callback) {
+            auto func_ty = llvm::FunctionType::get(
+                llvm::Type::getInt32Ty(ctx), 
+                {ptr_ty, llvm::Type::getInt8Ty(ctx)}, false);
+            llvm::Value* addr = llvm::ConstantInt::get(i64_ty, 
+                reinterpret_cast<uintptr_t>(channel_manager->read_callback));
+            read_callback_ptr = builder.CreateIntToPtr(addr, func_ty->getPointerTo());
+        }
+        
+        if (channel_manager->write_callback) {
+            auto func_ty = llvm::FunctionType::get(
+                void_ty, 
+                {ptr_ty, llvm::Type::getInt8Ty(ctx), llvm::Type::getInt32Ty(ctx)}, false);
+            llvm::Value* addr = llvm::ConstantInt::get(i64_ty, 
+                reinterpret_cast<uintptr_t>(channel_manager->write_callback));
+            write_callback_ptr = builder.CreateIntToPtr(addr, func_ty->getPointerTo());
+        }
+        
+        if (channel_manager->count_callback) {
+            auto func_ty = llvm::FunctionType::get(
+                llvm::Type::getInt32Ty(ctx), 
+                {ptr_ty, llvm::Type::getInt8Ty(ctx)}, false);
+            llvm::Value* addr = llvm::ConstantInt::get(i64_ty, 
+                reinterpret_cast<uintptr_t>(channel_manager->count_callback));
+            count_callback_ptr = builder.CreateIntToPtr(addr, func_ty->getPointerTo());
+        }
+    }
     
     // Emit IR for each instruction
     uint32_t current_pc = block->start_address;
     for (uint32_t instr : block->instructions) {
-        emit_spu_instruction(builder, instr, regs, local_store, current_pc);
+        emit_spu_instruction(builder, instr, regs, local_store, current_pc,
+                            spu_state, read_callback_ptr, write_callback_ptr, count_callback_ptr);
         current_pc += 4;
     }
     
