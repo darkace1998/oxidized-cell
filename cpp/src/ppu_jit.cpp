@@ -22,6 +22,7 @@
 #include <queue>
 #include <atomic>
 #include <functional>
+#include <list>
 
 #ifdef HAVE_LLVM
 #include <llvm/IR/LLVMContext.h>
@@ -66,30 +67,121 @@ struct BasicBlock {
 };
 
 /**
- * Code cache for compiled blocks
+ * Cache statistics for profiling
+ */
+struct CacheStatistics {
+    uint64_t hit_count;
+    uint64_t miss_count;
+    uint64_t eviction_count;
+    uint64_t invalidation_count;
+    
+    CacheStatistics() : hit_count(0), miss_count(0), eviction_count(0), invalidation_count(0) {}
+    
+    double hit_rate() const {
+        uint64_t total = hit_count + miss_count;
+        return total > 0 ? static_cast<double>(hit_count) / total : 0.0;
+    }
+};
+
+/**
+ * Code cache for compiled blocks with LRU eviction
  */
 struct CodeCache {
     std::unordered_map<uint32_t, std::unique_ptr<BasicBlock>> blocks;
+    std::list<uint32_t> lru_order;  // LRU tracking: front = most recent, back = least recent
+    std::unordered_map<uint32_t, std::list<uint32_t>::iterator> lru_positions;
     oc_mutex mutex;
     size_t total_size;
     size_t max_size;
+    CacheStatistics stats;
     
-    CodeCache() : total_size(0), max_size(64 * 1024 * 1024) {} // 64MB cache
+    CodeCache() : total_size(0), max_size(64 * 1024 * 1024) {} // 64MB default
+    
+    void set_max_size(size_t size) { max_size = size; }
+    size_t get_max_size() const { return max_size; }
     
     BasicBlock* find_block(uint32_t address) {
         auto it = blocks.find(address);
-        return (it != blocks.end()) ? it->second.get() : nullptr;
+        if (it != blocks.end()) {
+            // Move to front of LRU list (most recently used)
+            auto lru_it = lru_positions.find(address);
+            if (lru_it != lru_positions.end()) {
+                lru_order.erase(lru_it->second);
+                lru_order.push_front(address);
+                lru_positions[address] = lru_order.begin();
+            }
+            stats.hit_count++;
+            return it->second.get();
+        }
+        stats.miss_count++;
+        return nullptr;
     }
     
     void insert_block(uint32_t address, std::unique_ptr<BasicBlock> block) {
+        // Evict LRU blocks if we're over the limit
+        while (total_size + block->code_size > max_size && !lru_order.empty()) {
+            evict_lru();
+        }
+        
         total_size += block->code_size;
         blocks[address] = std::move(block);
+        
+        // Add to front of LRU list
+        lru_order.push_front(address);
+        lru_positions[address] = lru_order.begin();
+    }
+    
+    void evict_lru() {
+        if (lru_order.empty()) return;
+        
+        uint32_t oldest = lru_order.back();
+        lru_order.pop_back();
+        lru_positions.erase(oldest);
+        
+        auto it = blocks.find(oldest);
+        if (it != blocks.end()) {
+            total_size -= it->second->code_size;
+            blocks.erase(it);
+            stats.eviction_count++;
+        }
+    }
+    
+    void invalidate(uint32_t address) {
+        auto it = blocks.find(address);
+        if (it != blocks.end()) {
+            total_size -= it->second->code_size;
+            blocks.erase(it);
+            
+            auto lru_it = lru_positions.find(address);
+            if (lru_it != lru_positions.end()) {
+                lru_order.erase(lru_it->second);
+                lru_positions.erase(lru_it);
+            }
+            stats.invalidation_count++;
+        }
+    }
+    
+    void invalidate_range(uint32_t start, uint32_t end) {
+        std::vector<uint32_t> to_remove;
+        for (const auto& pair : blocks) {
+            if (pair.first >= start && pair.first < end) {
+                to_remove.push_back(pair.first);
+            }
+        }
+        for (uint32_t addr : to_remove) {
+            invalidate(addr);
+        }
     }
     
     void clear() {
         blocks.clear();
+        lru_order.clear();
+        lru_positions.clear();
         total_size = 0;
     }
+    
+    const CacheStatistics& get_statistics() const { return stats; }
+    void reset_statistics() { stats = CacheStatistics(); }
 };
 
 /**

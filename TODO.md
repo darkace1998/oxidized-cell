@@ -216,7 +216,7 @@ This document tracks pending tasks, improvements, and future features for the ox
   - Added `SpuOrcJitManager` class in SPU JIT with SIMD optimization for SPU emulation ✅
   - Location: `cpp/src/ppu_jit.cpp`, `cpp/src/spu_jit.cpp`
 
-- [ ] **Code Cache Management**: Improve compiled code storage
+- [x] **Code Cache Management**: Improve compiled code storage
   - **LRU Eviction**: Implement least-recently-used cache eviction
   - **Size Limits**: Configurable cache size limits per processor type
   - **Invalidation**: Proper code invalidation on self-modifying code
