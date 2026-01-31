@@ -646,7 +646,8 @@ static void generate_spu_llvm_ir(SpuBasicBlock* block, oc_spu_jit_t* jit = nullp
  * - RI18-Form: Register + 18-bit immediate (branches)
  */
 static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
-                                llvm::Value** regs, llvm::Value* local_store) {
+                                llvm::Value** regs, llvm::Value* local_store,
+                                uint32_t pc) {
     // Extract all opcode fields
     uint8_t op7 = (instr >> 25) & 0x7F;
     uint8_t op8 = (instr >> 24) & 0xFF;
@@ -910,6 +911,30 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
         }
         case 0b0100100: { // stqa rt, i16 - Store Quadword Absolute
             uint32_t addr = ((uint32_t)i16 << 2) & 0x3FFF0;
+            llvm::Value* rt_val = builder.CreateLoad(v4i32_ty, regs[rt]);
+            llvm::Value* ptr = builder.CreateGEP(i8_ty, local_store,
+                llvm::ConstantInt::get(i32_ty, addr));
+            llvm::Value* vec_ptr = builder.CreateBitCast(ptr,
+                llvm::PointerType::get(v4i32_ty, 0));
+            builder.CreateStore(rt_val, vec_ptr);
+            return;
+        }
+        case 0b0110111: { // lqr rt, i16 - Load Quadword PC-Relative
+            // Address = (PC + (i16 << 2)) & ~0xF (16-byte aligned)
+            int32_t offset = (int32_t)i16 << 2;
+            uint32_t addr = (pc + offset) & 0x3FFF0;
+            llvm::Value* ptr = builder.CreateGEP(i8_ty, local_store,
+                llvm::ConstantInt::get(i32_ty, addr));
+            llvm::Value* vec_ptr = builder.CreateBitCast(ptr,
+                llvm::PointerType::get(v4i32_ty, 0));
+            llvm::Value* loaded = builder.CreateLoad(v4i32_ty, vec_ptr);
+            builder.CreateStore(loaded, regs[rt]);
+            return;
+        }
+        case 0b0100111: { // stqr rt, i16 - Store Quadword PC-Relative
+            // Address = (PC + (i16 << 2)) & ~0xF (16-byte aligned)
+            int32_t offset = (int32_t)i16 << 2;
+            uint32_t addr = (pc + offset) & 0x3FFF0;
             llvm::Value* rt_val = builder.CreateLoad(v4i32_ty, regs[rt]);
             llvm::Value* ptr = builder.CreateGEP(i8_ty, local_store,
                 llvm::ConstantInt::get(i32_ty, addr));
@@ -2371,8 +2396,10 @@ static llvm::Function* create_spu_llvm_function(llvm::Module* module, SpuBasicBl
     llvm::Value* local_store = func->getArg(1);
     
     // Emit IR for each instruction
+    uint32_t current_pc = block->start_address;
     for (uint32_t instr : block->instructions) {
-        emit_spu_instruction(builder, instr, regs, local_store);
+        emit_spu_instruction(builder, instr, regs, local_store, current_pc);
+        current_pc += 4;
     }
     
     // Return

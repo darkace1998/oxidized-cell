@@ -172,10 +172,10 @@ This document tracks pending tasks, improvements, and future features for the ox
   - `rotqmby`, `rotqmbyi`, `rotqmbi`, `rotqmbii`, `rotqmbybi` - Quadword rotate and mask (right shift)
   - Location: `cpp/src/spu_jit.cpp`
 
-- [ ] **JIT Memory Operations**: Implement load/store IR
-  - `lqd`, `lqa`, `lqr`, `lqx` - Load quadword variants
-  - `stqd`, `stqa`, `stqr`, `stqx` - Store quadword variants
-  - Proper 16-byte alignment handling
+- [x] **JIT Memory Operations**: Implement load/store IR ✅
+  - `lqd`, `lqa`, `lqr`, `lqx` - Load quadword variants ✅
+  - `stqd`, `stqa`, `stqr`, `stqx` - Store quadword variants ✅
+  - Proper 16-byte alignment handling ✅
   - Location: `cpp/src/spu_jit.cpp`
 
 - [ ] **JIT Channel Operations**: Compile channel I/O
