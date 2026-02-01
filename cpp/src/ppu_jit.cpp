@@ -1028,6 +1028,343 @@ struct BranchTargetCache {
 };
 
 /**
+ * Type of constant value for propagation cache
+ */
+enum class ConstantType : uint8_t {
+    Unknown = 0,
+    Immediate = 1,    // Immediate constant from instruction
+    RegisterValue = 2, // Known value in register
+    MemoryLoad = 3    // Cached memory load
+};
+
+/**
+ * Constant value entry with type information
+ */
+struct ConstantValue {
+    uint64_t value;         // The constant value
+    ConstantType type;      // Type of constant
+    uint32_t source_addr;   // Address where value was defined
+    uint32_t use_count;     // Number of times accessed
+    bool is_valid;          // Whether the value is still valid
+    
+    ConstantValue()
+        : value(0), type(ConstantType::Unknown), source_addr(0),
+          use_count(0), is_valid(false) {}
+    
+    ConstantValue(uint64_t val, ConstantType t, uint32_t src)
+        : value(val), type(t), source_addr(src), use_count(0), is_valid(true) {}
+};
+
+/**
+ * Register value tracking entry
+ */
+struct RegisterValueEntry {
+    uint8_t reg_num;        // Register number (0-31)
+    uint64_t value;         // Known value
+    uint32_t def_addr;      // Address where value was defined
+    uint32_t use_count;     // Number of times used
+    bool is_known;          // Whether value is known
+    bool is_constant;       // True if value is a compile-time constant
+    
+    RegisterValueEntry()
+        : reg_num(0), value(0), def_addr(0), use_count(0),
+          is_known(false), is_constant(false) {}
+    
+    RegisterValueEntry(uint8_t reg, uint64_t val, uint32_t addr, bool constant = false)
+        : reg_num(reg), value(val), def_addr(addr), use_count(0),
+          is_known(true), is_constant(constant) {}
+};
+
+/**
+ * Memory load cache entry
+ */
+struct MemoryLoadEntry {
+    uint32_t address;       // Memory address
+    uint64_t value;         // Cached value
+    uint8_t size;           // Load size in bytes (1, 2, 4, 8)
+    uint32_t load_addr;     // Instruction address that performed the load
+    uint32_t use_count;     // Number of cache hits
+    bool is_valid;          // Whether the cached value is still valid
+    
+    MemoryLoadEntry()
+        : address(0), value(0), size(0), load_addr(0),
+          use_count(0), is_valid(false) {}
+    
+    MemoryLoadEntry(uint32_t addr, uint64_t val, uint8_t sz, uint32_t ld_addr)
+        : address(addr), value(val), size(sz), load_addr(ld_addr),
+          use_count(0), is_valid(true) {}
+};
+
+/**
+ * Constant propagation cache statistics
+ */
+struct ConstPropStatistics {
+    uint64_t imm_hits;          // Immediate value cache hits
+    uint64_t imm_misses;        // Immediate value cache misses
+    uint64_t reg_hits;          // Register value cache hits
+    uint64_t reg_misses;        // Register value cache misses
+    uint64_t mem_hits;          // Memory load cache hits
+    uint64_t mem_misses;        // Memory load cache misses
+    uint64_t invalidations;     // Number of cache invalidations
+    
+    ConstPropStatistics()
+        : imm_hits(0), imm_misses(0), reg_hits(0), reg_misses(0),
+          mem_hits(0), mem_misses(0), invalidations(0) {}
+    
+    double get_imm_hit_rate() const {
+        uint64_t total = imm_hits + imm_misses;
+        return (total > 0) ? (100.0 * imm_hits / total) : 0.0;
+    }
+    
+    double get_reg_hit_rate() const {
+        uint64_t total = reg_hits + reg_misses;
+        return (total > 0) ? (100.0 * reg_hits / total) : 0.0;
+    }
+    
+    double get_mem_hit_rate() const {
+        uint64_t total = mem_hits + mem_misses;
+        return (total > 0) ? (100.0 * mem_hits / total) : 0.0;
+    }
+};
+
+/**
+ * Constant Propagation Cache for optimizing constant values
+ * Caches immediate values, known register values, and memory loads
+ */
+struct ConstantPropagationCache {
+    // Immediate value cache: instruction address -> constant value
+    std::unordered_map<uint32_t, ConstantValue> immediates;
+    
+    // Register value tracking: register number -> value entry
+    // Indexed by block address to track per-block state
+    std::unordered_map<uint32_t, std::array<RegisterValueEntry, 32>> register_values;
+    
+    // Memory load cache: memory address -> cached value
+    std::unordered_map<uint32_t, MemoryLoadEntry> memory_loads;
+    
+    oc_mutex mutex;
+    size_t max_immediates;
+    size_t max_memory_loads;
+    ConstPropStatistics stats;
+    
+    ConstantPropagationCache() : max_immediates(4096), max_memory_loads(2048) {}
+    
+    // ========== Immediate Value Cache ==========
+    
+    // Cache an immediate value from an instruction
+    void set_immediate(uint32_t instr_addr, uint64_t value) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        // Evict if at capacity
+        if (immediates.size() >= max_immediates) {
+            uint32_t min_uses = UINT32_MAX;
+            uint32_t evict_addr = 0;
+            for (const auto& pair : immediates) {
+                if (pair.second.use_count < min_uses) {
+                    min_uses = pair.second.use_count;
+                    evict_addr = pair.first;
+                }
+            }
+            immediates.erase(evict_addr);
+        }
+        
+        immediates[instr_addr] = ConstantValue(value, ConstantType::Immediate, instr_addr);
+    }
+    
+    // Get cached immediate value
+    // Returns true if found and valid, stores value in out_value
+    bool get_immediate(uint32_t instr_addr, uint64_t* out_value) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        auto it = immediates.find(instr_addr);
+        if (it != immediates.end() && it->second.is_valid) {
+            it->second.use_count++;
+            stats.imm_hits++;
+            if (out_value) *out_value = it->second.value;
+            return true;
+        }
+        
+        stats.imm_misses++;
+        return false;
+    }
+    
+    // ========== Register Value Tracking ==========
+    
+    // Set known value for a register at a specific block
+    void set_register_value(uint32_t block_addr, uint8_t reg_num, uint64_t value, 
+                            uint32_t def_addr, bool is_constant = false) {
+        if (reg_num >= 32) return;
+        
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        auto it = register_values.find(block_addr);
+        if (it == register_values.end()) {
+            std::array<RegisterValueEntry, 32> regs{};  // Default-initialized
+            register_values[block_addr] = regs;
+            it = register_values.find(block_addr);
+        }
+        
+        it->second[reg_num] = RegisterValueEntry(reg_num, value, def_addr, is_constant);
+    }
+    
+    // Get known value for a register at a specific block
+    bool get_register_value(uint32_t block_addr, uint8_t reg_num, uint64_t* out_value,
+                            bool* out_is_constant = nullptr) {
+        if (reg_num >= 32) return false;
+        
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        auto it = register_values.find(block_addr);
+        if (it != register_values.end()) {
+            const auto& entry = it->second[reg_num];
+            if (entry.is_known) {
+                // Increment use count (non-const access)
+                auto& mutable_entry = register_values[block_addr][reg_num];
+                mutable_entry.use_count++;
+                stats.reg_hits++;
+                if (out_value) *out_value = entry.value;
+                if (out_is_constant) *out_is_constant = entry.is_constant;
+                return true;
+            }
+        }
+        
+        stats.reg_misses++;
+        return false;
+    }
+    
+    // Invalidate a register value at a specific block
+    void invalidate_register(uint32_t block_addr, uint8_t reg_num) {
+        if (reg_num >= 32) return;
+        
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        auto it = register_values.find(block_addr);
+        if (it != register_values.end()) {
+            it->second[reg_num].is_known = false;
+            it->second[reg_num].is_constant = false;
+            stats.invalidations++;
+        }
+    }
+    
+    // Invalidate all registers for a block (e.g., at function call)
+    void invalidate_all_registers(uint32_t block_addr) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        auto it = register_values.find(block_addr);
+        if (it != register_values.end()) {
+            for (auto& entry : it->second) {
+                entry.is_known = false;
+                entry.is_constant = false;
+            }
+            stats.invalidations++;
+        }
+    }
+    
+    // ========== Memory Load Cache ==========
+    
+    // Cache a memory load
+    void set_memory_load(uint32_t mem_addr, uint64_t value, uint8_t size, uint32_t load_addr) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        // Evict if at capacity
+        if (memory_loads.size() >= max_memory_loads) {
+            uint32_t min_uses = UINT32_MAX;
+            uint32_t evict_addr = 0;
+            for (const auto& pair : memory_loads) {
+                if (pair.second.use_count < min_uses) {
+                    min_uses = pair.second.use_count;
+                    evict_addr = pair.first;
+                }
+            }
+            memory_loads.erase(evict_addr);
+        }
+        
+        memory_loads[mem_addr] = MemoryLoadEntry(mem_addr, value, size, load_addr);
+    }
+    
+    // Get cached memory load
+    bool get_memory_load(uint32_t mem_addr, uint64_t* out_value, uint8_t* out_size = nullptr) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        auto it = memory_loads.find(mem_addr);
+        if (it != memory_loads.end() && it->second.is_valid) {
+            it->second.use_count++;
+            stats.mem_hits++;
+            if (out_value) *out_value = it->second.value;
+            if (out_size) *out_size = it->second.size;
+            return true;
+        }
+        
+        stats.mem_misses++;
+        return false;
+    }
+    
+    // Invalidate memory cache for an address
+    void invalidate_memory(uint32_t mem_addr) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        auto it = memory_loads.find(mem_addr);
+        if (it != memory_loads.end()) {
+            it->second.is_valid = false;
+            stats.invalidations++;
+        }
+    }
+    
+    // Invalidate memory range (for stores)
+    void invalidate_memory_range(uint32_t start_addr, uint32_t size) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        // Use 64-bit to prevent overflow
+        uint64_t end_addr = static_cast<uint64_t>(start_addr) + size;
+        for (auto& pair : memory_loads) {
+            uint64_t cached_start = pair.second.address;
+            uint64_t cached_end = cached_start + pair.second.size;
+            // Check for overlap
+            if (cached_start < end_addr && start_addr < cached_end) {
+                pair.second.is_valid = false;
+                stats.invalidations++;
+            }
+        }
+    }
+    
+    // ========== Statistics and Management ==========
+    
+    ConstPropStatistics get_stats() const {
+        oc_lock_guard<oc_mutex> lock(const_cast<oc_mutex&>(mutex));
+        return stats;
+    }
+    
+    void reset_stats() {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        stats = ConstPropStatistics();
+    }
+    
+    void clear() {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        immediates.clear();
+        register_values.clear();
+        memory_loads.clear();
+        stats = ConstPropStatistics();
+    }
+    
+    // Get cache sizes
+    size_t get_immediate_count() const {
+        oc_lock_guard<oc_mutex> lock(const_cast<oc_mutex&>(mutex));
+        return immediates.size();
+    }
+    
+    size_t get_memory_load_count() const {
+        oc_lock_guard<oc_mutex> lock(const_cast<oc_mutex&>(mutex));
+        return memory_loads.size();
+    }
+    
+    size_t get_block_count() const {
+        oc_lock_guard<oc_mutex> lock(const_cast<oc_mutex&>(mutex));
+        return register_values.size();
+    }
+};
+
+/**
  * Register allocation hints
  */
 enum class RegAllocHint : uint8_t {
@@ -1545,6 +1882,7 @@ struct oc_ppu_jit_t {
     BranchPredictor branch_predictor;
     InlineCacheManager inline_cache;
     BranchTargetCache branch_target_cache;
+    ConstantPropagationCache const_prop_cache;
     RegisterAllocator reg_allocator;
     LazyCompilationManager lazy_manager;
     CompilationThreadPool thread_pool;
@@ -4924,6 +5262,101 @@ void oc_ppu_jit_btb_reset_stats(oc_ppu_jit_t* jit) {
 void oc_ppu_jit_btb_clear(oc_ppu_jit_t* jit) {
     if (!jit) return;
     jit->branch_target_cache.clear();
+}
+
+// ============================================================================
+// Constant Propagation Cache APIs
+// ============================================================================
+
+void oc_ppu_jit_const_set_imm(oc_ppu_jit_t* jit, uint32_t instr_addr, uint64_t value) {
+    if (!jit) return;
+    jit->const_prop_cache.set_immediate(instr_addr, value);
+}
+
+int oc_ppu_jit_const_get_imm(oc_ppu_jit_t* jit, uint32_t instr_addr, uint64_t* out_value) {
+    if (!jit) return 0;
+    return jit->const_prop_cache.get_immediate(instr_addr, out_value) ? 1 : 0;
+}
+
+void oc_ppu_jit_const_set_reg(oc_ppu_jit_t* jit, uint32_t block_addr, uint8_t reg_num,
+                               uint64_t value, uint32_t def_addr, int is_constant) {
+    if (!jit) return;
+    jit->const_prop_cache.set_register_value(block_addr, reg_num, value, def_addr, 
+                                              is_constant != 0);
+}
+
+int oc_ppu_jit_const_get_reg(oc_ppu_jit_t* jit, uint32_t block_addr, uint8_t reg_num,
+                              uint64_t* out_value, int* out_is_constant) {
+    if (!jit) return 0;
+    bool is_const = false;
+    bool found = jit->const_prop_cache.get_register_value(block_addr, reg_num, 
+                                                           out_value, &is_const);
+    if (out_is_constant) *out_is_constant = is_const ? 1 : 0;
+    return found ? 1 : 0;
+}
+
+void oc_ppu_jit_const_invalidate_reg(oc_ppu_jit_t* jit, uint32_t block_addr, uint8_t reg_num) {
+    if (!jit) return;
+    jit->const_prop_cache.invalidate_register(block_addr, reg_num);
+}
+
+void oc_ppu_jit_const_invalidate_all_regs(oc_ppu_jit_t* jit, uint32_t block_addr) {
+    if (!jit) return;
+    jit->const_prop_cache.invalidate_all_registers(block_addr);
+}
+
+void oc_ppu_jit_const_set_mem(oc_ppu_jit_t* jit, uint32_t mem_addr, uint64_t value,
+                               uint8_t size, uint32_t load_addr) {
+    if (!jit) return;
+    jit->const_prop_cache.set_memory_load(mem_addr, value, size, load_addr);
+}
+
+int oc_ppu_jit_const_get_mem(oc_ppu_jit_t* jit, uint32_t mem_addr, uint64_t* out_value,
+                              uint8_t* out_size) {
+    if (!jit) return 0;
+    return jit->const_prop_cache.get_memory_load(mem_addr, out_value, out_size) ? 1 : 0;
+}
+
+void oc_ppu_jit_const_invalidate_mem(oc_ppu_jit_t* jit, uint32_t mem_addr) {
+    if (!jit) return;
+    jit->const_prop_cache.invalidate_memory(mem_addr);
+}
+
+void oc_ppu_jit_const_invalidate_mem_range(oc_ppu_jit_t* jit, uint32_t start_addr, 
+                                            uint32_t size) {
+    if (!jit) return;
+    jit->const_prop_cache.invalidate_memory_range(start_addr, size);
+}
+
+void oc_ppu_jit_const_get_stats(oc_ppu_jit_t* jit, uint64_t* imm_hits, uint64_t* imm_misses,
+                                 uint64_t* reg_hits, uint64_t* reg_misses,
+                                 uint64_t* mem_hits, uint64_t* mem_misses) {
+    if (!jit) {
+        if (imm_hits) *imm_hits = 0;
+        if (imm_misses) *imm_misses = 0;
+        if (reg_hits) *reg_hits = 0;
+        if (reg_misses) *reg_misses = 0;
+        if (mem_hits) *mem_hits = 0;
+        if (mem_misses) *mem_misses = 0;
+        return;
+    }
+    auto stats = jit->const_prop_cache.get_stats();
+    if (imm_hits) *imm_hits = stats.imm_hits;
+    if (imm_misses) *imm_misses = stats.imm_misses;
+    if (reg_hits) *reg_hits = stats.reg_hits;
+    if (reg_misses) *reg_misses = stats.reg_misses;
+    if (mem_hits) *mem_hits = stats.mem_hits;
+    if (mem_misses) *mem_misses = stats.mem_misses;
+}
+
+void oc_ppu_jit_const_reset_stats(oc_ppu_jit_t* jit) {
+    if (!jit) return;
+    jit->const_prop_cache.reset_stats();
+}
+
+void oc_ppu_jit_const_clear(oc_ppu_jit_t* jit) {
+    if (!jit) return;
+    jit->const_prop_cache.clear();
 }
 
 // ============================================================================

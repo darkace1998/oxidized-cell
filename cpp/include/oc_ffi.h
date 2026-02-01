@@ -226,6 +226,86 @@ void oc_ppu_jit_btb_reset_stats(oc_ppu_jit_t* jit);
  */
 void oc_ppu_jit_btb_clear(oc_ppu_jit_t* jit);
 
+// PPU JIT Constant Propagation Cache APIs
+
+/**
+ * Cache an immediate value from an instruction
+ */
+void oc_ppu_jit_const_set_imm(oc_ppu_jit_t* jit, uint32_t instr_addr, uint64_t value);
+
+/**
+ * Get cached immediate value
+ * Returns: 1 if found, 0 if not found
+ */
+int oc_ppu_jit_const_get_imm(oc_ppu_jit_t* jit, uint32_t instr_addr, uint64_t* out_value);
+
+/**
+ * Set known value for a register at a specific block
+ * is_constant: 1 if compile-time constant, 0 otherwise
+ */
+void oc_ppu_jit_const_set_reg(oc_ppu_jit_t* jit, uint32_t block_addr, uint8_t reg_num,
+                               uint64_t value, uint32_t def_addr, int is_constant);
+
+/**
+ * Get known value for a register at a specific block
+ * Returns: 1 if found, 0 if not found
+ * out_is_constant: set to 1 if value is compile-time constant
+ */
+int oc_ppu_jit_const_get_reg(oc_ppu_jit_t* jit, uint32_t block_addr, uint8_t reg_num,
+                              uint64_t* out_value, int* out_is_constant);
+
+/**
+ * Invalidate a register value at a specific block
+ */
+void oc_ppu_jit_const_invalidate_reg(oc_ppu_jit_t* jit, uint32_t block_addr, uint8_t reg_num);
+
+/**
+ * Invalidate all register values for a block (e.g., at function call)
+ */
+void oc_ppu_jit_const_invalidate_all_regs(oc_ppu_jit_t* jit, uint32_t block_addr);
+
+/**
+ * Cache a memory load value
+ * size: load size in bytes (1, 2, 4, 8)
+ */
+void oc_ppu_jit_const_set_mem(oc_ppu_jit_t* jit, uint32_t mem_addr, uint64_t value,
+                               uint8_t size, uint32_t load_addr);
+
+/**
+ * Get cached memory load value
+ * Returns: 1 if found, 0 if not found
+ */
+int oc_ppu_jit_const_get_mem(oc_ppu_jit_t* jit, uint32_t mem_addr, uint64_t* out_value,
+                              uint8_t* out_size);
+
+/**
+ * Invalidate cached memory value at address
+ */
+void oc_ppu_jit_const_invalidate_mem(oc_ppu_jit_t* jit, uint32_t mem_addr);
+
+/**
+ * Invalidate cached memory values in range (for stores)
+ */
+void oc_ppu_jit_const_invalidate_mem_range(oc_ppu_jit_t* jit, uint32_t start_addr, 
+                                            uint32_t size);
+
+/**
+ * Get constant propagation cache statistics
+ */
+void oc_ppu_jit_const_get_stats(oc_ppu_jit_t* jit, uint64_t* imm_hits, uint64_t* imm_misses,
+                                 uint64_t* reg_hits, uint64_t* reg_misses,
+                                 uint64_t* mem_hits, uint64_t* mem_misses);
+
+/**
+ * Reset constant propagation cache statistics
+ */
+void oc_ppu_jit_const_reset_stats(oc_ppu_jit_t* jit);
+
+/**
+ * Clear all constant propagation cache entries
+ */
+void oc_ppu_jit_const_clear(oc_ppu_jit_t* jit);
+
 // PPU JIT Register Allocation APIs
 
 /**

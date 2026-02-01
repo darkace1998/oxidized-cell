@@ -258,11 +258,11 @@ This document tracks pending tasks, improvements, and future features for the ox
   - **IC Invalidation**: Invalidate on code modification ✅
   - Location: `cpp/src/ppu_jit.cpp` (InlineCacheManager struct, BranchTargetCache struct)
 
-- [ ] **Constant Propagation Cache**: Cache constant values
-  - **Immediate Values**: Cache frequently used immediate values
-  - **Memory Load Caching**: Cache repeated memory loads
-  - **Register Value Tracking**: Track known register values
-  - Location: `cpp/src/ppu_jit.cpp`
+- [x] **Constant Propagation Cache**: Cache constant values
+  - **Immediate Values**: Cache frequently used immediate values ✅
+  - **Memory Load Caching**: Cache repeated memory loads ✅
+  - **Register Value Tracking**: Track known register values ✅
+  - Location: `cpp/src/ppu_jit.cpp` (ConstantPropagationCache struct)
 
 #### Register Allocation
 
