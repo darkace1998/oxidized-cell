@@ -156,6 +156,76 @@ void* oc_ppu_jit_lookup_inline_cache(oc_ppu_jit_t* jit, uint32_t call_site);
  */
 void oc_ppu_jit_invalidate_inline_cache(oc_ppu_jit_t* jit, uint32_t target);
 
+// PPU JIT Branch Target Cache (BTB) APIs
+
+/**
+ * Add entry to Branch Target Buffer
+ * Maps an indirect branch address to its target
+ */
+void oc_ppu_jit_btb_add(oc_ppu_jit_t* jit, uint32_t branch_address, 
+                        uint32_t target_address);
+
+/**
+ * Lookup predicted target for indirect branch
+ * Returns: predicted target address, or 0 if not found
+ */
+uint32_t oc_ppu_jit_btb_lookup(oc_ppu_jit_t* jit, uint32_t branch_address);
+
+/**
+ * Update BTB with actual target taken
+ * Promotes monomorphic to polymorphic if different targets observed
+ */
+void oc_ppu_jit_btb_update(oc_ppu_jit_t* jit, uint32_t branch_address, 
+                           uint32_t actual_target);
+
+/**
+ * Validate that cached target matches expected
+ * Returns: 1 if target is cached, 0 otherwise
+ */
+int oc_ppu_jit_btb_validate(oc_ppu_jit_t* jit, uint32_t branch_address, 
+                            uint32_t expected_target);
+
+/**
+ * Invalidate BTB entry for branch address
+ */
+void oc_ppu_jit_btb_invalidate(oc_ppu_jit_t* jit, uint32_t branch_address);
+
+/**
+ * Invalidate all BTB entries pointing to a target
+ */
+void oc_ppu_jit_btb_invalidate_target(oc_ppu_jit_t* jit, uint32_t target_address);
+
+/**
+ * Update compiled code pointer for branch -> target mapping
+ */
+void oc_ppu_jit_btb_update_compiled(oc_ppu_jit_t* jit, uint32_t branch_address,
+                                     uint32_t target_address, void* compiled);
+
+/**
+ * Get compiled code for branch -> target mapping
+ * Returns: compiled code pointer, or NULL if not found
+ */
+void* oc_ppu_jit_btb_get_compiled(oc_ppu_jit_t* jit, uint32_t branch_address,
+                                   uint32_t target_address);
+
+/**
+ * Get BTB statistics
+ * Outputs: total_lookups, total_hits, total_misses, hit_rate percentage
+ */
+void oc_ppu_jit_btb_get_stats(oc_ppu_jit_t* jit, uint64_t* total_lookups,
+                               uint64_t* total_hits, uint64_t* total_misses,
+                               double* hit_rate);
+
+/**
+ * Reset BTB statistics
+ */
+void oc_ppu_jit_btb_reset_stats(oc_ppu_jit_t* jit);
+
+/**
+ * Clear all BTB entries
+ */
+void oc_ppu_jit_btb_clear(oc_ppu_jit_t* jit);
+
 // PPU JIT Register Allocation APIs
 
 /**

@@ -243,20 +243,20 @@ This document tracks pending tasks, improvements, and future features for the ox
   - **Prediction Stats**: Track prediction accuracy per branch ✅
   - Location: `cpp/src/ppu_jit.cpp` (BranchPredictor struct)
 
-- [ ] **Branch Target Cache**: Implement indirect branch optimization
-  - **BTB (Branch Target Buffer)**: Cache indirect branch targets
-  - **Polymorphic Inline Cache**: Multiple targets per call site
-  - **Target Validation**: Validate cached targets before use
+- [x] **Branch Target Cache**: Implement indirect branch optimization
+  - **BTB (Branch Target Buffer)**: Cache indirect branch targets ✅
+  - **Polymorphic Inline Cache**: Multiple targets per call site ✅
+  - **Target Validation**: Validate cached targets before use ✅
   - Location: `cpp/src/ppu_jit.cpp`
 
 #### Inline Caching
 
-- [ ] **Call Site Inline Caching**: Complete IC implementation
-  - **Monomorphic IC**: Single target call site caching
-  - **Polymorphic IC**: Multiple target call site handling
-  - **Megamorphic Fallback**: Fallback for highly polymorphic sites
-  - **IC Invalidation**: Invalidate on code modification
-  - Location: `cpp/src/ppu_jit.cpp` (InlineCacheManager struct)
+- [x] **Call Site Inline Caching**: Complete IC implementation
+  - **Monomorphic IC**: Single target call site caching ✅
+  - **Polymorphic IC**: Multiple target call site handling ✅
+  - **Megamorphic Fallback**: Fallback for highly polymorphic sites ✅
+  - **IC Invalidation**: Invalidate on code modification ✅
+  - Location: `cpp/src/ppu_jit.cpp` (InlineCacheManager struct, BranchTargetCache struct)
 
 - [ ] **Constant Propagation Cache**: Cache constant values
   - **Immediate Values**: Cache frequently used immediate values
@@ -1102,11 +1102,11 @@ This document tracks pending tasks, improvements, and future features for the ox
 | Branch Prediction | ✅ Complete | Likely/Unlikely/Static hints |
 | Branch History | ✅ Complete | Taken/not-taken counters |
 | Prediction Updates | ✅ Complete | Runtime prediction updates |
-| Branch Target Cache | 🔴 Minimal | Not implemented |
+| Branch Target Cache | ✅ Complete | BTB with polymorphic support |
 | Inline Cache (PPU) | ✅ Complete | Call site caching with eviction |
 | IC Lookup | ✅ Complete | Hit counting, validation |
 | IC Invalidation | ✅ Complete | Target-based invalidation |
-| Polymorphic IC | 🔴 Minimal | Single-target only |
+| Polymorphic IC | ✅ Complete | Multi-target with megamorphic fallback |
 | Register Liveness | ✅ Complete | GPR/FPR/VR liveness analysis |
 | Register Hints | ✅ Complete | Caller/callee preference hints |
 | Spill/Fill | 🔴 Minimal | Not optimized |

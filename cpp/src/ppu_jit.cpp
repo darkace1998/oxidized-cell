@@ -646,6 +646,388 @@ struct InlineCacheManager {
 };
 
 /**
+ * Maximum number of targets for polymorphic inline cache
+ */
+static constexpr size_t MAX_POLYMORPHIC_TARGETS = 4;
+
+/**
+ * Branch target entry for indirect branches
+ */
+struct BranchTargetEntry {
+    uint32_t branch_address;     // Address of the indirect branch instruction
+    uint32_t target_address;     // Cached target address
+    void* compiled_target;       // Pointer to compiled target code
+    uint32_t hit_count;          // Number of cache hits
+    uint32_t miss_count;         // Number of cache misses (target mismatch)
+    bool is_valid;               // Whether the entry is valid
+    
+    BranchTargetEntry()
+        : branch_address(0), target_address(0), compiled_target(nullptr),
+          hit_count(0), miss_count(0), is_valid(false) {}
+    
+    BranchTargetEntry(uint32_t branch, uint32_t target)
+        : branch_address(branch), target_address(target), compiled_target(nullptr),
+          hit_count(0), miss_count(0), is_valid(true) {}
+    
+    // Get hit rate as a percentage (0-100)
+    double get_hit_rate() const {
+        uint32_t total = hit_count + miss_count;
+        return (total > 0) ? (100.0 * hit_count / total) : 0.0;
+    }
+};
+
+/**
+ * Polymorphic inline cache entry supporting multiple targets per call site
+ */
+struct PolymorphicEntry {
+    uint32_t branch_address;                                 // Address of the indirect branch
+    std::array<uint32_t, MAX_POLYMORPHIC_TARGETS> targets;   // Cached target addresses
+    std::array<void*, MAX_POLYMORPHIC_TARGETS> compiled;     // Compiled code pointers
+    std::array<uint32_t, MAX_POLYMORPHIC_TARGETS> hit_counts; // Hit counts per target
+    size_t num_targets;                                      // Number of active targets
+    uint32_t total_lookups;                                  // Total lookup count
+    bool is_megamorphic;                                     // True if too many targets
+    
+    PolymorphicEntry()
+        : branch_address(0), num_targets(0), total_lookups(0), is_megamorphic(false) {
+        targets.fill(0);
+        compiled.fill(nullptr);
+        hit_counts.fill(0);
+    }
+    
+    PolymorphicEntry(uint32_t branch)
+        : branch_address(branch), num_targets(0), total_lookups(0), is_megamorphic(false) {
+        targets.fill(0);
+        compiled.fill(nullptr);
+        hit_counts.fill(0);
+    }
+    
+    // Add a new target, returns index or -1 if megamorphic
+    int add_target(uint32_t target) {
+        if (is_megamorphic) return -1;
+        
+        // Check if already exists
+        for (size_t i = 0; i < num_targets; i++) {
+            if (targets[i] == target) {
+                return static_cast<int>(i);
+            }
+        }
+        
+        // Add new target if space available
+        if (num_targets < MAX_POLYMORPHIC_TARGETS) {
+            size_t idx = num_targets++;
+            targets[idx] = target;
+            compiled[idx] = nullptr;
+            hit_counts[idx] = 0;
+            return static_cast<int>(idx);
+        }
+        
+        // Too many targets - become megamorphic
+        is_megamorphic = true;
+        return -1;
+    }
+    
+    // Lookup target, returns compiled code or nullptr
+    void* lookup(uint32_t target) {
+        total_lookups++;
+        for (size_t i = 0; i < num_targets; i++) {
+            if (targets[i] == target) {
+                hit_counts[i]++;
+                return compiled[i];
+            }
+        }
+        return nullptr;
+    }
+    
+    // Update compiled code for a target
+    void update_compiled(uint32_t target, void* code) {
+        for (size_t i = 0; i < num_targets; i++) {
+            if (targets[i] == target) {
+                compiled[i] = code;
+                return;
+            }
+        }
+    }
+};
+
+/**
+ * Branch Target Buffer (BTB) statistics
+ */
+struct BTBStatistics {
+    uint64_t total_lookups;
+    uint64_t total_hits;
+    uint64_t total_misses;
+    uint64_t polymorphic_lookups;
+    uint64_t megamorphic_fallbacks;
+    double overall_hit_rate;
+    
+    BTBStatistics()
+        : total_lookups(0), total_hits(0), total_misses(0),
+          polymorphic_lookups(0), megamorphic_fallbacks(0), overall_hit_rate(0.0) {}
+};
+
+/**
+ * Branch Target Cache (BTB) for indirect branch optimization
+ */
+struct BranchTargetCache {
+    std::unordered_map<uint32_t, BranchTargetEntry> monomorphic;    // Single-target cache
+    std::unordered_map<uint32_t, PolymorphicEntry> polymorphic;     // Multi-target cache
+    oc_mutex mutex;
+    size_t max_entries;
+    BTBStatistics stats;
+    
+    BranchTargetCache() : max_entries(8192) {}
+    
+    // Add or update monomorphic entry
+    void add_entry(uint32_t branch_address, uint32_t target_address) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        // Check if already polymorphic
+        auto poly_it = polymorphic.find(branch_address);
+        if (poly_it != polymorphic.end()) {
+            poly_it->second.add_target(target_address);
+            return;
+        }
+        
+        // Check if monomorphic with different target (promote to polymorphic)
+        auto mono_it = monomorphic.find(branch_address);
+        if (mono_it != monomorphic.end()) {
+            if (mono_it->second.target_address != target_address) {
+                // Promote to polymorphic
+                PolymorphicEntry poly(branch_address);
+                poly.add_target(mono_it->second.target_address);
+                poly.update_compiled(mono_it->second.target_address, 
+                                     mono_it->second.compiled_target);
+                poly.add_target(target_address);
+                polymorphic[branch_address] = poly;
+                monomorphic.erase(mono_it);
+                return;
+            }
+            // Same target, just update
+            return;
+        }
+        
+        // Evict if at capacity
+        if (monomorphic.size() >= max_entries) {
+            // Find entry with lowest hit count
+            uint32_t min_hits = UINT32_MAX;
+            uint32_t evict_addr = 0;
+            for (const auto& pair : monomorphic) {
+                if (pair.second.hit_count < min_hits) {
+                    min_hits = pair.second.hit_count;
+                    evict_addr = pair.first;
+                }
+            }
+            monomorphic.erase(evict_addr);
+        }
+        
+        // Add new monomorphic entry
+        monomorphic[branch_address] = BranchTargetEntry(branch_address, target_address);
+    }
+    
+    // Lookup target for indirect branch
+    // Returns: target address if found and valid, 0 otherwise
+    uint32_t lookup(uint32_t branch_address) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        stats.total_lookups++;
+        
+        // Check polymorphic first (less common but need accurate lookup)
+        auto poly_it = polymorphic.find(branch_address);
+        if (poly_it != polymorphic.end()) {
+            stats.polymorphic_lookups++;
+            if (poly_it->second.is_megamorphic) {
+                stats.megamorphic_fallbacks++;
+                return 0;  // Megamorphic - no prediction
+            }
+            // Return most frequently hit target
+            size_t best_idx = 0;
+            uint32_t best_count = 0;
+            for (size_t i = 0; i < poly_it->second.num_targets; i++) {
+                if (poly_it->second.hit_counts[i] > best_count) {
+                    best_count = poly_it->second.hit_counts[i];
+                    best_idx = i;
+                }
+            }
+            if (poly_it->second.num_targets > 0) {
+                stats.total_hits++;
+                return poly_it->second.targets[best_idx];
+            }
+            stats.total_misses++;
+            return 0;
+        }
+        
+        // Check monomorphic
+        auto mono_it = monomorphic.find(branch_address);
+        if (mono_it != monomorphic.end() && mono_it->second.is_valid) {
+            mono_it->second.hit_count++;
+            stats.total_hits++;
+            return mono_it->second.target_address;
+        }
+        
+        stats.total_misses++;
+        return 0;
+    }
+    
+    // Update BTB with actual target taken
+    void update(uint32_t branch_address, uint32_t actual_target) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        // Check polymorphic
+        auto poly_it = polymorphic.find(branch_address);
+        if (poly_it != polymorphic.end()) {
+            int idx = poly_it->second.add_target(actual_target);
+            if (idx >= 0) {
+                poly_it->second.hit_counts[idx]++;
+            }
+            return;
+        }
+        
+        // Check monomorphic
+        auto mono_it = monomorphic.find(branch_address);
+        if (mono_it != monomorphic.end()) {
+            if (mono_it->second.target_address == actual_target) {
+                mono_it->second.hit_count++;
+            } else {
+                mono_it->second.miss_count++;
+                // Promote to polymorphic if too many misses
+                if (mono_it->second.miss_count > 3) {
+                    PolymorphicEntry poly(branch_address);
+                    poly.add_target(mono_it->second.target_address);
+                    poly.update_compiled(mono_it->second.target_address,
+                                         mono_it->second.compiled_target);
+                    poly.add_target(actual_target);
+                    polymorphic[branch_address] = poly;
+                    monomorphic.erase(mono_it);
+                }
+            }
+        }
+    }
+    
+    // Validate that cached target matches expected
+    bool validate(uint32_t branch_address, uint32_t expected_target) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        auto mono_it = monomorphic.find(branch_address);
+        if (mono_it != monomorphic.end() && mono_it->second.is_valid) {
+            return mono_it->second.target_address == expected_target;
+        }
+        
+        auto poly_it = polymorphic.find(branch_address);
+        if (poly_it != polymorphic.end()) {
+            for (size_t i = 0; i < poly_it->second.num_targets; i++) {
+                if (poly_it->second.targets[i] == expected_target) {
+                    return true;
+                }
+            }
+        }
+        
+        return false;
+    }
+    
+    // Invalidate entry for branch address
+    void invalidate(uint32_t branch_address) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        auto mono_it = monomorphic.find(branch_address);
+        if (mono_it != monomorphic.end()) {
+            mono_it->second.is_valid = false;
+            mono_it->second.compiled_target = nullptr;
+        }
+        
+        polymorphic.erase(branch_address);
+    }
+    
+    // Invalidate all entries pointing to a target
+    void invalidate_target(uint32_t target_address) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        for (auto& pair : monomorphic) {
+            if (pair.second.target_address == target_address) {
+                pair.second.is_valid = false;
+                pair.second.compiled_target = nullptr;
+            }
+        }
+        
+        // For polymorphic entries, just clear the compiled pointer
+        for (auto& pair : polymorphic) {
+            pair.second.update_compiled(target_address, nullptr);
+        }
+    }
+    
+    // Update compiled code pointer
+    void update_compiled(uint32_t branch_address, uint32_t target_address, void* compiled) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        auto mono_it = monomorphic.find(branch_address);
+        if (mono_it != monomorphic.end() && 
+            mono_it->second.target_address == target_address) {
+            mono_it->second.compiled_target = compiled;
+            return;
+        }
+        
+        auto poly_it = polymorphic.find(branch_address);
+        if (poly_it != polymorphic.end()) {
+            poly_it->second.update_compiled(target_address, compiled);
+        }
+    }
+    
+    // Get compiled code for branch -> target
+    void* get_compiled(uint32_t branch_address, uint32_t target_address) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        auto mono_it = monomorphic.find(branch_address);
+        if (mono_it != monomorphic.end() && 
+            mono_it->second.target_address == target_address &&
+            mono_it->second.is_valid) {
+            return mono_it->second.compiled_target;
+        }
+        
+        auto poly_it = polymorphic.find(branch_address);
+        if (poly_it != polymorphic.end()) {
+            // Direct access to avoid double-counting statistics
+            for (size_t i = 0; i < poly_it->second.num_targets; i++) {
+                if (poly_it->second.targets[i] == target_address) {
+                    return poly_it->second.compiled[i];
+                }
+            }
+        }
+        
+        return nullptr;
+    }
+    
+    // Get statistics
+    BTBStatistics get_stats() {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        stats.overall_hit_rate = (stats.total_lookups > 0) 
+            ? (100.0 * stats.total_hits / stats.total_lookups) 
+            : 0.0;
+        return stats;
+    }
+    
+    // Reset statistics
+    void reset_stats() {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        stats = BTBStatistics();
+        for (auto& pair : monomorphic) {
+            pair.second.hit_count = 0;
+            pair.second.miss_count = 0;
+        }
+        for (auto& pair : polymorphic) {
+            pair.second.total_lookups = 0;
+            pair.second.hit_counts.fill(0);
+        }
+    }
+    
+    // Clear all entries
+    void clear() {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        monomorphic.clear();
+        polymorphic.clear();
+        stats = BTBStatistics();
+    }
+};
+
+/**
  * Register allocation hints
  */
 enum class RegAllocHint : uint8_t {
@@ -1162,6 +1544,7 @@ struct oc_ppu_jit_t {
     BreakpointManager breakpoints;
     BranchPredictor branch_predictor;
     InlineCacheManager inline_cache;
+    BranchTargetCache branch_target_cache;
     RegisterAllocator reg_allocator;
     LazyCompilationManager lazy_manager;
     CompilationThreadPool thread_pool;
@@ -4465,6 +4848,82 @@ void* oc_ppu_jit_lookup_inline_cache(oc_ppu_jit_t* jit, uint32_t call_site) {
 void oc_ppu_jit_invalidate_inline_cache(oc_ppu_jit_t* jit, uint32_t target) {
     if (!jit) return;
     jit->inline_cache.invalidate(target);
+}
+
+// ============================================================================
+// Branch Target Cache (BTB) APIs
+// ============================================================================
+
+void oc_ppu_jit_btb_add(oc_ppu_jit_t* jit, uint32_t branch_address, 
+                        uint32_t target_address) {
+    if (!jit) return;
+    jit->branch_target_cache.add_entry(branch_address, target_address);
+}
+
+uint32_t oc_ppu_jit_btb_lookup(oc_ppu_jit_t* jit, uint32_t branch_address) {
+    if (!jit) return 0;
+    return jit->branch_target_cache.lookup(branch_address);
+}
+
+void oc_ppu_jit_btb_update(oc_ppu_jit_t* jit, uint32_t branch_address, 
+                           uint32_t actual_target) {
+    if (!jit) return;
+    jit->branch_target_cache.update(branch_address, actual_target);
+}
+
+int oc_ppu_jit_btb_validate(oc_ppu_jit_t* jit, uint32_t branch_address, 
+                            uint32_t expected_target) {
+    if (!jit) return 0;
+    return jit->branch_target_cache.validate(branch_address, expected_target) ? 1 : 0;
+}
+
+void oc_ppu_jit_btb_invalidate(oc_ppu_jit_t* jit, uint32_t branch_address) {
+    if (!jit) return;
+    jit->branch_target_cache.invalidate(branch_address);
+}
+
+void oc_ppu_jit_btb_invalidate_target(oc_ppu_jit_t* jit, uint32_t target_address) {
+    if (!jit) return;
+    jit->branch_target_cache.invalidate_target(target_address);
+}
+
+void oc_ppu_jit_btb_update_compiled(oc_ppu_jit_t* jit, uint32_t branch_address,
+                                     uint32_t target_address, void* compiled) {
+    if (!jit) return;
+    jit->branch_target_cache.update_compiled(branch_address, target_address, compiled);
+}
+
+void* oc_ppu_jit_btb_get_compiled(oc_ppu_jit_t* jit, uint32_t branch_address,
+                                   uint32_t target_address) {
+    if (!jit) return nullptr;
+    return jit->branch_target_cache.get_compiled(branch_address, target_address);
+}
+
+void oc_ppu_jit_btb_get_stats(oc_ppu_jit_t* jit, uint64_t* total_lookups,
+                               uint64_t* total_hits, uint64_t* total_misses,
+                               double* hit_rate) {
+    if (!jit) {
+        if (total_lookups) *total_lookups = 0;
+        if (total_hits) *total_hits = 0;
+        if (total_misses) *total_misses = 0;
+        if (hit_rate) *hit_rate = 0.0;
+        return;
+    }
+    auto stats = jit->branch_target_cache.get_stats();
+    if (total_lookups) *total_lookups = stats.total_lookups;
+    if (total_hits) *total_hits = stats.total_hits;
+    if (total_misses) *total_misses = stats.total_misses;
+    if (hit_rate) *hit_rate = stats.overall_hit_rate;
+}
+
+void oc_ppu_jit_btb_reset_stats(oc_ppu_jit_t* jit) {
+    if (!jit) return;
+    jit->branch_target_cache.reset_stats();
+}
+
+void oc_ppu_jit_btb_clear(oc_ppu_jit_t* jit) {
+    if (!jit) return;
+    jit->branch_target_cache.clear();
 }
 
 // ============================================================================
