@@ -380,6 +380,13 @@ enum class BranchHint : uint8_t {
 };
 
 /**
+ * Default threshold for branch prediction classification
+ * A branch is classified as "likely" when: taken_count > not_taken_count * threshold
+ * A branch is classified as "unlikely" when: not_taken_count > taken_count * threshold
+ */
+static constexpr uint32_t DEFAULT_BRANCH_THRESHOLD = 2;
+
+/**
  * Branch prediction data for a basic block
  */
 struct BranchPrediction {
@@ -388,27 +395,43 @@ struct BranchPrediction {
     BranchHint hint;
     uint32_t taken_count;
     uint32_t not_taken_count;
+    uint32_t correct_predictions;    // Prediction accuracy tracking
+    uint32_t incorrect_predictions;  // Prediction accuracy tracking
+    uint32_t likely_threshold;       // Configurable threshold for "likely" classification
+    uint32_t unlikely_threshold;     // Configurable threshold for "unlikely" classification
     
     BranchPrediction() 
         : branch_address(0), target_address(0), hint(BranchHint::None),
-          taken_count(0), not_taken_count(0) {}
+          taken_count(0), not_taken_count(0), correct_predictions(0),
+          incorrect_predictions(0), likely_threshold(DEFAULT_BRANCH_THRESHOLD), 
+          unlikely_threshold(DEFAULT_BRANCH_THRESHOLD) {}
     
     BranchPrediction(uint32_t addr, uint32_t target, BranchHint h)
         : branch_address(addr), target_address(target), hint(h),
-          taken_count(0), not_taken_count(0) {}
+          taken_count(0), not_taken_count(0), correct_predictions(0),
+          incorrect_predictions(0), likely_threshold(DEFAULT_BRANCH_THRESHOLD), 
+          unlikely_threshold(DEFAULT_BRANCH_THRESHOLD) {}
     
     // Update prediction based on runtime behavior
     void update(bool taken) {
+        // Track prediction accuracy
+        bool predicted = predict_taken();
+        if (predicted == taken) {
+            correct_predictions++;
+        } else {
+            incorrect_predictions++;
+        }
+        
         if (taken) {
             taken_count++;
         } else {
             not_taken_count++;
         }
         
-        // Update hint based on observed behavior
-        if (taken_count > not_taken_count * 2) {
+        // Update hint based on observed behavior using configurable thresholds
+        if (taken_count > not_taken_count * likely_threshold) {
             hint = BranchHint::Likely;
-        } else if (not_taken_count > taken_count * 2) {
+        } else if (not_taken_count > taken_count * unlikely_threshold) {
             hint = BranchHint::Unlikely;
         }
     }
@@ -425,6 +448,26 @@ struct BranchPrediction {
                 return taken_count >= not_taken_count;
         }
     }
+    
+    // Get prediction accuracy as a percentage (0-100)
+    double get_accuracy() const {
+        uint32_t total = correct_predictions + incorrect_predictions;
+        return (total > 0) ? (100.0 * correct_predictions / total) : 0.0;
+    }
+    
+    // Set configurable thresholds
+    void set_thresholds(uint32_t likely_thresh, uint32_t unlikely_thresh) {
+        likely_threshold = likely_thresh;
+        unlikely_threshold = unlikely_thresh;
+    }
+    
+    // Reset statistics
+    void reset_stats() {
+        taken_count = 0;
+        not_taken_count = 0;
+        correct_predictions = 0;
+        incorrect_predictions = 0;
+    }
 };
 
 /**
@@ -433,10 +476,17 @@ struct BranchPrediction {
 struct BranchPredictor {
     std::unordered_map<uint32_t, BranchPrediction> predictions;
     oc_mutex mutex;
+    uint32_t default_likely_threshold;    // Default threshold for new predictions
+    uint32_t default_unlikely_threshold;  // Default threshold for new predictions
+    
+    BranchPredictor() : default_likely_threshold(DEFAULT_BRANCH_THRESHOLD), 
+                        default_unlikely_threshold(DEFAULT_BRANCH_THRESHOLD) {}
     
     void add_prediction(uint32_t address, uint32_t target, BranchHint hint) {
         oc_lock_guard<oc_mutex> lock(mutex);
-        predictions[address] = BranchPrediction(address, target, hint);
+        BranchPrediction pred(address, target, hint);
+        pred.set_thresholds(default_likely_threshold, default_unlikely_threshold);
+        predictions[address] = pred;
     }
     
     BranchPrediction* get_prediction(uint32_t address) {
@@ -456,6 +506,58 @@ struct BranchPredictor {
     void clear() {
         oc_lock_guard<oc_mutex> lock(mutex);
         predictions.clear();
+    }
+    
+    // Set default thresholds for new predictions
+    void set_default_thresholds(uint32_t likely_thresh, uint32_t unlikely_thresh) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        default_likely_threshold = likely_thresh;
+        default_unlikely_threshold = unlikely_thresh;
+    }
+    
+    // Set thresholds for a specific branch
+    void set_branch_thresholds(uint32_t address, uint32_t likely_thresh, uint32_t unlikely_thresh) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        auto it = predictions.find(address);
+        if (it != predictions.end()) {
+            it->second.set_thresholds(likely_thresh, unlikely_thresh);
+        }
+    }
+    
+    // Get prediction statistics for a specific branch
+    // Returns: accuracy percentage (0-100), or -1 if branch not found
+    double get_branch_accuracy(uint32_t address) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        auto it = predictions.find(address);
+        return (it != predictions.end()) ? it->second.get_accuracy() : -1.0;
+    }
+    
+    // Get aggregate prediction statistics
+    // Returns: {total_correct, total_incorrect, overall_accuracy}
+    struct AggregateStats {
+        uint64_t total_correct;
+        uint64_t total_incorrect;
+        double overall_accuracy;
+    };
+    
+    AggregateStats get_aggregate_stats() {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        AggregateStats stats = {0, 0, 0.0};
+        for (const auto& pair : predictions) {
+            stats.total_correct += pair.second.correct_predictions;
+            stats.total_incorrect += pair.second.incorrect_predictions;
+        }
+        uint64_t total = stats.total_correct + stats.total_incorrect;
+        stats.overall_accuracy = (total > 0) ? (100.0 * stats.total_correct / total) : 0.0;
+        return stats;
+    }
+    
+    // Reset all prediction statistics
+    void reset_all_stats() {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        for (auto& pair : predictions) {
+            pair.second.reset_stats();
+        }
     }
 };
 
@@ -4305,6 +4407,43 @@ int oc_ppu_jit_predict_branch(oc_ppu_jit_t* jit, uint32_t address) {
 void oc_ppu_jit_update_branch(oc_ppu_jit_t* jit, uint32_t address, int taken) {
     if (!jit) return;
     jit->branch_predictor.update_prediction(address, taken != 0);
+}
+
+void oc_ppu_jit_set_branch_thresholds(oc_ppu_jit_t* jit, uint32_t likely_threshold,
+                                       uint32_t unlikely_threshold) {
+    if (!jit) return;
+    jit->branch_predictor.set_default_thresholds(likely_threshold, unlikely_threshold);
+}
+
+void oc_ppu_jit_set_branch_thresholds_for_address(oc_ppu_jit_t* jit, uint32_t address,
+                                                   uint32_t likely_threshold,
+                                                   uint32_t unlikely_threshold) {
+    if (!jit) return;
+    jit->branch_predictor.set_branch_thresholds(address, likely_threshold, unlikely_threshold);
+}
+
+double oc_ppu_jit_get_branch_accuracy(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return -1.0;
+    return jit->branch_predictor.get_branch_accuracy(address);
+}
+
+void oc_ppu_jit_get_branch_stats(oc_ppu_jit_t* jit, uint64_t* total_correct,
+                                  uint64_t* total_incorrect, double* overall_accuracy) {
+    if (!jit) {
+        if (total_correct) *total_correct = 0;
+        if (total_incorrect) *total_incorrect = 0;
+        if (overall_accuracy) *overall_accuracy = 0.0;
+        return;
+    }
+    auto stats = jit->branch_predictor.get_aggregate_stats();
+    if (total_correct) *total_correct = stats.total_correct;
+    if (total_incorrect) *total_incorrect = stats.total_incorrect;
+    if (overall_accuracy) *overall_accuracy = stats.overall_accuracy;
+}
+
+void oc_ppu_jit_reset_branch_stats(oc_ppu_jit_t* jit) {
+    if (!jit) return;
+    jit->branch_predictor.reset_all_stats();
 }
 
 // ============================================================================

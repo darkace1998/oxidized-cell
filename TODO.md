@@ -236,11 +236,11 @@ This document tracks pending tasks, improvements, and future features for the ox
 
 #### Branch Prediction
 
-- [ ] **Branch Prediction Enhancement**: Complete prediction infrastructure
-  - **Hint Types**: Likely, Unlikely, Static (backward=taken)
-  - **Runtime Updates**: Update predictions based on execution history
-  - **Threshold Tuning**: Configurable taken/not-taken thresholds
-  - **Prediction Stats**: Track prediction accuracy per branch
+- [x] **Branch Prediction Enhancement**: Complete prediction infrastructure
+  - **Hint Types**: Likely, Unlikely, Static (backward=taken) ✅
+  - **Runtime Updates**: Update predictions based on execution history ✅
+  - **Threshold Tuning**: Configurable taken/not-taken thresholds ✅
+  - **Prediction Stats**: Track prediction accuracy per branch ✅
   - Location: `cpp/src/ppu_jit.cpp` (BranchPredictor struct)
 
 - [ ] **Branch Target Cache**: Implement indirect branch optimization

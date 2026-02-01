@@ -105,6 +105,39 @@ int oc_ppu_jit_predict_branch(oc_ppu_jit_t* jit, uint32_t address);
  */
 void oc_ppu_jit_update_branch(oc_ppu_jit_t* jit, uint32_t address, int taken);
 
+/**
+ * Set default branch prediction thresholds for new branches
+ * likely_threshold: multiplier for taken_count > not_taken_count * threshold
+ * unlikely_threshold: multiplier for not_taken_count > taken_count * threshold
+ */
+void oc_ppu_jit_set_branch_thresholds(oc_ppu_jit_t* jit, uint32_t likely_threshold,
+                                       uint32_t unlikely_threshold);
+
+/**
+ * Set branch prediction thresholds for a specific branch address
+ */
+void oc_ppu_jit_set_branch_thresholds_for_address(oc_ppu_jit_t* jit, uint32_t address,
+                                                   uint32_t likely_threshold,
+                                                   uint32_t unlikely_threshold);
+
+/**
+ * Get prediction accuracy for a specific branch
+ * Returns: accuracy percentage (0-100), or -1 if branch not found
+ */
+double oc_ppu_jit_get_branch_accuracy(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Get aggregate branch prediction statistics
+ * Outputs: total_correct, total_incorrect predictions, and overall_accuracy percentage
+ */
+void oc_ppu_jit_get_branch_stats(oc_ppu_jit_t* jit, uint64_t* total_correct,
+                                  uint64_t* total_incorrect, double* overall_accuracy);
+
+/**
+ * Reset all branch prediction statistics
+ */
+void oc_ppu_jit_reset_branch_stats(oc_ppu_jit_t* jit);
+
 // PPU JIT Inline Cache APIs
 
 /**
