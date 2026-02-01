@@ -33,8 +33,12 @@
 #include <llvm/ExecutionEngine/ExecutionEngine.h>
 #include <llvm/ExecutionEngine/MCJIT.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
+#include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
 #include <llvm/Support/TargetSelect.h>
+#include <llvm/TargetParser/Host.h>
+#include <llvm/Support/Error.h>
 #include <llvm/Target/TargetMachine.h>
+#include <llvm/MC/TargetRegistry.h>
 #include <llvm/Transforms/Scalar.h>
 #include <llvm/Transforms/InstCombine/InstCombine.h>
 #include <llvm/Passes/PassBuilder.h>
@@ -52,12 +56,19 @@ struct SpuBasicBlock {
     void* compiled_code;
     size_t code_size;
     
+    // Block merging support: CFG edges
+    std::vector<uint32_t> successors;    // Addresses of successor blocks
+    std::vector<uint32_t> predecessors;  // Addresses of predecessor blocks
+    bool is_fallthrough;                 // True if block falls through to next
+    bool can_merge;                      // True if block can be merged with successor
+    
 #ifdef HAVE_LLVM
     std::unique_ptr<llvm::Function> llvm_func;
 #endif
     
     SpuBasicBlock(uint32_t start) 
-        : start_address(start), end_address(start), compiled_code(nullptr), code_size(0) {}
+        : start_address(start), end_address(start), compiled_code(nullptr), code_size(0),
+          is_fallthrough(false), can_merge(false) {}
 };
 
 /**
@@ -83,6 +94,187 @@ struct SpuCodeCache {
     void clear() {
         blocks.clear();
         total_size = 0;
+    }
+};
+
+/**
+ * SPU Block Merger: Merges consecutive blocks for better optimization
+ * 
+ * Detects all SPU branch types:
+ * - br/bra: Relative/absolute unconditional branch
+ * - brsl: Branch relative and set link
+ * - bi/bisl: Branch indirect / branch indirect and set link
+ * - brnz/brz: Branch if not zero / branch if zero
+ * - brhnz/brhz: Branch halfword if not zero / zero
+ */
+struct SpuBlockMerger {
+    std::unordered_map<uint32_t, std::vector<uint32_t>> successors;
+    std::unordered_map<uint32_t, std::vector<uint32_t>> predecessors;
+    
+    /**
+     * Analyze a block and determine its successors based on its terminating instruction
+     * SPU instruction encoding is different from PPU
+     */
+    void analyze_block(SpuBasicBlock* block) {
+        if (block->instructions.empty()) return;
+        
+        uint32_t last_instr = block->instructions.back();
+        
+        // Extract opcode fields from SPU instruction
+        // SPU uses different encoding than PPU
+        uint8_t op4 = (last_instr >> 28) & 0xF;      // 4-bit primary opcode
+        uint8_t op7 = (last_instr >> 25) & 0x7F;     // 7-bit primary opcode
+        uint8_t op8 = (last_instr >> 24) & 0xFF;     // 8-bit primary opcode
+        uint16_t op9 = (last_instr >> 23) & 0x1FF;   // 9-bit primary opcode
+        uint16_t op11 = (last_instr >> 21) & 0x7FF; // 11-bit primary opcode
+        
+        bool is_unconditional_branch = false;
+        bool is_conditional_branch = false;
+        uint32_t branch_target = 0;
+        
+        // br - Branch Relative (opcode 0b001100100)
+        if (op9 == 0b001100100) {
+            int16_t i16 = (last_instr >> 7) & 0xFFFF;
+            if (i16 & 0x8000) i16 |= 0xFFFF0000;  // Sign extend
+            branch_target = block->end_address - 4 + (i16 << 2);
+            is_unconditional_branch = true;
+        }
+        // bra - Branch Absolute (opcode 0b001100000)
+        else if (op9 == 0b001100000) {
+            int16_t i16 = (last_instr >> 7) & 0xFFFF;
+            branch_target = static_cast<uint32_t>(i16 << 2);
+            is_unconditional_branch = true;
+        }
+        // brsl - Branch Relative and Set Link (opcode 0b001100110)
+        else if (op9 == 0b001100110) {
+            int16_t i16 = (last_instr >> 7) & 0xFFFF;
+            if (i16 & 0x8000) i16 |= 0xFFFF0000;
+            branch_target = block->end_address - 4 + (i16 << 2);
+            is_unconditional_branch = true;
+        }
+        // bi - Branch Indirect (opcode 0b00110101000)
+        else if (op11 == 0b00110101000) {
+            // Target is in register - can't determine statically
+            // Can't merge across indirect branches
+        }
+        // bisl - Branch Indirect and Set Link (opcode 0b00110101001)
+        else if (op11 == 0b00110101001) {
+            // Target is in register - can't determine statically
+        }
+        // brnz - Branch If Not Zero Word (opcode 0b001000010)
+        else if (op9 == 0b001000010) {
+            int16_t i16 = (last_instr >> 7) & 0xFFFF;
+            if (i16 & 0x8000) i16 |= 0xFFFF0000;
+            branch_target = block->end_address - 4 + (i16 << 2);
+            is_conditional_branch = true;
+        }
+        // brz - Branch If Zero Word (opcode 0b001000000)
+        else if (op9 == 0b001000000) {
+            int16_t i16 = (last_instr >> 7) & 0xFFFF;
+            if (i16 & 0x8000) i16 |= 0xFFFF0000;
+            branch_target = block->end_address - 4 + (i16 << 2);
+            is_conditional_branch = true;
+        }
+        // brhnz - Branch If Not Zero Halfword (opcode 0b001000110)
+        else if (op9 == 0b001000110) {
+            int16_t i16 = (last_instr >> 7) & 0xFFFF;
+            if (i16 & 0x8000) i16 |= 0xFFFF0000;
+            branch_target = block->end_address - 4 + (i16 << 2);
+            is_conditional_branch = true;
+        }
+        // brhz - Branch If Zero Halfword (opcode 0b001000100)
+        else if (op9 == 0b001000100) {
+            int16_t i16 = (last_instr >> 7) & 0xFFFF;
+            if (i16 & 0x8000) i16 |= 0xFFFF0000;
+            branch_target = block->end_address - 4 + (i16 << 2);
+            is_conditional_branch = true;
+        }
+        
+        // Record successors
+        if (is_unconditional_branch) {
+            successors[block->start_address].push_back(branch_target);
+            predecessors[branch_target].push_back(block->start_address);
+        } else if (is_conditional_branch) {
+            successors[block->start_address].push_back(branch_target);
+            successors[block->start_address].push_back(block->end_address);
+            predecessors[branch_target].push_back(block->start_address);
+            predecessors[block->end_address].push_back(block->start_address);
+        } else {
+            // Block falls through to next instruction
+            block->is_fallthrough = true;
+            successors[block->start_address].push_back(block->end_address);
+            predecessors[block->end_address].push_back(block->start_address);
+        }
+        
+        block->successors = successors[block->start_address];
+        
+        // Determine if block can be merged
+        if (is_unconditional_branch && !is_conditional_branch) {
+            if (predecessors[branch_target].size() == 1) {
+                block->can_merge = true;
+            }
+        } else if (block->is_fallthrough) {
+            block->can_merge = true;
+        }
+    }
+    
+    /**
+     * Check if two blocks can be merged
+     */
+    bool can_merge_blocks(SpuBasicBlock* first, SpuBasicBlock* second) {
+        if (first->end_address != second->start_address) return false;
+        
+        if (!first->is_fallthrough && std::find(first->successors.begin(), 
+            first->successors.end(), second->start_address) == first->successors.end()) {
+            return false;
+        }
+        
+        auto it = predecessors.find(second->start_address);
+        if (it != predecessors.end() && it->second.size() != 1) {
+            return false;
+        }
+        
+        return true;
+    }
+    
+    /**
+     * Merge two blocks into one
+     */
+    std::unique_ptr<SpuBasicBlock> merge_blocks(SpuBasicBlock* first, SpuBasicBlock* second) {
+        if (!can_merge_blocks(first, second)) return nullptr;
+        
+        auto merged = std::make_unique<SpuBasicBlock>(first->start_address);
+        merged->end_address = second->end_address;
+        
+        merged->instructions = first->instructions;
+        
+        if (first->is_fallthrough) {
+            merged->instructions.insert(merged->instructions.end(),
+                second->instructions.begin(), second->instructions.end());
+        } else {
+            // Remove trailing unconditional branch
+            if (!merged->instructions.empty()) {
+                uint32_t last = merged->instructions.back();
+                uint16_t op9 = (last >> 23) & 0x1FF;
+                // Check for br/bra/brsl opcodes
+                if (op9 == 0b001100100 || op9 == 0b001100000 || op9 == 0b001100110) {
+                    merged->instructions.pop_back();
+                }
+            }
+            merged->instructions.insert(merged->instructions.end(),
+                second->instructions.begin(), second->instructions.end());
+        }
+        
+        merged->successors = second->successors;
+        merged->is_fallthrough = second->is_fallthrough;
+        merged->can_merge = second->can_merge;
+        
+        return merged;
+    }
+    
+    void clear() {
+        successors.clear();
+        predecessors.clear();
     }
 };
 
@@ -165,14 +357,16 @@ struct ChannelManager {
     std::vector<ChannelOperation> operations;
     oc_mutex mutex;
     
-    // Channel callback function type
+    // Channel callback function types
     using ChannelReadFunc = uint32_t (*)(void* spu_state, uint8_t channel);
     using ChannelWriteFunc = void (*)(void* spu_state, uint8_t channel, uint32_t value);
+    using ChannelCountFunc = uint32_t (*)(void* spu_state, uint8_t channel);
     
     ChannelReadFunc read_callback;
     ChannelWriteFunc write_callback;
+    ChannelCountFunc count_callback;
     
-    ChannelManager() : read_callback(nullptr), write_callback(nullptr) {}
+    ChannelManager() : read_callback(nullptr), write_callback(nullptr), count_callback(nullptr) {}
     
     void register_operation(SpuChannel channel, bool is_read, uint32_t address, uint8_t reg) {
         oc_lock_guard<oc_mutex> lock(mutex);
@@ -182,6 +376,10 @@ struct ChannelManager {
     void set_callbacks(ChannelReadFunc read_cb, ChannelWriteFunc write_cb) {
         read_callback = read_cb;
         write_callback = write_cb;
+    }
+    
+    void set_count_callback(ChannelCountFunc count_cb) {
+        count_callback = count_cb;
     }
     
     const std::vector<ChannelOperation>& get_operations() const {
@@ -456,6 +654,222 @@ struct SimdIntrinsicManager {
 };
 
 /**
+ * SPU JIT compilation error types for comprehensive error handling
+ */
+enum class SpuJitErrorKind : uint8_t {
+    None = 0,
+    InitializationFailed = 1,
+    ModuleCreationFailed = 2,
+    CompilationFailed = 3,
+    LookupFailed = 4,
+    TargetConfigFailed = 5,
+    VerificationFailed = 6
+};
+
+/**
+ * SPU JIT compilation result with error handling
+ */
+struct SpuJitResult {
+    SpuJitErrorKind error;
+    std::string error_message;
+    void* compiled_code;
+    
+    SpuJitResult() : error(SpuJitErrorKind::None), compiled_code(nullptr) {}
+    SpuJitResult(SpuJitErrorKind e, const std::string& msg) 
+        : error(e), error_message(msg), compiled_code(nullptr) {}
+    SpuJitResult(void* code) : error(SpuJitErrorKind::None), compiled_code(code) {}
+    
+    bool success() const { return error == SpuJitErrorKind::None; }
+    operator bool() const { return success(); }
+};
+
+#ifdef HAVE_LLVM
+/**
+ * SPU ORC JIT Manager - Enhanced LLJIT wrapper for SPU with:
+ * - Proper ThreadSafeModule for module ownership
+ * - Target machine configuration with SIMD features (AVX2, AVX-512 for emulation)
+ * - Error handling for JIT creation and module compilation
+ * - Function lookup with error propagation
+ * 
+ * Note: SPU doesn't have a native LLVM backend, so we emit code for the host
+ * and emulate SPU semantics using SIMD operations.
+ */
+class SpuOrcJitManager {
+public:
+    std::unique_ptr<llvm::orc::LLJIT> jit;
+    std::unique_ptr<llvm::TargetMachine> target_machine;
+    std::string last_error;
+    bool initialized;
+    
+    // CPU feature flags detected at runtime (for SPU emulation optimization)
+    bool has_avx2;
+    bool has_avx512;
+    bool has_sse4;
+    
+    SpuOrcJitManager() : initialized(false), has_avx2(false), has_avx512(false), has_sse4(false) {}
+    
+    /**
+     * Initialize the JIT with proper target machine configuration
+     */
+    SpuJitResult initialize() {
+        // Initialize LLVM targets
+        llvm::InitializeNativeTarget();
+        llvm::InitializeNativeTargetAsmPrinter();
+        llvm::InitializeNativeTargetAsmParser();
+        
+        // Detect CPU features for optimal SPU emulation
+        detect_cpu_features();
+        
+        // Create target machine with optimal configuration
+        auto tm_result = configure_target_machine();
+        if (!tm_result.success()) {
+            return tm_result;
+        }
+        
+        // Create LLJIT with configured target machine
+        auto jit_builder = llvm::orc::LLJITBuilder();
+        
+        // Configure for optimal performance
+        jit_builder.setNumCompileThreads(0); // Compile in calling thread
+        
+        auto jit_expected = jit_builder.create();
+        if (!jit_expected) {
+            std::string err_msg;
+            llvm::raw_string_ostream err_stream(err_msg);
+            err_stream << jit_expected.takeError();
+            last_error = err_stream.str();
+            return SpuJitResult(SpuJitErrorKind::InitializationFailed, last_error);
+        }
+        
+        jit = std::move(*jit_expected);
+        initialized = true;
+        
+        return SpuJitResult();
+    }
+    
+    /**
+     * Detect host CPU features for optimal SPU emulation code generation
+     * SPU uses 128-bit SIMD operations, so AVX/SSE support is important
+     */
+    void detect_cpu_features() {
+        llvm::StringMap<bool> features;
+        llvm::sys::getHostCPUFeatures(features);
+        
+        has_avx2 = features.count("avx2") && features["avx2"];
+        has_avx512 = features.count("avx512f") && features["avx512f"];
+        has_sse4 = features.count("sse4.2") && features["sse4.2"];
+    }
+    
+    /**
+     * Configure target machine for SPU emulation
+     * Uses host CPU with SIMD extensions for 128-bit SPU operations
+     */
+    SpuJitResult configure_target_machine() {
+        std::string triple = llvm::sys::getProcessTriple();
+        std::string cpu = std::string(llvm::sys::getHostCPUName());
+        
+        // Build feature string - prioritize SIMD for SPU emulation
+        std::string features;
+        if (has_avx512) {
+            // AVX-512 provides native 512-bit operations (4x SPU quadword)
+            features = "+avx512f,+avx512vl,+avx512bw,+avx512dq";
+        } else if (has_avx2) {
+            // AVX2 provides 256-bit operations (2x SPU quadword)
+            features = "+avx2,+fma";
+        } else if (has_sse4) {
+            // SSE4.2 provides 128-bit operations (1x SPU quadword) - ideal match
+            features = "+sse4.2";
+        }
+        
+        std::string error;
+        auto target = llvm::TargetRegistry::lookupTarget(triple, error);
+        if (!target) {
+            last_error = "Failed to lookup target: " + error;
+            return SpuJitResult(SpuJitErrorKind::TargetConfigFailed, last_error);
+        }
+        
+        llvm::TargetOptions options;
+        options.UnsafeFPMath = true;      // Allow FP optimizations (SPU has extended precision anyway)
+        options.NoInfsFPMath = true;      // SPU float semantics
+        options.NoNaNsFPMath = true;      // SPU float semantics
+        options.AllowFPOpFusion = llvm::FPOpFusion::Fast;  // SPU has native FMA
+        
+        target_machine.reset(target->createTargetMachine(
+            triple, cpu, features,
+            options,
+            llvm::Reloc::PIC_,
+            llvm::CodeModel::Small,
+            llvm::CodeGenOptLevel::Aggressive
+        ));
+        
+        if (!target_machine) {
+            last_error = "Failed to create target machine";
+            return SpuJitResult(SpuJitErrorKind::TargetConfigFailed, last_error);
+        }
+        
+        return SpuJitResult();
+    }
+    
+    /**
+     * Add a module to the JIT with proper ThreadSafeModule ownership
+     */
+    SpuJitResult add_module(std::unique_ptr<llvm::Module> module, 
+                            std::unique_ptr<llvm::LLVMContext> context) {
+        if (!initialized || !jit) {
+            return SpuJitResult(SpuJitErrorKind::InitializationFailed, "JIT not initialized");
+        }
+        
+        // Create ThreadSafeModule for proper ownership
+        auto tsm = llvm::orc::ThreadSafeModule(std::move(module), std::move(context));
+        
+        if (auto err = jit->addIRModule(std::move(tsm))) {
+            std::string err_msg;
+            llvm::raw_string_ostream err_stream(err_msg);
+            err_stream << err;
+            last_error = err_stream.str();
+            return SpuJitResult(SpuJitErrorKind::ModuleCreationFailed, last_error);
+        }
+        
+        return SpuJitResult();
+    }
+    
+    /**
+     * Lookup a compiled function by name with error handling
+     */
+    SpuJitResult lookup_function(const std::string& name) {
+        if (!initialized || !jit) {
+            return SpuJitResult(SpuJitErrorKind::InitializationFailed, "JIT not initialized");
+        }
+        
+        auto sym = jit->lookup(name);
+        if (!sym) {
+            std::string err_msg;
+            llvm::raw_string_ostream err_stream(err_msg);
+            err_stream << sym.takeError();
+            last_error = err_stream.str();
+            return SpuJitResult(SpuJitErrorKind::LookupFailed, last_error);
+        }
+        
+        return SpuJitResult(reinterpret_cast<void*>(sym->getValue()));
+    }
+    
+    /**
+     * Get feature string for diagnostics
+     */
+    std::string get_features_string() const {
+        std::string result;
+        if (has_avx512) result += "AVX-512 ";
+        if (has_avx2) result += "AVX2 ";
+        if (has_sse4) result += "SSE4.2 ";
+        return result.empty() ? "baseline" : result;
+    }
+    
+    bool is_initialized() const { return initialized; }
+    const std::string& get_last_error() const { return last_error; }
+};
+#endif
+
+/**
  * SPU JIT compiler structure
  */
 struct oc_spu_jit_t {
@@ -476,6 +890,7 @@ struct oc_spu_jit_t {
     std::unique_ptr<llvm::Module> module;
     std::unique_ptr<llvm::orc::LLJIT> jit;
     llvm::TargetMachine* target_machine;
+    SpuOrcJitManager orc_manager;  // Enhanced ORC JIT manager for SPU
 #endif
     
     oc_spu_jit_t() : enabled(true), channel_ops_enabled(true), 
@@ -491,11 +906,15 @@ struct oc_spu_jit_t {
         llvm::InitializeNativeTargetAsmPrinter();
         llvm::InitializeNativeTargetAsmParser();
         
-        // Create LLJIT instance
-        auto jit_builder = llvm::orc::LLJITBuilder();
-        auto jit_result = jit_builder.create();
-        if (jit_result) {
-            jit = std::move(*jit_result);
+        // Initialize enhanced ORC JIT manager
+        auto orc_result = orc_manager.initialize();
+        if (!orc_result.success()) {
+            // Fall back to simple LLJIT
+            auto jit_builder = llvm::orc::LLJITBuilder();
+            auto jit_result = jit_builder.create();
+            if (jit_result) {
+                jit = std::move(*jit_result);
+            }
         }
 #endif
     }
@@ -574,7 +993,8 @@ static void allocate_spu_placeholder_code(SpuBasicBlock* block) {
 
 // Forward declarations for LLVM functions
 #ifdef HAVE_LLVM
-static llvm::Function* create_spu_llvm_function(llvm::Module* module, SpuBasicBlock* block);
+static llvm::Function* create_spu_llvm_function(llvm::Module* module, SpuBasicBlock* block,
+                                                 ChannelManager* channel_manager = nullptr);
 static void apply_spu_optimization_passes(llvm::Module* module);
 #endif
 
@@ -595,8 +1015,9 @@ static void apply_spu_optimization_passes(llvm::Module* module);
 static void generate_spu_llvm_ir(SpuBasicBlock* block, oc_spu_jit_t* jit = nullptr) {
 #ifdef HAVE_LLVM
     if (jit && jit->module) {
-        // Create LLVM function for this block
-        llvm::Function* func = create_spu_llvm_function(jit->module.get(), block);
+        // Create LLVM function for this block with channel manager for callback support
+        llvm::Function* func = create_spu_llvm_function(jit->module.get(), block, 
+                                                         &jit->channel_manager);
         
         if (func) {
             // Apply optimization passes to the module
@@ -646,7 +1067,11 @@ static void generate_spu_llvm_ir(SpuBasicBlock* block, oc_spu_jit_t* jit = nullp
  * - RI18-Form: Register + 18-bit immediate (branches)
  */
 static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
-                                llvm::Value** regs, llvm::Value* local_store) {
+                                llvm::Value** regs, llvm::Value* local_store,
+                                uint32_t pc, llvm::Value* spu_state,
+                                llvm::Value* read_callback_ptr,
+                                llvm::Value* write_callback_ptr,
+                                llvm::Value* count_callback_ptr) {
     // Extract all opcode fields
     uint8_t op7 = (instr >> 25) & 0x7F;
     uint8_t op8 = (instr >> 24) & 0xFF;
@@ -827,6 +1252,46 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             builder.CreateStore(result, regs[rt]);
             return;
         }
+        
+        // ---- Halfword Shift/Rotate Immediate ----
+        case 0b011111111: { // shlhi rt, ra, i7 - Shift Left Halfword Immediate
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_16 = builder.CreateBitCast(ra_val, v8i16_ty);
+            int shift = i7 & 0x1F;
+            llvm::Value* result = builder.CreateShl(ra_16, create_splat_i16(shift));
+            llvm::Value* result_32 = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_32, regs[rt]);
+            return;
+        }
+        case 0b000111111: { // rothi rt, ra, i7 - Rotate Halfword Immediate
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_16 = builder.CreateBitCast(ra_val, v8i16_ty);
+            uint16_t rot = i7 & 0xF;
+            llvm::Value* left = builder.CreateShl(ra_16, create_splat_i16(rot));
+            llvm::Value* right = builder.CreateLShr(ra_16, create_splat_i16(16 - rot));
+            llvm::Value* result = builder.CreateOr(left, right);
+            llvm::Value* result_32 = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_32, regs[rt]);
+            return;
+        }
+        case 0b001111111: { // rotmhi rt, ra, i7 - Rotate and Mask Halfword Immediate
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_16 = builder.CreateBitCast(ra_val, v8i16_ty);
+            int shift = (-i7) & 0x1F;
+            llvm::Value* result = builder.CreateLShr(ra_16, create_splat_i16(shift));
+            llvm::Value* result_32 = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_32, regs[rt]);
+            return;
+        }
+        case 0b001111100: { // rotmahi rt, ra, i7 - Rotate and Mask Algebraic Halfword Immediate
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_16 = builder.CreateBitCast(ra_val, v8i16_ty);
+            int shift = (-i7) & 0x1F;
+            llvm::Value* result = builder.CreateAShr(ra_16, create_splat_i16(shift));
+            llvm::Value* result_32 = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_32, regs[rt]);
+            return;
+        }
         default:
             break;
     }
@@ -870,6 +1335,30 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
         }
         case 0b0100100: { // stqa rt, i16 - Store Quadword Absolute
             uint32_t addr = ((uint32_t)i16 << 2) & 0x3FFF0;
+            llvm::Value* rt_val = builder.CreateLoad(v4i32_ty, regs[rt]);
+            llvm::Value* ptr = builder.CreateGEP(i8_ty, local_store,
+                llvm::ConstantInt::get(i32_ty, addr));
+            llvm::Value* vec_ptr = builder.CreateBitCast(ptr,
+                llvm::PointerType::get(v4i32_ty, 0));
+            builder.CreateStore(rt_val, vec_ptr);
+            return;
+        }
+        case 0b0110111: { // lqr rt, i16 - Load Quadword PC-Relative
+            // Address = (PC + (i16 << 2)) & ~0xF (16-byte aligned)
+            int32_t offset = (int32_t)i16 << 2;
+            uint32_t addr = (pc + offset) & 0x3FFF0;
+            llvm::Value* ptr = builder.CreateGEP(i8_ty, local_store,
+                llvm::ConstantInt::get(i32_ty, addr));
+            llvm::Value* vec_ptr = builder.CreateBitCast(ptr,
+                llvm::PointerType::get(v4i32_ty, 0));
+            llvm::Value* loaded = builder.CreateLoad(v4i32_ty, vec_ptr);
+            builder.CreateStore(loaded, regs[rt]);
+            return;
+        }
+        case 0b0100111: { // stqr rt, i16 - Store Quadword PC-Relative
+            // Address = (PC + (i16 << 2)) & ~0xF (16-byte aligned)
+            int32_t offset = (int32_t)i16 << 2;
+            uint32_t addr = (pc + offset) & 0x3FFF0;
             llvm::Value* rt_val = builder.CreateLoad(v4i32_ty, regs[rt]);
             llvm::Value* ptr = builder.CreateGEP(i8_ty, local_store,
                 llvm::ConstantInt::get(i32_ty, addr));
@@ -1032,7 +1521,7 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             builder.CreateStore(result, regs[rt]);
             return;
         }
-        case 0b0001011111: { // rotm rt, ra, rb - Rotate and Mask Word
+        case 0b0001011001: { // rotm rt, ra, rb - Rotate and Mask Word
             llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
             llvm::Value* rb_val = builder.CreateLoad(v4i32_ty, regs[rb]);
             llvm::Value* neg_rb = builder.CreateNeg(rb_val);
@@ -1041,13 +1530,68 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             builder.CreateStore(result, regs[rt]);
             return;
         }
-        case 0b0001111111: { // rotma rt, ra, rb - Rotate and Mask Algebraic Word
+        case 0b0001011010: { // rotma rt, ra, rb - Rotate and Mask Algebraic Word
             llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
             llvm::Value* rb_val = builder.CreateLoad(v4i32_ty, regs[rb]);
             llvm::Value* neg_rb = builder.CreateNeg(rb_val);
             llvm::Value* shift = builder.CreateAnd(neg_rb, create_splat_i32(0x3F));
             llvm::Value* result = builder.CreateAShr(ra_val, shift);
             builder.CreateStore(result, regs[rt]);
+            return;
+        }
+        
+        // ---- Halfword Shift/Rotate ----
+        case 0b0001011100: { // roth rt, ra, rb - Rotate Halfword
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* rb_val = builder.CreateLoad(v4i32_ty, regs[rb]);
+            llvm::Value* ra_16 = builder.CreateBitCast(ra_val, v8i16_ty);
+            llvm::Value* rb_16 = builder.CreateBitCast(rb_val, v8i16_ty);
+            // Rotate each halfword by (rb & 0xF) bits
+            llvm::Value* shift = builder.CreateAnd(rb_16, create_splat_i16(0xF));
+            llvm::Value* inv_shift = builder.CreateSub(create_splat_i16(16), shift);
+            llvm::Value* left = builder.CreateShl(ra_16, shift);
+            llvm::Value* right = builder.CreateLShr(ra_16, inv_shift);
+            llvm::Value* result = builder.CreateOr(left, right);
+            llvm::Value* result_32 = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_32, regs[rt]);
+            return;
+        }
+        case 0b0001011101: { // rothm rt, ra, rb - Rotate and Mask Halfword (right shift logical)
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* rb_val = builder.CreateLoad(v4i32_ty, regs[rb]);
+            llvm::Value* ra_16 = builder.CreateBitCast(ra_val, v8i16_ty);
+            llvm::Value* rb_16 = builder.CreateBitCast(rb_val, v8i16_ty);
+            // Right shift by (-rb & 0x1F) bits
+            llvm::Value* neg_rb = builder.CreateNeg(rb_16);
+            llvm::Value* shift = builder.CreateAnd(neg_rb, create_splat_i16(0x1F));
+            llvm::Value* result = builder.CreateLShr(ra_16, shift);
+            llvm::Value* result_32 = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_32, regs[rt]);
+            return;
+        }
+        case 0b0001011110: { // rotmah rt, ra, rb - Rotate and Mask Algebraic Halfword (right shift arithmetic)
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* rb_val = builder.CreateLoad(v4i32_ty, regs[rb]);
+            llvm::Value* ra_16 = builder.CreateBitCast(ra_val, v8i16_ty);
+            llvm::Value* rb_16 = builder.CreateBitCast(rb_val, v8i16_ty);
+            // Arithmetic right shift by (-rb & 0x1F) bits
+            llvm::Value* neg_rb = builder.CreateNeg(rb_16);
+            llvm::Value* shift = builder.CreateAnd(neg_rb, create_splat_i16(0x1F));
+            llvm::Value* result = builder.CreateAShr(ra_16, shift);
+            llvm::Value* result_32 = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_32, regs[rt]);
+            return;
+        }
+        case 0b0001011111: { // shlh rt, ra, rb - Shift Left Halfword
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* rb_val = builder.CreateLoad(v4i32_ty, regs[rb]);
+            llvm::Value* ra_16 = builder.CreateBitCast(ra_val, v8i16_ty);
+            llvm::Value* rb_16 = builder.CreateBitCast(rb_val, v8i16_ty);
+            // Shift left by (rb & 0x1F) bits, zero if >= 16
+            llvm::Value* shift = builder.CreateAnd(rb_16, create_splat_i16(0x1F));
+            llvm::Value* result = builder.CreateShl(ra_16, shift);
+            llvm::Value* result_32 = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_32, regs[rt]);
             return;
         }
         
@@ -1169,6 +1713,38 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             llvm::Value* rb_val = builder.CreateBitCast(
                 builder.CreateLoad(v4i32_ty, regs[rb]), v4f32_ty);
             llvm::Value* cmp = builder.CreateFCmpOGT(ra_val, rb_val);
+            llvm::Value* result = builder.CreateSExt(cmp, v4i32_ty);
+            builder.CreateStore(result, regs[rt]);
+            return;
+        }
+        case 0b0111101110: { // fcmeq rt, ra, rb - Floating Compare Magnitude Equal
+            llvm::Value* ra_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[ra]), v4f32_ty);
+            llvm::Value* rb_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[rb]), v4f32_ty);
+            // Use fabs intrinsic to get absolute values
+            llvm::Function* fabs_fn = llvm::Intrinsic::getDeclaration(
+                builder.GetInsertBlock()->getModule(),
+                llvm::Intrinsic::fabs, {v4f32_ty});
+            llvm::Value* ra_abs = builder.CreateCall(fabs_fn, {ra_val});
+            llvm::Value* rb_abs = builder.CreateCall(fabs_fn, {rb_val});
+            llvm::Value* cmp = builder.CreateFCmpOEQ(ra_abs, rb_abs);
+            llvm::Value* result = builder.CreateSExt(cmp, v4i32_ty);
+            builder.CreateStore(result, regs[rt]);
+            return;
+        }
+        case 0b0101101101: { // fcmgt rt, ra, rb - Floating Compare Magnitude Greater Than
+            llvm::Value* ra_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[ra]), v4f32_ty);
+            llvm::Value* rb_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[rb]), v4f32_ty);
+            // Use fabs intrinsic to get absolute values
+            llvm::Function* fabs_fn = llvm::Intrinsic::getDeclaration(
+                builder.GetInsertBlock()->getModule(),
+                llvm::Intrinsic::fabs, {v4f32_ty});
+            llvm::Value* ra_abs = builder.CreateCall(fabs_fn, {ra_val});
+            llvm::Value* rb_abs = builder.CreateCall(fabs_fn, {rb_val});
+            llvm::Value* cmp = builder.CreateFCmpOGT(ra_abs, rb_abs);
             llvm::Value* result = builder.CreateSExt(cmp, v4i32_ty);
             builder.CreateStore(result, regs[rt]);
             return;
@@ -1358,21 +1934,84 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
         
         // ---- Channel Instructions ----
         case 0b00000001101: { // rdch rt, ca - Read Channel
-            // Read from SPU channel (channel operations typically handled by runtime)
-            // For JIT, emit placeholder - actual channel access requires runtime support
-            llvm::Value* zero_vec = create_splat_i32(0);
-            builder.CreateStore(zero_vec, regs[rt]);
+            // Read from SPU channel via runtime callback
+            // Channel number is in ra field (bits 7-13)
+            uint8_t channel = ra & 0x7F;
+            
+            if (read_callback_ptr) {
+                // Call read_callback(spu_state, channel) -> uint32_t
+                auto channel_ty = llvm::Type::getInt8Ty(ctx);
+                auto func_ty = llvm::FunctionType::get(i32_ty, 
+                    {builder.getPtrTy(), channel_ty}, false);
+                
+                llvm::Value* channel_val = llvm::ConstantInt::get(channel_ty, channel);
+                llvm::Value* result = builder.CreateCall(
+                    func_ty, read_callback_ptr, {spu_state, channel_val}, "rdch_result");
+                
+                // Store result in rt[0], zero in other slots
+                llvm::Value* result_vec = create_splat_i32(0);
+                result_vec = builder.CreateInsertElement(result_vec, result,
+                    llvm::ConstantInt::get(i32_ty, 0));
+                builder.CreateStore(result_vec, regs[rt]);
+            } else {
+                // Fallback: return zero
+                llvm::Value* zero_vec = create_splat_i32(0);
+                builder.CreateStore(zero_vec, regs[rt]);
+            }
             return;
         }
         case 0b00000001100: { // wrch ca, rt - Write Channel
-            // Write to SPU channel
-            // Placeholder - actual channel access requires runtime support
+            // Write to SPU channel via runtime callback
+            // Channel number is in ra field (bits 7-13)
+            uint8_t channel = ra & 0x7F;
+            
+            if (write_callback_ptr) {
+                // Extract value from rt[0]
+                llvm::Value* rt_val = builder.CreateLoad(v4i32_ty, regs[rt]);
+                llvm::Value* value = builder.CreateExtractElement(rt_val,
+                    llvm::ConstantInt::get(i32_ty, 0));
+                
+                // Call write_callback(spu_state, channel, value) -> void
+                auto channel_ty = llvm::Type::getInt8Ty(ctx);
+                auto void_ty = llvm::Type::getVoidTy(ctx);
+                auto func_ty = llvm::FunctionType::get(void_ty, 
+                    {builder.getPtrTy(), channel_ty, i32_ty}, false);
+                
+                llvm::Value* channel_val = llvm::ConstantInt::get(channel_ty, channel);
+                builder.CreateCall(func_ty, write_callback_ptr, 
+                    {spu_state, channel_val, value});
+            }
+            // If no callback, instruction is a no-op
             return;
         }
         case 0b00000001111: { // rchcnt rt, ca - Read Channel Count
-            // Read available channel count
-            llvm::Value* result = create_splat_i32(1); // Placeholder: always 1 available
-            builder.CreateStore(result, regs[rt]);
+            // Read available channel count via runtime callback
+            // Channel number is in ra field (bits 7-13)
+            uint8_t channel = ra & 0x7F;
+            
+            if (count_callback_ptr) {
+                // Call count_callback(spu_state, channel) -> uint32_t
+                auto channel_ty = llvm::Type::getInt8Ty(ctx);
+                auto func_ty = llvm::FunctionType::get(i32_ty, 
+                    {builder.getPtrTy(), channel_ty}, false);
+                
+                llvm::Value* channel_val = llvm::ConstantInt::get(channel_ty, channel);
+                llvm::Value* count = builder.CreateCall(
+                    func_ty, count_callback_ptr, {spu_state, channel_val}, "rchcnt_result");
+                
+                // Store count in rt[0], zero in other slots
+                llvm::Value* result_vec = create_splat_i32(0);
+                result_vec = builder.CreateInsertElement(result_vec, count,
+                    llvm::ConstantInt::get(i32_ty, 0));
+                builder.CreateStore(result_vec, regs[rt]);
+            } else {
+                // Fallback: return 1 (always available)
+                llvm::Value* result = create_splat_i32(0);
+                result = builder.CreateInsertElement(result, 
+                    llvm::ConstantInt::get(i32_ty, 1),
+                    llvm::ConstantInt::get(i32_ty, 0));
+                builder.CreateStore(result, regs[rt]);
+            }
             return;
         }
         
@@ -1585,7 +2224,7 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             builder.CreateStore(result, regs[rt]);
             return;
         }
-        case 0b00110101000: { // gbb rt, ra - Gather Bits from Bytes
+        case 0b01101101010: { // gbb rt, ra - Gather Bits from Bytes
             llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
             llvm::Value* ra_8 = builder.CreateBitCast(ra_val, v16i8_ty);
             llvm::Value* mask = llvm::ConstantVector::getSplat(
@@ -1737,6 +2376,60 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             llvm::Value* right = builder.CreateLShr(ra_val, inv_shift);
             llvm::Value* result = builder.CreateOr(left, right);
             builder.CreateStore(result, regs[rt]);
+            return;
+        }
+        case 0b00111000111: { // rotqmby rt, ra, rb - Rotate and Mask Quadword by Bytes (right shift)
+            // shift = (-rb[0]) & 0x1F
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* rb_val = builder.CreateLoad(v4i32_ty, regs[rb]);
+            llvm::Value* rb0 = builder.CreateExtractElement(rb_val,
+                llvm::ConstantInt::get(i32_ty, 0));
+            llvm::Value* neg_shift = builder.CreateNeg(rb0);
+            llvm::Value* shift_bytes = builder.CreateAnd(neg_shift,
+                llvm::ConstantInt::get(i32_ty, 0x1F));
+            // Right shift by bytes
+            llvm::Value* shift_bits = builder.CreateMul(shift_bytes,
+                llvm::ConstantInt::get(i32_ty, 8));
+            llvm::Value* shift_vec = builder.CreateVectorSplat(4, shift_bits);
+            llvm::Value* shifted = builder.CreateLShr(ra_val, shift_vec);
+            builder.CreateStore(shifted, regs[rt]);
+            return;
+        }
+        case 0b00111000011: { // rotqmbi rt, ra, rb - Rotate and Mask Quadword by Bits (right shift)
+            // shift = (-rb[0]) & 0x7
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* rb_val = builder.CreateLoad(v4i32_ty, regs[rb]);
+            llvm::Value* rb0 = builder.CreateExtractElement(rb_val,
+                llvm::ConstantInt::get(i32_ty, 0));
+            llvm::Value* neg_shift = builder.CreateNeg(rb0);
+            llvm::Value* shift_bits = builder.CreateAnd(neg_shift,
+                llvm::ConstantInt::get(i32_ty, 0x07));
+            // Use i128 for proper quadword shift
+            auto loc_i128_ty = llvm::Type::getInt128Ty(ctx);
+            llvm::Value* ra_128 = builder.CreateBitCast(ra_val, loc_i128_ty);
+            llvm::Value* shift_128 = builder.CreateZExt(shift_bits, loc_i128_ty);
+            llvm::Value* shifted = builder.CreateLShr(ra_128, shift_128);
+            llvm::Value* result = builder.CreateBitCast(shifted, v4i32_ty);
+            builder.CreateStore(result, regs[rt]);
+            return;
+        }
+        case 0b00111001101: { // rotqmbybi rt, ra, rb - Rotate and Mask Quadword by Bytes from Bit Shift Count
+            // shift_bytes = ((-rb[0]) >> 3) & 0x1F
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* rb_val = builder.CreateLoad(v4i32_ty, regs[rb]);
+            llvm::Value* rb0 = builder.CreateExtractElement(rb_val,
+                llvm::ConstantInt::get(i32_ty, 0));
+            llvm::Value* neg_val = builder.CreateNeg(rb0);
+            llvm::Value* shift_bytes = builder.CreateLShr(neg_val,
+                llvm::ConstantInt::get(i32_ty, 3));
+            shift_bytes = builder.CreateAnd(shift_bytes,
+                llvm::ConstantInt::get(i32_ty, 0x1F));
+            // Right shift by bytes
+            llvm::Value* shift_bits = builder.CreateMul(shift_bytes,
+                llvm::ConstantInt::get(i32_ty, 8));
+            llvm::Value* shift_vec = builder.CreateVectorSplat(4, shift_bits);
+            llvm::Value* shifted = builder.CreateLShr(ra_val, shift_vec);
+            builder.CreateStore(shifted, regs[rt]);
             return;
         }
         
@@ -1920,6 +2613,263 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             return;
         }
         
+        // ---- Quadword Shift/Rotate Immediate Forms ----
+        case 0b001111011111: { // shlqbyi rt, ra, i7 - Shift Left Quadword by Bytes Immediate
+            int shift_bytes = i7 & 0x1F;  // 5-bit shift amount
+            if (shift_bytes == 0) {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                builder.CreateStore(ra_val, regs[rt]);
+            } else if (shift_bytes >= 16) {
+                llvm::Value* zero = llvm::ConstantVector::getSplat(
+                    llvm::ElementCount::getFixed(4), llvm::ConstantInt::get(i32_ty, 0));
+                builder.CreateStore(zero, regs[rt]);
+            } else {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                llvm::Value* ra_bytes = builder.CreateBitCast(ra_val, v16i8_ty);
+                // Create shuffle mask for byte shift left
+                std::vector<int> mask(16);
+                for (int i = 0; i < 16; i++) {
+                    int src_idx = i + shift_bytes;
+                    mask[i] = (src_idx < 16) ? src_idx : 16; // 16 = zero element
+                }
+                llvm::Value* zero_byte = llvm::ConstantVector::getSplat(
+                    llvm::ElementCount::getFixed(16), llvm::ConstantInt::get(i8_ty, 0));
+                llvm::Value* result = builder.CreateShuffleVector(ra_bytes, zero_byte, mask);
+                llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+                builder.CreateStore(result_int, regs[rt]);
+            }
+            return;
+        }
+        case 0b001111001111: { // rotqbyi rt, ra, i7 - Rotate Quadword by Bytes Immediate
+            int rot_bytes = i7 & 0x0F;  // 4-bit rotate amount
+            if (rot_bytes == 0) {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                builder.CreateStore(ra_val, regs[rt]);
+            } else {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                llvm::Value* ra_bytes = builder.CreateBitCast(ra_val, v16i8_ty);
+                // Create shuffle mask for byte rotation
+                std::vector<int> mask(16);
+                for (int i = 0; i < 16; i++) {
+                    mask[i] = (i + rot_bytes) & 0x0F;
+                }
+                llvm::Value* result = builder.CreateShuffleVector(ra_bytes, ra_bytes, mask);
+                llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+                builder.CreateStore(result_int, regs[rt]);
+            }
+            return;
+        }
+        case 0b001111011011: { // shlqbii rt, ra, i7 - Shift Left Quadword by Bits Immediate
+            int shift_bits = i7 & 0x07;  // 3-bit shift amount
+            if (shift_bits == 0) {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                builder.CreateStore(ra_val, regs[rt]);
+            } else {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                auto loc_i64_ty = llvm::Type::getInt64Ty(ctx);
+                auto v2i64_ty = llvm::VectorType::get(loc_i64_ty, 2, false);
+                llvm::Value* ra_64 = builder.CreateBitCast(ra_val, v2i64_ty);
+                // Shift each 64-bit element and combine
+                llvm::Value* shift_amt = llvm::ConstantInt::get(loc_i64_ty, shift_bits);
+                llvm::Value* shift_amt_vec = builder.CreateVectorSplat(2, shift_amt);
+                llvm::Value* shifted = builder.CreateShl(ra_64, shift_amt_vec);
+                llvm::Value* result = builder.CreateBitCast(shifted, v4i32_ty);
+                builder.CreateStore(result, regs[rt]);
+            }
+            return;
+        }
+        case 0b001111001011: { // rotqbii rt, ra, i7 - Rotate Quadword by Bits Immediate
+            int rot_bits = i7 & 0x07;  // 3-bit rotate amount
+            if (rot_bits == 0) {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                builder.CreateStore(ra_val, regs[rt]);
+            } else {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                auto loc_i64_ty = llvm::Type::getInt64Ty(ctx);
+                auto v2i64_ty = llvm::VectorType::get(loc_i64_ty, 2, false);
+                llvm::Value* ra_64 = builder.CreateBitCast(ra_val, v2i64_ty);
+                // Rotate by shifting and ORing
+                llvm::Value* shift_left = llvm::ConstantInt::get(loc_i64_ty, rot_bits);
+                llvm::Value* shift_right = llvm::ConstantInt::get(loc_i64_ty, 64 - rot_bits);
+                llvm::Value* sl_vec = builder.CreateVectorSplat(2, shift_left);
+                llvm::Value* sr_vec = builder.CreateVectorSplat(2, shift_right);
+                llvm::Value* left = builder.CreateShl(ra_64, sl_vec);
+                llvm::Value* right = builder.CreateLShr(ra_64, sr_vec);
+                llvm::Value* rotated = builder.CreateOr(left, right);
+                llvm::Value* result = builder.CreateBitCast(rotated, v4i32_ty);
+                builder.CreateStore(result, regs[rt]);
+            }
+            return;
+        }
+        case 0b001111000111: { // rotqmbyi rt, ra, i7 - Rotate and Mask Quadword by Bytes Immediate (right shift)
+            // shift = (-i7) & 0x1F
+            int shift_bytes = (0 - i7) & 0x1F;
+            if (shift_bytes >= 16) {
+                // All bytes shifted out
+                llvm::Value* zero = llvm::ConstantVector::getSplat(
+                    llvm::ElementCount::getFixed(4), llvm::ConstantInt::get(i32_ty, 0));
+                builder.CreateStore(zero, regs[rt]);
+            } else if (shift_bytes == 0) {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                builder.CreateStore(ra_val, regs[rt]);
+            } else {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                llvm::Value* ra_bytes = builder.CreateBitCast(ra_val, v16i8_ty);
+                // Create shuffle mask for byte shift right
+                std::vector<int> mask(16);
+                for (int i = 0; i < 16; i++) {
+                    if (i < shift_bytes) {
+                        mask[i] = 16; // Zero element
+                    } else {
+                        mask[i] = i - shift_bytes;
+                    }
+                }
+                llvm::Value* zero_byte = llvm::ConstantVector::getSplat(
+                    llvm::ElementCount::getFixed(16), llvm::ConstantInt::get(i8_ty, 0));
+                llvm::Value* result = builder.CreateShuffleVector(ra_bytes, zero_byte, mask);
+                llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+                builder.CreateStore(result_int, regs[rt]);
+            }
+            return;
+        }
+        case 0b001111000011: { // rotqmbii rt, ra, i7 - Rotate and Mask Quadword by Bits Immediate (right shift)
+            // shift = (-i7) & 0x7
+            int shift_bits = (0 - i7) & 0x07;
+            if (shift_bits == 0) {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                builder.CreateStore(ra_val, regs[rt]);
+            } else {
+                llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+                auto loc_i128_ty = llvm::Type::getInt128Ty(ctx);
+                llvm::Value* ra_128 = builder.CreateBitCast(ra_val, loc_i128_ty);
+                // Right shift the 128-bit value
+                llvm::Value* shift_amt = llvm::ConstantInt::get(loc_i128_ty, shift_bits);
+                llvm::Value* shifted = builder.CreateLShr(ra_128, shift_amt);
+                llvm::Value* result = builder.CreateBitCast(shifted, v4i32_ty);
+                builder.CreateStore(result, regs[rt]);
+            }
+            return;
+        }
+        
+        // ---- Float to Integer Conversions ----
+        // Note: Full SPU float conversion instructions use an 8-bit scale factor.
+        // The scale allows fixed-point representation: cflts multiplies by 2^(173-i8)
+        // before converting, csflt divides by 2^(155-i8) after converting.
+        // Current implementation: Direct conversion without scaling (i8=173 for cflts,
+        // i8=155 for csflt). This is correct for i8=173/155 but may produce incorrect
+        // results for other scale values. Games typically use the default scale values.
+        case 0b01110110000: { // cflts rt, ra, i8 - Convert Float to Signed Integer
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_float = builder.CreateBitCast(ra_val, v4f32_ty);
+            // Direct conversion (equivalent to scale=173)
+            llvm::Value* result = builder.CreateFPToSI(ra_float, v4i32_ty);
+            builder.CreateStore(result, regs[rt]);
+            return;
+        }
+        case 0b01110110001: { // cfltu rt, ra, i8 - Convert Float to Unsigned Integer
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_float = builder.CreateBitCast(ra_val, v4f32_ty);
+            // Direct conversion (equivalent to scale=173)
+            llvm::Value* result = builder.CreateFPToUI(ra_float, v4i32_ty);
+            builder.CreateStore(result, regs[rt]);
+            return;
+        }
+        case 0b01110110010: { // csflt rt, ra, i8 - Convert Signed Integer to Float
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* result_float = builder.CreateSIToFP(ra_val, v4f32_ty);
+            // Direct conversion (equivalent to scale=155)
+            llvm::Value* result = builder.CreateBitCast(result_float, v4i32_ty);
+            builder.CreateStore(result, regs[rt]);
+            return;
+        }
+        case 0b01110110011: { // cuflt rt, ra, i8 - Convert Unsigned Integer to Float
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* result_float = builder.CreateUIToFP(ra_val, v4f32_ty);
+            // Direct conversion (equivalent to scale=155)
+            llvm::Value* result = builder.CreateBitCast(result_float, v4i32_ty);
+            builder.CreateStore(result, regs[rt]);
+            return;
+        }
+        
+        // ---- Compare Immediate Halfword/Byte ----
+        case 0b01111101: { // ceqhi rt, ra, i10 - Compare Equal Halfword Immediate
+            int16_t imm = (int16_t)(i10 << 6) >> 6;  // Sign extend
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_16 = builder.CreateBitCast(ra_val, v8i16_ty);
+            llvm::Value* imm_val = llvm::ConstantInt::get(i16_ty, imm);
+            llvm::Value* imm_vec = builder.CreateVectorSplat(8, imm_val);
+            llvm::Value* cmp = builder.CreateICmpEQ(ra_16, imm_vec);
+            llvm::Value* result = builder.CreateSExt(cmp, v8i16_ty);
+            llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_int, regs[rt]);
+            return;
+        }
+        case 0b01111110: { // ceqbi rt, ra, i10 - Compare Equal Byte Immediate
+            int8_t imm = (int8_t)(i10 & 0xFF);
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_8 = builder.CreateBitCast(ra_val, v16i8_ty);
+            llvm::Value* imm_val = llvm::ConstantInt::get(i8_ty, imm);
+            llvm::Value* imm_vec = builder.CreateVectorSplat(16, imm_val);
+            llvm::Value* cmp = builder.CreateICmpEQ(ra_8, imm_vec);
+            llvm::Value* result = builder.CreateSExt(cmp, v16i8_ty);
+            llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_int, regs[rt]);
+            return;
+        }
+        case 0b01001101: { // cgthi rt, ra, i10 - Compare Greater Than Halfword Immediate
+            int16_t imm = (int16_t)(i10 << 6) >> 6;
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_16 = builder.CreateBitCast(ra_val, v8i16_ty);
+            llvm::Value* imm_val = llvm::ConstantInt::get(i16_ty, imm);
+            llvm::Value* imm_vec = builder.CreateVectorSplat(8, imm_val);
+            llvm::Value* cmp = builder.CreateICmpSGT(ra_16, imm_vec);
+            llvm::Value* result = builder.CreateSExt(cmp, v8i16_ty);
+            llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_int, regs[rt]);
+            return;
+        }
+        case 0b01001110: { // cgtbi rt, ra, i10 - Compare Greater Than Byte Immediate
+            int8_t imm = (int8_t)(i10 & 0xFF);
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_8 = builder.CreateBitCast(ra_val, v16i8_ty);
+            llvm::Value* imm_val = llvm::ConstantInt::get(i8_ty, imm);
+            llvm::Value* imm_vec = builder.CreateVectorSplat(16, imm_val);
+            llvm::Value* cmp = builder.CreateICmpSGT(ra_8, imm_vec);
+            llvm::Value* result = builder.CreateSExt(cmp, v16i8_ty);
+            llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_int, regs[rt]);
+            return;
+        }
+        case 0b01011101: { // clgthi rt, ra, i10 - Compare Logical Greater Than Halfword Immediate
+            uint16_t imm = i10 & 0x3FF;
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_16 = builder.CreateBitCast(ra_val, v8i16_ty);
+            llvm::Value* imm_val = llvm::ConstantInt::get(i16_ty, imm);
+            llvm::Value* imm_vec = builder.CreateVectorSplat(8, imm_val);
+            llvm::Value* cmp = builder.CreateICmpUGT(ra_16, imm_vec);
+            llvm::Value* result = builder.CreateSExt(cmp, v8i16_ty);
+            llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_int, regs[rt]);
+            return;
+        }
+        case 0b01011110: { // clgtbi rt, ra, i10 - Compare Logical Greater Than Byte Immediate
+            uint8_t imm = i10 & 0xFF;
+            llvm::Value* ra_val = builder.CreateLoad(v4i32_ty, regs[ra]);
+            llvm::Value* ra_8 = builder.CreateBitCast(ra_val, v16i8_ty);
+            llvm::Value* imm_val = llvm::ConstantInt::get(i8_ty, imm);
+            llvm::Value* imm_vec = builder.CreateVectorSplat(16, imm_val);
+            llvm::Value* cmp = builder.CreateICmpUGT(ra_8, imm_vec);
+            llvm::Value* result = builder.CreateSExt(cmp, v16i8_ty);
+            llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_int, regs[rt]);
+            return;
+        }
+        
+        // ---- MFC DMA Operations ----
+        // MFC operations are handled via channel writes to MFC_Cmd channel
+        // The infrastructure in MfcDmaManager handles the actual DMA
+        // Note: selb (0b1011), shufb (0b1100), gbh, gb, avgb, sumb are already implemented above
+        
         default:
             break;
     }
@@ -1930,7 +2880,8 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
 /**
  * Create LLVM function for SPU basic block
  */
-static llvm::Function* create_spu_llvm_function(llvm::Module* module, SpuBasicBlock* block) {
+static llvm::Function* create_spu_llvm_function(llvm::Module* module, SpuBasicBlock* block,
+                                                 ChannelManager* channel_manager) {
     auto& ctx = module->getContext();
     
     // Function type: void(void* spu_state, void* local_store)
@@ -1961,12 +2912,52 @@ static llvm::Function* create_spu_llvm_function(llvm::Module* module, SpuBasicBl
         builder.CreateStore(zero_vec, regs[i]);
     }
     
-    // Get local store pointer from function argument
+    // Get spu_state and local_store pointers from function arguments
+    llvm::Value* spu_state = func->getArg(0);
     llvm::Value* local_store = func->getArg(1);
     
+    // Create callback function pointers as LLVM values
+    llvm::Value* read_callback_ptr = nullptr;
+    llvm::Value* write_callback_ptr = nullptr;
+    llvm::Value* count_callback_ptr = nullptr;
+    
+    if (channel_manager) {
+        auto i64_ty = llvm::Type::getInt64Ty(ctx);
+        
+        if (channel_manager->read_callback) {
+            auto func_ty = llvm::FunctionType::get(
+                llvm::Type::getInt32Ty(ctx), 
+                {ptr_ty, llvm::Type::getInt8Ty(ctx)}, false);
+            llvm::Value* addr = llvm::ConstantInt::get(i64_ty, 
+                reinterpret_cast<uintptr_t>(channel_manager->read_callback));
+            read_callback_ptr = builder.CreateIntToPtr(addr, func_ty->getPointerTo());
+        }
+        
+        if (channel_manager->write_callback) {
+            auto func_ty = llvm::FunctionType::get(
+                void_ty, 
+                {ptr_ty, llvm::Type::getInt8Ty(ctx), llvm::Type::getInt32Ty(ctx)}, false);
+            llvm::Value* addr = llvm::ConstantInt::get(i64_ty, 
+                reinterpret_cast<uintptr_t>(channel_manager->write_callback));
+            write_callback_ptr = builder.CreateIntToPtr(addr, func_ty->getPointerTo());
+        }
+        
+        if (channel_manager->count_callback) {
+            auto func_ty = llvm::FunctionType::get(
+                llvm::Type::getInt32Ty(ctx), 
+                {ptr_ty, llvm::Type::getInt8Ty(ctx)}, false);
+            llvm::Value* addr = llvm::ConstantInt::get(i64_ty, 
+                reinterpret_cast<uintptr_t>(channel_manager->count_callback));
+            count_callback_ptr = builder.CreateIntToPtr(addr, func_ty->getPointerTo());
+        }
+    }
+    
     // Emit IR for each instruction
+    uint32_t current_pc = block->start_address;
     for (uint32_t instr : block->instructions) {
-        emit_spu_instruction(builder, instr, regs, local_store);
+        emit_spu_instruction(builder, instr, regs, local_store, current_pc,
+                            spu_state, read_callback_ptr, write_callback_ptr, count_callback_ptr);
+        current_pc += 4;
     }
     
     // Return

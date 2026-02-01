@@ -18,10 +18,12 @@
 #include <cstring>
 #include <unordered_map>
 #include <vector>
+#include <algorithm>
 #include <memory>
 #include <queue>
 #include <atomic>
 #include <functional>
+#include <list>
 
 #ifdef HAVE_LLVM
 #include <llvm/IR/LLVMContext.h>
@@ -34,8 +36,12 @@
 #include <llvm/ExecutionEngine/ExecutionEngine.h>
 #include <llvm/ExecutionEngine/MCJIT.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
+#include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
 #include <llvm/Support/TargetSelect.h>
+#include <llvm/TargetParser/Host.h>
+#include <llvm/Support/Error.h>
 #include <llvm/Target/TargetMachine.h>
+#include <llvm/MC/TargetRegistry.h>
 #include <llvm/Transforms/Scalar.h>
 #include <llvm/Transforms/InstCombine/InstCombine.h>
 #include <llvm/Passes/PassBuilder.h>
@@ -53,38 +59,290 @@ struct BasicBlock {
     void* compiled_code;
     size_t code_size;
     
+    // Block merging support: CFG edges
+    std::vector<uint32_t> successors;    // Addresses of successor blocks
+    std::vector<uint32_t> predecessors;  // Addresses of predecessor blocks
+    bool is_fallthrough;                 // True if block falls through to next
+    bool can_merge;                      // True if block can be merged with successor
+    
 #ifdef HAVE_LLVM
     std::unique_ptr<llvm::Function> llvm_func;
 #endif
     
     BasicBlock(uint32_t start) 
-        : start_address(start), end_address(start), compiled_code(nullptr), code_size(0) {}
+        : start_address(start), end_address(start), compiled_code(nullptr), code_size(0),
+          is_fallthrough(false), can_merge(false) {}
 };
 
 /**
- * Code cache for compiled blocks
+ * Cache statistics for profiling
+ */
+struct CacheStatistics {
+    uint64_t hit_count;
+    uint64_t miss_count;
+    uint64_t eviction_count;
+    uint64_t invalidation_count;
+    
+    CacheStatistics() : hit_count(0), miss_count(0), eviction_count(0), invalidation_count(0) {}
+    
+    double hit_rate() const {
+        uint64_t total = hit_count + miss_count;
+        return total > 0 ? static_cast<double>(hit_count) / total : 0.0;
+    }
+};
+
+/**
+ * Code cache for compiled blocks with LRU eviction
  */
 struct CodeCache {
     std::unordered_map<uint32_t, std::unique_ptr<BasicBlock>> blocks;
+    std::list<uint32_t> lru_order;  // LRU tracking: front = most recent, back = least recent
+    std::unordered_map<uint32_t, std::list<uint32_t>::iterator> lru_positions;
     oc_mutex mutex;
     size_t total_size;
     size_t max_size;
+    CacheStatistics stats;
     
-    CodeCache() : total_size(0), max_size(64 * 1024 * 1024) {} // 64MB cache
+    CodeCache() : total_size(0), max_size(64 * 1024 * 1024) {} // 64MB default
+    
+    void set_max_size(size_t size) { max_size = size; }
+    size_t get_max_size() const { return max_size; }
     
     BasicBlock* find_block(uint32_t address) {
         auto it = blocks.find(address);
-        return (it != blocks.end()) ? it->second.get() : nullptr;
+        if (it != blocks.end()) {
+            // Move to front of LRU list (most recently used)
+            auto lru_it = lru_positions.find(address);
+            if (lru_it != lru_positions.end()) {
+                lru_order.erase(lru_it->second);
+                lru_order.push_front(address);
+                lru_positions[address] = lru_order.begin();
+            }
+            stats.hit_count++;
+            return it->second.get();
+        }
+        stats.miss_count++;
+        return nullptr;
     }
     
     void insert_block(uint32_t address, std::unique_ptr<BasicBlock> block) {
+        // Evict LRU blocks if we're over the limit
+        while (total_size + block->code_size > max_size && !lru_order.empty()) {
+            evict_lru();
+        }
+        
         total_size += block->code_size;
         blocks[address] = std::move(block);
+        
+        // Add to front of LRU list
+        lru_order.push_front(address);
+        lru_positions[address] = lru_order.begin();
+    }
+    
+    void evict_lru() {
+        if (lru_order.empty()) return;
+        
+        uint32_t oldest = lru_order.back();
+        lru_order.pop_back();
+        lru_positions.erase(oldest);
+        
+        auto it = blocks.find(oldest);
+        if (it != blocks.end()) {
+            total_size -= it->second->code_size;
+            blocks.erase(it);
+            stats.eviction_count++;
+        }
+    }
+    
+    void invalidate(uint32_t address) {
+        auto it = blocks.find(address);
+        if (it != blocks.end()) {
+            total_size -= it->second->code_size;
+            blocks.erase(it);
+            
+            auto lru_it = lru_positions.find(address);
+            if (lru_it != lru_positions.end()) {
+                lru_order.erase(lru_it->second);
+                lru_positions.erase(lru_it);
+            }
+            stats.invalidation_count++;
+        }
+    }
+    
+    void invalidate_range(uint32_t start, uint32_t end) {
+        std::vector<uint32_t> to_remove;
+        for (const auto& pair : blocks) {
+            if (pair.first >= start && pair.first < end) {
+                to_remove.push_back(pair.first);
+            }
+        }
+        for (uint32_t addr : to_remove) {
+            invalidate(addr);
+        }
     }
     
     void clear() {
         blocks.clear();
+        lru_order.clear();
+        lru_positions.clear();
         total_size = 0;
+    }
+    
+    const CacheStatistics& get_statistics() const { return stats; }
+    void reset_statistics() { stats = CacheStatistics(); }
+};
+
+/**
+ * Block Merger: Merges consecutive blocks for better optimization
+ * 
+ * Analyzes CFG to identify blocks that can be merged:
+ * - Blocks that fall through to their successor
+ * - Blocks with a single successor that has a single predecessor
+ */
+struct BlockMerger {
+    std::unordered_map<uint32_t, std::vector<uint32_t>> successors;
+    std::unordered_map<uint32_t, std::vector<uint32_t>> predecessors;
+    
+    /**
+     * Analyze a block and determine its successors based on its terminating instruction
+     */
+    void analyze_block(BasicBlock* block) {
+        if (block->instructions.empty()) return;
+        
+        uint32_t last_instr = block->instructions.back();
+        uint8_t opcode = (last_instr >> 26) & 0x3F;
+        
+        // Determine block successors based on branch type
+        bool is_unconditional_branch = false;
+        bool is_conditional_branch = false;
+        uint32_t branch_target = 0;
+        
+        if (opcode == 18) { // b/bl/ba/bla
+            bool aa = (last_instr >> 1) & 1;  // Absolute address bit
+            int32_t li = (last_instr >> 2) & 0xFFFFFF;
+            if (li & 0x800000) li |= 0xFF000000;  // Sign extend
+            li <<= 2;  // LI is in units of words
+            
+            if (aa) {
+                branch_target = static_cast<uint32_t>(li);
+            } else {
+                branch_target = block->end_address - 4 + li;
+            }
+            is_unconditional_branch = true;
+            
+            successors[block->start_address].push_back(branch_target);
+            predecessors[branch_target].push_back(block->start_address);
+        } else if (opcode == 16) { // bc/bcl/bca/bcla (conditional)
+            bool aa = (last_instr >> 1) & 1;
+            int32_t bd = (last_instr >> 2) & 0x3FFF;
+            if (bd & 0x2000) bd |= 0xFFFFC000;  // Sign extend
+            bd <<= 2;
+            
+            if (aa) {
+                branch_target = static_cast<uint32_t>(bd);
+            } else {
+                branch_target = block->end_address - 4 + bd;
+            }
+            is_conditional_branch = true;
+            
+            // Conditional branches have two successors
+            successors[block->start_address].push_back(branch_target);
+            successors[block->start_address].push_back(block->end_address);
+            predecessors[branch_target].push_back(block->start_address);
+            predecessors[block->end_address].push_back(block->start_address);
+        } else if (opcode == 19) { // bclr/bcctr
+            // Indirect branches - target unknown at analysis time
+            // Can't merge across indirect branches
+        } else {
+            // Block falls through to next instruction
+            block->is_fallthrough = true;
+            successors[block->start_address].push_back(block->end_address);
+            predecessors[block->end_address].push_back(block->start_address);
+        }
+        
+        // Update block's successor/predecessor lists
+        block->successors = successors[block->start_address];
+        
+        // Determine if block can be merged with its successor
+        // Conditions: single fallthrough successor, successor has single predecessor
+        if (is_unconditional_branch && !is_conditional_branch) {
+            // Unconditional branch can be merged if target has single predecessor
+            if (predecessors[branch_target].size() == 1) {
+                block->can_merge = true;
+            }
+        } else if (block->is_fallthrough) {
+            block->can_merge = true;
+        }
+    }
+    
+    /**
+     * Check if two blocks can be merged
+     */
+    bool can_merge_blocks(BasicBlock* first, BasicBlock* second) {
+        // First block must end at second block's start
+        if (first->end_address != second->start_address) return false;
+        
+        // First block must fall through or unconditionally branch to second
+        if (!first->is_fallthrough && std::find(first->successors.begin(), 
+            first->successors.end(), second->start_address) == first->successors.end()) {
+            return false;
+        }
+        
+        // Second block must have only one predecessor (the first block)
+        auto it = predecessors.find(second->start_address);
+        if (it != predecessors.end() && it->second.size() != 1) {
+            return false;
+        }
+        
+        return true;
+    }
+    
+    /**
+     * Merge two blocks into one
+     * Returns a new merged block, or nullptr if merge is not possible
+     */
+    std::unique_ptr<BasicBlock> merge_blocks(BasicBlock* first, BasicBlock* second) {
+        if (!can_merge_blocks(first, second)) return nullptr;
+        
+        auto merged = std::make_unique<BasicBlock>(first->start_address);
+        merged->end_address = second->end_address;
+        
+        // Combine instructions
+        merged->instructions = first->instructions;
+        
+        // If first block ends with a fallthrough, remove last instruction if it's just a branch to next
+        // Otherwise, append all instructions from second block
+        if (first->is_fallthrough) {
+            // Just append second block's instructions
+            merged->instructions.insert(merged->instructions.end(),
+                second->instructions.begin(), second->instructions.end());
+        } else {
+            // First block ends with unconditional branch to second - remove the branch
+            if (!merged->instructions.empty()) {
+                uint32_t last = merged->instructions.back();
+                uint8_t op = (last >> 26) & 0x3F;
+                if (op == 18) { // Unconditional branch - remove it
+                    merged->instructions.pop_back();
+                }
+            }
+            merged->instructions.insert(merged->instructions.end(),
+                second->instructions.begin(), second->instructions.end());
+        }
+        
+        // Copy successors from second block
+        merged->successors = second->successors;
+        merged->is_fallthrough = second->is_fallthrough;
+        merged->can_merge = second->can_merge;
+        
+        return merged;
+    }
+    
+    /**
+     * Clear analysis state
+     */
+    void clear() {
+        successors.clear();
+        predecessors.clear();
     }
 };
 
@@ -587,6 +845,214 @@ struct CompilationThreadPool {
 };
 
 /**
+ * JIT compilation error types for comprehensive error handling
+ */
+enum class JitErrorKind : uint8_t {
+    None = 0,
+    InitializationFailed = 1,
+    ModuleCreationFailed = 2,
+    CompilationFailed = 3,
+    LookupFailed = 4,
+    TargetConfigFailed = 5,
+    VerificationFailed = 6
+};
+
+/**
+ * JIT compilation result with error handling
+ */
+struct JitResult {
+    JitErrorKind error;
+    std::string error_message;
+    void* compiled_code;
+    
+    JitResult() : error(JitErrorKind::None), compiled_code(nullptr) {}
+    JitResult(JitErrorKind e, const std::string& msg) 
+        : error(e), error_message(msg), compiled_code(nullptr) {}
+    JitResult(void* code) : error(JitErrorKind::None), compiled_code(code) {}
+    
+    bool success() const { return error == JitErrorKind::None; }
+    operator bool() const { return success(); }
+};
+
+#ifdef HAVE_LLVM
+/**
+ * ORC JIT Manager - Enhanced LLJIT wrapper with:
+ * - Proper ThreadSafeModule for module ownership
+ * - Target machine configuration with host CPU features
+ * - Error handling for JIT creation and module compilation
+ * - Function lookup with error propagation
+ */
+class OrcJitManager {
+public:
+    std::unique_ptr<llvm::orc::LLJIT> jit;
+    std::unique_ptr<llvm::TargetMachine> target_machine;
+    std::string last_error;
+    bool initialized;
+    
+    // CPU feature flags detected at runtime
+    bool has_avx2;
+    bool has_avx512;
+    bool has_sse4;
+    
+    OrcJitManager() : initialized(false), has_avx2(false), has_avx512(false), has_sse4(false) {}
+    
+    /**
+     * Initialize the JIT with proper target machine configuration
+     */
+    JitResult initialize() {
+        // Initialize LLVM targets
+        llvm::InitializeNativeTarget();
+        llvm::InitializeNativeTargetAsmPrinter();
+        llvm::InitializeNativeTargetAsmParser();
+        
+        // Detect CPU features
+        detect_cpu_features();
+        
+        // Create target machine with optimal configuration
+        auto tm_result = configure_target_machine();
+        if (!tm_result.success()) {
+            return tm_result;
+        }
+        
+        // Create LLJIT with configured target machine
+        auto jit_builder = llvm::orc::LLJITBuilder();
+        
+        // Configure for optimal performance
+        jit_builder.setNumCompileThreads(0); // Compile in calling thread for predictability
+        
+        auto jit_expected = jit_builder.create();
+        if (!jit_expected) {
+            std::string err_msg;
+            llvm::raw_string_ostream err_stream(err_msg);
+            err_stream << jit_expected.takeError();
+            last_error = err_stream.str();
+            return JitResult(JitErrorKind::InitializationFailed, last_error);
+        }
+        
+        jit = std::move(*jit_expected);
+        initialized = true;
+        
+        return JitResult();
+    }
+    
+    /**
+     * Detect host CPU features for optimal code generation
+     */
+    void detect_cpu_features() {
+        llvm::StringMap<bool> features;
+        llvm::sys::getHostCPUFeatures(features);
+        
+        has_avx2 = features.count("avx2") && features["avx2"];
+        has_avx512 = features.count("avx512f") && features["avx512f"];
+        has_sse4 = features.count("sse4.2") && features["sse4.2"];
+    }
+    
+    /**
+     * Configure target machine for host CPU with optimal features
+     */
+    JitResult configure_target_machine() {
+        std::string triple = llvm::sys::getProcessTriple();
+        std::string cpu = std::string(llvm::sys::getHostCPUName());
+        
+        // Build feature string based on detected capabilities
+        std::string features;
+        if (has_avx512) {
+            features = "+avx512f,+avx512vl,+avx512bw,+avx512dq";
+        } else if (has_avx2) {
+            features = "+avx2,+fma";
+        } else if (has_sse4) {
+            features = "+sse4.2";
+        }
+        
+        std::string error;
+        auto target = llvm::TargetRegistry::lookupTarget(triple, error);
+        if (!target) {
+            last_error = "Failed to lookup target: " + error;
+            return JitResult(JitErrorKind::TargetConfigFailed, last_error);
+        }
+        
+        llvm::TargetOptions options;
+        options.UnsafeFPMath = true;      // Allow FP optimizations
+        options.NoInfsFPMath = true;      // No infinities
+        options.NoNaNsFPMath = true;      // No NaNs  
+        options.AllowFPOpFusion = llvm::FPOpFusion::Fast;  // Allow FMA fusion
+        
+        target_machine.reset(target->createTargetMachine(
+            triple, cpu, features,
+            options,
+            llvm::Reloc::PIC_,
+            llvm::CodeModel::Small,
+            llvm::CodeGenOptLevel::Aggressive
+        ));
+        
+        if (!target_machine) {
+            last_error = "Failed to create target machine";
+            return JitResult(JitErrorKind::TargetConfigFailed, last_error);
+        }
+        
+        return JitResult();
+    }
+    
+    /**
+     * Add a module to the JIT with proper ThreadSafeModule ownership
+     */
+    JitResult add_module(std::unique_ptr<llvm::Module> module, 
+                         std::unique_ptr<llvm::LLVMContext> context) {
+        if (!initialized || !jit) {
+            return JitResult(JitErrorKind::InitializationFailed, "JIT not initialized");
+        }
+        
+        // Create ThreadSafeModule for proper ownership
+        auto tsm = llvm::orc::ThreadSafeModule(std::move(module), std::move(context));
+        
+        if (auto err = jit->addIRModule(std::move(tsm))) {
+            std::string err_msg;
+            llvm::raw_string_ostream err_stream(err_msg);
+            err_stream << err;
+            last_error = err_stream.str();
+            return JitResult(JitErrorKind::ModuleCreationFailed, last_error);
+        }
+        
+        return JitResult();
+    }
+    
+    /**
+     * Lookup a compiled function by name with error handling
+     */
+    JitResult lookup_function(const std::string& name) {
+        if (!initialized || !jit) {
+            return JitResult(JitErrorKind::InitializationFailed, "JIT not initialized");
+        }
+        
+        auto sym = jit->lookup(name);
+        if (!sym) {
+            std::string err_msg;
+            llvm::raw_string_ostream err_stream(err_msg);
+            err_stream << sym.takeError();
+            last_error = err_stream.str();
+            return JitResult(JitErrorKind::LookupFailed, last_error);
+        }
+        
+        return JitResult(reinterpret_cast<void*>(sym->getValue()));
+    }
+    
+    /**
+     * Get feature string for diagnostics
+     */
+    std::string get_features_string() const {
+        std::string result;
+        if (has_avx512) result += "AVX-512 ";
+        if (has_avx2) result += "AVX2 ";
+        if (has_sse4) result += "SSE4.2 ";
+        return result.empty() ? "baseline" : result;
+    }
+    
+    bool is_initialized() const { return initialized; }
+    const std::string& get_last_error() const { return last_error; }
+};
+#endif
+
+/**
  * PPU JIT compiler structure
  */
 struct oc_ppu_jit_t {
@@ -607,6 +1073,7 @@ struct oc_ppu_jit_t {
     std::unique_ptr<llvm::Module> module;
     std::unique_ptr<llvm::orc::LLJIT> jit;
     llvm::TargetMachine* target_machine;
+    OrcJitManager orc_manager;  // Enhanced ORC JIT manager
 #endif
     
     oc_ppu_jit_t() : enabled(true), lazy_compilation_enabled(false), 
@@ -621,11 +1088,15 @@ struct oc_ppu_jit_t {
         llvm::InitializeNativeTargetAsmPrinter();
         llvm::InitializeNativeTargetAsmParser();
         
-        // Create LLJIT instance
-        auto jit_builder = llvm::orc::LLJITBuilder();
-        auto jit_result = jit_builder.create();
-        if (jit_result) {
-            jit = std::move(*jit_result);
+        // Initialize enhanced ORC JIT manager
+        auto orc_result = orc_manager.initialize();
+        if (!orc_result.success()) {
+            // Fall back to simple LLJIT
+            auto jit_builder = llvm::orc::LLJITBuilder();
+            auto jit_result = jit_builder.create();
+            if (jit_result) {
+                jit = std::move(*jit_result);
+            }
         }
 #endif
     }
@@ -940,12 +1411,16 @@ static void set_ca_add_extended(llvm::IRBuilder<>& builder, llvm::Value* a, llvm
  * - Branch instructions (conditional, unconditional, to LR/CTR)
  * - Comparison instructions (signed/unsigned, integer/floating-point)
  * - System instructions (SPR access, CR operations)
+ * - VMX/AltiVec vector instructions (128-bit SIMD operations)
  */
 static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                                 llvm::Value** gprs, llvm::Value** fprs,
+                                llvm::Value** vrs,
                                 llvm::Value* memory_base,
                                 llvm::Value* cr_ptr, llvm::Value* lr_ptr,
-                                llvm::Value* ctr_ptr, llvm::Value* xer_ptr) {
+                                llvm::Value* ctr_ptr, llvm::Value* xer_ptr,
+                                llvm::Value* vscr_ptr,
+                                uint64_t pc = 0) {
     uint8_t opcode = (instr >> 26) & 0x3F;
     uint8_t rt = (instr >> 21) & 0x1F;
     uint8_t ra = (instr >> 16) & 0x1F;
@@ -960,6 +1435,9 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
     auto i64_ty = llvm::Type::getInt64Ty(ctx);
     auto f32_ty = llvm::Type::getFloatTy(ctx);
     auto f64_ty = llvm::Type::getDoubleTy(ctx);
+    // Vector types for VMX
+    auto v4i32_ty = llvm::VectorType::get(i32_ty, 4, false);
+    auto v4f32_ty = llvm::VectorType::get(f32_ty, 4, false);
     
     switch (opcode) {
         // Integer immediate operations
@@ -1274,6 +1752,48 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             builder.CreateStore(rs_val, i64_ptr);
             if (ds_xo == 1) { // stdu
                 builder.CreateStore(addr, gprs[ra]);
+            }
+            break;
+        }
+        
+        // Multiple Word Load/Store (opcode 46 and 47)
+        case 46: { // lmw rt, d(ra) - Load Multiple Word
+            llvm::Value* ra_val = (ra == 0) ?
+                static_cast<llvm::Value*>(llvm::ConstantInt::get(i64_ty, 0)) :
+                static_cast<llvm::Value*>(builder.CreateLoad(i64_ty, gprs[ra]));
+            llvm::Value* base_addr = builder.CreateAdd(ra_val,
+                llvm::ConstantInt::get(i64_ty, (int64_t)simm));
+            
+            // Load words from rt to r31
+            for (uint8_t r = rt; r <= 31; r++) {
+                llvm::Value* offset = llvm::ConstantInt::get(i64_ty, (r - rt) * 4);
+                llvm::Value* addr = builder.CreateAdd(base_addr, offset);
+                llvm::Value* ptr = builder.CreateGEP(i8_ty, memory_base, addr);
+                llvm::Value* i32_ptr = builder.CreateBitCast(ptr,
+                    llvm::PointerType::get(i32_ty, 0));
+                llvm::Value* loaded = builder.CreateLoad(i32_ty, i32_ptr);
+                llvm::Value* extended = builder.CreateZExt(loaded, i64_ty);
+                builder.CreateStore(extended, gprs[r]);
+            }
+            break;
+        }
+        case 47: { // stmw rs, d(ra) - Store Multiple Word
+            llvm::Value* ra_val = (ra == 0) ?
+                static_cast<llvm::Value*>(llvm::ConstantInt::get(i64_ty, 0)) :
+                static_cast<llvm::Value*>(builder.CreateLoad(i64_ty, gprs[ra]));
+            llvm::Value* base_addr = builder.CreateAdd(ra_val,
+                llvm::ConstantInt::get(i64_ty, (int64_t)simm));
+            
+            // Store words from rt to r31
+            for (uint8_t r = rt; r <= 31; r++) {
+                llvm::Value* rs_val = builder.CreateLoad(i64_ty, gprs[r]);
+                llvm::Value* truncated = builder.CreateTrunc(rs_val, i32_ty);
+                llvm::Value* offset = llvm::ConstantInt::get(i64_ty, (r - rt) * 4);
+                llvm::Value* addr = builder.CreateAdd(base_addr, offset);
+                llvm::Value* ptr = builder.CreateGEP(i8_ty, memory_base, addr);
+                llvm::Value* i32_ptr = builder.CreateBitCast(ptr,
+                    llvm::PointerType::get(i32_ty, 0));
+                builder.CreateStore(truncated, i32_ptr);
             }
             break;
         }
@@ -2847,20 +3367,19 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
         
         // Branch instructions
         case 18: { // b/bl/ba/bla - Branch
-            // Note: In a full implementation, branches would be emitted as
-            // LLVM conditional/unconditional branches. For basic block
-            // compilation, we just update the target address.
             bool aa = (instr >> 1) & 1;  // Absolute address
             bool lk = instr & 1;         // Link (sets LR)
             int32_t li = ((int32_t)(instr & 0x03FFFFFC) << 6) >> 6;
             
             // If link bit set, save return address to LR
-            if (lk) {
-                // LR = PC + 4 (would need PC value passed in)
-                // For now, just note that LR should be updated
+            if (lk && pc != 0) {
+                llvm::Value* next_pc = llvm::ConstantInt::get(i64_ty, pc + 4);
+                builder.CreateStore(next_pc, lr_ptr);
             }
             
-            // Target address calculation would be used for block chaining
+            // Target address calculation (for block chaining in future)
+            // If absolute: target = li
+            // If relative: target = pc + li
             (void)aa;
             (void)li;
             break;
@@ -2881,12 +3400,14 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                 builder.CreateStore(new_ctr, ctr_ptr);
             }
             
-            // In a full implementation, would emit conditional branch based on
-            // BO/BI fields. For now, just handle link bit.
-            if (lk) {
-                // Save next address to LR
+            // If link bit set, save return address to LR
+            if (lk && pc != 0) {
+                llvm::Value* next_pc = llvm::ConstantInt::get(i64_ty, pc + 4);
+                builder.CreateStore(next_pc, lr_ptr);
             }
             
+            // Branch condition check would be emitted here
+            // For now, branch targets are handled by block chaining
             (void)bi;
             (void)aa;
             (void)bd;
@@ -2911,10 +3432,19 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                         builder.CreateStore(new_ctr, ctr_ptr);
                     }
                     
-                    // In full implementation: branch to LR if condition met
-                    // For now, note that a branch occurred
+                    // If link bit set, save return address to LR (before branch)
+                    // Note: For bclr, we save current LR to temp, then update LR
+                    if (lk && pc != 0) {
+                        // Read current LR (branch target)
+                        llvm::Value* old_lr = builder.CreateLoad(i64_ty, lr_ptr);
+                        // Store next PC to LR
+                        llvm::Value* next_pc = llvm::ConstantInt::get(i64_ty, pc + 4);
+                        builder.CreateStore(next_pc, lr_ptr);
+                        (void)old_lr; // Branch target used by block chaining
+                    }
+                    
+                    (void)bo;
                     (void)bi;
-                    (void)lk;
                     break;
                 }
                 case 528: { // bcctr - Branch Conditional to Count Register
@@ -2922,10 +3452,14 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                     uint8_t bi = ra;
                     bool lk = instr & 1;
                     
-                    // In full implementation: branch to CTR if condition met
+                    // If link bit set, save return address to LR
+                    if (lk && pc != 0) {
+                        llvm::Value* next_pc = llvm::ConstantInt::get(i64_ty, pc + 4);
+                        builder.CreateStore(next_pc, lr_ptr);
+                    }
+                    
                     (void)bo;
                     (void)bi;
-                    (void)lk;
                     break;
                 }
                 case 0: { // mcrf - Move Condition Register Field
@@ -3347,6 +3881,173 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             break;
         }
         
+        // VMX/AltiVec instructions (opcode 4)
+        // Implements common vector operations using LLVM's vector types
+        case 4: {
+            // Extract VMX register fields
+            uint8_t vrt = rt;  // Vector target register
+            uint8_t vra = ra;  // Vector source register A
+            uint8_t vrb = rb;  // Vector source register B
+            uint8_t vrc = (instr >> 6) & 0x1F;  // Vector source register C (for VA-form)
+            
+            // Extract sub-opcode fields
+            uint16_t vxo_vx = (instr >> 1) & 0x3FF;  // 10-bit sub-opcode for VX-form
+            uint8_t vxo_va = (instr >> 0) & 0x3F;  // 6-bit sub-opcode for VA-form
+            
+            // VA-Form instructions (6-bit sub-opcode in bits 0-5)
+            switch (vxo_va) {
+                case 46: { // vmaddfp vrt, vra, vrc, vrb - Vector Multiply-Add FP
+                    // vrt = (vra * vrc) + vrb
+                    llvm::Value* a = builder.CreateLoad(v4f32_ty, vrs[vra]);
+                    llvm::Value* c = builder.CreateLoad(v4f32_ty, vrs[vrc]);
+                    llvm::Value* b = builder.CreateLoad(v4f32_ty, vrs[vrb]);
+                    llvm::Value* mul = builder.CreateFMul(a, c);
+                    llvm::Value* result = builder.CreateFAdd(mul, b);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 47: { // vnmsubfp vrt, vra, vrc, vrb - Vector Negative Multiply-Subtract FP
+                    // vrt = -((vra * vrc) - vrb) = vrb - (vra * vrc)
+                    llvm::Value* a = builder.CreateLoad(v4f32_ty, vrs[vra]);
+                    llvm::Value* c = builder.CreateLoad(v4f32_ty, vrs[vrc]);
+                    llvm::Value* b = builder.CreateLoad(v4f32_ty, vrs[vrb]);
+                    llvm::Value* mul = builder.CreateFMul(a, c);
+                    llvm::Value* result = builder.CreateFSub(b, mul);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 43: { // vsel vrt, vra, vrb, vrc - Vector Select
+                    // For each bit: result = (vrc & vrb) | (~vrc & vra)
+                    llvm::Value* a = builder.CreateLoad(v4i32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4i32_ty, vrs[vrb]);
+                    llvm::Value* c = builder.CreateLoad(v4i32_ty, vrs[vrc]);
+                    llvm::Value* not_c = builder.CreateNot(c);
+                    llvm::Value* c_and_b = builder.CreateAnd(c, b);
+                    llvm::Value* not_c_and_a = builder.CreateAnd(not_c, a);
+                    llvm::Value* result = builder.CreateOr(c_and_b, not_c_and_a);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 44: { // vperm vrt, vra, vrb, vrc - Vector Permute
+                    // vperm selects bytes from the concatenation of vra and vrb based on vrc
+                    // Each byte of vrc selects a byte from the 32-byte {vra, vrb} concatenation
+                    auto v16i8_ty = llvm::VectorType::get(i8_ty, 16, false);
+                    
+                    // Load registers as byte vectors
+                    llvm::Value* a = builder.CreateLoad(v4i32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4i32_ty, vrs[vrb]);
+                    llvm::Value* c = builder.CreateLoad(v4i32_ty, vrs[vrc]);
+                    
+                    // Bitcast to byte vectors for permutation
+                    llvm::Value* a_bytes = builder.CreateBitCast(a, v16i8_ty);
+                    llvm::Value* b_bytes = builder.CreateBitCast(b, v16i8_ty);
+                    llvm::Value* c_bytes = builder.CreateBitCast(c, v16i8_ty);
+                    
+                    // For simplicity, use llvm.experimental.vector.interleave2 or manual selection
+                    // For now, implement a simplified version that handles common patterns
+                    // Full implementation would require runtime byte selection
+                    
+                    // Create result by selecting from a or b based on low bit of index
+                    llvm::Value* mask_low = llvm::ConstantVector::getSplat(
+                        llvm::ElementCount::getFixed(16), llvm::ConstantInt::get(i8_ty, 0x10));
+                    llvm::Value* use_b = builder.CreateICmpUGE(c_bytes, mask_low);
+                    llvm::Value* result_bytes = builder.CreateSelect(use_b, b_bytes, a_bytes);
+                    
+                    // Bitcast back to i32 vector and store
+                    llvm::Value* result = builder.CreateBitCast(result_bytes, v4i32_ty);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                default:
+                    // Unhandled VA-form instruction
+                    break;
+            }
+            
+            // VX-Form instructions (10-bit sub-opcode)
+            switch (vxo_vx) {
+                case 10: { // vaddfp vrt, vra, vrb - Vector Add FP
+                    llvm::Value* a = builder.CreateLoad(v4f32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4f32_ty, vrs[vrb]);
+                    llvm::Value* result = builder.CreateFAdd(a, b);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 74: { // vsubfp vrt, vra, vrb - Vector Subtract FP
+                    llvm::Value* a = builder.CreateLoad(v4f32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4f32_ty, vrs[vrb]);
+                    llvm::Value* result = builder.CreateFSub(a, b);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 1028: { // vand vrt, vra, vrb - Vector AND
+                    llvm::Value* a = builder.CreateLoad(v4i32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4i32_ty, vrs[vrb]);
+                    llvm::Value* result = builder.CreateAnd(a, b);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 1156: { // vor vrt, vra, vrb - Vector OR
+                    llvm::Value* a = builder.CreateLoad(v4i32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4i32_ty, vrs[vrb]);
+                    llvm::Value* result = builder.CreateOr(a, b);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 1220: { // vxor vrt, vra, vrb - Vector XOR
+                    llvm::Value* a = builder.CreateLoad(v4i32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4i32_ty, vrs[vrb]);
+                    llvm::Value* result = builder.CreateXor(a, b);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 1284: { // vnor vrt, vra, vrb - Vector NOR
+                    llvm::Value* a = builder.CreateLoad(v4i32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4i32_ty, vrs[vrb]);
+                    llvm::Value* or_result = builder.CreateOr(a, b);
+                    llvm::Value* result = builder.CreateNot(or_result);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 134: { // vcmpequw vrt, vra, vrb - Vector Compare Equal Unsigned Word
+                    llvm::Value* a = builder.CreateLoad(v4i32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4i32_ty, vrs[vrb]);
+                    llvm::Value* cmp = builder.CreateICmpEQ(a, b);
+                    llvm::Value* result = builder.CreateSExt(cmp, v4i32_ty);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 902: { // vcmpgtsw vrt, vra, vrb - Vector Compare Greater Than Signed Word
+                    llvm::Value* a = builder.CreateLoad(v4i32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4i32_ty, vrs[vrb]);
+                    llvm::Value* cmp = builder.CreateICmpSGT(a, b);
+                    llvm::Value* result = builder.CreateSExt(cmp, v4i32_ty);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 128: { // vadduwm vrt, vra, vrb - Vector Add Unsigned Word Modulo
+                    llvm::Value* a = builder.CreateLoad(v4i32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4i32_ty, vrs[vrb]);
+                    llvm::Value* result = builder.CreateAdd(a, b);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                case 1152: { // vsubuwm vrt, vra, vrb - Vector Subtract Unsigned Word Modulo
+                    llvm::Value* a = builder.CreateLoad(v4i32_ty, vrs[vra]);
+                    llvm::Value* b = builder.CreateLoad(v4i32_ty, vrs[vrb]);
+                    llvm::Value* result = builder.CreateSub(a, b);
+                    builder.CreateStore(result, vrs[vrt]);
+                    break;
+                }
+                default:
+                    // Unhandled VX-form instruction - no-op
+                    break;
+            }
+            
+            // Suppress unused variable warnings for fields used only in some code paths
+            (void)vscr_ptr;
+            break;
+        }
+        
         default:
             // Unhandled instruction - emit nop
             break;
@@ -3373,20 +4074,25 @@ static llvm::Function* create_llvm_function(llvm::Module* module, BasicBlock* bl
     llvm::BasicBlock* entry_bb = llvm::BasicBlock::Create(ctx, "entry", func);
     llvm::IRBuilder<> builder(entry_bb);
     
-    // Allocate space for GPRs, FPRs, and special registers
+    // Allocate space for GPRs, FPRs, VRs, and special registers
     auto i32_ty = llvm::Type::getInt32Ty(ctx);
     auto i64_ty = llvm::Type::getInt64Ty(ctx);
     auto f64_ty = llvm::Type::getDoubleTy(ctx);
+    auto f32_ty = llvm::Type::getFloatTy(ctx);
+    auto v4f32_ty = llvm::VectorType::get(f32_ty, 4, false);  // 128-bit vector as 4 x float
     
     llvm::Value* gprs[32];
     llvm::Value* fprs[32];
+    llvm::Value* vrs[32];  // Vector registers for VMX
     
     for (int i = 0; i < 32; i++) {
         gprs[i] = builder.CreateAlloca(i64_ty, nullptr, "gpr" + std::to_string(i));
         fprs[i] = builder.CreateAlloca(f64_ty, nullptr, "fpr" + std::to_string(i));
+        vrs[i] = builder.CreateAlloca(v4f32_ty, nullptr, "vr" + std::to_string(i));
         // Initialize to zero
         builder.CreateStore(llvm::ConstantInt::get(i64_ty, 0), gprs[i]);
         builder.CreateStore(llvm::ConstantFP::get(f64_ty, 0.0), fprs[i]);
+        builder.CreateStore(llvm::ConstantAggregateZero::get(v4f32_ty), vrs[i]);
     }
     
     // Allocate special registers
@@ -3394,20 +4100,24 @@ static llvm::Function* create_llvm_function(llvm::Module* module, BasicBlock* bl
     llvm::Value* lr_ptr = builder.CreateAlloca(i64_ty, nullptr, "lr");
     llvm::Value* ctr_ptr = builder.CreateAlloca(i64_ty, nullptr, "ctr");
     llvm::Value* xer_ptr = builder.CreateAlloca(i64_ty, nullptr, "xer");
+    llvm::Value* vscr_ptr = builder.CreateAlloca(i32_ty, nullptr, "vscr");  // Vector Status and Control Register
     
     // Initialize special registers to zero
     builder.CreateStore(llvm::ConstantInt::get(i32_ty, 0), cr_ptr);
     builder.CreateStore(llvm::ConstantInt::get(i64_ty, 0), lr_ptr);
     builder.CreateStore(llvm::ConstantInt::get(i64_ty, 0), ctr_ptr);
     builder.CreateStore(llvm::ConstantInt::get(i64_ty, 0), xer_ptr);
+    builder.CreateStore(llvm::ConstantInt::get(i32_ty, 0), vscr_ptr);
     
     // Get memory base pointer from function argument
     llvm::Value* memory_base = func->getArg(1);
     
     // Emit IR for each instruction
+    uint64_t current_pc = block->start_address;
     for (uint32_t instr : block->instructions) {
-        emit_ppu_instruction(builder, instr, gprs, fprs, memory_base,
-                            cr_ptr, lr_ptr, ctr_ptr, xer_ptr);
+        emit_ppu_instruction(builder, instr, gprs, fprs, vrs, memory_base,
+                            cr_ptr, lr_ptr, ctr_ptr, xer_ptr, vscr_ptr, current_pc);
+        current_pc += 4; // PowerPC instructions are 4 bytes
     }
     
     // Return

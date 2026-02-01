@@ -1,6 +1,7 @@
 //! SPU interpreter implementation
 
 use crate::decoder::SpuDecoder;
+use crate::instructions::{arithmetic, float, hints};
 use crate::thread::SpuThread;
 use oc_core::error::SpuError;
 
@@ -46,6 +47,16 @@ impl SpuInterpreter {
                 // Check other opcode lengths
                 match op7 {
                     0b0100000..=0b0100001 => self.execute_immediate_load(thread, opcode)?,
+                    // hbra - Hint for Branch (a-form), 7-bit patterns 0b0001000 to 0b0001111
+                    0b0001000..=0b0001111 => {
+                        hints::hbra(thread, opcode);
+                        thread.advance_pc();
+                    }
+                    // hbrr - Hint for Branch (relative), 7-bit patterns 0b0011000 to 0b0011111
+                    0b0011000..=0b0011111 => {
+                        hints::hbrr(thread, opcode);
+                        thread.advance_pc();
+                    }
                     _ => {
                         match op8 {
                             0b00011100 => self.execute_ai(thread, opcode)?,
@@ -62,14 +73,125 @@ impl SpuInterpreter {
                                     0b0001001101 => self.execute_nor(thread, opcode)?,
                                     0b0000100000 => self.execute_stop(thread, opcode)?,
                                     0b0000000000 => {
-                                        // nop
+                                        // sync - Synchronize
+                                        hints::sync(thread, opcode);
                                         thread.advance_pc();
+                                    }
+                                    // Double-precision floating-point (RR form, 10-bit opcodes)
+                                    0b0101100100 => { // dfa (0x2cc >> 1)
+                                        let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                        float::dfa(thread, rb, ra, rt)?;
+                                    }
+                                    0b0101100101 => { // dfs (0x2cd >> 1)
+                                        let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                        float::dfs(thread, rb, ra, rt)?;
+                                    }
+                                    0b0101100110 => { // dfm (0x2ce >> 1)
+                                        let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                        float::dfm(thread, rb, ra, rt)?;
                                     }
                                     _ => {
                                         match op11 {
                                             0b01111000100 => self.execute_shufb(thread, opcode)?,
                                             0b01010100101 | 0b01010110101 | 0b01111010101 => {
                                                 // FMA-type instructions
+                                                thread.advance_pc();
+                                            }
+                                            // Double-precision FMA variants (11-bit opcodes)
+                                            0b01101011100 => { // dfma (0x35c)
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                float::dfma(thread, rb, ra, rt)?;
+                                            }
+                                            0b01101011101 => { // dfms (0x35d)
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                float::dfms(thread, rb, ra, rt)?;
+                                            }
+                                            0b01101011110 => { // dfnms (0x35e)
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                float::dfnms(thread, rb, ra, rt)?;
+                                            }
+                                            0b01101011111 => { // dfnma (0x35f)
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                float::dfnma(thread, rb, ra, rt)?;
+                                            }
+                                            // Double-precision comparisons
+                                            0b01011000011 => { // dfcgt (0x2c3)
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                float::dfcgt(thread, rb, ra, rt)?;
+                                            }
+                                            0b01011001011 => { // dfcmgt (0x2cb)
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                float::dfcmgt(thread, rb, ra, rt)?;
+                                            }
+                                            0b01111000011 => { // dfceq (0x3c3)
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                float::dfceq(thread, rb, ra, rt)?;
+                                            }
+                                            0b01111001011 => { // dfcmeq (0x3cb)
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                float::dfcmeq(thread, rb, ra, rt)?;
+                                            }
+                                            // Float/double conversion
+                                            0b01110111000 => { // fesd (0x3b8)
+                                                let (_rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                float::fesd(thread, ra, rt)?;
+                                            }
+                                            0b01110111001 => { // frds (0x3b9)
+                                                let (_rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                float::frds(thread, ra, rt)?;
+                                            }
+                                            // Byte/Halfword Operations
+                                            0b00011000010 => { // cg - Carry Generate
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                arithmetic::cg(thread, rb, ra, rt)?;
+                                            }
+                                            0b00001000010 => { // bg - Borrow Generate
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                arithmetic::bg(thread, rb, ra, rt)?;
+                                            }
+                                            0b01101000000 => { // addx - Add Extended
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                arithmetic::addx(thread, rb, ra, rt)?;
+                                            }
+                                            0b01101000001 => { // sfx - Subtract From Extended
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                arithmetic::sfx(thread, rb, ra, rt)?;
+                                            }
+                                            0b01101100010 => { // cgx - Carry Generate Extended
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                arithmetic::cgx(thread, rb, ra, rt)?;
+                                            }
+                                            0b01101000010 => { // bgx - Borrow Generate Extended
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                arithmetic::bgx(thread, rb, ra, rt)?;
+                                            }
+                                            0b00001010011 => { // absdb - Absolute Difference of Bytes
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                arithmetic::absdb(thread, rb, ra, rt)?;
+                                            }
+                                            0b01001010011 => { // sumb - Sum Bytes into Halfwords
+                                                let (rb, ra, rt) = SpuDecoder::rr_form(opcode);
+                                                arithmetic::sumb(thread, rb, ra, rt)?;
+                                            }
+                                            // Hint and Scheduling Instructions
+                                            0b01000000010 => { // nop
+                                                hints::nop(thread, opcode);
+                                                thread.advance_pc();
+                                            }
+                                            0b00000000010 => { // lnop
+                                                hints::lnop(thread, opcode);
+                                                thread.advance_pc();
+                                            }
+                                            0b00000000110 => { // dsync
+                                                hints::dsync(thread, opcode);
+                                                thread.advance_pc();
+                                            }
+                                            0b00010000110 => { // hbrp
+                                                hints::hbrp(thread, opcode);
+                                                thread.advance_pc();
+                                            }
+                                            0b00000110000 => { // mfspr
+                                                hints::mfspr(thread, opcode);
                                                 thread.advance_pc();
                                             }
                                             _ => {

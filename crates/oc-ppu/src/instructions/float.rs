@@ -7,6 +7,7 @@ use crate::thread::PpuThread;
 
 /// FPSCR bit positions
 pub mod fpscr {
+    // Exception Status Bits (bits 0-24 in PowerPC numbering, high bits in our representation)
     pub const FX: u64 = 0x8000_0000_0000_0000;   // FP Exception Summary
     pub const FEX: u64 = 0x4000_0000_0000_0000;  // FP Enabled Exception Summary
     pub const VX: u64 = 0x2000_0000_0000_0000;   // FP Invalid Operation Exception Summary
@@ -25,8 +26,32 @@ pub mod fpscr {
     pub const VXSQRT: u64 = 0x0001_0000_0000_0000; // FP Invalid Op (√negative)
     pub const VXCVI: u64 = 0x0000_8000_0000_0000;  // FP Invalid Op (Invalid Integer Convert)
     
+    // FPRF (Floating-Point Result Flags) - bits 47-51 (in our representation, bits 12-16)
+    pub const FPRF_MASK: u64 = 0x0001_F000;        // FPRF mask (bits 12-16)
+    pub const FPRF_C: u64 = 0x0001_0000;           // FPRF Class descriptor
+    pub const FPRF_FL: u64 = 0x0000_8000;          // FPRF Less than
+    pub const FPRF_FG: u64 = 0x0000_4000;          // FPRF Greater than
+    pub const FPRF_FE: u64 = 0x0000_2000;          // FPRF Equal
+    pub const FPRF_FU: u64 = 0x0000_1000;          // FPRF Unordered
+    
+    // Exception Enable Bits (bits 24-28 in PowerPC numbering)
+    pub const VE: u64 = 0x0000_0000_0000_0080;    // FP Invalid Op Exception Enable
+    pub const OE: u64 = 0x0000_0000_0000_0040;    // FP Overflow Exception Enable
+    pub const UE: u64 = 0x0000_0000_0000_0020;    // FP Underflow Exception Enable
+    pub const ZE: u64 = 0x0000_0000_0000_0010;    // FP Zero Divide Exception Enable
+    pub const XE: u64 = 0x0000_0000_0000_0008;    // FP Inexact Exception Enable
+    
+    // Non-IEEE Mode bit
+    pub const NI: u64 = 0x0000_0000_0000_0004;    // Non-IEEE Mode (Denormals Are Zero)
+    
     /// Rounding mode mask (bits 62-63)
     pub const RN_MASK: u64 = 0x0000_0000_0000_0003;
+    
+    /// Mask for all VX sub-exception bits
+    pub const VX_ALL: u64 = VXSNAN | VXISI | VXIDI | VXZDZ | VXIMZ | VXVC | VXSQRT | VXCVI;
+    
+    /// Mask for all exception enable bits
+    pub const ENABLE_ALL: u64 = VE | OE | UE | ZE | XE;
 }
 
 /// Rounding modes
@@ -112,6 +137,67 @@ pub fn update_fprf(thread: &mut PpuThread, value: f64) {
     // FPRF is in bits 47-51 of FPSCR (counting from bit 0 at the left in PowerPC)
     // In our 64-bit representation, this is bits 12-16 from the right
     thread.regs.fpscr = (thread.regs.fpscr & !0x0001_F000) | ((fprf as u64) << 12);
+}
+
+/// Update FEX (Floating-Point Enabled Exception Summary) based on exception status and enable bits
+/// FEX is set if any exception bit is set AND the corresponding enable bit is set
+pub fn update_fex(thread: &mut PpuThread) {
+    let fpscr = thread.regs.fpscr;
+    
+    // Check each exception type against its enable bit
+    let fex = 
+        ((fpscr & fpscr::VX) != 0 && (fpscr & fpscr::VE) != 0) ||  // Invalid op enabled
+        ((fpscr & fpscr::OX) != 0 && (fpscr & fpscr::OE) != 0) ||  // Overflow enabled
+        ((fpscr & fpscr::UX) != 0 && (fpscr & fpscr::UE) != 0) ||  // Underflow enabled
+        ((fpscr & fpscr::ZX) != 0 && (fpscr & fpscr::ZE) != 0) ||  // Zero divide enabled
+        ((fpscr & fpscr::XX) != 0 && (fpscr & fpscr::XE) != 0);    // Inexact enabled
+    
+    if fex {
+        thread.regs.fpscr |= fpscr::FEX;
+    } else {
+        thread.regs.fpscr &= !fpscr::FEX;
+    }
+}
+
+/// Update VX (Invalid Operation Summary) based on all VXSNAN, VXISI, etc. bits
+pub fn update_vx(thread: &mut PpuThread) {
+    let fpscr = thread.regs.fpscr;
+    
+    // VX is set if any of the VX sub-exception bits are set
+    let vx = (fpscr & fpscr::VX_ALL) != 0;
+    
+    if vx {
+        thread.regs.fpscr |= fpscr::VX;
+    } else {
+        thread.regs.fpscr &= !fpscr::VX;
+    }
+}
+
+/// Handle denormalized numbers per IEEE 754 and PowerPC specifications
+/// In "Non-IEEE Mode" (NI bit set), denormals are treated as zero
+pub fn handle_denormalized(thread: &PpuThread, value: f64) -> f64 {
+    let class = classify_f64(value);
+    
+    // Check if Non-IEEE Mode is enabled (NI bit)
+    let ni_mode = (thread.regs.fpscr & fpscr::NI) != 0;
+    
+    if ni_mode {
+        // In Non-IEEE mode, treat denormals as zero with the same sign
+        match class {
+            FpClass::PositiveDenormalized => 0.0,
+            FpClass::NegativeDenormalized => -0.0,
+            _ => value,
+        }
+    } else {
+        // Normal IEEE 754 mode - preserve denormals
+        value
+    }
+}
+
+/// Check if any FP exception would cause a trap (enabled exception occurred)
+/// Returns true if a program interrupt should be generated
+pub fn check_fp_trap(thread: &PpuThread) -> bool {
+    (thread.regs.fpscr & fpscr::FEX) != 0
 }
 
 /// Update CR1 based on FPSCR exception bits
@@ -393,6 +479,10 @@ pub fn check_fp_exceptions_with_rounding(
     }
     
     thread.regs.fpscr = fpscr;
+    
+    // Update VX and FEX summary bits
+    update_vx(thread);
+    update_fex(thread);
 }
 
 /// Check for and set FPSCR exception flags (legacy function for compatibility)
@@ -426,6 +516,10 @@ pub fn check_fp_exceptions(thread: &mut PpuThread, value: f64, operation: &str) 
     }
     
     thread.regs.fpscr = fpscr;
+    
+    // Update VX and FEX summary bits
+    update_vx(thread);
+    update_fex(thread);
 }
 
 /// Check for invalid operations in FMA operations
@@ -448,6 +542,10 @@ pub fn check_fma_invalid(thread: &mut PpuThread, a: f64, c: f64, b: f64) {
     }
     
     thread.regs.fpscr = fpscr;
+    
+    // Update VX and FEX summary bits
+    update_vx(thread);
+    update_fex(thread);
 }
 
 /// Check for divide-by-zero and divide invalid operations
@@ -475,6 +573,10 @@ pub fn check_divide_invalid(thread: &mut PpuThread, dividend: f64, divisor: f64)
     }
     
     thread.regs.fpscr = fpscr;
+    
+    // Update VX and FEX summary bits
+    update_vx(thread);
+    update_fex(thread);
 }
 
 /// Perform rounding based on FPSCR rounding mode
@@ -738,5 +840,58 @@ mod tests {
         let sqrt2 = 2.0f64.sqrt();
         let (inexact, _rounded_away) = check_rounding_occurred(&[2.0], sqrt2, "sqrt");
         assert!(inexact, "sqrt(2) should be inexact");
+    }
+    
+    #[test]
+    fn test_fpscr_exception_enable_bits() {
+        // Verify the enable bit constants are correct (checking bit positions)
+        assert_eq!(fpscr::VE, 0x0000_0000_0000_0080u64, "VE should be bit 7");
+        assert_eq!(fpscr::OE, 0x0000_0000_0000_0040u64, "OE should be bit 6");
+        assert_eq!(fpscr::UE, 0x0000_0000_0000_0020u64, "UE should be bit 5");
+        assert_eq!(fpscr::ZE, 0x0000_0000_0000_0010u64, "ZE should be bit 4");
+        assert_eq!(fpscr::XE, 0x0000_0000_0000_0008u64, "XE should be bit 3");
+    }
+    
+    #[test]
+    fn test_fpscr_ni_mode() {
+        assert_eq!(fpscr::NI, 0x0000_0000_0000_0004u64, "NI should be bit 2");
+    }
+    
+    #[test]
+    fn test_fpscr_vx_all_mask() {
+        // VX_ALL should include all invalid operation sub-exception bits
+        assert!((fpscr::VX_ALL & fpscr::VXSNAN) != 0);
+        assert!((fpscr::VX_ALL & fpscr::VXISI) != 0);
+        assert!((fpscr::VX_ALL & fpscr::VXIDI) != 0);
+        assert!((fpscr::VX_ALL & fpscr::VXZDZ) != 0);
+        assert!((fpscr::VX_ALL & fpscr::VXIMZ) != 0);
+        assert!((fpscr::VX_ALL & fpscr::VXVC) != 0);
+        assert!((fpscr::VX_ALL & fpscr::VXSQRT) != 0);
+        assert!((fpscr::VX_ALL & fpscr::VXCVI) != 0);
+    }
+    
+    #[test]
+    fn test_handle_denormalized() {
+        use crate::thread::PpuThread;
+        use oc_memory::MemoryManager;
+        
+        let mem = MemoryManager::new().unwrap();
+        let mut thread = PpuThread::new(0, mem);
+        
+        // In normal mode, denormals are preserved
+        thread.regs.fpscr = 0; // NI = 0
+        let small = 5e-324f64; // smallest denormalized f64
+        assert!(matches!(classify_f64(small), FpClass::PositiveDenormalized));
+        let result = handle_denormalized(&thread, small);
+        assert_eq!(result, small, "Denormal should be preserved in normal mode");
+        
+        // In NI mode, denormals become zero
+        thread.regs.fpscr = fpscr::NI;
+        let result = handle_denormalized(&thread, small);
+        assert_eq!(result, 0.0, "Positive denormal should become +0 in NI mode");
+        
+        let neg_small = -5e-324f64;
+        let result = handle_denormalized(&thread, neg_small);
+        assert!(result.is_sign_negative() && result == 0.0, "Negative denormal should become -0 in NI mode");
     }
 }

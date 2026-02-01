@@ -597,6 +597,7 @@ impl PpuInterpreter {
             InstructionForm::X => self.execute_x_form(thread, opcode, decoded.xo),
             InstructionForm::XO => self.execute_xo_form(thread, opcode, decoded.xo),
             InstructionForm::XL => self.execute_xl_form(thread, opcode, decoded.xo),
+            InstructionForm::XS => self.execute_xs_form(thread, opcode),
             InstructionForm::M => self.execute_m_form(thread, opcode, decoded.op),
             InstructionForm::MD => self.execute_md_form(thread, opcode),
             InstructionForm::MDS => self.execute_mds_form(thread, opcode),
@@ -1732,6 +1733,12 @@ impl PpuInterpreter {
                 thread.set_fpr(rt as usize, result);
                 if rc { float::update_cr1(thread); }
             }
+            // mcrfs - Move to CR from FPSCR
+            64 => {
+                let bf = (rt >> 2) & 7;
+                let bfa = (ra >> 2) & 7;
+                system::mcrfs(thread, bf, bfa);
+            }
             // sync - Synchronize
             598 => {
                 std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
@@ -1779,8 +1786,19 @@ impl PpuInterpreter {
             // Same implementation as mtcrf
             // mfmsr - Move From Machine State Register (privileged)
             83 => {
-                // For emulation, return a fixed MSR value
-                thread.set_gpr(rt as usize, 0x8000_0000_0000_0000); // 64-bit mode
+                // Return the actual MSR value
+                thread.set_gpr(rt as usize, system::mfmsr(thread));
+            }
+            // mtmsr - Move To Machine State Register (privileged)
+            146 => {
+                let value = thread.gpr(rt as usize);
+                system::mtmsr(thread, value);
+            }
+            // mtmsrd - Move To Machine State Register Doubleword (privileged)
+            178 => {
+                let value = thread.gpr(rt as usize);
+                let l = (opcode >> 16) & 1 != 0; // L bit
+                system::mtmsrd(thread, value, l);
             }
             // XO-form arithmetic instructions (dispatched as X-form by decoder)
             // Note: These have a 10-bit XO in the decoder, but only 9-bit in the instruction
@@ -1817,6 +1835,17 @@ impl PpuInterpreter {
                     thread.set_xer_ov(overflow);
                     if overflow { thread.set_xer_so(true); }
                 }
+                if rc { self.update_cr0(thread, result); }
+            }
+            // srawi - Shift Right Algebraic Word Immediate
+            824 => {
+                let sh = rb; // For srawi, the shift amount is in the RB field position
+                let value = thread.gpr(rt as usize) as i32;
+                let result = (value >> (sh as u32)) as i64 as u64;
+                // CA is set if (RS)[32:63] is negative and any 1-bits are shifted out
+                let ca = value < 0 && (thread.gpr(rt as usize) as u32 & ((1u32 << sh) - 1)) != 0;
+                thread.set_gpr(ra as usize, result);
+                thread.set_xer_ca(ca);
                 if rc { self.update_cr0(thread, result); }
             }
             _ => {
@@ -2593,6 +2622,40 @@ impl PpuInterpreter {
         thread.set_gpr(ra as usize, result);
         if rc {
             self.update_cr0(thread, result);
+        }
+
+        thread.advance_pc();
+        Ok(())
+    }
+
+    /// Execute XS-form instructions (64-bit shift with immediate)
+    /// Currently handles: sradi (xo=413)
+    fn execute_xs_form(&self, thread: &mut PpuThread, opcode: u32) -> Result<(), PpuError> {
+        let (rs, ra, sh, xo, rc) = PpuDecoder::xs_form(opcode);
+
+        match xo {
+            // sradi - Shift Right Algebraic Doubleword Immediate
+            413 => {
+                let value = thread.gpr(rs as usize) as i64;
+                let result = value >> (sh as u32);
+                // CA is set if (RS) is negative and any 1-bits are shifted out
+                let ca = value < 0 && (thread.gpr(rs as usize) & ((1u64 << sh) - 1)) != 0;
+                thread.set_gpr(ra as usize, result as u64);
+                thread.set_xer_ca(ca);
+                if rc {
+                    self.update_cr0(thread, result as u64);
+                }
+            }
+            _ => {
+                tracing::warn!(
+                    "Unimplemented XS-form xo {} at 0x{:08x} (opcode: 0x{:08x})",
+                    xo, thread.pc(), opcode
+                );
+                return Err(PpuError::InvalidInstruction {
+                    addr: thread.pc() as u32,
+                    opcode,
+                });
+            }
         }
 
         thread.advance_pc();
@@ -3793,5 +3856,130 @@ mod tests {
         
         interpreter.reset_instruction_count();
         assert_eq!(interpreter.instruction_count(), 0);
+    }
+
+    #[test]
+    fn test_srawi_positive() {
+        let (interpreter, mut thread) = create_test_env();
+        thread.set_pc(0x2000_0000);
+        
+        // Setup: positive value to shift right algebraically
+        thread.set_gpr(3, 0x1000_0000u64); // 268,435,456 in r3
+        
+        // srawi r4, r3, 4 - shift right by 4 bits
+        // X-form: op=31, rs=3, ra=4, sh=4, xo=824, rc=0
+        // Bits: 31 << 26 | 3 << 21 | 4 << 16 | 4 << 11 | 824 << 1 | 0
+        let opcode = 0x7C64_2670u32;
+        
+        interpreter.memory.write_be32(0x2000_0000, opcode).unwrap();
+        interpreter.step(&mut thread).unwrap();
+        
+        // Result should be 0x0100_0000 (16,777,216)
+        assert_eq!(thread.gpr(4), 0x0100_0000u64);
+        // CA should be 0 (positive value, no bits shifted out)
+        assert!(!thread.get_xer_ca());
+    }
+
+    #[test]
+    fn test_srawi_negative() {
+        let (interpreter, mut thread) = create_test_env();
+        thread.set_pc(0x2000_0000);
+        
+        // Setup: negative value (sign-extended 32-bit)
+        thread.set_gpr(3, 0xFFFF_FFFF_F000_0010u64); // -268,435,440 as 64-bit sign-extended
+        
+        // srawi r4, r3, 4 - shift right by 4 bits
+        let opcode = 0x7C64_2670u32;
+        
+        interpreter.memory.write_be32(0x2000_0000, opcode).unwrap();
+        interpreter.step(&mut thread).unwrap();
+        
+        // The low 32 bits are 0xF000_0010, shifted right 4 = 0xFF00_0001
+        // Sign-extended to 64-bit: 0xFFFF_FFFF_FF00_0001
+        assert_eq!(thread.gpr(4), 0xFFFF_FFFF_FF00_0001u64);
+        // CA should be 0 because no 1-bits were shifted out (low 4 bits of 0xF0000010 are 0)
+        assert!(!thread.get_xer_ca());
+    }
+
+    #[test]
+    fn test_srawi_with_carry() {
+        let (interpreter, mut thread) = create_test_env();
+        thread.set_pc(0x2000_0000);
+        
+        // Setup: negative value with 1-bits in low positions
+        thread.set_gpr(3, 0xFFFF_FFFF_F000_000Fu64); // negative, low 4 bits are 1s
+        
+        // srawi r4, r3, 4 - shift right by 4 bits
+        let opcode = 0x7C64_2670u32;
+        
+        interpreter.memory.write_be32(0x2000_0000, opcode).unwrap();
+        interpreter.step(&mut thread).unwrap();
+        
+        // Result: 0xFFFF_FFFF_FF00_0000 (sign-extended)
+        assert_eq!(thread.gpr(4), 0xFFFF_FFFF_FF00_0000u64);
+        // CA should be 1 because negative and 1-bits were shifted out
+        assert!(thread.get_xer_ca());
+    }
+
+    #[test]
+    fn test_sradi_positive() {
+        let (interpreter, mut thread) = create_test_env();
+        thread.set_pc(0x2000_0000);
+        
+        // Setup: positive 64-bit value
+        thread.set_gpr(3, 0x1000_0000_0000_0000u64);
+        
+        // sradi r4, r3, 4 - shift right by 4 bits
+        // XS-form: op=31, rs=3, ra=4, sh[0:4]=4, xo=413, sh[5]=0, rc=0
+        // The encoding is: 31 << 26 | 3 << 21 | 4 << 16 | 4 << 11 | 413 << 2 | 0 << 1 | 0
+        let opcode = 0x7C64_2674u32;
+        
+        interpreter.memory.write_be32(0x2000_0000, opcode).unwrap();
+        interpreter.step(&mut thread).unwrap();
+        
+        // Result should be 0x0100_0000_0000_0000
+        assert_eq!(thread.gpr(4), 0x0100_0000_0000_0000u64);
+        // CA should be 0 (positive value)
+        assert!(!thread.get_xer_ca());
+    }
+
+    #[test]
+    fn test_sradi_negative() {
+        let (interpreter, mut thread) = create_test_env();
+        thread.set_pc(0x2000_0000);
+        
+        // Setup: negative 64-bit value
+        thread.set_gpr(3, 0xF000_0000_0000_0010u64);
+        
+        // sradi r4, r3, 4 - shift right by 4 bits  
+        let opcode = 0x7C64_2674u32;
+        
+        interpreter.memory.write_be32(0x2000_0000, opcode).unwrap();
+        interpreter.step(&mut thread).unwrap();
+        
+        // Result should be 0xFF00_0000_0000_0001 (sign extended)
+        assert_eq!(thread.gpr(4), 0xFF00_0000_0000_0001u64);
+        // CA should be 0 (low 4 bits of source were 0)
+        assert!(!thread.get_xer_ca());
+    }
+
+    #[test]
+    fn test_sradi_with_carry() {
+        let (interpreter, mut thread) = create_test_env();
+        thread.set_pc(0x2000_0000);
+        
+        // Setup: negative 64-bit value with 1-bits in low positions
+        thread.set_gpr(3, 0xF000_0000_0000_000Fu64);
+        
+        // sradi r4, r3, 4 - shift right by 4 bits
+        let opcode = 0x7C64_2674u32;
+        
+        interpreter.memory.write_be32(0x2000_0000, opcode).unwrap();
+        interpreter.step(&mut thread).unwrap();
+        
+        // Result should be 0xFF00_0000_0000_0000 (sign extended)
+        assert_eq!(thread.gpr(4), 0xFF00_0000_0000_0000u64);
+        // CA should be 1 (negative and 1-bits shifted out)
+        assert!(thread.get_xer_ca());
     }
 }

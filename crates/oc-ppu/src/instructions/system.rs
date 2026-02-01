@@ -32,9 +32,149 @@ pub mod spr {
     pub const PIR: u16 = 1023;    // Processor Identification Register
 }
 
+/// Machine State Register (MSR) bit positions
+pub mod msr {
+    /// SF - Sixty-Four-Bit Mode (bit 0)
+    pub const SF: u64 = 0x8000_0000_0000_0000;
+    /// HV - Hypervisor State (bit 3)
+    pub const HV: u64 = 0x1000_0000_0000_0000;
+    /// VEC - VMX/AltiVec Enable (bit 38 from right, bit 25 from left in 64-bit)
+    pub const VEC: u64 = 0x0000_0000_0200_0000;
+    /// EE - External Interrupt Enable (bit 48 from right)
+    pub const EE: u64 = 0x0000_0000_0000_8000;
+    /// PR - Problem State / User Mode (bit 49 from right)
+    pub const PR: u64 = 0x0000_0000_0000_4000;
+    /// FP - Floating-Point Available (bit 50 from right)
+    pub const FP: u64 = 0x0000_0000_0000_2000;
+    /// ME - Machine Check Interrupt Enable (bit 51 from right)
+    pub const ME: u64 = 0x0000_0000_0000_1000;
+    /// FE0 - Floating-Point Exception Mode 0 (bit 52 from right)
+    pub const FE0: u64 = 0x0000_0000_0000_0800;
+    /// SE - Single-Step Trace Enable (bit 53 from right)
+    pub const SE: u64 = 0x0000_0000_0000_0400;
+    /// BE - Branch Trace Enable (bit 54 from right)
+    pub const BE: u64 = 0x0000_0000_0000_0200;
+    /// FE1 - Floating-Point Exception Mode 1 (bit 55 from right)
+    pub const FE1: u64 = 0x0000_0000_0000_0100;
+    /// IR - Instruction Relocate (bit 58 from right)
+    pub const IR: u64 = 0x0000_0000_0000_0020;
+    /// DR - Data Relocate (bit 59 from right)
+    pub const DR: u64 = 0x0000_0000_0000_0010;
+    /// PMM - Performance Monitor Mark (bit 61 from right)
+    pub const PMM: u64 = 0x0000_0000_0000_0004;
+    /// RI - Recoverable Interrupt (bit 62 from right)
+    pub const RI: u64 = 0x0000_0000_0000_0002;
+    /// LE - Little-Endian Mode (bit 63 from right)
+    pub const LE: u64 = 0x0000_0000_0000_0001;
+    
+    /// Default MSR for user mode: 64-bit mode, FP enabled, VMX enabled
+    pub const USER_MODE_DEFAULT: u64 = SF | FP | VEC | RI;
+    /// Default MSR for supervisor mode: adds hypervisor, problem state cleared
+    pub const SUPERVISOR_MODE_DEFAULT: u64 = SF | HV | FP | VEC | EE | ME | RI;
+}
+
+/// Time Base frequency in Hz (Cell BE uses 79.8 MHz timebase)
+pub const TB_FREQUENCY: u64 = 79_800_000;
+
+/// Decrementer frequency in Hz (same as timebase on Cell BE)
+pub const DEC_FREQUENCY: u64 = TB_FREQUENCY;
+
 /// Get the Cell BE Processor Version Register value
 /// This identifies it as a Cell Broadband Engine
 pub const CELL_PVR: u64 = 0x0070_0100; // Cell BE
+
+/// Get current time base value based on system time
+/// This provides a consistent timebase across reads
+fn get_current_tb() -> u64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    // Convert nanoseconds to timebase ticks: nanos * TB_FREQUENCY / 1e9
+    // Use 128-bit arithmetic to avoid overflow
+    ((nanos as u128 * TB_FREQUENCY as u128) / 1_000_000_000) as u64
+}
+
+/// Move From Time Base (mftb) - Returns the current time base value
+pub fn mftb(thread: &PpuThread) -> u64 {
+    // Use stored time base if available, otherwise compute from system time
+    if thread.regs.tb != 0 {
+        thread.regs.tb
+    } else {
+        get_current_tb()
+    }
+}
+
+/// Move From Time Base Upper (mftbu) - Returns upper 32 bits of time base
+pub fn mftbu(thread: &PpuThread) -> u64 {
+    let tb = if thread.regs.tb != 0 {
+        thread.regs.tb
+    } else {
+        get_current_tb()
+    };
+    (tb >> 32) & 0xFFFF_FFFF
+}
+
+/// Move From Machine State Register (mfmsr)
+pub fn mfmsr(thread: &PpuThread) -> u64 {
+    thread.regs.msr
+}
+
+/// Move To Machine State Register (mtmsr)
+/// Note: This is a privileged instruction - in user mode it would cause an exception
+pub fn mtmsr(thread: &mut PpuThread, value: u64) {
+    // In emulation, we allow MSR writes but log them
+    // Real hardware would check privilege level
+    tracing::trace!("mtmsr: MSR = 0x{:016x}", value);
+    thread.regs.msr = value;
+}
+
+/// Move To Machine State Register Direct (mtmsrd)
+/// Sets full 64-bit MSR value
+pub fn mtmsrd(thread: &mut PpuThread, value: u64, l: bool) {
+    if l {
+        // L=1: Only update EE and RI bits
+        let mask = msr::EE | msr::RI;
+        thread.regs.msr = (thread.regs.msr & !mask) | (value & mask);
+    } else {
+        // L=0: Update all bits
+        thread.regs.msr = value;
+    }
+    tracing::trace!("mtmsrd: MSR = 0x{:016x} (L={})", thread.regs.msr, l);
+}
+
+/// Update the decrementer value
+/// Returns true if decrementer crosses from positive to negative (would cause an interrupt)
+pub fn update_decrementer(thread: &mut PpuThread, cycles: u32) -> bool {
+    let old_dec = thread.regs.dec;
+    
+    // Decrement by the number of cycles
+    let (new_dec, overflow) = old_dec.overflowing_sub(cycles);
+    thread.regs.dec = new_dec;
+    
+    // Decrementer exception occurs when it transitions from positive to negative
+    // This happens when: old was positive (high bit 0) and new is negative (high bit 1)
+    let was_positive = (old_dec as i32) >= 0;
+    let now_negative = (new_dec as i32) < 0;
+    
+    was_positive && (overflow || now_negative)
+}
+
+/// Check if decrementer interrupt should fire
+/// Returns true if DEC is negative and EE is enabled in MSR
+pub fn check_decrementer_interrupt(thread: &PpuThread) -> bool {
+    // Check if decrementer has gone negative (high bit set)
+    let dec_negative = (thread.regs.dec as i32) < 0;
+    // Check if external interrupts are enabled
+    let ee_enabled = (thread.regs.msr & msr::EE) != 0;
+    
+    dec_negative && ee_enabled
+}
+
+/// Update time base by a number of cycles
+pub fn update_timebase(thread: &mut PpuThread, cycles: u64) {
+    thread.regs.tb = thread.regs.tb.wrapping_add(cycles);
+}
 
 /// Read from Special Purpose Register
 pub fn mfspr(thread: &PpuThread, spr_num: u16) -> u64 {
@@ -43,27 +183,15 @@ pub fn mfspr(thread: &PpuThread, spr_num: u16) -> u64 {
         spr::LR => thread.regs.lr,
         spr::CTR => thread.regs.ctr,
         spr::PVR => CELL_PVR,
-        spr::TB => {
-            // Time base - use system time for now
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64 / 40 // ~25MHz TB frequency
-        }
-        spr::TBU => {
-            let tb = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64 / 40;
-            (tb >> 32) & 0xFFFF_FFFF
-        }
+        spr::TB => mftb(thread),
+        spr::TBU => mftbu(thread),
         spr::VRSAVE => 0, // VMX register save mask
         spr::PIR => thread.id as u64,
         // Save/Restore registers for exception handling
         spr::SRR0 => thread.regs.srr0,
         spr::SRR1 => thread.regs.srr1,
-        // Decrementer (returns stored value)
-        spr::DEC => thread.regs.dec as u64,
+        // Decrementer (returns stored value, sign-extended for 64-bit)
+        spr::DEC => thread.regs.dec as i32 as i64 as u64,
         // SPRG scratch registers - commonly used by OS/hypervisor
         spr::SPRG0 | spr::SPRG1 | spr::SPRG2 | spr::SPRG3 => {
             // SPRGs are typically supervisor-only, return 0 for user mode
@@ -186,6 +314,39 @@ pub fn mtfsb0(thread: &mut PpuThread, bt: u8) {
 /// Move to FPSCR Bit 1 (clear)
 pub fn mtfsb1(thread: &mut PpuThread, bt: u8) {
     thread.regs.fpscr |= 1u64 << (31 - bt);
+}
+
+/// Move to CR from FPSCR (mcrfs)
+/// Copies a 4-bit field from FPSCR to the specified CR field
+/// bf specifies which CR field (0-7) to write
+/// bfa specifies which FPSCR field (0-7) to read
+/// After copying, sticky exception bits in the source FPSCR field are cleared
+pub fn mcrfs(thread: &mut PpuThread, bf: u8, bfa: u8) {
+    // FPSCR fields are numbered 0-7, each 4 bits
+    // Field 0 is bits 32-35 (FX, FEX, VX, OX), etc.
+    let shift = (7 - bfa) * 4;
+    let fpscr_field = ((thread.regs.fpscr >> (32 + shift)) & 0xF) as u32;
+    
+    // Set the CR field
+    thread.set_cr_field(bf as usize, fpscr_field);
+    
+    // Clear only sticky exception bits in the copied FPSCR field
+    // FEX and VX are summary bits and should NOT be cleared directly
+    // Per PowerPC specification, only specific sticky bits are cleared:
+    let clear_mask: u64 = match bfa {
+        0 => 0b1001, // Field 0: FX, FEX, VX, OX - clear FX (bit 0) and OX (bit 3) only
+        1 => 0b1111, // Field 1: UX, ZX, XX, VXSNAN - clear all (all are sticky)
+        2 => 0b1111, // Field 2: VXISI, VXIDI, VXZDZ, VXIMZ - clear all (all are sticky)
+        3 => 0b1000, // Field 3: VXVC, FR, FI, FPRF[C] - clear only VXVC (bit 0)
+        4 => 0b0100, // Field 4: VXSQRT (bit 1), VXCVI (bit 0) - clear VXSQRT only
+        5 => 0b0001, // Field 5: VE, OE, UE, ZE - no sticky bits here, but VXCVI extends here
+        _ => 0x0,    // Fields 6-7: no sticky bits to clear
+    };
+    
+    if clear_mask != 0 {
+        let clear_bits = clear_mask << (32 + shift);
+        thread.regs.fpscr &= !clear_bits;
+    }
 }
 
 /// Condition Register AND
@@ -436,5 +597,131 @@ mod tests {
         // Trap if a < b (signed, immediate, 64-bit)
         assert!(tdi(&thread, 0x10, (-1i64) as u64, 0));
         assert!(!tdi(&thread, 0x10, 5, 3));
+    }
+    
+    #[test]
+    fn test_mcrfs() {
+        let mut thread = create_test_thread();
+        
+        // Set up FPSCR with test values in field 0 (FX, FEX, VX, OX)
+        // Field 0 is bits 32-35 (counting from 0 at MSB)
+        thread.regs.fpscr = 0xF000_0000_0000_0000; // All 4 bits of field 0 set
+        
+        // Copy FPSCR field 0 to CR field 0
+        mcrfs(&mut thread, 0, 0);
+        
+        // Check that CR field 0 has the value
+        let cr_field0 = (thread.regs.cr >> 28) & 0xF;
+        assert_eq!(cr_field0, 0xF, "CR field 0 should have FPSCR field 0 value");
+        
+        // Reset and test field 1 (UX, ZX, XX, VXSNAN)
+        thread.regs.fpscr = 0x0A00_0000_0000_0000; // Some bits in field 1
+        thread.regs.cr = 0;
+        
+        mcrfs(&mut thread, 2, 1); // Copy FPSCR field 1 to CR field 2
+        
+        let cr_field2 = (thread.regs.cr >> 20) & 0xF;
+        assert_eq!(cr_field2, 0xA, "CR field 2 should have FPSCR field 1 value");
+    }
+    
+    #[test]
+    fn test_msr_constants() {
+        // Verify MSR bit positions are correct
+        assert_eq!(msr::SF, 0x8000_0000_0000_0000, "SF bit should be bit 0 (MSB)");
+        assert_eq!(msr::HV, 0x1000_0000_0000_0000, "HV bit should be bit 3");
+        assert_eq!(msr::EE, 0x0000_0000_0000_8000, "EE bit position");
+        assert_eq!(msr::PR, 0x0000_0000_0000_4000, "PR bit position");
+    }
+    
+    #[test]
+    fn test_mfmsr_mtmsr() {
+        let mut thread = create_test_thread();
+        
+        // Initial MSR should be default value (64-bit mode)
+        let initial_msr = mfmsr(&thread);
+        assert!((initial_msr & msr::SF) != 0, "MSR should have 64-bit mode enabled");
+        
+        // Set a new MSR value
+        let new_msr = msr::SF | msr::FP | msr::VEC | msr::EE;
+        mtmsr(&mut thread, new_msr);
+        
+        assert_eq!(mfmsr(&thread), new_msr, "MSR should be updated");
+    }
+    
+    #[test]
+    fn test_mtmsrd_l_bit() {
+        let mut thread = create_test_thread();
+        
+        // Set initial MSR with some bits
+        thread.regs.msr = msr::SF | msr::FP | msr::VEC;
+        
+        // With L=1, only EE and RI should be updated
+        let value = msr::EE | msr::RI | msr::PR; // Try to set PR too
+        mtmsrd(&mut thread, value, true);
+        
+        // EE and RI should be set, but PR should NOT be set
+        assert!((thread.regs.msr & msr::EE) != 0, "EE should be set");
+        assert!((thread.regs.msr & msr::RI) != 0, "RI should be set");
+        assert!((thread.regs.msr & msr::PR) == 0, "PR should NOT be set with L=1");
+        assert!((thread.regs.msr & msr::SF) != 0, "SF should still be set");
+        
+        // With L=0, all bits should be updated
+        mtmsrd(&mut thread, msr::SF | msr::PR, false);
+        assert!((thread.regs.msr & msr::EE) == 0, "EE should be cleared with L=0");
+        assert!((thread.regs.msr & msr::PR) != 0, "PR should be set with L=0");
+    }
+    
+    #[test]
+    fn test_mftb() {
+        let thread = create_test_thread();
+        
+        // Time base should return a non-zero value from system time
+        let tb1 = mftb(&thread);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let tb2 = mftb(&thread);
+        
+        // TB should be increasing
+        assert!(tb2 > tb1, "Time base should increase over time");
+    }
+    
+    #[test]
+    fn test_decrementer_update() {
+        let mut thread = create_test_thread();
+        
+        // Set decrementer
+        thread.regs.dec = 1000;
+        
+        // Decrement by 500 cycles
+        let overflow = update_decrementer(&mut thread, 500);
+        assert!(!overflow, "No overflow expected");
+        assert_eq!(thread.regs.dec, 500, "Decrementer should be 500");
+        
+        // Decrement by another 600 cycles - should overflow
+        let overflow = update_decrementer(&mut thread, 600);
+        assert!(overflow, "Overflow expected when going negative");
+        
+        // Test decrementing from zero - should also trigger
+        thread.regs.dec = 0;
+        let overflow = update_decrementer(&mut thread, 1);
+        assert!(overflow, "Overflow expected when decrementing from zero");
+    }
+    
+    #[test]
+    fn test_decrementer_interrupt_check() {
+        let mut thread = create_test_thread();
+        
+        // Set decrementer to positive value
+        thread.regs.dec = 100;
+        thread.regs.msr = msr::SF | msr::EE; // Enable external interrupts
+        
+        assert!(!check_decrementer_interrupt(&thread), "No interrupt when DEC is positive");
+        
+        // Make decrementer negative
+        thread.regs.dec = 0xFFFF_FFFF; // -1 as signed
+        assert!(check_decrementer_interrupt(&thread), "Interrupt when DEC is negative and EE enabled");
+        
+        // Disable EE - no interrupt should fire
+        thread.regs.msr &= !msr::EE;
+        assert!(!check_decrementer_interrupt(&thread), "No interrupt when EE disabled");
     }
 }
