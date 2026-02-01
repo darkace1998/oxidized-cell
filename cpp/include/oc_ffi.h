@@ -330,6 +330,85 @@ uint32_t oc_ppu_jit_get_live_gprs(oc_ppu_jit_t* jit, uint32_t address);
  */
 uint32_t oc_ppu_jit_get_modified_gprs(oc_ppu_jit_t* jit, uint32_t address);
 
+// PPU JIT Enhanced Register Allocation APIs
+
+/**
+ * Add control flow edge for cross-block liveness analysis
+ */
+void oc_ppu_jit_reg_add_edge(oc_ppu_jit_t* jit, uint32_t from_addr, uint32_t to_addr);
+
+/**
+ * Propagate liveness across blocks (backwards dataflow analysis)
+ * Returns: 1 if converged, 0 if still iterating
+ */
+int oc_ppu_jit_reg_propagate_liveness(oc_ppu_jit_t* jit);
+
+/**
+ * Allocate a spill slot for a register
+ * reg_type: 0=GPR, 1=FPR, 2=VR
+ * Returns: slot ID for later retrieval
+ */
+uint32_t oc_ppu_jit_reg_allocate_spill(oc_ppu_jit_t* jit, uint8_t reg_num, 
+                                        uint8_t reg_type, uint32_t spill_addr);
+
+/**
+ * Free a spill slot after filling
+ */
+void oc_ppu_jit_reg_free_spill(oc_ppu_jit_t* jit, uint32_t slot_id, uint32_t fill_addr);
+
+/**
+ * Get stack offset for a spill slot
+ * Returns: stack offset, or -1 if not found
+ */
+int oc_ppu_jit_reg_get_spill_offset(oc_ppu_jit_t* jit, uint32_t slot_id);
+
+/**
+ * Check if a register needs to be spilled at a block
+ * Returns: 1 if spill needed, 0 otherwise
+ */
+int oc_ppu_jit_reg_needs_spill(oc_ppu_jit_t* jit, uint32_t block_addr, 
+                                uint8_t reg_num, uint8_t reg_type);
+
+/**
+ * Get live-in register mask for a block
+ * reg_type: 0=GPR, 1=FPR, 2=VR
+ */
+uint32_t oc_ppu_jit_reg_get_live_in(oc_ppu_jit_t* jit, uint32_t block_addr, uint8_t reg_type);
+
+/**
+ * Get live-out register mask for a block
+ * reg_type: 0=GPR, 1=FPR, 2=VR
+ */
+uint32_t oc_ppu_jit_reg_get_live_out(oc_ppu_jit_t* jit, uint32_t block_addr, uint8_t reg_type);
+
+/**
+ * Run register copy coalescing pass
+ * Returns: number of copies eliminated
+ */
+size_t oc_ppu_jit_reg_coalesce_copies(oc_ppu_jit_t* jit);
+
+/**
+ * Get coalesced register (after copy elimination)
+ */
+uint8_t oc_ppu_jit_reg_get_coalesced(oc_ppu_jit_t* jit, uint8_t reg, uint8_t reg_type);
+
+/**
+ * Get register allocation statistics
+ */
+void oc_ppu_jit_reg_get_stats(oc_ppu_jit_t* jit, uint64_t* blocks_analyzed,
+                               uint64_t* total_spills, uint64_t* total_fills,
+                               uint64_t* copies_eliminated);
+
+/**
+ * Reset register allocation statistics
+ */
+void oc_ppu_jit_reg_reset_stats(oc_ppu_jit_t* jit);
+
+/**
+ * Clear all register allocation state
+ */
+void oc_ppu_jit_reg_clear(oc_ppu_jit_t* jit);
+
 // PPU JIT Lazy Compilation APIs
 
 /**

@@ -1468,6 +1468,539 @@ struct RegisterAllocator {
 };
 
 /**
+ * Spill slot for register spilling to memory
+ */
+struct SpillSlot {
+    uint32_t slot_id;       // Unique slot identifier
+    uint32_t offset;        // Stack offset (from frame pointer)
+    uint8_t reg_num;        // Original register number
+    uint8_t reg_type;       // 0=GPR, 1=FPR, 2=VR
+    uint32_t spill_addr;    // Instruction address where spill occurred
+    uint32_t fill_addr;     // Instruction address where fill occurred (0 if not filled)
+    bool is_active;         // Whether the slot is currently in use
+    
+    SpillSlot()
+        : slot_id(0), offset(0), reg_num(0), reg_type(0),
+          spill_addr(0), fill_addr(0), is_active(false) {}
+    
+    SpillSlot(uint32_t id, uint32_t off, uint8_t reg, uint8_t type, uint32_t addr)
+        : slot_id(id), offset(off), reg_num(reg), reg_type(type),
+          spill_addr(addr), fill_addr(0), is_active(true) {}
+};
+
+/**
+ * Cross-block register state for inter-procedural analysis
+ */
+struct CrossBlockState {
+    uint32_t block_addr;                     // Address of the basic block
+    uint32_t live_in_gprs;                   // GPRs live at block entry
+    uint32_t live_out_gprs;                  // GPRs live at block exit
+    uint32_t live_in_fprs;                   // FPRs live at block entry
+    uint32_t live_out_fprs;                  // FPRs live at block exit
+    uint32_t live_in_vrs;                    // VRs live at block entry
+    uint32_t live_out_vrs;                   // VRs live at block exit
+    std::vector<uint32_t> successors;        // Successor block addresses
+    std::vector<uint32_t> predecessors;      // Predecessor block addresses
+    bool is_analyzed;                        // Whether cross-block analysis is complete
+    
+    CrossBlockState()
+        : block_addr(0), live_in_gprs(0), live_out_gprs(0),
+          live_in_fprs(0), live_out_fprs(0), live_in_vrs(0), live_out_vrs(0),
+          is_analyzed(false) {}
+    
+    CrossBlockState(uint32_t addr)
+        : block_addr(addr), live_in_gprs(0), live_out_gprs(0),
+          live_in_fprs(0), live_out_fprs(0), live_in_vrs(0), live_out_vrs(0),
+          is_analyzed(false) {}
+};
+
+/**
+ * Register copy information for coalescing
+ */
+struct CopyInfo {
+    uint32_t instr_addr;    // Address of copy instruction
+    uint8_t src_reg;        // Source register
+    uint8_t dst_reg;        // Destination register
+    uint8_t reg_type;       // 0=GPR, 1=FPR, 2=VR
+    bool is_eliminated;     // Whether the copy was eliminated
+    
+    CopyInfo()
+        : instr_addr(0), src_reg(0), dst_reg(0), reg_type(0), is_eliminated(false) {}
+    
+    CopyInfo(uint32_t addr, uint8_t src, uint8_t dst, uint8_t type)
+        : instr_addr(addr), src_reg(src), dst_reg(dst), reg_type(type), is_eliminated(false) {}
+};
+
+/**
+ * Register allocation statistics
+ */
+struct RegAllocStatistics {
+    uint64_t blocks_analyzed;        // Number of blocks analyzed
+    uint64_t total_spills;           // Total number of spills
+    uint64_t total_fills;            // Total number of fills
+    uint64_t spills_avoided;         // Spills avoided through optimization
+    uint64_t copies_eliminated;      // Register copies eliminated
+    uint64_t cross_block_props;      // Cross-block liveness propagations
+    
+    RegAllocStatistics()
+        : blocks_analyzed(0), total_spills(0), total_fills(0),
+          spills_avoided(0), copies_eliminated(0), cross_block_props(0) {}
+    
+    double get_spill_ratio() const {
+        uint64_t total = total_spills + spills_avoided;
+        return (total > 0) ? (100.0 * total_spills / total) : 0.0;
+    }
+};
+
+/**
+ * Register coalescer for eliminating register copies
+ */
+struct RegisterCoalescer {
+    std::vector<CopyInfo> copies;              // All detected copies
+    std::unordered_map<uint8_t, uint8_t> gpr_alias;  // GPR alias mapping
+    std::unordered_map<uint8_t, uint8_t> fpr_alias;  // FPR alias mapping
+    std::unordered_map<uint8_t, uint8_t> vr_alias;   // VR alias mapping
+    oc_mutex mutex;
+    
+    // Add a register copy for potential coalescing
+    void add_copy(uint32_t instr_addr, uint8_t src, uint8_t dst, uint8_t reg_type) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        copies.push_back(CopyInfo(instr_addr, src, dst, reg_type));
+    }
+    
+    // Try to eliminate a copy by aliasing registers
+    bool try_coalesce(uint8_t src, uint8_t dst, uint8_t reg_type, 
+                       const RegisterLiveness& liveness) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        // Can't coalesce if both registers are live
+        bool src_live = false;
+        bool dst_live = false;
+        
+        switch (reg_type) {
+            case 0: // GPR
+                src_live = liveness.is_gpr_live(src);
+                dst_live = liveness.is_gpr_live(dst);
+                break;
+            case 1: // FPR
+                src_live = liveness.is_fpr_live(src);
+                dst_live = liveness.is_fpr_live(dst);
+                break;
+            case 2: // VR
+                src_live = liveness.is_vr_live(src);
+                dst_live = liveness.is_vr_live(dst);
+                break;
+        }
+        
+        // Can coalesce if both registers are not simultaneously live (non-interfering)
+        // We alias dst to src, so dst uses become src uses
+        if (!src_live && !dst_live) {
+            // Neither is live - safe to coalesce
+            switch (reg_type) {
+                case 0: gpr_alias[dst] = src; break;
+                case 1: fpr_alias[dst] = src; break;
+                case 2: vr_alias[dst] = src; break;
+            }
+            return true;
+        }
+        
+        return false;
+    }
+    
+    // Maximum iterations for alias chain traversal (one per possible register)
+    static constexpr int MAX_ALIAS_CHAIN_LENGTH = 32;
+    
+    // Get the actual register after coalescing
+    uint8_t get_actual_reg(uint8_t reg, uint8_t reg_type) const {
+        oc_lock_guard<oc_mutex> lock(const_cast<oc_mutex&>(mutex));
+        
+        const std::unordered_map<uint8_t, uint8_t>* alias_map = nullptr;
+        switch (reg_type) {
+            case 0: alias_map = &gpr_alias; break;
+            case 1: alias_map = &fpr_alias; break;
+            case 2: alias_map = &vr_alias; break;
+            default: return reg;
+        }
+        
+        // Follow alias chain (limited to prevent cycles)
+        uint8_t current = reg;
+        int iterations = 0;
+        while (iterations < MAX_ALIAS_CHAIN_LENGTH) {
+            auto it = alias_map->find(current);
+            if (it == alias_map->end()) break;
+            current = it->second;
+            iterations++;
+        }
+        
+        return current;
+    }
+    
+    // Run coalescing pass
+    size_t run_coalescing(const std::unordered_map<uint32_t, RegisterLiveness>& liveness_map) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        size_t eliminated = 0;
+        for (auto& copy : copies) {
+            if (copy.is_eliminated) continue;
+            
+            // Find liveness at the copy point (approximate with containing block)
+            for (const auto& pair : liveness_map) {
+                if (pair.first <= copy.instr_addr) {
+                    bool src_live = false;
+                    switch (copy.reg_type) {
+                        case 0: src_live = pair.second.is_gpr_live(copy.src_reg); break;
+                        case 1: src_live = pair.second.is_fpr_live(copy.src_reg); break;
+                        case 2: src_live = pair.second.is_vr_live(copy.src_reg); break;
+                    }
+                    
+                    if (!src_live) {
+                        copy.is_eliminated = true;
+                        switch (copy.reg_type) {
+                            case 0: gpr_alias[copy.dst_reg] = copy.src_reg; break;
+                            case 1: fpr_alias[copy.dst_reg] = copy.src_reg; break;
+                            case 2: vr_alias[copy.dst_reg] = copy.src_reg; break;
+                        }
+                        eliminated++;
+                    }
+                    break;
+                }
+            }
+        }
+        
+        return eliminated;
+    }
+    
+    size_t get_eliminated_count() const {
+        oc_lock_guard<oc_mutex> lock(const_cast<oc_mutex&>(mutex));
+        size_t count = 0;
+        for (const auto& copy : copies) {
+            if (copy.is_eliminated) count++;
+        }
+        return count;
+    }
+    
+    void clear() {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        copies.clear();
+        gpr_alias.clear();
+        fpr_alias.clear();
+        vr_alias.clear();
+    }
+};
+
+/**
+ * Enhanced register allocator with spill/fill and cross-block support
+ */
+struct EnhancedRegisterAllocator {
+    // Basic liveness per block
+    std::unordered_map<uint32_t, RegisterLiveness> block_liveness;
+    
+    // Cross-block state for inter-procedural analysis
+    std::unordered_map<uint32_t, CrossBlockState> cross_block_state;
+    
+    // Spill slots
+    std::vector<SpillSlot> spill_slots;
+    uint32_t next_slot_id;
+    uint32_t next_stack_offset;
+    static constexpr uint32_t SLOT_SIZE = 16;  // 16 bytes for VR alignment
+    
+    // Register coalescer
+    RegisterCoalescer coalescer;
+    
+    // Statistics
+    RegAllocStatistics stats;
+    oc_mutex mutex;
+    
+    EnhancedRegisterAllocator() : next_slot_id(1), next_stack_offset(0) {}
+    
+    // Analyze register usage in a basic block
+    void analyze_block(uint32_t address, const std::vector<uint32_t>& instructions) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        RegisterLiveness liveness;
+        
+        for (size_t i = 0; i < instructions.size(); i++) {
+            uint32_t instr = instructions[i];
+            uint32_t instr_addr = address + i * 4;
+            uint8_t opcode = (instr >> 26) & 0x3F;
+            uint8_t rt = (instr >> 21) & 0x1F;
+            uint8_t ra = (instr >> 16) & 0x1F;
+            uint8_t rb = (instr >> 11) & 0x1F;
+            
+            // Mark source registers as live
+            if (ra != 0) liveness.mark_gpr_live(ra);
+            if (opcode == 31 || opcode == 63) { // Extended opcodes use rb
+                if (rb != 0) liveness.mark_gpr_live(rb);
+            }
+            
+            // Mark destination register as modified
+            if (rt != 0) {
+                liveness.mark_gpr_modified(rt);
+            }
+            
+            // Handle floating-point instructions
+            if (opcode >= 48 && opcode <= 63) {
+                liveness.mark_fpr_live(ra);
+                liveness.mark_fpr_modified(rt);
+            }
+            
+            // Detect register-to-register moves for coalescing
+            // mr rD, rA is rlwinm rD, rA, 0, 0, 31 (opcode 21) or or rD, rA, rA (opcode 31, xo 444)
+            if (opcode == 31) {
+                uint16_t xo = (instr >> 1) & 0x3FF;
+                if (xo == 444 && ra == rb) {  // or rD, rA, rA = move
+                    coalescer.add_copy(instr_addr, ra, rt, 0);
+                }
+            }
+        }
+        
+        block_liveness[address] = liveness;
+        stats.blocks_analyzed++;
+        
+        // Initialize cross-block state if not exists
+        if (cross_block_state.find(address) == cross_block_state.end()) {
+            cross_block_state[address] = CrossBlockState(address);
+        }
+    }
+    
+    // Add control flow edge for cross-block analysis
+    void add_edge(uint32_t from_addr, uint32_t to_addr) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        if (cross_block_state.find(from_addr) == cross_block_state.end()) {
+            cross_block_state[from_addr] = CrossBlockState(from_addr);
+        }
+        if (cross_block_state.find(to_addr) == cross_block_state.end()) {
+            cross_block_state[to_addr] = CrossBlockState(to_addr);
+        }
+        
+        cross_block_state[from_addr].successors.push_back(to_addr);
+        cross_block_state[to_addr].predecessors.push_back(from_addr);
+    }
+    
+    // Propagate liveness across blocks (backwards dataflow analysis)
+    bool propagate_liveness() {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        bool changed = true;
+        int iterations = 0;
+        const int MAX_ITERATIONS = 100;
+        
+        while (changed && iterations < MAX_ITERATIONS) {
+            changed = false;
+            iterations++;
+            
+            for (auto& pair : cross_block_state) {
+                auto& state = pair.second;
+                uint32_t addr = state.block_addr;
+                
+                // Get basic block liveness
+                auto it = block_liveness.find(addr);
+                if (it == block_liveness.end()) continue;
+                const auto& liveness = it->second;
+                
+                // live_out = union of live_in of all successors
+                uint32_t new_live_out_gprs = 0;
+                uint32_t new_live_out_fprs = 0;
+                uint32_t new_live_out_vrs = 0;
+                
+                for (uint32_t succ_addr : state.successors) {
+                    auto succ_it = cross_block_state.find(succ_addr);
+                    if (succ_it != cross_block_state.end()) {
+                        new_live_out_gprs |= succ_it->second.live_in_gprs;
+                        new_live_out_fprs |= succ_it->second.live_in_fprs;
+                        new_live_out_vrs |= succ_it->second.live_in_vrs;
+                    }
+                }
+                
+                // live_in = (live_out - def) | use
+                uint32_t new_live_in_gprs = (new_live_out_gprs & ~liveness.modified_gprs) | liveness.live_gprs;
+                uint32_t new_live_in_fprs = (new_live_out_fprs & ~liveness.modified_fprs) | liveness.live_fprs;
+                uint32_t new_live_in_vrs = (new_live_out_vrs & ~liveness.modified_vrs) | liveness.live_vrs;
+                
+                if (new_live_in_gprs != state.live_in_gprs ||
+                    new_live_in_fprs != state.live_in_fprs ||
+                    new_live_in_vrs != state.live_in_vrs ||
+                    new_live_out_gprs != state.live_out_gprs ||
+                    new_live_out_fprs != state.live_out_fprs ||
+                    new_live_out_vrs != state.live_out_vrs) {
+                    
+                    state.live_in_gprs = new_live_in_gprs;
+                    state.live_in_fprs = new_live_in_fprs;
+                    state.live_in_vrs = new_live_in_vrs;
+                    state.live_out_gprs = new_live_out_gprs;
+                    state.live_out_fprs = new_live_out_fprs;
+                    state.live_out_vrs = new_live_out_vrs;
+                    changed = true;
+                }
+                
+                state.is_analyzed = true;
+            }
+            
+            stats.cross_block_props++;
+        }
+        
+        return !changed;  // Return true if converged
+    }
+    
+    // Allocate a spill slot for a register
+    uint32_t allocate_spill_slot(uint8_t reg_num, uint8_t reg_type, uint32_t spill_addr) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        // Try to reuse an inactive slot
+        for (auto& slot : spill_slots) {
+            if (!slot.is_active && slot.reg_type == reg_type) {
+                slot.reg_num = reg_num;
+                slot.spill_addr = spill_addr;
+                slot.fill_addr = 0;
+                slot.is_active = true;
+                stats.total_spills++;
+                return slot.slot_id;
+            }
+        }
+        
+        // Allocate new slot
+        uint32_t slot_id = next_slot_id++;
+        uint32_t offset = next_stack_offset;
+        next_stack_offset += SLOT_SIZE;
+        
+        spill_slots.push_back(SpillSlot(slot_id, offset, reg_num, reg_type, spill_addr));
+        stats.total_spills++;
+        
+        return slot_id;
+    }
+    
+    // Free a spill slot
+    void free_spill_slot(uint32_t slot_id, uint32_t fill_addr) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        for (auto& slot : spill_slots) {
+            if (slot.slot_id == slot_id && slot.is_active) {
+                slot.is_active = false;
+                slot.fill_addr = fill_addr;
+                stats.total_fills++;
+                return;
+            }
+        }
+    }
+    
+    // Check if a register needs to be spilled at a point
+    bool needs_spill(uint32_t block_addr, uint8_t reg_num, uint8_t reg_type) const {
+        oc_lock_guard<oc_mutex> lock(const_cast<oc_mutex&>(mutex));
+        
+        auto it = cross_block_state.find(block_addr);
+        if (it == cross_block_state.end()) return false;
+        
+        const auto& state = it->second;
+        
+        // Check if register is live out of this block
+        switch (reg_type) {
+            case 0: return (state.live_out_gprs & (1u << reg_num)) != 0;
+            case 1: return (state.live_out_fprs & (1u << reg_num)) != 0;
+            case 2: return (state.live_out_vrs & (1u << reg_num)) != 0;
+        }
+        
+        return false;
+    }
+    
+    // Get spill slot info
+    const SpillSlot* get_spill_slot(uint32_t slot_id) const {
+        oc_lock_guard<oc_mutex> lock(const_cast<oc_mutex&>(mutex));
+        
+        for (const auto& slot : spill_slots) {
+            if (slot.slot_id == slot_id) {
+                return &slot;
+            }
+        }
+        return nullptr;
+    }
+    
+    // Get allocation hints for a register
+    RegAllocHint get_hint(uint32_t address, uint8_t reg) const {
+        oc_lock_guard<oc_mutex> lock(const_cast<oc_mutex&>(mutex));
+        
+        auto it = block_liveness.find(address);
+        if (it == block_liveness.end()) {
+            return RegAllocHint::None;
+        }
+        
+        const auto& liveness = it->second;
+        
+        // Check cross-block state for better hints
+        auto cross_it = cross_block_state.find(address);
+        if (cross_it != cross_block_state.end() && cross_it->second.is_analyzed) {
+            const auto& state = cross_it->second;
+            
+            // If register is live across block boundaries, prefer callee-saved
+            // This indicates the value needs to survive across potential function calls
+            if (state.live_out_gprs & (1u << reg)) {
+                return RegAllocHint::Callee;
+            }
+            
+            // If register is live into the block, it was set by a predecessor
+            // and may benefit from callee-saved allocation
+            if (state.live_in_gprs & (1u << reg)) {
+                return RegAllocHint::Callee;
+            }
+        }
+        
+        // Default to caller-saved for values only used within a block
+        return RegAllocHint::Caller;
+    }
+    
+    // Get liveness info for a block
+    const RegisterLiveness* get_liveness(uint32_t address) const {
+        oc_lock_guard<oc_mutex> lock(const_cast<oc_mutex&>(mutex));
+        
+        auto it = block_liveness.find(address);
+        return (it != block_liveness.end()) ? &it->second : nullptr;
+    }
+    
+    // Get cross-block state
+    const CrossBlockState* get_cross_block_state(uint32_t address) const {
+        oc_lock_guard<oc_mutex> lock(const_cast<oc_mutex&>(mutex));
+        
+        auto it = cross_block_state.find(address);
+        return (it != cross_block_state.end()) ? &it->second : nullptr;
+    }
+    
+    // Run register coalescing
+    size_t run_coalescing() {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        size_t eliminated = coalescer.run_coalescing(block_liveness);
+        stats.copies_eliminated += eliminated;
+        return eliminated;
+    }
+    
+    // Get coalesced register
+    uint8_t get_coalesced_reg(uint8_t reg, uint8_t reg_type) const {
+        return coalescer.get_actual_reg(reg, reg_type);
+    }
+    
+    // Get statistics
+    RegAllocStatistics get_stats() const {
+        oc_lock_guard<oc_mutex> lock(const_cast<oc_mutex&>(mutex));
+        return stats;
+    }
+    
+    void reset_stats() {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        stats = RegAllocStatistics();
+    }
+    
+    void clear() {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        block_liveness.clear();
+        cross_block_state.clear();
+        spill_slots.clear();
+        coalescer.clear();
+        next_slot_id = 1;
+        next_stack_offset = 0;
+        stats = RegAllocStatistics();
+    }
+};
+
+/**
  * Lazy compilation state
  */
 enum class LazyState : uint8_t {
@@ -1884,6 +2417,7 @@ struct oc_ppu_jit_t {
     BranchTargetCache branch_target_cache;
     ConstantPropagationCache const_prop_cache;
     RegisterAllocator reg_allocator;
+    EnhancedRegisterAllocator enhanced_reg_allocator;
     LazyCompilationManager lazy_manager;
     CompilationThreadPool thread_pool;
     bool enabled;
@@ -5368,23 +5902,122 @@ void oc_ppu_jit_analyze_registers(oc_ppu_jit_t* jit, uint32_t address,
     if (!jit || !instructions) return;
     std::vector<uint32_t> instrs(instructions, instructions + count);
     jit->reg_allocator.analyze_block(address, instrs);
+    jit->enhanced_reg_allocator.analyze_block(address, instrs);
 }
 
 int oc_ppu_jit_get_reg_hint(oc_ppu_jit_t* jit, uint32_t address, uint8_t reg) {
     if (!jit) return 0;
-    return static_cast<int>(jit->reg_allocator.get_hint(address, reg));
+    // Use enhanced allocator for better hints
+    return static_cast<int>(jit->enhanced_reg_allocator.get_hint(address, reg));
 }
 
 uint32_t oc_ppu_jit_get_live_gprs(oc_ppu_jit_t* jit, uint32_t address) {
     if (!jit) return 0;
-    auto* liveness = jit->reg_allocator.get_liveness(address);
+    auto* liveness = jit->enhanced_reg_allocator.get_liveness(address);
     return liveness ? liveness->live_gprs : 0;
 }
 
 uint32_t oc_ppu_jit_get_modified_gprs(oc_ppu_jit_t* jit, uint32_t address) {
     if (!jit) return 0;
-    auto* liveness = jit->reg_allocator.get_liveness(address);
+    auto* liveness = jit->enhanced_reg_allocator.get_liveness(address);
     return liveness ? liveness->modified_gprs : 0;
+}
+
+// Enhanced Register Allocation APIs
+
+void oc_ppu_jit_reg_add_edge(oc_ppu_jit_t* jit, uint32_t from_addr, uint32_t to_addr) {
+    if (!jit) return;
+    jit->enhanced_reg_allocator.add_edge(from_addr, to_addr);
+}
+
+int oc_ppu_jit_reg_propagate_liveness(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->enhanced_reg_allocator.propagate_liveness() ? 1 : 0;
+}
+
+uint32_t oc_ppu_jit_reg_allocate_spill(oc_ppu_jit_t* jit, uint8_t reg_num, 
+                                        uint8_t reg_type, uint32_t spill_addr) {
+    if (!jit) return 0;
+    return jit->enhanced_reg_allocator.allocate_spill_slot(reg_num, reg_type, spill_addr);
+}
+
+void oc_ppu_jit_reg_free_spill(oc_ppu_jit_t* jit, uint32_t slot_id, uint32_t fill_addr) {
+    if (!jit) return;
+    jit->enhanced_reg_allocator.free_spill_slot(slot_id, fill_addr);
+}
+
+int oc_ppu_jit_reg_get_spill_offset(oc_ppu_jit_t* jit, uint32_t slot_id) {
+    if (!jit) return -1;
+    auto* slot = jit->enhanced_reg_allocator.get_spill_slot(slot_id);
+    return slot ? static_cast<int>(slot->offset) : -1;
+}
+
+int oc_ppu_jit_reg_needs_spill(oc_ppu_jit_t* jit, uint32_t block_addr, 
+                                uint8_t reg_num, uint8_t reg_type) {
+    if (!jit) return 0;
+    return jit->enhanced_reg_allocator.needs_spill(block_addr, reg_num, reg_type) ? 1 : 0;
+}
+
+uint32_t oc_ppu_jit_reg_get_live_in(oc_ppu_jit_t* jit, uint32_t block_addr, uint8_t reg_type) {
+    if (!jit) return 0;
+    auto* state = jit->enhanced_reg_allocator.get_cross_block_state(block_addr);
+    if (!state) return 0;
+    switch (reg_type) {
+        case 0: return state->live_in_gprs;
+        case 1: return state->live_in_fprs;
+        case 2: return state->live_in_vrs;
+        default: return 0;
+    }
+}
+
+uint32_t oc_ppu_jit_reg_get_live_out(oc_ppu_jit_t* jit, uint32_t block_addr, uint8_t reg_type) {
+    if (!jit) return 0;
+    auto* state = jit->enhanced_reg_allocator.get_cross_block_state(block_addr);
+    if (!state) return 0;
+    switch (reg_type) {
+        case 0: return state->live_out_gprs;
+        case 1: return state->live_out_fprs;
+        case 2: return state->live_out_vrs;
+        default: return 0;
+    }
+}
+
+size_t oc_ppu_jit_reg_coalesce_copies(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->enhanced_reg_allocator.run_coalescing();
+}
+
+uint8_t oc_ppu_jit_reg_get_coalesced(oc_ppu_jit_t* jit, uint8_t reg, uint8_t reg_type) {
+    if (!jit) return reg;
+    return jit->enhanced_reg_allocator.get_coalesced_reg(reg, reg_type);
+}
+
+void oc_ppu_jit_reg_get_stats(oc_ppu_jit_t* jit, uint64_t* blocks_analyzed,
+                               uint64_t* total_spills, uint64_t* total_fills,
+                               uint64_t* copies_eliminated) {
+    if (!jit) {
+        if (blocks_analyzed) *blocks_analyzed = 0;
+        if (total_spills) *total_spills = 0;
+        if (total_fills) *total_fills = 0;
+        if (copies_eliminated) *copies_eliminated = 0;
+        return;
+    }
+    auto stats = jit->enhanced_reg_allocator.get_stats();
+    if (blocks_analyzed) *blocks_analyzed = stats.blocks_analyzed;
+    if (total_spills) *total_spills = stats.total_spills;
+    if (total_fills) *total_fills = stats.total_fills;
+    if (copies_eliminated) *copies_eliminated = stats.copies_eliminated;
+}
+
+void oc_ppu_jit_reg_reset_stats(oc_ppu_jit_t* jit) {
+    if (!jit) return;
+    jit->enhanced_reg_allocator.reset_stats();
+}
+
+void oc_ppu_jit_reg_clear(oc_ppu_jit_t* jit) {
+    if (!jit) return;
+    jit->reg_allocator.clear();
+    jit->enhanced_reg_allocator.clear();
 }
 
 // ============================================================================

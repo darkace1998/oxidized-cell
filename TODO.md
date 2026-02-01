@@ -266,18 +266,18 @@ This document tracks pending tasks, improvements, and future features for the ox
 
 #### Register Allocation
 
-- [ ] **Register Allocation Optimization**: Complete register allocator
-  - **Liveness Analysis**: Track live GPR/FPR/VR across blocks
-  - **Spill/Fill Optimization**: Minimize stack spills
-  - **Register Hints**: Caller-saved vs callee-saved preferences
-  - **Cross-Block Allocation**: Preserve registers across basic blocks
-  - Location: `cpp/src/ppu_jit.cpp` (RegisterAllocator struct)
+- [x] **Register Allocation Optimization**: Complete register allocator
+  - **Liveness Analysis**: Track live GPR/FPR/VR across blocks ✅
+  - **Spill/Fill Optimization**: Minimize stack spills ✅
+  - **Register Hints**: Caller-saved vs callee-saved preferences ✅
+  - **Cross-Block Allocation**: Preserve registers across basic blocks ✅
+  - Location: `cpp/src/ppu_jit.cpp` (EnhancedRegisterAllocator struct)
 
-- [ ] **Register Coalescing**: Reduce move instructions
-  - **Copy Elimination**: Eliminate unnecessary register copies
-  - **Phi Elimination**: Handle SSA phi nodes efficiently
-  - **Argument Passing**: Optimize function call register usage
-  - Location: `cpp/src/ppu_jit.cpp`
+- [x] **Register Coalescing**: Reduce move instructions
+  - **Copy Elimination**: Eliminate unnecessary register copies ✅
+  - **Phi Elimination**: Handle SSA phi nodes (basic support via alias tracking)
+  - **Argument Passing**: Optimize function call register usage (via liveness analysis)
+  - Location: `cpp/src/ppu_jit.cpp` (RegisterCoalescer struct)
 
 #### Lazy Compilation
 
