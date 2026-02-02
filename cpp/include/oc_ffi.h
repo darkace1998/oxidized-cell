@@ -640,6 +640,60 @@ size_t oc_ppu_jit_get_completed_tasks(oc_ppu_jit_t* jit);
  */
 int oc_ppu_jit_is_multithreaded(oc_ppu_jit_t* jit);
 
+// PPU JIT Enhanced Thread Pool APIs
+
+/**
+ * Submit task to enhanced thread pool with timing tracking
+ */
+void oc_ppu_jit_pool_submit(oc_ppu_jit_t* jit, uint32_t address,
+                             const uint8_t* code, size_t size, int priority);
+
+/**
+ * Wait for all pending tasks to complete
+ * timeout_ms: 0 = wait indefinitely
+ * Returns: 1 if all completed, 0 if timeout
+ */
+int oc_ppu_jit_pool_wait_all(oc_ppu_jit_t* jit, uint32_t timeout_ms);
+
+/**
+ * Cancel all pending tasks
+ * Returns: number of cancelled tasks
+ */
+size_t oc_ppu_jit_pool_cancel_all(oc_ppu_jit_t* jit);
+
+/**
+ * Get thread count in pool
+ */
+size_t oc_ppu_jit_pool_get_thread_count(oc_ppu_jit_t* jit);
+
+/**
+ * Get number of currently active workers
+ */
+size_t oc_ppu_jit_pool_get_active_workers(oc_ppu_jit_t* jit);
+
+/**
+ * Get pending task count (enhanced pool)
+ */
+size_t oc_ppu_jit_pool_get_pending(oc_ppu_jit_t* jit);
+
+/**
+ * Get completed task count (enhanced pool)
+ */
+size_t oc_ppu_jit_pool_get_completed(oc_ppu_jit_t* jit);
+
+/**
+ * Get enhanced thread pool statistics
+ */
+void oc_ppu_jit_pool_get_stats(oc_ppu_jit_t* jit, uint64_t* total_submitted,
+                                uint64_t* total_completed, uint64_t* total_failed,
+                                uint64_t* peak_queue_size, uint64_t* avg_wait_ms,
+                                uint64_t* avg_exec_ms);
+
+/**
+ * Reset thread pool statistics
+ */
+void oc_ppu_jit_pool_reset_stats(oc_ppu_jit_t* jit);
+
 // ============================================================================
 // PPU JIT Execution Context
 // ============================================================================

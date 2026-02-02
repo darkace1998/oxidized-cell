@@ -2816,6 +2816,275 @@ struct CompilationTask {
 };
 
 /**
+ * Thread pool statistics
+ */
+struct ThreadPoolStats {
+    uint64_t total_tasks_submitted;   // Total tasks submitted to pool
+    uint64_t total_tasks_completed;   // Total tasks completed
+    uint64_t total_tasks_failed;      // Total tasks that failed
+    uint64_t peak_queue_size;         // Peak queue size observed
+    uint64_t total_wait_time_ms;      // Total time tasks waited in queue
+    uint64_t total_exec_time_ms;      // Total execution time
+    
+    ThreadPoolStats()
+        : total_tasks_submitted(0), total_tasks_completed(0), total_tasks_failed(0),
+          peak_queue_size(0), total_wait_time_ms(0), total_exec_time_ms(0) {}
+    
+    double get_avg_wait_time_ms() const {
+        return (total_tasks_completed > 0) 
+            ? (static_cast<double>(total_wait_time_ms) / total_tasks_completed) : 0.0;
+    }
+    
+    double get_avg_exec_time_ms() const {
+        return (total_tasks_completed > 0) 
+            ? (static_cast<double>(total_exec_time_ms) / total_tasks_completed) : 0.0;
+    }
+};
+
+/**
+ * Enhanced compilation task with timing information
+ */
+struct EnhancedCompilationTask {
+    uint32_t address;
+    std::vector<uint8_t> code;
+    int priority;                      // Higher = more important
+    std::chrono::steady_clock::time_point submit_time;  // When task was submitted
+    
+    EnhancedCompilationTask() 
+        : address(0), priority(0), submit_time(std::chrono::steady_clock::now()) {}
+    
+    EnhancedCompilationTask(uint32_t addr, const uint8_t* c, size_t size, int prio = 0)
+        : address(addr), code(c, c + size), priority(prio),
+          submit_time(std::chrono::steady_clock::now()) {}
+    
+    bool operator<(const EnhancedCompilationTask& other) const {
+        return priority < other.priority;  // Max-heap
+    }
+    
+    uint64_t get_wait_time_ms() const {
+        auto now = std::chrono::steady_clock::now();
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - submit_time).count();
+    }
+};
+
+/**
+ * Enhanced multi-threaded compilation thread pool with statistics
+ */
+struct EnhancedCompilationThreadPool {
+    std::vector<oc_thread> workers;
+    std::priority_queue<EnhancedCompilationTask> task_queue;
+    mutable oc_mutex queue_mutex;
+    oc_condition_variable condition;
+    oc_condition_variable all_done_condition;  // For waiting until all tasks complete
+    std::atomic<bool> stop_flag;
+    std::atomic<bool> drain_flag;              // If true, finish remaining tasks before shutdown
+    std::atomic<size_t> pending_tasks;
+    std::atomic<size_t> completed_tasks;
+    std::atomic<size_t> active_workers;        // Workers currently processing tasks
+    std::function<bool(const EnhancedCompilationTask&)> compile_func;  // Returns true on success
+    ThreadPoolStats stats;
+    
+    EnhancedCompilationThreadPool() 
+        : stop_flag(false), drain_flag(false), pending_tasks(0), 
+          completed_tasks(0), active_workers(0) {}
+    
+    ~EnhancedCompilationThreadPool() {
+        shutdown(false);
+    }
+    
+    // Start thread pool with specified number of workers
+    void start(size_t num_threads, std::function<bool(const EnhancedCompilationTask&)> func) {
+        compile_func = std::move(func);
+        stop_flag = false;
+        drain_flag = false;
+        
+        for (size_t i = 0; i < num_threads; ++i) {
+            workers.emplace_back([this, i] {
+                worker_thread(i);
+            });
+        }
+    }
+    
+    // Worker thread function
+    void worker_thread(size_t /* worker_id */) {
+        while (true) {
+            EnhancedCompilationTask task;
+            {
+                oc_unique_lock<oc_mutex> lock(queue_mutex);
+                condition.wait(lock, [this] {
+                    return stop_flag.load() || !task_queue.empty();
+                });
+                
+                // Check if we should exit
+                if (stop_flag.load()) {
+                    // If draining, only exit when queue is empty
+                    if (drain_flag.load()) {
+                        if (task_queue.empty()) {
+                            return;
+                        }
+                    } else {
+                        // Immediate shutdown, exit even if tasks remain
+                        return;
+                    }
+                }
+                
+                if (task_queue.empty()) {
+                    continue;
+                }
+                
+                task = task_queue.top();
+                task_queue.pop();
+            }
+            
+            active_workers.fetch_add(1);
+            
+            // Track wait time
+            uint64_t wait_time = task.get_wait_time_ms();
+            
+            // Execute task
+            auto exec_start = std::chrono::steady_clock::now();
+            bool success = true;
+            if (compile_func) {
+                success = compile_func(task);
+            }
+            auto exec_end = std::chrono::steady_clock::now();
+            
+            uint64_t exec_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+                exec_end - exec_start).count();
+            
+            // Update counters and stats
+            {
+                oc_lock_guard<oc_mutex> lock(queue_mutex);
+                stats.total_wait_time_ms += wait_time;
+                stats.total_exec_time_ms += exec_time;
+                if (success) {
+                    stats.total_tasks_completed++;
+                } else {
+                    stats.total_tasks_failed++;
+                }
+                
+                // Update counters while holding lock
+                pending_tasks.fetch_sub(1);
+                completed_tasks.fetch_add(1);
+                active_workers.fetch_sub(1);
+                
+                // Check and notify if all tasks done (inside lock to avoid race)
+                if (pending_tasks.load() == 0 && active_workers.load() == 0) {
+                    all_done_condition.notify_all();
+                }
+            }
+        }
+    }
+    
+    // Submit a compilation task
+    void submit(uint32_t address, const uint8_t* code, size_t size, int priority = 0) {
+        {
+            oc_lock_guard<oc_mutex> lock(queue_mutex);
+            task_queue.emplace(address, code, size, priority);
+            pending_tasks.fetch_add(1);
+            stats.total_tasks_submitted++;
+            
+            // Track peak queue size
+            size_t current_size = task_queue.size();
+            if (current_size > stats.peak_queue_size) {
+                stats.peak_queue_size = current_size;
+            }
+        }
+        condition.notify_one();
+    }
+    
+    // Wait for all pending tasks to complete
+    bool wait_all(uint32_t timeout_ms = 0) {
+        oc_unique_lock<oc_mutex> lock(queue_mutex);
+        
+        if (timeout_ms == 0) {
+            // Wait indefinitely
+            all_done_condition.wait(lock, [this] {
+                return pending_tasks.load() == 0 && active_workers.load() == 0;
+            });
+            return true;
+        } else {
+            // Wait with timeout
+            return all_done_condition.wait_for(
+                lock, 
+                std::chrono::milliseconds(timeout_ms),
+                [this] {
+                    return pending_tasks.load() == 0 && active_workers.load() == 0;
+                }
+            );
+        }
+    }
+    
+    // Shutdown the thread pool
+    // If drain is true, finish all remaining tasks before stopping
+    void shutdown(bool drain = true) {
+        drain_flag = drain;
+        stop_flag = true;
+        condition.notify_all();
+        
+        for (auto& worker : workers) {
+            if (worker.joinable()) {
+                worker.join();
+            }
+        }
+        workers.clear();
+    }
+    
+    // Cancel all pending tasks (only queue tasks, not active ones)
+    size_t cancel_all() {
+        oc_lock_guard<oc_mutex> lock(queue_mutex);
+        size_t cancelled = task_queue.size();
+        
+        while (!task_queue.empty()) {
+            task_queue.pop();
+        }
+        // Only decrement by cancelled count, not set to 0
+        // Active workers still have pending work
+        pending_tasks.fetch_sub(cancelled);
+        
+        return cancelled;
+    }
+    
+    // Get thread count
+    size_t get_thread_count() const {
+        return workers.size();
+    }
+    
+    // Get active worker count
+    size_t get_active_workers() const {
+        return active_workers.load();
+    }
+    
+    // Get pending task count
+    size_t get_pending_count() const { 
+        return pending_tasks.load(); 
+    }
+    
+    // Get completed task count
+    size_t get_completed_count() const { 
+        return completed_tasks.load(); 
+    }
+    
+    // Check if running
+    bool is_running() const { 
+        return !workers.empty() && !stop_flag.load(); 
+    }
+    
+    // Get statistics
+    ThreadPoolStats get_stats() const {
+        oc_lock_guard<oc_mutex> lock(queue_mutex);
+        return stats;
+    }
+    
+    // Reset statistics (does not reset runtime counters like completed_tasks)
+    void reset_stats() {
+        oc_lock_guard<oc_mutex> lock(queue_mutex);
+        stats = ThreadPoolStats();
+    }
+};
+
+/**
  * Multi-threaded compilation thread pool
  */
 struct CompilationThreadPool {
@@ -3114,6 +3383,7 @@ struct oc_ppu_jit_t {
     EnhancedLazyCompilationManager enhanced_lazy_manager;
     TieredCompilationManager tiered_manager;
     CompilationThreadPool thread_pool;
+    EnhancedCompilationThreadPool enhanced_thread_pool;
     bool enabled;
     bool lazy_compilation_enabled;
     bool multithreaded_enabled;
@@ -6996,11 +7266,31 @@ void oc_ppu_jit_start_compile_threads(oc_ppu_jit_t* jit, size_t num_threads) {
         // Update lazy state
         jit->lazy_manager.mark_compiled(task.address);
     });
+    
+    // Also start enhanced thread pool
+    jit->enhanced_thread_pool.start(num_threads, [jit](const EnhancedCompilationTask& task) -> bool {
+        // Compile the task
+        auto block = std::make_unique<BasicBlock>(task.address);
+        identify_basic_block(task.code.data(), task.code.size(), block.get());
+        generate_llvm_ir(block.get(), jit);
+        emit_machine_code(block.get());
+        
+        // Insert into cache (thread-safe)
+        {
+            oc_lock_guard<oc_mutex> lock(jit->cache.mutex);
+            jit->cache.insert_block(task.address, std::move(block));
+        }
+        
+        // Update lazy state
+        jit->lazy_manager.mark_compiled(task.address);
+        return true;  // Success
+    });
 }
 
 void oc_ppu_jit_stop_compile_threads(oc_ppu_jit_t* jit) {
     if (!jit) return;
     jit->thread_pool.shutdown();
+    jit->enhanced_thread_pool.shutdown(true);  // Drain remaining tasks
     jit->multithreaded_enabled = false;
 }
 
@@ -7024,6 +7314,72 @@ size_t oc_ppu_jit_get_completed_tasks(oc_ppu_jit_t* jit) {
 int oc_ppu_jit_is_multithreaded(oc_ppu_jit_t* jit) {
     if (!jit) return 0;
     return jit->multithreaded_enabled ? 1 : 0;
+}
+
+// Enhanced Thread Pool APIs
+
+void oc_ppu_jit_pool_submit(oc_ppu_jit_t* jit, uint32_t address,
+                             const uint8_t* code, size_t size, int priority) {
+    if (!jit || !code || !jit->multithreaded_enabled) return;
+    jit->enhanced_thread_pool.submit(address, code, size, priority);
+}
+
+int oc_ppu_jit_pool_wait_all(oc_ppu_jit_t* jit, uint32_t timeout_ms) {
+    if (!jit) return 0;
+    return jit->enhanced_thread_pool.wait_all(timeout_ms) ? 1 : 0;
+}
+
+size_t oc_ppu_jit_pool_cancel_all(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->enhanced_thread_pool.cancel_all();
+}
+
+size_t oc_ppu_jit_pool_get_thread_count(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->enhanced_thread_pool.get_thread_count();
+}
+
+size_t oc_ppu_jit_pool_get_active_workers(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->enhanced_thread_pool.get_active_workers();
+}
+
+size_t oc_ppu_jit_pool_get_pending(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->enhanced_thread_pool.get_pending_count();
+}
+
+size_t oc_ppu_jit_pool_get_completed(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->enhanced_thread_pool.get_completed_count();
+}
+
+void oc_ppu_jit_pool_get_stats(oc_ppu_jit_t* jit, uint64_t* total_submitted,
+                                uint64_t* total_completed, uint64_t* total_failed,
+                                uint64_t* peak_queue_size, uint64_t* avg_wait_ms,
+                                uint64_t* avg_exec_ms) {
+    if (!jit) {
+        if (total_submitted) *total_submitted = 0;
+        if (total_completed) *total_completed = 0;
+        if (total_failed) *total_failed = 0;
+        if (peak_queue_size) *peak_queue_size = 0;
+        if (avg_wait_ms) *avg_wait_ms = 0;
+        if (avg_exec_ms) *avg_exec_ms = 0;
+        return;
+    }
+    
+    auto stats = jit->enhanced_thread_pool.get_stats();
+    if (total_submitted) *total_submitted = stats.total_tasks_submitted;
+    if (total_completed) *total_completed = stats.total_tasks_completed;
+    if (total_failed) *total_failed = stats.total_tasks_failed;
+    if (peak_queue_size) *peak_queue_size = stats.peak_queue_size;
+    if (avg_wait_ms) *avg_wait_ms = static_cast<uint64_t>(stats.get_avg_wait_time_ms());
+    if (avg_exec_ms) *avg_exec_ms = static_cast<uint64_t>(stats.get_avg_exec_time_ms());
+}
+
+void oc_ppu_jit_pool_reset_stats(oc_ppu_jit_t* jit) {
+    if (!jit) return;
+    jit->enhanced_thread_pool.reset_stats();
 }
 
 // ============================================================================
