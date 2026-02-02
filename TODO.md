@@ -288,12 +288,12 @@ This document tracks pending tasks, improvements, and future features for the ox
   - **Hot Path Detection**: Identify and prioritize hot code paths ✅
   - Location: `cpp/src/ppu_jit.cpp` (EnhancedLazyCompilationManager struct)
 
-- [ ] **Tiered Compilation**: Implement multi-tier compilation
-  - **Tier 0**: Interpreter (immediate execution)
-  - **Tier 1**: Baseline JIT (fast compilation, low optimization)
-  - **Tier 2**: Optimizing JIT (slow compilation, high optimization)
-  - **Tier Transition**: Automatic tier promotion based on execution count
-  - Location: `cpp/src/ppu_jit.cpp`
+- [x] **Tiered Compilation**: Implement multi-tier compilation
+  - **Tier 0**: Interpreter (immediate execution) ✅
+  - **Tier 1**: Baseline JIT (fast compilation, low optimization) ✅
+  - **Tier 2**: Optimizing JIT (slow compilation, high optimization) ✅
+  - **Tier Transition**: Automatic tier promotion based on execution count ✅
+  - Location: `cpp/src/ppu_jit.cpp` (TieredCompilationManager struct)
 
 #### Multi-threaded Compilation
 
@@ -1114,7 +1114,7 @@ This document tracks pending tasks, improvements, and future features for the ox
 | Lazy Compilation | ✅ Complete | Threshold-based triggering |
 | Lazy State Machine | ✅ Complete | NotCompiled → Pending → Compiling → Compiled |
 | Lazy Threshold | ✅ Complete | Configurable threshold (default: 10) |
-| Tiered Compilation | 🔴 Minimal | Single tier only |
+| Tiered Compilation | ✅ Complete | 3-tier: Interpreter/Baseline/Optimizing |
 | Compilation Thread Pool | ✅ Complete | Multi-threaded worker pool |
 | Priority Queue | ✅ Complete | Priority-based task scheduling |
 | Task Tracking | ✅ Complete | Pending/completed counters |

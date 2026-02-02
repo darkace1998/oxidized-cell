@@ -532,6 +532,80 @@ void oc_ppu_jit_lazy_reset_stats(oc_ppu_jit_t* jit);
  */
 void oc_ppu_jit_lazy_clear(oc_ppu_jit_t* jit);
 
+// PPU JIT Tiered Compilation APIs
+
+/**
+ * Set tier promotion thresholds
+ * tier0_to_1: Executions before Interpreter → Baseline (default: 10)
+ * tier1_to_2: Executions at tier 1 before Baseline → Optimizing (default: 1000)
+ */
+void oc_ppu_jit_tiered_set_thresholds(oc_ppu_jit_t* jit, uint32_t tier0_to_1, uint32_t tier1_to_2);
+
+/**
+ * Get current tier promotion thresholds
+ */
+void oc_ppu_jit_tiered_get_thresholds(oc_ppu_jit_t* jit, uint32_t* tier0_to_1, uint32_t* tier1_to_2);
+
+/**
+ * Register code for tiered compilation
+ * Use 0 for thresholds to use defaults
+ */
+void oc_ppu_jit_tiered_register(oc_ppu_jit_t* jit, uint32_t address,
+                                 const uint8_t* code, size_t size,
+                                 uint32_t tier0_to_1, uint32_t tier1_to_2);
+
+/**
+ * Record execution and check if promotion is needed
+ * Returns: current or target tier (0=Interpreter, 1=Baseline, 2=Optimizing)
+ */
+int oc_ppu_jit_tiered_record_execution(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Get current tier for address
+ * Returns: 0=Interpreter, 1=Baseline, 2=Optimizing
+ */
+int oc_ppu_jit_tiered_get_tier(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Promote code to specified tier
+ * target_tier: 1=Baseline, 2=Optimizing
+ * Returns: 1 if successful, 0 if failed
+ */
+int oc_ppu_jit_tiered_promote(oc_ppu_jit_t* jit, uint32_t address, int target_tier);
+
+/**
+ * Get compiled code pointer for address (at current tier)
+ * Returns: code pointer or NULL if at interpreter tier
+ */
+void* oc_ppu_jit_tiered_get_code(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Get execution count for address
+ */
+uint32_t oc_ppu_jit_tiered_get_execution_count(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Get count of entries at each tier
+ */
+void oc_ppu_jit_tiered_get_tier_counts(oc_ppu_jit_t* jit, size_t* tier0, size_t* tier1, size_t* tier2);
+
+/**
+ * Get tiered compilation statistics
+ */
+void oc_ppu_jit_tiered_get_stats(oc_ppu_jit_t* jit, uint64_t* total_registered,
+                                  uint64_t* tier0_execs, uint64_t* tier1_execs, uint64_t* tier2_execs,
+                                  uint64_t* tier0_to_1_promotions, uint64_t* tier1_to_2_promotions);
+
+/**
+ * Reset tiered compilation statistics
+ */
+void oc_ppu_jit_tiered_reset_stats(oc_ppu_jit_t* jit);
+
+/**
+ * Clear all tiered compilation entries
+ */
+void oc_ppu_jit_tiered_clear(oc_ppu_jit_t* jit);
+
 // PPU JIT Multi-threaded Compilation APIs
 
 /**

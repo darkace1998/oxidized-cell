@@ -2383,6 +2383,421 @@ struct EnhancedLazyCompilationManager {
     }
 };
 
+// ============================================================================
+// Tiered Compilation System
+// ============================================================================
+
+/**
+ * Compilation tiers for multi-tier JIT
+ */
+enum class CompilationTier : uint8_t {
+    Interpreter = 0,  // Tier 0: Interpreted execution (immediate, no compilation)
+    Baseline = 1,     // Tier 1: Fast compilation, low optimization
+    Optimizing = 2    // Tier 2: Slow compilation, high optimization
+};
+
+/**
+ * Get tier name as string
+ */
+inline const char* tier_to_string(CompilationTier tier) {
+    switch (tier) {
+        case CompilationTier::Interpreter: return "Interpreter";
+        case CompilationTier::Baseline: return "Baseline";
+        case CompilationTier::Optimizing: return "Optimizing";
+        default: return "Unknown";
+    }
+}
+
+/**
+ * Tiered compilation entry
+ */
+struct TieredCompilationEntry {
+    uint32_t address;
+    const uint8_t* code;
+    size_t size;
+    std::atomic<int> current_tier;                // Atomic tier for thread safety
+    std::atomic<uint32_t> execution_count;
+    std::atomic<uint32_t> baseline_tier_executions;  // Executions at baseline tier
+    uint32_t tier0_to_1_threshold;                // Threshold for Interpreter → Baseline
+    uint32_t tier1_to_2_threshold;                // Threshold for Baseline → Optimizing
+    void* baseline_code;                          // Pointer to baseline compiled code
+    void* optimized_code;                         // Pointer to optimized compiled code
+    std::atomic<bool> is_promoting;               // Atomic flag for promotion in progress
+    
+    TieredCompilationEntry()
+        : address(0), code(nullptr), size(0), 
+          current_tier(static_cast<int>(CompilationTier::Interpreter)),
+          execution_count(0), baseline_tier_executions(0), tier0_to_1_threshold(10),
+          tier1_to_2_threshold(1000), baseline_code(nullptr), optimized_code(nullptr),
+          is_promoting(false) {}
+    
+    TieredCompilationEntry(uint32_t addr, const uint8_t* c, size_t s, 
+                            uint32_t t0_t1 = 10, uint32_t t1_t2 = 1000)
+        : address(addr), code(c), size(s), 
+          current_tier(static_cast<int>(CompilationTier::Interpreter)),
+          execution_count(0), baseline_tier_executions(0), tier0_to_1_threshold(t0_t1),
+          tier1_to_2_threshold(t1_t2), baseline_code(nullptr), optimized_code(nullptr),
+          is_promoting(false) {}
+    
+    // Move constructor
+    TieredCompilationEntry(TieredCompilationEntry&& other) noexcept
+        : address(other.address), code(other.code), size(other.size),
+          current_tier(other.current_tier.load()), 
+          execution_count(other.execution_count.load()),
+          baseline_tier_executions(other.baseline_tier_executions.load()),
+          tier0_to_1_threshold(other.tier0_to_1_threshold),
+          tier1_to_2_threshold(other.tier1_to_2_threshold),
+          baseline_code(other.baseline_code), optimized_code(other.optimized_code),
+          is_promoting(other.is_promoting.load()) {}
+    
+    // Move assignment
+    TieredCompilationEntry& operator=(TieredCompilationEntry&& other) noexcept {
+        if (this != &other) {
+            address = other.address;
+            code = other.code;
+            size = other.size;
+            current_tier.store(other.current_tier.load());
+            execution_count.store(other.execution_count.load());
+            baseline_tier_executions.store(other.baseline_tier_executions.load());
+            tier0_to_1_threshold = other.tier0_to_1_threshold;
+            tier1_to_2_threshold = other.tier1_to_2_threshold;
+            baseline_code = other.baseline_code;
+            optimized_code = other.optimized_code;
+            is_promoting.store(other.is_promoting.load());
+        }
+        return *this;
+    }
+    
+    // Delete copy operations
+    TieredCompilationEntry(const TieredCompilationEntry&) = delete;
+    TieredCompilationEntry& operator=(const TieredCompilationEntry&) = delete;
+    
+    // Get current tier (thread-safe)
+    CompilationTier get_tier() const {
+        return static_cast<CompilationTier>(current_tier.load());
+    }
+    
+    // Set current tier (thread-safe)
+    void set_tier(CompilationTier tier) {
+        current_tier.store(static_cast<int>(tier));
+    }
+    
+    // Check if should promote to next tier
+    // Returns: next tier if should promote, current tier if not
+    CompilationTier check_promotion() {
+        uint32_t count = execution_count.load();
+        CompilationTier tier = get_tier();
+        
+        switch (tier) {
+            case CompilationTier::Interpreter:
+                if (count >= tier0_to_1_threshold) {
+                    return CompilationTier::Baseline;
+                }
+                break;
+            case CompilationTier::Baseline:
+                if (baseline_tier_executions.load() >= tier1_to_2_threshold) {
+                    return CompilationTier::Optimizing;
+                }
+                break;
+            case CompilationTier::Optimizing:
+                // Already at highest tier
+                break;
+        }
+        
+        return tier;
+    }
+    
+    // Get compiled code pointer for current tier
+    void* get_compiled_code() const {
+        CompilationTier tier = get_tier();
+        switch (tier) {
+            case CompilationTier::Baseline:
+                return baseline_code;
+            case CompilationTier::Optimizing:
+                return optimized_code;
+            default:
+                return nullptr;  // Interpreter has no compiled code
+        }
+    }
+};
+
+/**
+ * Tiered compilation callback types
+ */
+using BaselineCompileCallback = void* (*)(uint32_t address, const uint8_t* code, size_t size, void* user_data);
+using OptimizingCompileCallback = void* (*)(uint32_t address, const uint8_t* code, size_t size, void* baseline_code, void* user_data);
+
+/**
+ * Tiered compilation statistics
+ */
+struct TieredCompilationStats {
+    uint64_t total_registered;           // Total functions registered
+    uint64_t tier0_executions;           // Executions at interpreter tier
+    uint64_t tier1_executions;           // Executions at baseline tier
+    uint64_t tier2_executions;           // Executions at optimizing tier
+    uint64_t tier0_to_1_promotions;      // Promotions from interpreter to baseline
+    uint64_t tier1_to_2_promotions;      // Promotions from baseline to optimizing
+    uint64_t baseline_compilations;      // Successful baseline compilations
+    uint64_t optimizing_compilations;    // Successful optimizing compilations
+    uint64_t compilation_failures;       // Total compilation failures
+    
+    TieredCompilationStats()
+        : total_registered(0), tier0_executions(0), tier1_executions(0), tier2_executions(0),
+          tier0_to_1_promotions(0), tier1_to_2_promotions(0), baseline_compilations(0),
+          optimizing_compilations(0), compilation_failures(0) {}
+    
+    double get_tier1_coverage() const {
+        uint64_t total = tier0_executions + tier1_executions + tier2_executions;
+        return (total > 0) ? (100.0 * (tier1_executions + tier2_executions) / total) : 0.0;
+    }
+    
+    double get_tier2_coverage() const {
+        uint64_t total = tier0_executions + tier1_executions + tier2_executions;
+        return (total > 0) ? (100.0 * tier2_executions / total) : 0.0;
+    }
+};
+
+/**
+ * Tiered Compilation Manager
+ * Manages multi-tier JIT compilation with automatic tier promotion
+ */
+struct TieredCompilationManager {
+    std::unordered_map<uint32_t, std::unique_ptr<TieredCompilationEntry>> entries;
+    mutable oc_mutex mutex;
+    
+    // Default thresholds
+    uint32_t default_tier0_to_1_threshold;
+    uint32_t default_tier1_to_2_threshold;
+    
+    // Compilation callbacks
+    BaselineCompileCallback baseline_compiler;
+    OptimizingCompileCallback optimizing_compiler;
+    void* compiler_user_data;
+    
+    // Statistics
+    TieredCompilationStats stats;
+    
+    static constexpr uint32_t DEFAULT_TIER0_TO_1 = 10;
+    static constexpr uint32_t DEFAULT_TIER1_TO_2 = 1000;
+    
+    TieredCompilationManager()
+        : default_tier0_to_1_threshold(DEFAULT_TIER0_TO_1),
+          default_tier1_to_2_threshold(DEFAULT_TIER1_TO_2),
+          baseline_compiler(nullptr), optimizing_compiler(nullptr),
+          compiler_user_data(nullptr) {}
+    
+    // Set tier promotion thresholds
+    void set_thresholds(uint32_t tier0_to_1, uint32_t tier1_to_2) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        default_tier0_to_1_threshold = tier0_to_1;
+        default_tier1_to_2_threshold = tier1_to_2;
+    }
+    
+    // Get current thresholds
+    void get_thresholds(uint32_t* tier0_to_1, uint32_t* tier1_to_2) const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        if (tier0_to_1) *tier0_to_1 = default_tier0_to_1_threshold;
+        if (tier1_to_2) *tier1_to_2 = default_tier1_to_2_threshold;
+    }
+    
+    // Set compilation callbacks
+    void set_compilers(BaselineCompileCallback baseline, OptimizingCompileCallback optimizing,
+                       void* user_data) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        baseline_compiler = baseline;
+        optimizing_compiler = optimizing;
+        compiler_user_data = user_data;
+    }
+    
+    // Register code for tiered compilation
+    void register_code(uint32_t address, const uint8_t* code, size_t size,
+                       uint32_t t0_t1 = 0, uint32_t t1_t2 = 0) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        uint32_t thresh0 = (t0_t1 == 0) ? default_tier0_to_1_threshold : t0_t1;
+        uint32_t thresh1 = (t1_t2 == 0) ? default_tier1_to_2_threshold : t1_t2;
+        
+        entries[address] = std::make_unique<TieredCompilationEntry>(
+            address, code, size, thresh0, thresh1);
+        stats.total_registered++;
+    }
+    
+    // Get entry for an address
+    TieredCompilationEntry* get_entry(uint32_t address) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        auto it = entries.find(address);
+        return (it != entries.end()) ? it->second.get() : nullptr;
+    }
+    
+    // Record execution and check if should promote
+    // Returns: new tier if promotion triggered, current tier otherwise
+    CompilationTier record_execution(uint32_t address) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        auto it = entries.find(address);
+        if (it == entries.end()) return CompilationTier::Interpreter;
+        
+        auto* entry = it->second.get();
+        CompilationTier tier = entry->get_tier();
+        
+        // Track execution at current tier
+        switch (tier) {
+            case CompilationTier::Interpreter:
+                stats.tier0_executions++;
+                break;
+            case CompilationTier::Baseline:
+                stats.tier1_executions++;
+                entry->baseline_tier_executions.fetch_add(1);
+                break;
+            case CompilationTier::Optimizing:
+                stats.tier2_executions++;
+                break;
+        }
+        
+        // Increment total execution count
+        entry->execution_count.fetch_add(1);
+        
+        // Skip if already promoting
+        if (entry->is_promoting.load()) {
+            return tier;
+        }
+        
+        // Check if should promote
+        CompilationTier next_tier = entry->check_promotion();
+        if (next_tier != tier) {
+            return next_tier;  // Return the tier to promote to
+        }
+        
+        return tier;
+    }
+    
+    // Perform tier promotion (compile at new tier)
+    // Returns: true if promotion successful
+    bool promote(uint32_t address, CompilationTier target_tier) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        auto it = entries.find(address);
+        if (it == entries.end()) return false;
+        
+        auto* entry = it->second.get();
+        CompilationTier current = entry->get_tier();
+        
+        // Validate promotion
+        if (target_tier <= current) return false;
+        
+        // Try to set is_promoting atomically
+        bool expected = false;
+        if (!entry->is_promoting.compare_exchange_strong(expected, true)) {
+            return false;  // Another thread is already promoting
+        }
+        
+        bool success = false;
+        
+        if (target_tier == CompilationTier::Baseline) {
+            // Compile at baseline tier
+            if (baseline_compiler) {
+                void* code_ptr = baseline_compiler(
+                    entry->address, entry->code, entry->size, compiler_user_data);
+                if (code_ptr) {
+                    entry->baseline_code = code_ptr;
+                    entry->set_tier(CompilationTier::Baseline);
+                    stats.tier0_to_1_promotions++;
+                    stats.baseline_compilations++;
+                    success = true;
+                } else {
+                    stats.compilation_failures++;
+                }
+            } else {
+                // No compiler, just mark as promoted
+                entry->set_tier(CompilationTier::Baseline);
+                stats.tier0_to_1_promotions++;
+                success = true;
+            }
+        } else if (target_tier == CompilationTier::Optimizing) {
+            // Compile at optimizing tier
+            if (optimizing_compiler) {
+                void* code_ptr = optimizing_compiler(
+                    entry->address, entry->code, entry->size, 
+                    entry->baseline_code, compiler_user_data);
+                if (code_ptr) {
+                    entry->optimized_code = code_ptr;
+                    entry->set_tier(CompilationTier::Optimizing);
+                    stats.tier1_to_2_promotions++;
+                    stats.optimizing_compilations++;
+                    success = true;
+                } else {
+                    stats.compilation_failures++;
+                }
+            } else {
+                // No compiler, just mark as promoted
+                entry->set_tier(CompilationTier::Optimizing);
+                stats.tier1_to_2_promotions++;
+                success = true;
+            }
+        }
+        
+        entry->is_promoting.store(false);
+        return success;
+    }
+    
+    // Get current tier for an address
+    CompilationTier get_tier(uint32_t address) const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        auto it = entries.find(address);
+        return (it != entries.end()) ? it->second->get_tier() : CompilationTier::Interpreter;
+    }
+    
+    // Get compiled code pointer for an address
+    void* get_compiled_code(uint32_t address) const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        auto it = entries.find(address);
+        return (it != entries.end()) ? it->second->get_compiled_code() : nullptr;
+    }
+    
+    // Get execution count for an address
+    uint32_t get_execution_count(uint32_t address) const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        auto it = entries.find(address);
+        return (it != entries.end()) ? it->second->execution_count.load() : 0;
+    }
+    
+    // Get count of entries at each tier
+    void get_tier_counts(size_t* tier0, size_t* tier1, size_t* tier2) const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        size_t t0 = 0, t1 = 0, t2 = 0;
+        for (const auto& pair : entries) {
+            switch (pair.second->get_tier()) {
+                case CompilationTier::Interpreter: t0++; break;
+                case CompilationTier::Baseline: t1++; break;
+                case CompilationTier::Optimizing: t2++; break;
+            }
+        }
+        
+        if (tier0) *tier0 = t0;
+        if (tier1) *tier1 = t1;
+        if (tier2) *tier2 = t2;
+    }
+    
+    // Get statistics
+    TieredCompilationStats get_stats() const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        return stats;
+    }
+    
+    // Reset statistics
+    void reset_stats() {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        stats = TieredCompilationStats();
+    }
+    
+    void clear() {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        entries.clear();
+        stats = TieredCompilationStats();
+    }
+};
+
 /**
  * Compilation task for multi-threaded compilation
  */
@@ -2697,6 +3112,7 @@ struct oc_ppu_jit_t {
     EnhancedRegisterAllocator enhanced_reg_allocator;
     LazyCompilationManager lazy_manager;
     EnhancedLazyCompilationManager enhanced_lazy_manager;
+    TieredCompilationManager tiered_manager;
     CompilationThreadPool thread_pool;
     bool enabled;
     bool lazy_compilation_enabled;
@@ -6451,6 +6867,107 @@ void oc_ppu_jit_lazy_clear(oc_ppu_jit_t* jit) {
     if (!jit) return;
     jit->lazy_manager.clear();
     jit->enhanced_lazy_manager.clear();
+}
+
+// ============================================================================
+// Tiered Compilation APIs
+// ============================================================================
+
+void oc_ppu_jit_tiered_set_thresholds(oc_ppu_jit_t* jit, uint32_t tier0_to_1, uint32_t tier1_to_2) {
+    if (!jit) return;
+    jit->tiered_manager.set_thresholds(tier0_to_1, tier1_to_2);
+}
+
+void oc_ppu_jit_tiered_get_thresholds(oc_ppu_jit_t* jit, uint32_t* tier0_to_1, uint32_t* tier1_to_2) {
+    if (!jit) {
+        if (tier0_to_1) *tier0_to_1 = 10;
+        if (tier1_to_2) *tier1_to_2 = 1000;
+        return;
+    }
+    jit->tiered_manager.get_thresholds(tier0_to_1, tier1_to_2);
+}
+
+void oc_ppu_jit_tiered_register(oc_ppu_jit_t* jit, uint32_t address,
+                                 const uint8_t* code, size_t size,
+                                 uint32_t tier0_to_1, uint32_t tier1_to_2) {
+    if (!jit || !code) return;
+    jit->tiered_manager.register_code(address, code, size, tier0_to_1, tier1_to_2);
+}
+
+int oc_ppu_jit_tiered_record_execution(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return 0;
+    CompilationTier next_tier = jit->tiered_manager.record_execution(address);
+    CompilationTier current_tier = jit->tiered_manager.get_tier(address);
+    
+    // If next_tier differs from current, a promotion should happen
+    if (next_tier != current_tier) {
+        return static_cast<int>(next_tier);
+    }
+    return static_cast<int>(current_tier);
+}
+
+int oc_ppu_jit_tiered_get_tier(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return 0;
+    return static_cast<int>(jit->tiered_manager.get_tier(address));
+}
+
+int oc_ppu_jit_tiered_promote(oc_ppu_jit_t* jit, uint32_t address, int target_tier) {
+    if (!jit) return 0;
+    if (target_tier < 0 || target_tier > 2) return 0;
+    
+    return jit->tiered_manager.promote(address, static_cast<CompilationTier>(target_tier)) ? 1 : 0;
+}
+
+void* oc_ppu_jit_tiered_get_code(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return nullptr;
+    return jit->tiered_manager.get_compiled_code(address);
+}
+
+uint32_t oc_ppu_jit_tiered_get_execution_count(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return 0;
+    return jit->tiered_manager.get_execution_count(address);
+}
+
+void oc_ppu_jit_tiered_get_tier_counts(oc_ppu_jit_t* jit, size_t* tier0, size_t* tier1, size_t* tier2) {
+    if (!jit) {
+        if (tier0) *tier0 = 0;
+        if (tier1) *tier1 = 0;
+        if (tier2) *tier2 = 0;
+        return;
+    }
+    jit->tiered_manager.get_tier_counts(tier0, tier1, tier2);
+}
+
+void oc_ppu_jit_tiered_get_stats(oc_ppu_jit_t* jit, uint64_t* total_registered,
+                                  uint64_t* tier0_execs, uint64_t* tier1_execs, uint64_t* tier2_execs,
+                                  uint64_t* tier0_to_1_promotions, uint64_t* tier1_to_2_promotions) {
+    if (!jit) {
+        if (total_registered) *total_registered = 0;
+        if (tier0_execs) *tier0_execs = 0;
+        if (tier1_execs) *tier1_execs = 0;
+        if (tier2_execs) *tier2_execs = 0;
+        if (tier0_to_1_promotions) *tier0_to_1_promotions = 0;
+        if (tier1_to_2_promotions) *tier1_to_2_promotions = 0;
+        return;
+    }
+    
+    auto stats = jit->tiered_manager.get_stats();
+    if (total_registered) *total_registered = stats.total_registered;
+    if (tier0_execs) *tier0_execs = stats.tier0_executions;
+    if (tier1_execs) *tier1_execs = stats.tier1_executions;
+    if (tier2_execs) *tier2_execs = stats.tier2_executions;
+    if (tier0_to_1_promotions) *tier0_to_1_promotions = stats.tier0_to_1_promotions;
+    if (tier1_to_2_promotions) *tier1_to_2_promotions = stats.tier1_to_2_promotions;
+}
+
+void oc_ppu_jit_tiered_reset_stats(oc_ppu_jit_t* jit) {
+    if (!jit) return;
+    jit->tiered_manager.reset_stats();
+}
+
+void oc_ppu_jit_tiered_clear(oc_ppu_jit_t* jit) {
+    if (!jit) return;
+    jit->tiered_manager.clear();
 }
 
 // ============================================================================
