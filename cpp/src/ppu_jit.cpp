@@ -2107,6 +2107,283 @@ struct LazyCompilationManager {
 };
 
 /**
+ * Lazy compilation statistics
+ */
+struct LazyCompilationStats {
+    uint64_t total_registered;       // Total functions registered for lazy compilation
+    uint64_t total_compiled;         // Total functions compiled
+    uint64_t total_failed;           // Total compilation failures
+    uint64_t total_executions;       // Total execution count across all entries
+    uint64_t hot_path_promotions;    // Times a function was promoted to hot status
+    uint64_t stub_calls;             // Times interpreter stub was called
+    
+    LazyCompilationStats()
+        : total_registered(0), total_compiled(0), total_failed(0),
+          total_executions(0), hot_path_promotions(0), stub_calls(0) {}
+};
+
+/**
+ * Hot path entry for prioritization
+ */
+struct HotPathEntry {
+    uint32_t address;
+    uint32_t execution_count;
+    bool is_compiled;
+    
+    HotPathEntry() : address(0), execution_count(0), is_compiled(false) {}
+    HotPathEntry(uint32_t addr, uint32_t count, bool compiled)
+        : address(addr), execution_count(count), is_compiled(compiled) {}
+    
+    // Higher execution count = higher priority
+    bool operator<(const HotPathEntry& other) const {
+        return execution_count < other.execution_count;
+    }
+};
+
+/**
+ * Interpreter stub callback type
+ * Called when uncompiled code is executed
+ * Returns: 0 = continue with interpreter, 1 = code is now compiled
+ */
+using InterpreterStubCallback = int (*)(uint32_t address, void* user_data);
+
+/**
+ * Enhanced lazy compilation manager with hot path detection and stub support
+ */
+struct EnhancedLazyCompilationManager {
+    std::unordered_map<uint32_t, std::unique_ptr<LazyCompilationEntry>> entries;
+    std::priority_queue<HotPathEntry> hot_queue;  // Priority queue for hot paths
+    mutable oc_mutex mutex;  // mutable to allow locking in const methods
+    
+    uint32_t default_threshold;          // Default compilation threshold
+    uint32_t hot_threshold;              // Threshold to consider a path "hot"
+    InterpreterStubCallback stub_callback;
+    void* stub_user_data;
+    LazyCompilationStats stats;
+    
+    static constexpr uint32_t DEFAULT_THRESHOLD = 10;
+    static constexpr uint32_t HOT_THRESHOLD = 100;
+    
+    EnhancedLazyCompilationManager()
+        : default_threshold(DEFAULT_THRESHOLD), hot_threshold(HOT_THRESHOLD),
+          stub_callback(nullptr), stub_user_data(nullptr) {}
+    
+    // Set default compilation threshold
+    void set_default_threshold(uint32_t threshold) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        default_threshold = threshold;
+    }
+    
+    uint32_t get_default_threshold() const {
+        return default_threshold;
+    }
+    
+    // Set hot path threshold
+    void set_hot_threshold(uint32_t threshold) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        hot_threshold = threshold;
+    }
+    
+    // Set interpreter stub callback
+    void set_stub_callback(InterpreterStubCallback callback, void* user_data) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        stub_callback = callback;
+        stub_user_data = user_data;
+    }
+    
+    // Register code for lazy compilation
+    void register_lazy(uint32_t address, const uint8_t* code, size_t size, uint32_t threshold = 0) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        uint32_t actual_threshold = (threshold == 0) ? default_threshold : threshold;
+        entries[address] = std::make_unique<LazyCompilationEntry>(address, code, size, actual_threshold);
+        stats.total_registered++;
+    }
+    
+    // Get entry for an address
+    LazyCompilationEntry* get_entry(uint32_t address) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        auto it = entries.find(address);
+        return (it != entries.end()) ? it->second.get() : nullptr;
+    }
+    
+    // Increment execution count and check if should compile
+    // Returns: true if should compile now
+    bool record_execution(uint32_t address) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        auto it = entries.find(address);
+        if (it == entries.end()) return false;
+        
+        auto* entry = it->second.get();
+        stats.total_executions++;
+        
+        // Already compiled or compiling
+        if (entry->state == LazyState::Compiled || entry->state == LazyState::Compiling) {
+            return false;
+        }
+        
+        // Increment execution count
+        uint32_t count = entry->execution_count.fetch_add(1) + 1;
+        
+        // Check for hot path promotion
+        if (count == hot_threshold) {
+            stats.hot_path_promotions++;
+            hot_queue.push(HotPathEntry(address, count, false));
+        }
+        
+        // Check if should compile
+        if (count >= entry->threshold) {
+            entry->state = LazyState::Pending;
+            return true;
+        }
+        
+        return false;
+    }
+    
+    // Call interpreter stub for uncompiled code
+    int call_stub(uint32_t address) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        stats.stub_calls++;
+        
+        if (stub_callback) {
+            return stub_callback(address, stub_user_data);
+        }
+        return 0;  // No stub, continue with interpreter
+    }
+    
+    // Mark entry as compiling
+    void mark_compiling(uint32_t address) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        auto it = entries.find(address);
+        if (it != entries.end()) {
+            it->second->state = LazyState::Compiling;
+        }
+    }
+    
+    // Mark entry as compiled
+    void mark_compiled(uint32_t address) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        auto it = entries.find(address);
+        if (it != entries.end()) {
+            it->second->state = LazyState::Compiled;
+            stats.total_compiled++;
+        }
+    }
+    
+    // Mark entry as failed
+    void mark_failed(uint32_t address) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        auto it = entries.find(address);
+        if (it != entries.end()) {
+            it->second->state = LazyState::Failed;
+            stats.total_failed++;
+        }
+    }
+    
+    // Get execution count for an address
+    uint32_t get_execution_count(uint32_t address) const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        auto it = entries.find(address);
+        return (it != entries.end()) ? it->second->execution_count.load() : 0;
+    }
+    
+    // Get state for an address
+    LazyState get_state(uint32_t address) const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        auto it = entries.find(address);
+        return (it != entries.end()) ? it->second->state : LazyState::NotCompiled;
+    }
+    
+    // Get next hot address to compile (highest priority)
+    // Returns 0 if no hot addresses pending
+    uint32_t get_next_hot_address() {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        while (!hot_queue.empty()) {
+            HotPathEntry top = hot_queue.top();
+            hot_queue.pop();
+            
+            auto it = entries.find(top.address);
+            if (it != entries.end() && it->second->state == LazyState::Pending) {
+                return top.address;
+            }
+        }
+        
+        return 0;
+    }
+    
+    // Get list of hot addresses (sorted by execution count, descending)
+    // Uses partial_sort for efficiency when max_count < total entries
+    std::vector<HotPathEntry> get_hot_addresses(size_t max_count = 100) const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        std::vector<HotPathEntry> result;
+        result.reserve(std::min(entries.size(), max_count * 2));  // Reserve reasonable space
+        
+        for (const auto& pair : entries) {
+            uint32_t count = pair.second->execution_count.load();
+            if (count >= hot_threshold) {
+                result.push_back(HotPathEntry(
+                    pair.first, count, 
+                    pair.second->state == LazyState::Compiled
+                ));
+            }
+        }
+        
+        // Use partial_sort if we have more results than needed
+        if (result.size() > max_count) {
+            std::partial_sort(result.begin(), result.begin() + max_count, result.end(),
+                              [](const HotPathEntry& a, const HotPathEntry& b) {
+                                  return a.execution_count > b.execution_count;
+                              });
+            result.resize(max_count);
+        } else {
+            // Full sort for small result sets
+            std::sort(result.begin(), result.end(), 
+                      [](const HotPathEntry& a, const HotPathEntry& b) {
+                          return a.execution_count > b.execution_count;
+                      });
+        }
+        
+        return result;
+    }
+    
+    // Get pending compilation count
+    size_t get_pending_count() const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        size_t count = 0;
+        for (const auto& pair : entries) {
+            if (pair.second->state == LazyState::Pending) {
+                count++;
+            }
+        }
+        return count;
+    }
+    
+    // Get statistics
+    LazyCompilationStats get_stats() const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        return stats;
+    }
+    
+    // Reset statistics
+    void reset_stats() {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        stats = LazyCompilationStats();
+    }
+    
+    void clear() {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        entries.clear();
+        // Clear the priority queue
+        while (!hot_queue.empty()) {
+            hot_queue.pop();
+        }
+        stats = LazyCompilationStats();
+    }
+};
+
+/**
  * Compilation task for multi-threaded compilation
  */
 struct CompilationTask {
@@ -2419,6 +2696,7 @@ struct oc_ppu_jit_t {
     RegisterAllocator reg_allocator;
     EnhancedRegisterAllocator enhanced_reg_allocator;
     LazyCompilationManager lazy_manager;
+    EnhancedLazyCompilationManager enhanced_lazy_manager;
     CompilationThreadPool thread_pool;
     bool enabled;
     bool lazy_compilation_enabled;
@@ -6053,6 +6331,126 @@ int oc_ppu_jit_get_lazy_state(oc_ppu_jit_t* jit, uint32_t address) {
     if (!jit) return 0;
     auto* entry = jit->lazy_manager.get_entry(address);
     return entry ? static_cast<int>(entry->state) : 0;
+}
+
+// Enhanced Lazy Compilation APIs
+
+void oc_ppu_jit_lazy_set_default_threshold(oc_ppu_jit_t* jit, uint32_t threshold) {
+    if (!jit) return;
+    jit->enhanced_lazy_manager.set_default_threshold(threshold);
+}
+
+uint32_t oc_ppu_jit_lazy_get_default_threshold(oc_ppu_jit_t* jit) {
+    if (!jit) return 10;
+    return jit->enhanced_lazy_manager.get_default_threshold();
+}
+
+void oc_ppu_jit_lazy_set_hot_threshold(oc_ppu_jit_t* jit, uint32_t threshold) {
+    if (!jit) return;
+    jit->enhanced_lazy_manager.set_hot_threshold(threshold);
+}
+
+void oc_ppu_jit_lazy_register(oc_ppu_jit_t* jit, uint32_t address,
+                               const uint8_t* code, size_t size, 
+                               uint32_t threshold) {
+    if (!jit || !code) return;
+    // Register with both managers for compatibility
+    jit->lazy_manager.register_lazy(address, code, size, threshold);
+    jit->enhanced_lazy_manager.register_lazy(address, code, size, threshold);
+}
+
+int oc_ppu_jit_lazy_record_execution(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return 0;
+    return jit->enhanced_lazy_manager.record_execution(address) ? 1 : 0;
+}
+
+uint32_t oc_ppu_jit_lazy_get_execution_count(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return 0;
+    return jit->enhanced_lazy_manager.get_execution_count(address);
+}
+
+int oc_ppu_jit_lazy_get_enhanced_state(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return 0;
+    return static_cast<int>(jit->enhanced_lazy_manager.get_state(address));
+}
+
+uint32_t oc_ppu_jit_lazy_get_next_hot_address(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->enhanced_lazy_manager.get_next_hot_address();
+}
+
+size_t oc_ppu_jit_lazy_get_hot_addresses(oc_ppu_jit_t* jit, uint32_t* addresses, 
+                                          uint32_t* exec_counts, int* compiled,
+                                          size_t max_count) {
+    if (!jit) return 0;
+    
+    auto hot_list = jit->enhanced_lazy_manager.get_hot_addresses(max_count);
+    size_t count = hot_list.size();
+    
+    for (size_t i = 0; i < count; i++) {
+        if (addresses) addresses[i] = hot_list[i].address;
+        if (exec_counts) exec_counts[i] = hot_list[i].execution_count;
+        if (compiled) compiled[i] = hot_list[i].is_compiled ? 1 : 0;
+    }
+    
+    return count;
+}
+
+size_t oc_ppu_jit_lazy_get_pending_count(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->enhanced_lazy_manager.get_pending_count();
+}
+
+void oc_ppu_jit_lazy_mark_compiling(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return;
+    jit->lazy_manager.mark_compiling(address);
+    jit->enhanced_lazy_manager.mark_compiling(address);
+}
+
+void oc_ppu_jit_lazy_mark_compiled(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return;
+    jit->lazy_manager.mark_compiled(address);
+    jit->enhanced_lazy_manager.mark_compiled(address);
+}
+
+void oc_ppu_jit_lazy_mark_failed(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return;
+    jit->lazy_manager.mark_failed(address);
+    jit->enhanced_lazy_manager.mark_failed(address);
+}
+
+void oc_ppu_jit_lazy_get_stats(oc_ppu_jit_t* jit, uint64_t* total_registered,
+                                uint64_t* total_compiled, uint64_t* total_failed,
+                                uint64_t* total_executions, uint64_t* hot_promotions,
+                                uint64_t* stub_calls) {
+    if (!jit) {
+        if (total_registered) *total_registered = 0;
+        if (total_compiled) *total_compiled = 0;
+        if (total_failed) *total_failed = 0;
+        if (total_executions) *total_executions = 0;
+        if (hot_promotions) *hot_promotions = 0;
+        if (stub_calls) *stub_calls = 0;
+        return;
+    }
+    
+    auto stats = jit->enhanced_lazy_manager.get_stats();
+    if (total_registered) *total_registered = stats.total_registered;
+    if (total_compiled) *total_compiled = stats.total_compiled;
+    if (total_failed) *total_failed = stats.total_failed;
+    if (total_executions) *total_executions = stats.total_executions;
+    if (hot_promotions) *hot_promotions = stats.hot_path_promotions;
+    if (stub_calls) *stub_calls = stats.stub_calls;
+}
+
+void oc_ppu_jit_lazy_reset_stats(oc_ppu_jit_t* jit) {
+    if (!jit) return;
+    jit->enhanced_lazy_manager.reset_stats();
+}
+
+void oc_ppu_jit_lazy_clear(oc_ppu_jit_t* jit) {
+    if (!jit) return;
+    jit->lazy_manager.clear();
+    jit->enhanced_lazy_manager.clear();
 }
 
 // ============================================================================

@@ -439,6 +439,99 @@ int oc_ppu_jit_should_compile_lazy(oc_ppu_jit_t* jit, uint32_t address);
  */
 int oc_ppu_jit_get_lazy_state(oc_ppu_jit_t* jit, uint32_t address);
 
+// PPU JIT Enhanced Lazy Compilation APIs
+
+/**
+ * Set default compilation threshold for new registrations
+ */
+void oc_ppu_jit_lazy_set_default_threshold(oc_ppu_jit_t* jit, uint32_t threshold);
+
+/**
+ * Get default compilation threshold
+ */
+uint32_t oc_ppu_jit_lazy_get_default_threshold(oc_ppu_jit_t* jit);
+
+/**
+ * Set hot path threshold (paths with >= this count are considered hot)
+ */
+void oc_ppu_jit_lazy_set_hot_threshold(oc_ppu_jit_t* jit, uint32_t threshold);
+
+/**
+ * Register code for lazy compilation (enhanced version)
+ * Uses default threshold if threshold=0
+ */
+void oc_ppu_jit_lazy_register(oc_ppu_jit_t* jit, uint32_t address,
+                               const uint8_t* code, size_t size, 
+                               uint32_t threshold);
+
+/**
+ * Record execution and check if should compile
+ * Returns: 1 if should compile now, 0 otherwise
+ */
+int oc_ppu_jit_lazy_record_execution(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Get execution count for an address
+ */
+uint32_t oc_ppu_jit_lazy_get_execution_count(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Get lazy state (enhanced version with same return values)
+ */
+int oc_ppu_jit_lazy_get_enhanced_state(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Get next hot address to compile (highest priority)
+ * Returns: address or 0 if none pending
+ */
+uint32_t oc_ppu_jit_lazy_get_next_hot_address(oc_ppu_jit_t* jit);
+
+/**
+ * Get list of hot addresses sorted by execution count
+ * Returns: number of entries written
+ */
+size_t oc_ppu_jit_lazy_get_hot_addresses(oc_ppu_jit_t* jit, uint32_t* addresses, 
+                                          uint32_t* exec_counts, int* compiled,
+                                          size_t max_count);
+
+/**
+ * Get count of pending compilations
+ */
+size_t oc_ppu_jit_lazy_get_pending_count(oc_ppu_jit_t* jit);
+
+/**
+ * Mark entry as compiling
+ */
+void oc_ppu_jit_lazy_mark_compiling(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Mark entry as compiled
+ */
+void oc_ppu_jit_lazy_mark_compiled(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Mark entry as failed
+ */
+void oc_ppu_jit_lazy_mark_failed(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Get lazy compilation statistics
+ */
+void oc_ppu_jit_lazy_get_stats(oc_ppu_jit_t* jit, uint64_t* total_registered,
+                                uint64_t* total_compiled, uint64_t* total_failed,
+                                uint64_t* total_executions, uint64_t* hot_promotions,
+                                uint64_t* stub_calls);
+
+/**
+ * Reset lazy compilation statistics
+ */
+void oc_ppu_jit_lazy_reset_stats(oc_ppu_jit_t* jit);
+
+/**
+ * Clear all lazy compilation entries and state
+ */
+void oc_ppu_jit_lazy_clear(oc_ppu_jit_t* jit);
+
 // PPU JIT Multi-threaded Compilation APIs
 
 /**
