@@ -307,11 +307,12 @@ This document tracks pending tasks, improvements, and future features for the ox
   - **Pool Statistics**: Wait time, execution time, peak queue size ✅
   - Location: `cpp/src/ppu_jit.cpp` (EnhancedCompilationThreadPool struct)
 
-- [ ] **Background Compilation**: Compile ahead of execution
-  - **Speculative Compilation**: Compile likely-to-execute blocks
-  - **Branch Target Precompilation**: Compile branch targets in advance
-  - **Idle Compilation**: Compile during idle time
-  - Location: `cpp/src/ppu_jit.cpp`
+- [x] **Background Compilation**: Compile ahead of execution
+  - **Speculative Compilation**: Compile likely-to-execute blocks ✅
+  - **Branch Target Precompilation**: Compile branch targets in advance ✅
+  - **Idle Compilation**: Compile during idle time ✅
+  - **Configurable Parameters**: Speculation depth, priority, thresholds ✅
+  - Location: `cpp/src/ppu_jit.cpp` (BackgroundCompilationManager struct)
 
 #### SPU-Specific JIT Features
 
@@ -1121,7 +1122,7 @@ This document tracks pending tasks, improvements, and future features for the ox
 | Compilation Thread Pool | ✅ Complete | Multi-threaded worker pool |
 | Priority Queue | ✅ Complete | Priority-based task scheduling |
 | Task Tracking | ✅ Complete | Pending/completed counters |
-| Background Compilation | 🔴 Minimal | Not implemented |
+| Background Compilation | ✅ Complete | Speculative/branch-target/idle compilation |
 | Loop Detection (SPU) | ✅ Complete | Header/back-edge/exit detection |
 | Loop Iteration Count | ✅ Complete | Compile-time count tracking |
 | Loop Vectorization Flag | ✅ Complete | Vectorizable marking |

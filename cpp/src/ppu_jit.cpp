@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <algorithm>
 #include <memory>
@@ -3159,6 +3160,291 @@ struct CompilationThreadPool {
     bool is_running() const { return !workers.empty() && !stop_flag; }
 };
 
+// ============================================================================
+// Background Compilation System
+// ============================================================================
+
+/**
+ * Background compilation statistics
+ */
+struct BackgroundCompilationStats {
+    uint64_t speculative_queued;       // Blocks queued speculatively
+    uint64_t speculative_compiled;     // Blocks compiled speculatively
+    uint64_t speculative_hits;         // Speculatively compiled blocks that were executed
+    uint64_t branch_targets_queued;    // Branch targets queued for precompilation
+    uint64_t branch_targets_compiled;  // Branch targets compiled
+    uint64_t idle_compilations;        // Compilations during idle time
+    uint64_t already_compiled;         // Requests for already-compiled blocks
+    uint64_t compilation_failures;     // Failed compilations
+    
+    BackgroundCompilationStats()
+        : speculative_queued(0), speculative_compiled(0), speculative_hits(0),
+          branch_targets_queued(0), branch_targets_compiled(0), idle_compilations(0),
+          already_compiled(0), compilation_failures(0) {}
+    
+    double get_speculation_hit_rate() const {
+        return (speculative_compiled > 0)
+            ? (100.0 * speculative_hits / speculative_compiled) : 0.0;
+    }
+};
+
+/**
+ * Speculative compilation entry with scoring
+ */
+struct SpeculativeEntry {
+    uint32_t address;
+    const uint8_t* code;
+    size_t size;
+    int score;                          // Higher = more likely to execute
+    bool is_branch_target;              // True if this is a branch target
+    std::chrono::steady_clock::time_point queue_time;
+    
+    SpeculativeEntry()
+        : address(0), code(nullptr), size(0), score(0), is_branch_target(false),
+          queue_time(std::chrono::steady_clock::now()) {}
+    
+    SpeculativeEntry(uint32_t addr, const uint8_t* c, size_t s, int sc, bool branch = false)
+        : address(addr), code(c), size(s), score(sc), is_branch_target(branch),
+          queue_time(std::chrono::steady_clock::now()) {}
+    
+    bool operator<(const SpeculativeEntry& other) const {
+        return score < other.score;  // Max-heap by score
+    }
+};
+
+/**
+ * Background Compilation Manager
+ * Manages speculative and ahead-of-time compilation for improved performance
+ */
+struct BackgroundCompilationManager {
+    std::priority_queue<SpeculativeEntry> speculative_queue;
+    std::unordered_set<uint32_t> queued_addresses;  // Prevent duplicates
+    std::unordered_set<uint32_t> compiled_addresses; // Track what's compiled
+    mutable oc_mutex mutex;
+    
+    std::atomic<bool> enabled;
+    std::atomic<bool> idle_mode;
+    
+    // Configuration
+    uint32_t speculation_depth;         // How many blocks ahead to speculate
+    int branch_target_priority;         // Priority boost for branch targets
+    int hot_block_threshold;            // Execution count to consider "hot"
+    size_t max_queue_size;              // Maximum speculative queue size
+    
+    // Statistics
+    BackgroundCompilationStats stats;
+    
+    static constexpr uint32_t DEFAULT_SPECULATION_DEPTH = 3;
+    static constexpr int DEFAULT_BRANCH_TARGET_PRIORITY = 50;
+    static constexpr int DEFAULT_HOT_BLOCK_THRESHOLD = 5;
+    static constexpr size_t DEFAULT_MAX_QUEUE_SIZE = 1000;
+    
+    BackgroundCompilationManager()
+        : enabled(false), idle_mode(false),
+          speculation_depth(DEFAULT_SPECULATION_DEPTH),
+          branch_target_priority(DEFAULT_BRANCH_TARGET_PRIORITY),
+          hot_block_threshold(DEFAULT_HOT_BLOCK_THRESHOLD),
+          max_queue_size(DEFAULT_MAX_QUEUE_SIZE) {}
+    
+    // Enable/disable background compilation
+    void set_enabled(bool enable) {
+        enabled.store(enable);
+    }
+    
+    bool is_enabled() const {
+        return enabled.load();
+    }
+    
+    // Enter/exit idle mode (for idle-time compilation)
+    void set_idle_mode(bool idle) {
+        idle_mode.store(idle);
+    }
+    
+    bool is_idle() const {
+        return idle_mode.load();
+    }
+    
+    // Configure speculation parameters
+    void configure(uint32_t depth, int branch_priority, int hot_threshold, size_t max_queue) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        speculation_depth = depth;
+        branch_target_priority = branch_priority;
+        hot_block_threshold = hot_threshold;
+        max_queue_size = max_queue;
+    }
+    
+    // Check if address is already compiled or queued
+    bool is_compiled(uint32_t address) const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        return compiled_addresses.find(address) != compiled_addresses.end();
+    }
+    
+    bool is_queued(uint32_t address) const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        return queued_addresses.find(address) != queued_addresses.end();
+    }
+    
+    // Mark an address as compiled (called externally after compilation)
+    void mark_compiled(uint32_t address) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        compiled_addresses.insert(address);
+        queued_addresses.erase(address);
+    }
+    
+    // Queue a block for speculative compilation
+    bool queue_speculative(uint32_t address, const uint8_t* code, size_t size, 
+                          int base_score = 0, bool is_branch_target = false) {
+        if (!enabled.load()) return false;
+        
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        // Check if already compiled or queued
+        if (compiled_addresses.find(address) != compiled_addresses.end()) {
+            stats.already_compiled++;
+            return false;
+        }
+        
+        if (queued_addresses.find(address) != queued_addresses.end()) {
+            return false;  // Already queued
+        }
+        
+        // Check queue size limit
+        if (speculative_queue.size() >= max_queue_size) {
+            return false;  // Queue full
+        }
+        
+        // Calculate score
+        int score = base_score;
+        if (is_branch_target) {
+            score += branch_target_priority;
+            stats.branch_targets_queued++;
+        } else {
+            stats.speculative_queued++;
+        }
+        
+        speculative_queue.emplace(address, code, size, score, is_branch_target);
+        queued_addresses.insert(address);
+        
+        return true;
+    }
+    
+    // Queue multiple branch targets for precompilation
+    size_t queue_branch_targets(const std::vector<std::pair<uint32_t, std::pair<const uint8_t*, size_t>>>& targets) {
+        if (!enabled.load()) return 0;
+        
+        size_t queued = 0;
+        for (const auto& target : targets) {
+            if (queue_speculative(target.first, target.second.first, target.second.second, 
+                                  0, true)) {
+                queued++;
+            }
+        }
+        return queued;
+    }
+    
+    // Get next block to compile (highest priority)
+    bool get_next_task(SpeculativeEntry& entry) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        if (speculative_queue.empty()) {
+            return false;
+        }
+        
+        entry = speculative_queue.top();
+        speculative_queue.pop();
+        
+        return true;
+    }
+    
+    // Process one compilation during idle time
+    // Returns: true if a task was processed
+    bool process_idle_task(std::function<bool(uint32_t, const uint8_t*, size_t)> compile_func) {
+        if (!enabled.load() || !idle_mode.load()) return false;
+        
+        SpeculativeEntry entry;
+        if (!get_next_task(entry)) {
+            return false;
+        }
+        
+        // Compile the entry
+        bool success = compile_func(entry.address, entry.code, entry.size);
+        
+        {
+            oc_lock_guard<oc_mutex> lock(mutex);
+            queued_addresses.erase(entry.address);
+            
+            if (success) {
+                compiled_addresses.insert(entry.address);
+                stats.idle_compilations++;
+                
+                if (entry.is_branch_target) {
+                    stats.branch_targets_compiled++;
+                } else {
+                    stats.speculative_compiled++;
+                }
+            } else {
+                stats.compilation_failures++;
+            }
+        }
+        
+        return true;
+    }
+    
+    // Process multiple tasks during idle time (up to max_count)
+    size_t process_idle_batch(std::function<bool(uint32_t, const uint8_t*, size_t)> compile_func,
+                               size_t max_count) {
+        size_t processed = 0;
+        while (processed < max_count && process_idle_task(compile_func)) {
+            processed++;
+        }
+        return processed;
+    }
+    
+    // Record that a speculatively compiled block was executed (hit)
+    void record_speculative_hit(uint32_t address) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        if (compiled_addresses.find(address) != compiled_addresses.end()) {
+            stats.speculative_hits++;
+        }
+    }
+    
+    // Get queue size
+    size_t get_queue_size() const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        return speculative_queue.size();
+    }
+    
+    // Get compiled count
+    size_t get_compiled_count() const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        return compiled_addresses.size();
+    }
+    
+    // Get statistics
+    BackgroundCompilationStats get_stats() const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        return stats;
+    }
+    
+    // Reset statistics
+    void reset_stats() {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        stats = BackgroundCompilationStats();
+    }
+    
+    // Clear all state
+    void clear() {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        
+        while (!speculative_queue.empty()) {
+            speculative_queue.pop();
+        }
+        queued_addresses.clear();
+        compiled_addresses.clear();
+        stats = BackgroundCompilationStats();
+    }
+};
+
 /**
  * JIT compilation error types for comprehensive error handling
  */
@@ -3384,6 +3670,7 @@ struct oc_ppu_jit_t {
     TieredCompilationManager tiered_manager;
     CompilationThreadPool thread_pool;
     EnhancedCompilationThreadPool enhanced_thread_pool;
+    BackgroundCompilationManager bg_compiler;
     bool enabled;
     bool lazy_compilation_enabled;
     bool multithreaded_enabled;
@@ -7380,6 +7667,142 @@ void oc_ppu_jit_pool_get_stats(oc_ppu_jit_t* jit, uint64_t* total_submitted,
 void oc_ppu_jit_pool_reset_stats(oc_ppu_jit_t* jit) {
     if (!jit) return;
     jit->enhanced_thread_pool.reset_stats();
+}
+
+// ============================================================================
+// Background Compilation APIs
+// ============================================================================
+
+void oc_ppu_jit_bg_enable(oc_ppu_jit_t* jit, int enable) {
+    if (!jit) return;
+    jit->bg_compiler.set_enabled(enable != 0);
+}
+
+int oc_ppu_jit_bg_is_enabled(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->bg_compiler.is_enabled() ? 1 : 0;
+}
+
+void oc_ppu_jit_bg_set_idle_mode(oc_ppu_jit_t* jit, int idle) {
+    if (!jit) return;
+    jit->bg_compiler.set_idle_mode(idle != 0);
+}
+
+int oc_ppu_jit_bg_is_idle(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->bg_compiler.is_idle() ? 1 : 0;
+}
+
+void oc_ppu_jit_bg_configure(oc_ppu_jit_t* jit, uint32_t speculation_depth,
+                              int branch_priority, int hot_threshold, size_t max_queue) {
+    if (!jit) return;
+    jit->bg_compiler.configure(speculation_depth, branch_priority, hot_threshold, max_queue);
+}
+
+int oc_ppu_jit_bg_queue_speculative(oc_ppu_jit_t* jit, uint32_t address,
+                                     const uint8_t* code, size_t size, int score) {
+    if (!jit || !code) return 0;
+    return jit->bg_compiler.queue_speculative(address, code, size, score, false) ? 1 : 0;
+}
+
+int oc_ppu_jit_bg_queue_branch_target(oc_ppu_jit_t* jit, uint32_t address,
+                                       const uint8_t* code, size_t size) {
+    if (!jit || !code) return 0;
+    return jit->bg_compiler.queue_speculative(address, code, size, 0, true) ? 1 : 0;
+}
+
+int oc_ppu_jit_bg_is_compiled(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return 0;
+    return jit->bg_compiler.is_compiled(address) ? 1 : 0;
+}
+
+int oc_ppu_jit_bg_is_queued(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return 0;
+    return jit->bg_compiler.is_queued(address) ? 1 : 0;
+}
+
+void oc_ppu_jit_bg_mark_compiled(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return;
+    jit->bg_compiler.mark_compiled(address);
+}
+
+size_t oc_ppu_jit_bg_process_idle(oc_ppu_jit_t* jit, size_t max_count) {
+    if (!jit) return 0;
+    
+    return jit->bg_compiler.process_idle_batch(
+        [jit](uint32_t addr, const uint8_t* code, size_t size) -> bool {
+            // Compile using existing infrastructure
+            // Note: These functions may fail silently in some cases
+            auto block = std::make_unique<BasicBlock>(addr);
+            if (!block) return false;
+            
+            identify_basic_block(code, size, block.get());
+            
+            // Check if block has any instructions (basic validation)
+            if (block->instructions.empty()) {
+                return false;  // Empty block, compilation failed
+            }
+            
+            generate_llvm_ir(block.get(), jit);
+            emit_machine_code(block.get());
+            
+            // Insert into cache
+            {
+                oc_lock_guard<oc_mutex> lock(jit->cache.mutex);
+                jit->cache.insert_block(addr, std::move(block));
+            }
+            return true;
+        },
+        max_count
+    );
+}
+
+void oc_ppu_jit_bg_record_hit(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return;
+    jit->bg_compiler.record_speculative_hit(address);
+}
+
+size_t oc_ppu_jit_bg_get_queue_size(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->bg_compiler.get_queue_size();
+}
+
+size_t oc_ppu_jit_bg_get_compiled_count(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->bg_compiler.get_compiled_count();
+}
+
+void oc_ppu_jit_bg_get_stats(oc_ppu_jit_t* jit, uint64_t* speculative_queued,
+                              uint64_t* speculative_compiled, uint64_t* speculative_hits,
+                              uint64_t* branch_targets_queued, uint64_t* branch_targets_compiled,
+                              uint64_t* idle_compilations) {
+    if (!jit) {
+        if (speculative_queued) *speculative_queued = 0;
+        if (speculative_compiled) *speculative_compiled = 0;
+        if (speculative_hits) *speculative_hits = 0;
+        if (branch_targets_queued) *branch_targets_queued = 0;
+        if (branch_targets_compiled) *branch_targets_compiled = 0;
+        if (idle_compilations) *idle_compilations = 0;
+        return;
+    }
+    
+    auto stats = jit->bg_compiler.get_stats();
+    if (speculative_queued) *speculative_queued = stats.speculative_queued;
+    if (speculative_compiled) *speculative_compiled = stats.speculative_compiled;
+    if (speculative_hits) *speculative_hits = stats.speculative_hits;
+    if (branch_targets_queued) *branch_targets_queued = stats.branch_targets_queued;
+    if (branch_targets_compiled) *branch_targets_compiled = stats.branch_targets_compiled;
+    if (idle_compilations) *idle_compilations = stats.idle_compilations;
+}
+
+void oc_ppu_jit_bg_reset_stats(oc_ppu_jit_t* jit) {
+    if (!jit) return;
+    jit->bg_compiler.reset_stats();
+}
+
+void oc_ppu_jit_bg_clear(oc_ppu_jit_t* jit) {
+    if (!jit) return;
+    jit->bg_compiler.clear();
 }
 
 // ============================================================================

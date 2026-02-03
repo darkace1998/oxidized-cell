@@ -694,6 +694,108 @@ void oc_ppu_jit_pool_get_stats(oc_ppu_jit_t* jit, uint64_t* total_submitted,
  */
 void oc_ppu_jit_pool_reset_stats(oc_ppu_jit_t* jit);
 
+// PPU JIT Background Compilation APIs
+
+/**
+ * Enable or disable background compilation
+ */
+void oc_ppu_jit_bg_enable(oc_ppu_jit_t* jit, int enable);
+
+/**
+ * Check if background compilation is enabled
+ */
+int oc_ppu_jit_bg_is_enabled(oc_ppu_jit_t* jit);
+
+/**
+ * Set idle mode (for idle-time compilation)
+ */
+void oc_ppu_jit_bg_set_idle_mode(oc_ppu_jit_t* jit, int idle);
+
+/**
+ * Check if in idle mode
+ */
+int oc_ppu_jit_bg_is_idle(oc_ppu_jit_t* jit);
+
+/**
+ * Configure background compilation parameters
+ * speculation_depth: How many blocks ahead to speculate
+ * branch_priority: Priority boost for branch targets
+ * hot_threshold: Execution count to consider "hot"
+ * max_queue: Maximum speculative queue size
+ */
+void oc_ppu_jit_bg_configure(oc_ppu_jit_t* jit, uint32_t speculation_depth,
+                              int branch_priority, int hot_threshold, size_t max_queue);
+
+/**
+ * Queue a block for speculative compilation
+ * score: Base priority score (higher = more likely to be compiled first)
+ * Returns: 1 if queued, 0 if not (already compiled/queued or disabled)
+ */
+int oc_ppu_jit_bg_queue_speculative(oc_ppu_jit_t* jit, uint32_t address,
+                                     const uint8_t* code, size_t size, int score);
+
+/**
+ * Queue a branch target for precompilation (higher priority)
+ * Returns: 1 if queued, 0 if not
+ */
+int oc_ppu_jit_bg_queue_branch_target(oc_ppu_jit_t* jit, uint32_t address,
+                                       const uint8_t* code, size_t size);
+
+/**
+ * Check if an address has been background-compiled
+ */
+int oc_ppu_jit_bg_is_compiled(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Check if an address is queued for background compilation
+ */
+int oc_ppu_jit_bg_is_queued(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Mark an address as compiled (for external compilation tracking)
+ */
+void oc_ppu_jit_bg_mark_compiled(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Process background compilation during idle time
+ * max_count: Maximum number of blocks to compile
+ * Returns: Number of blocks compiled
+ */
+size_t oc_ppu_jit_bg_process_idle(oc_ppu_jit_t* jit, size_t max_count);
+
+/**
+ * Record that a speculatively compiled block was executed (hit)
+ */
+void oc_ppu_jit_bg_record_hit(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Get speculative queue size
+ */
+size_t oc_ppu_jit_bg_get_queue_size(oc_ppu_jit_t* jit);
+
+/**
+ * Get count of background-compiled blocks
+ */
+size_t oc_ppu_jit_bg_get_compiled_count(oc_ppu_jit_t* jit);
+
+/**
+ * Get background compilation statistics
+ */
+void oc_ppu_jit_bg_get_stats(oc_ppu_jit_t* jit, uint64_t* speculative_queued,
+                              uint64_t* speculative_compiled, uint64_t* speculative_hits,
+                              uint64_t* branch_targets_queued, uint64_t* branch_targets_compiled,
+                              uint64_t* idle_compilations);
+
+/**
+ * Reset background compilation statistics
+ */
+void oc_ppu_jit_bg_reset_stats(oc_ppu_jit_t* jit);
+
+/**
+ * Clear all background compilation state
+ */
+void oc_ppu_jit_bg_clear(oc_ppu_jit_t* jit);
+
 // ============================================================================
 // PPU JIT Execution Context
 // ============================================================================
