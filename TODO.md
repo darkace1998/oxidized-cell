@@ -325,26 +325,31 @@ This document tracks pending tasks, improvements, and future features for the ox
   - **Unroll Statistics**: Track unrolled loops and rejected reasons ✅
   - Location: `cpp/src/spu_jit.cpp` (LoopOptimizer struct)
 
-- [ ] **Channel Operation JIT**: Compile channel I/O
-  - **Channel Read/Write**: JIT `rdch`, `wrch`, `rchcnt` instructions
-  - **Blocking Semantics**: Handle blocking channel operations
-  - **Callback Integration**: Channel callbacks for interpreter fallback
-  - **All 32 Channels**: Support all SPU/MFC channels
+- [x] **Channel Operation JIT**: Compile channel I/O
+  - **Channel Read/Write**: JIT `rdch`, `wrch`, `rchcnt` instructions ✅
+  - **Blocking Semantics**: Handle blocking channel operations ✅
+  - **Callback Integration**: Channel callbacks for interpreter fallback ✅
+  - **All 32 Channels**: Support all SPU/MFC channels ✅
+  - **Channel Statistics**: Track reads, writes, blocking operations ✅
   - Location: `cpp/src/spu_jit.cpp` (ChannelManager struct)
 
-- [ ] **MFC DMA JIT**: Compile DMA operations
-  - **GET/PUT Commands**: All DMA command variants (GET, PUT, GETB, PUTB, GETF, PUTF)
-  - **Atomic Operations**: GETLLAR, PUTLLC, PUTLLUC
-  - **Tag Management**: DMA tag tracking and completion
-  - **Transfer Callbacks**: DMA transfer callbacks
+- [x] **MFC DMA JIT**: Compile DMA operations
+  - **GET/PUT Commands**: All DMA command variants (GET, PUT, GETB, PUTB, GETF, PUTF) ✅
+  - **Atomic Operations**: GETLLAR, PUTLLC, PUTLLUC ✅
+  - **Tag Management**: DMA tag tracking and completion ✅
+  - **Transfer Callbacks**: DMA transfer and atomic callbacks ✅
+  - **DMA Statistics**: Track bytes transferred, operations completed ✅
   - Location: `cpp/src/spu_jit.cpp` (MfcDmaManager struct)
 
-- [ ] **SIMD Intrinsics**: Native SIMD code generation
-  - **Integer Ops**: VecAddI8/16/32, VecSubI8/16/32, VecMulI16
-  - **Float Ops**: VecAddF32, VecSubF32, VecMulF32, VecMaddF32
-  - **Logical Ops**: VecAndV, VecOrV, VecXorV, VecNotV
-  - **Shuffle Ops**: VecShuffle, VecRotateBytes, VecShiftBytes, VecSelect
-  - **Instruction Mapping**: Map SPU opcodes to native SIMD intrinsics
+- [x] **SIMD Intrinsics**: Native SIMD code generation
+  - **Integer Ops**: VecAddI8/16/32, VecSubI8/16/32, VecMulI16, VecMulHiI16, VecMulLoI16, VecMulI32 ✅
+  - **Float Ops**: VecAddF32, VecSubF32, VecMulF32, VecMaddF32, VecMsubF32, VecNmsubF32 ✅
+  - **Logical Ops**: VecAndV, VecOrV, VecXorV, VecNotV, VecNandV, VecNorV ✅
+  - **Compare Ops**: VecCmpEqI8/16/32, VecCmpGtI8/16/32, VecCmpGtuI8/16/32, VecCmpEqF32, VecCmpGtF32 ✅
+  - **Shuffle Ops**: VecShuffle, VecRotateBytes, VecShiftBytes, VecSelect, VecGatherBits ✅
+  - **Conversion Ops**: VecCvtI32F32, VecCvtF32I32, VecExtendI8I16, VecExtendI16I32 ✅
+  - **Instruction Mapping**: Complete SPU opcode to native SIMD intrinsic mapping (50+ mappings) ✅
+  - **Intrinsic Statistics**: Track lookup hits/misses ✅
   - Location: `cpp/src/spu_jit.cpp` (SimdIntrinsicManager struct)
 
 #### JIT Execution & Debugging
@@ -1129,18 +1134,18 @@ This document tracks pending tasks, improvements, and future features for the ox
 | Loop Iteration Count | ✅ Complete | Compile-time count tracking |
 | Loop Vectorization Flag | ✅ Complete | Vectorizable marking |
 | Loop Unrolling | ✅ Complete | Configurable unroll with statistics |
-| Channel Manager (SPU) | ✅ Complete | All 32 channels supported |
-| Channel Callbacks | ✅ Complete | Read/write callback registration |
-| Channel Blocking JIT | 🟡 Partial | Basic operations, blocking incomplete |
-| MFC DMA Manager | ✅ Complete | DMA operation queuing |
+| Channel Manager (SPU) | ✅ Complete | All 32 channels with blocking semantics |
+| Channel Callbacks | ✅ Complete | Read/write/count callback registration |
+| Channel Blocking JIT | ✅ Complete | Full blocking operation support with statistics |
+| MFC DMA Manager | ✅ Complete | DMA operation queuing with statistics |
 | MFC Tag Groups | ✅ Complete | Tag-based operation tracking |
 | MFC GET/PUT | ✅ Complete | All command variants |
-| MFC Atomic | ✅ Complete | GETLLAR, PUTLLC, PUTLLUC |
-| DMA Callbacks | ✅ Complete | Transfer callback registration |
-| SIMD Intrinsic Map | ✅ Complete | SPU opcode to intrinsic mapping |
-| SIMD Integer Ops | 🟡 Partial | Add/Sub/And/Or/Xor mapped |
-| SIMD Float Ops | 🟡 Partial | Add/Sub/Mul mapped |
-| SIMD Shuffle | 🔴 Minimal | Not implemented |
+| MFC Atomic | ✅ Complete | GETLLAR, PUTLLC, PUTLLUC with reservation tracking |
+| DMA Callbacks | ✅ Complete | Transfer, atomic, and tag completion callbacks |
+| SIMD Intrinsic Map | ✅ Complete | SPU opcode to intrinsic mapping (50+ mappings) |
+| SIMD Integer Ops | ✅ Complete | Add/Sub/Mul/And/Or/Xor/Nand/Nor/Cmp mapped |
+| SIMD Float Ops | ✅ Complete | Add/Sub/Mul/Madd/Msub/Nmsub/Rsqrt/Rcp mapped |
+| SIMD Shuffle | ✅ Complete | Shuffle/Rotate/Shift/Select/Gather mapped |
 | PPU Context | ✅ Complete | 32 GPR, 32 FPR, 32 VR, CR, LR, CTR, XER, FPSCR, VSCR |
 | SPU Context | 🟡 Partial | 128 registers, LS pointer; some fields incomplete |
 | Exit Reason Codes | ✅ Complete | Normal, Branch, Syscall, Breakpoint, Error |

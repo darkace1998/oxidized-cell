@@ -1144,6 +1144,133 @@ int oc_spu_jit_get_simd_intrinsic(oc_spu_jit_t* jit, uint32_t opcode);
  */
 int oc_spu_jit_has_simd_intrinsic(oc_spu_jit_t* jit, uint32_t opcode);
 
+/**
+ * Register a custom opcode to intrinsic mapping
+ */
+void oc_spu_jit_register_simd_mapping(oc_spu_jit_t* jit, uint32_t opcode, int intrinsic);
+
+/**
+ * Get the number of registered SIMD intrinsic mappings
+ */
+size_t oc_spu_jit_get_simd_mapping_count(oc_spu_jit_t* jit);
+
+/**
+ * Get SIMD intrinsic statistics
+ * lookups: total opcode lookups
+ * hits: successful mappings found
+ * misses: no mapping found
+ */
+void oc_spu_jit_get_simd_stats(oc_spu_jit_t* jit, uint64_t* lookups, uint64_t* hits, uint64_t* misses);
+
+/**
+ * Reset SIMD intrinsic statistics
+ */
+void oc_spu_jit_reset_simd_stats(oc_spu_jit_t* jit);
+
+/**
+ * Get intrinsic name for debugging
+ * Returns: static string with intrinsic name
+ */
+const char* oc_spu_jit_get_intrinsic_name(int intrinsic);
+
+// SPU JIT Enhanced Channel APIs
+
+/**
+ * Check if a channel operation would block
+ * Returns: 1 if would block, 0 otherwise
+ */
+int oc_spu_jit_channel_would_block(oc_spu_jit_t* jit, uint8_t channel, int is_read);
+
+/**
+ * Record a channel read operation (for statistics)
+ */
+void oc_spu_jit_channel_record_read(oc_spu_jit_t* jit, uint8_t channel, int was_blocking);
+
+/**
+ * Record a channel write operation (for statistics)
+ */
+void oc_spu_jit_channel_record_write(oc_spu_jit_t* jit, uint8_t channel, int was_blocking);
+
+/**
+ * Record a channel count query (for statistics)
+ */
+void oc_spu_jit_channel_record_count(oc_spu_jit_t* jit, uint8_t channel);
+
+/**
+ * Get channel statistics
+ */
+void oc_spu_jit_get_channel_stats(oc_spu_jit_t* jit, 
+                                   uint64_t* total_reads, uint64_t* total_writes,
+                                   uint64_t* total_count_queries,
+                                   uint64_t* total_blocking_reads, uint64_t* total_blocking_writes);
+
+/**
+ * Reset channel statistics
+ */
+void oc_spu_jit_reset_channel_stats(oc_spu_jit_t* jit);
+
+/**
+ * Set blocking check callback for channels
+ */
+void oc_spu_jit_set_channel_blocking_callback(oc_spu_jit_t* jit, void* callback);
+
+// SPU JIT Enhanced MFC DMA APIs
+
+/**
+ * Queue a GETLLAR (Get Lock Line and Reserve) atomic operation
+ */
+void oc_spu_jit_queue_getllar(oc_spu_jit_t* jit, uint32_t local_addr, uint64_t ea, uint16_t tag);
+
+/**
+ * Queue a PUTLLC (Put Lock Line Conditional) atomic operation
+ */
+void oc_spu_jit_queue_putllc(oc_spu_jit_t* jit, uint32_t local_addr, uint64_t ea, uint16_t tag);
+
+/**
+ * Queue a PUTLLUC (Put Lock Line Unconditional) atomic operation
+ */
+void oc_spu_jit_queue_putlluc(oc_spu_jit_t* jit, uint32_t local_addr, uint64_t ea, uint16_t tag);
+
+/**
+ * Check if a reservation exists for an EA
+ * Returns: 1 if reservation exists, 0 otherwise
+ */
+int oc_spu_jit_has_reservation(oc_spu_jit_t* jit, uint64_t ea);
+
+/**
+ * Lose the current reservation (external write detected)
+ */
+void oc_spu_jit_lose_reservation(oc_spu_jit_t* jit);
+
+/**
+ * Get the tag completion status mask
+ * Returns: 32-bit mask where bit N is set if tag N is complete
+ */
+uint32_t oc_spu_jit_get_tag_status(oc_spu_jit_t* jit);
+
+/**
+ * Set atomic operation callback
+ */
+void oc_spu_jit_set_atomic_callback(oc_spu_jit_t* jit, void* callback);
+
+/**
+ * Set tag completion callback
+ */
+void oc_spu_jit_set_tag_completion_callback(oc_spu_jit_t* jit, void* callback);
+
+/**
+ * Get MFC DMA statistics
+ */
+void oc_spu_jit_get_dma_stats(oc_spu_jit_t* jit,
+                               uint64_t* gets_queued, uint64_t* puts_queued, uint64_t* atomics_queued,
+                               uint64_t* gets_completed, uint64_t* puts_completed, uint64_t* atomics_completed,
+                               uint64_t* total_bytes_in, uint64_t* total_bytes_out);
+
+/**
+ * Reset MFC DMA statistics
+ */
+void oc_spu_jit_reset_dma_stats(oc_spu_jit_t* jit);
+
 // ============================================================================
 // RSX Shader Compiler
 // ============================================================================
