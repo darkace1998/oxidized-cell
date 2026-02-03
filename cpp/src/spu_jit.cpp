@@ -513,16 +513,63 @@ struct LoopInfo {
     bool is_simple;           // True if loop has single entry/exit
     bool is_counted;          // True if loop count is known at compile time
     bool is_vectorizable;     // True if loop can be vectorized
+    bool is_unrolled;         // True if loop has been unrolled
+    uint32_t unroll_factor;   // Number of times the loop body was duplicated
     
     LoopInfo()
         : header_addr(0), back_edge_addr(0), exit_addr(0), 
           iteration_count(0), body_size(0),
-          is_simple(false), is_counted(false), is_vectorizable(false) {}
+          is_simple(false), is_counted(false), is_vectorizable(false),
+          is_unrolled(false), unroll_factor(1) {}
     
     LoopInfo(uint32_t header, uint32_t back_edge, uint32_t exit)
         : header_addr(header), back_edge_addr(back_edge), exit_addr(exit),
           iteration_count(0), body_size(0),
-          is_simple(true), is_counted(false), is_vectorizable(true) {}
+          is_simple(true), is_counted(false), is_vectorizable(true),
+          is_unrolled(false), unroll_factor(1) {}
+};
+
+/**
+ * Loop unrolling configuration
+ */
+struct LoopUnrollConfig {
+    uint32_t max_unroll_factor;    // Maximum number of unrolls (default: 4)
+    uint32_t max_body_size;        // Max body size (instructions) to consider unrolling
+    uint32_t min_iteration_count;  // Minimum iterations to consider unrolling
+    bool unroll_vectorizable_only; // Only unroll loops marked as vectorizable
+    
+    static constexpr uint32_t DEFAULT_MAX_UNROLL_FACTOR = 4;
+    static constexpr uint32_t DEFAULT_MAX_BODY_SIZE = 16;
+    static constexpr uint32_t DEFAULT_MIN_ITERATION_COUNT = 4;
+    
+    LoopUnrollConfig()
+        : max_unroll_factor(DEFAULT_MAX_UNROLL_FACTOR),
+          max_body_size(DEFAULT_MAX_BODY_SIZE),
+          min_iteration_count(DEFAULT_MIN_ITERATION_COUNT),
+          unroll_vectorizable_only(false) {}
+};
+
+/**
+ * Loop optimization statistics
+ */
+struct LoopOptStats {
+    uint64_t loops_detected;
+    uint64_t loops_with_known_count;
+    uint64_t loops_vectorizable;
+    uint64_t loops_unrolled;
+    uint64_t total_unroll_factor;    // Sum of all unroll factors
+    uint64_t unroll_rejected_size;   // Rejected due to body size
+    uint64_t unroll_rejected_count;  // Rejected due to iteration count
+    
+    LoopOptStats()
+        : loops_detected(0), loops_with_known_count(0), loops_vectorizable(0),
+          loops_unrolled(0), total_unroll_factor(0), unroll_rejected_size(0),
+          unroll_rejected_count(0) {}
+    
+    double get_avg_unroll_factor() const {
+        return (loops_unrolled > 0) ? 
+            (static_cast<double>(total_unroll_factor) / loops_unrolled) : 0.0;
+    }
 };
 
 /**
@@ -530,19 +577,35 @@ struct LoopInfo {
  */
 struct LoopOptimizer {
     std::unordered_map<uint32_t, LoopInfo> loops;  // Key: header address
-    oc_mutex mutex;
+    mutable oc_mutex mutex;
+    LoopUnrollConfig config;
+    LoopOptStats stats;
     
     void detect_loop(uint32_t header, uint32_t back_edge, uint32_t exit) {
         oc_lock_guard<oc_mutex> lock(mutex);
         loops[header] = LoopInfo(header, back_edge, exit);
+        stats.loops_detected++;
+    }
+    
+    void set_body_size(uint32_t header, uint32_t size) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        auto it = loops.find(header);
+        if (it != loops.end()) {
+            it->second.body_size = size;
+        }
     }
     
     void set_iteration_count(uint32_t header, uint32_t count) {
         oc_lock_guard<oc_mutex> lock(mutex);
         auto it = loops.find(header);
         if (it != loops.end()) {
+            // Only increment stat if transitioning from unknown to known
+            bool was_counted = it->second.is_counted;
             it->second.iteration_count = count;
             it->second.is_counted = (count > 0);
+            if (count > 0 && !was_counted) {
+                stats.loops_with_known_count++;
+            }
         }
     }
     
@@ -550,7 +613,12 @@ struct LoopOptimizer {
         oc_lock_guard<oc_mutex> lock(mutex);
         auto it = loops.find(header);
         if (it != loops.end()) {
+            // Only increment stat if transitioning to vectorizable
+            bool was_vectorizable = it->second.is_vectorizable;
             it->second.is_vectorizable = vectorizable;
+            if (vectorizable && !was_vectorizable) {
+                stats.loops_vectorizable++;
+            }
         }
     }
     
@@ -560,7 +628,100 @@ struct LoopOptimizer {
         return (it != loops.end()) ? &it->second : nullptr;
     }
     
+    // Calculate optimal unroll factor for a loop
+    uint32_t calculate_unroll_factor(const LoopInfo& loop) const {
+        // Cannot unroll if iteration count is unknown
+        if (!loop.is_counted || loop.iteration_count == 0) {
+            return 1;
+        }
+        
+        // Cannot unroll if body is too large
+        if (loop.body_size > config.max_body_size) {
+            return 1;
+        }
+        
+        // Cannot unroll if too few iterations
+        if (loop.iteration_count < config.min_iteration_count) {
+            return 1;
+        }
+        
+        // Only unroll vectorizable loops if configured
+        if (config.unroll_vectorizable_only && !loop.is_vectorizable) {
+            return 1;
+        }
+        
+        // Find largest factor that divides iteration count evenly
+        // and doesn't exceed max_unroll_factor
+        uint32_t factor = 1;
+        for (uint32_t f = 2; f <= config.max_unroll_factor; ++f) {
+            if (loop.iteration_count % f == 0) {
+                // Prefer factors that result in reasonable unrolled body size
+                uint32_t unrolled_size = loop.body_size * f;
+                if (unrolled_size <= config.max_body_size * config.max_unroll_factor) {
+                    factor = f;
+                }
+            }
+        }
+        
+        return factor;
+    }
+    
+    // Check if a loop can be unrolled
+    bool can_unroll(uint32_t header) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        auto it = loops.find(header);
+        if (it == loops.end()) return false;
+        
+        return calculate_unroll_factor(it->second) > 1;
+    }
+    
+    // Perform loop unrolling analysis (marks loop as unrolled)
+    // Returns the unroll factor (1 = not unrolled)
+    uint32_t unroll_loop(uint32_t header) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        auto it = loops.find(header);
+        if (it == loops.end()) return 1;
+        
+        LoopInfo& loop = it->second;
+        
+        // Already unrolled?
+        if (loop.is_unrolled) {
+            return loop.unroll_factor;
+        }
+        
+        // Check body size limit
+        if (loop.body_size > config.max_body_size) {
+            stats.unroll_rejected_size++;
+            return 1;
+        }
+        
+        // Check iteration count
+        if (!loop.is_counted || loop.iteration_count < config.min_iteration_count) {
+            stats.unroll_rejected_count++;
+            return 1;
+        }
+        
+        uint32_t factor = calculate_unroll_factor(loop);
+        if (factor > 1) {
+            loop.is_unrolled = true;
+            loop.unroll_factor = factor;
+            stats.loops_unrolled++;
+            stats.total_unroll_factor += factor;
+        }
+        
+        return factor;
+    }
+    
+    // Get the unroll factor for a loop
+    uint32_t get_unroll_factor(uint32_t header) const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        auto it = loops.find(header);
+        if (it == loops.end()) return 1;
+        return it->second.unroll_factor;
+    }
+    
     bool is_in_loop(uint32_t address) const {
+        oc_lock_guard<oc_mutex> lock(mutex);
         for (const auto& pair : loops) {
             const auto& loop = pair.second;
             if (address >= loop.header_addr && address <= loop.back_edge_addr) {
@@ -570,9 +731,44 @@ struct LoopOptimizer {
         return false;
     }
     
+    // Configure loop unrolling
+    void set_config(uint32_t max_factor, uint32_t max_body, uint32_t min_iterations, 
+                    bool vectorizable_only) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        config.max_unroll_factor = max_factor;
+        config.max_body_size = max_body;
+        config.min_iteration_count = min_iterations;
+        config.unroll_vectorizable_only = vectorizable_only;
+    }
+    
+    // Get configuration
+    LoopUnrollConfig get_config() const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        return config;
+    }
+    
+    // Get statistics
+    LoopOptStats get_stats() const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        return stats;
+    }
+    
+    // Reset statistics
+    void reset_stats() {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        stats = LoopOptStats();
+    }
+    
+    // Get loop count
+    size_t get_loop_count() const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        return loops.size();
+    }
+    
     void clear() {
         oc_lock_guard<oc_mutex> lock(mutex);
         loops.clear();
+        stats = LoopOptStats();
     }
 };
 
@@ -3247,6 +3443,100 @@ int oc_spu_jit_get_loop_info(oc_spu_jit_t* jit, uint32_t header,
     if (is_vectorizable) *is_vectorizable = loop->is_vectorizable ? 1 : 0;
     
     return 1;
+}
+
+// ============================================================================
+// Loop Unrolling APIs
+// ============================================================================
+
+void oc_spu_jit_set_loop_body_size(oc_spu_jit_t* jit, uint32_t header, uint32_t size) {
+    if (!jit) return;
+    jit->loop_optimizer.set_body_size(header, size);
+}
+
+void oc_spu_jit_set_unroll_config(oc_spu_jit_t* jit, uint32_t max_factor,
+                                   uint32_t max_body_size, uint32_t min_iterations,
+                                   int vectorizable_only) {
+    if (!jit) return;
+    jit->loop_optimizer.set_config(max_factor, max_body_size, min_iterations,
+                                   vectorizable_only != 0);
+}
+
+void oc_spu_jit_get_unroll_config(oc_spu_jit_t* jit, uint32_t* max_factor,
+                                   uint32_t* max_body_size, uint32_t* min_iterations,
+                                   int* vectorizable_only) {
+    if (!jit) {
+        if (max_factor) *max_factor = 0;
+        if (max_body_size) *max_body_size = 0;
+        if (min_iterations) *min_iterations = 0;
+        if (vectorizable_only) *vectorizable_only = 0;
+        return;
+    }
+    
+    auto config = jit->loop_optimizer.get_config();
+    if (max_factor) *max_factor = config.max_unroll_factor;
+    if (max_body_size) *max_body_size = config.max_body_size;
+    if (min_iterations) *min_iterations = config.min_iteration_count;
+    if (vectorizable_only) *vectorizable_only = config.unroll_vectorizable_only ? 1 : 0;
+}
+
+int oc_spu_jit_can_unroll_loop(oc_spu_jit_t* jit, uint32_t header) {
+    if (!jit) return 0;
+    return jit->loop_optimizer.can_unroll(header) ? 1 : 0;
+}
+
+uint32_t oc_spu_jit_unroll_loop(oc_spu_jit_t* jit, uint32_t header) {
+    if (!jit) return 1;
+    return jit->loop_optimizer.unroll_loop(header);
+}
+
+uint32_t oc_spu_jit_get_unroll_factor(oc_spu_jit_t* jit, uint32_t header) {
+    if (!jit) return 1;
+    return jit->loop_optimizer.get_unroll_factor(header);
+}
+
+int oc_spu_jit_is_loop_unrolled(oc_spu_jit_t* jit, uint32_t header) {
+    if (!jit) return 0;
+    auto* loop = jit->loop_optimizer.get_loop(header);
+    return (loop && loop->is_unrolled) ? 1 : 0;
+}
+
+size_t oc_spu_jit_get_loop_count(oc_spu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->loop_optimizer.get_loop_count();
+}
+
+void oc_spu_jit_get_loop_stats(oc_spu_jit_t* jit, uint64_t* loops_detected,
+                                uint64_t* loops_with_count, uint64_t* loops_vectorizable,
+                                uint64_t* loops_unrolled, uint64_t* rejected_size,
+                                uint64_t* rejected_count) {
+    if (!jit) {
+        if (loops_detected) *loops_detected = 0;
+        if (loops_with_count) *loops_with_count = 0;
+        if (loops_vectorizable) *loops_vectorizable = 0;
+        if (loops_unrolled) *loops_unrolled = 0;
+        if (rejected_size) *rejected_size = 0;
+        if (rejected_count) *rejected_count = 0;
+        return;
+    }
+    
+    auto stats = jit->loop_optimizer.get_stats();
+    if (loops_detected) *loops_detected = stats.loops_detected;
+    if (loops_with_count) *loops_with_count = stats.loops_with_known_count;
+    if (loops_vectorizable) *loops_vectorizable = stats.loops_vectorizable;
+    if (loops_unrolled) *loops_unrolled = stats.loops_unrolled;
+    if (rejected_size) *rejected_size = stats.unroll_rejected_size;
+    if (rejected_count) *rejected_count = stats.unroll_rejected_count;
+}
+
+void oc_spu_jit_reset_loop_stats(oc_spu_jit_t* jit) {
+    if (!jit) return;
+    jit->loop_optimizer.reset_stats();
+}
+
+void oc_spu_jit_clear_loops(oc_spu_jit_t* jit) {
+    if (!jit) return;
+    jit->loop_optimizer.clear();
 }
 
 // ============================================================================

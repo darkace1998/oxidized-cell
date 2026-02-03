@@ -1049,6 +1049,78 @@ int oc_spu_jit_get_loop_info(oc_spu_jit_t* jit, uint32_t header,
                               uint32_t* back_edge, uint32_t* exit,
                               uint32_t* iteration_count, int* is_vectorizable);
 
+// SPU JIT Loop Unrolling APIs
+
+/**
+ * Set the body size (instruction count) for a loop
+ */
+void oc_spu_jit_set_loop_body_size(oc_spu_jit_t* jit, uint32_t header, uint32_t size);
+
+/**
+ * Configure loop unrolling parameters
+ * max_factor: Maximum unroll factor (default: 4)
+ * max_body_size: Max body size (instructions) to consider unrolling (default: 16)
+ * min_iterations: Minimum iterations to consider unrolling (default: 4)
+ * vectorizable_only: Only unroll vectorizable loops if 1
+ */
+void oc_spu_jit_set_unroll_config(oc_spu_jit_t* jit, uint32_t max_factor,
+                                   uint32_t max_body_size, uint32_t min_iterations,
+                                   int vectorizable_only);
+
+/**
+ * Get loop unrolling configuration
+ */
+void oc_spu_jit_get_unroll_config(oc_spu_jit_t* jit, uint32_t* max_factor,
+                                   uint32_t* max_body_size, uint32_t* min_iterations,
+                                   int* vectorizable_only);
+
+/**
+ * Check if a loop can be unrolled
+ * Returns: 1 if unrollable, 0 otherwise
+ */
+int oc_spu_jit_can_unroll_loop(oc_spu_jit_t* jit, uint32_t header);
+
+/**
+ * Perform loop unrolling analysis and mark as unrolled
+ * Returns: The unroll factor used (1 = not unrolled)
+ */
+uint32_t oc_spu_jit_unroll_loop(oc_spu_jit_t* jit, uint32_t header);
+
+/**
+ * Get the unroll factor for a loop
+ * Returns: The unroll factor (1 = not unrolled)
+ */
+uint32_t oc_spu_jit_get_unroll_factor(oc_spu_jit_t* jit, uint32_t header);
+
+/**
+ * Check if a loop has been unrolled
+ * Returns: 1 if unrolled, 0 otherwise
+ */
+int oc_spu_jit_is_loop_unrolled(oc_spu_jit_t* jit, uint32_t header);
+
+/**
+ * Get total number of detected loops
+ */
+size_t oc_spu_jit_get_loop_count(oc_spu_jit_t* jit);
+
+/**
+ * Get loop optimization statistics
+ */
+void oc_spu_jit_get_loop_stats(oc_spu_jit_t* jit, uint64_t* loops_detected,
+                                uint64_t* loops_with_count, uint64_t* loops_vectorizable,
+                                uint64_t* loops_unrolled, uint64_t* rejected_size,
+                                uint64_t* rejected_count);
+
+/**
+ * Reset loop optimization statistics
+ */
+void oc_spu_jit_reset_loop_stats(oc_spu_jit_t* jit);
+
+/**
+ * Clear all detected loops and statistics
+ */
+void oc_spu_jit_clear_loops(oc_spu_jit_t* jit);
+
 // SPU JIT SIMD Intrinsics APIs
 
 /**

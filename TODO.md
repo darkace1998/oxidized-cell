@@ -316,11 +316,13 @@ This document tracks pending tasks, improvements, and future features for the ox
 
 #### SPU-Specific JIT Features
 
-- [ ] **Loop Optimization**: Complete SPU loop handling
-  - **Loop Detection**: Identify loop headers and back edges
-  - **Iteration Count**: Determine compile-time iteration count
-  - **Vectorization Check**: Mark loops as vectorizable
-  - **Loop Unrolling**: Unroll small loops for performance
+- [x] **Loop Optimization**: Complete SPU loop handling
+  - **Loop Detection**: Identify loop headers and back edges ✅
+  - **Iteration Count**: Determine compile-time iteration count ✅
+  - **Vectorization Check**: Mark loops as vectorizable ✅
+  - **Loop Unrolling**: Unroll small loops for performance ✅
+  - **Unroll Configuration**: Configurable max factor, body size, min iterations ✅
+  - **Unroll Statistics**: Track unrolled loops and rejected reasons ✅
   - Location: `cpp/src/spu_jit.cpp` (LoopOptimizer struct)
 
 - [ ] **Channel Operation JIT**: Compile channel I/O
@@ -1126,7 +1128,7 @@ This document tracks pending tasks, improvements, and future features for the ox
 | Loop Detection (SPU) | ✅ Complete | Header/back-edge/exit detection |
 | Loop Iteration Count | ✅ Complete | Compile-time count tracking |
 | Loop Vectorization Flag | ✅ Complete | Vectorizable marking |
-| Loop Unrolling | 🔴 Minimal | Not implemented |
+| Loop Unrolling | ✅ Complete | Configurable unroll with statistics |
 | Channel Manager (SPU) | ✅ Complete | All 32 channels supported |
 | Channel Callbacks | ✅ Complete | Read/write callback registration |
 | Channel Blocking JIT | 🟡 Partial | Basic operations, blocking incomplete |
