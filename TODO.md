@@ -435,37 +435,37 @@ This document tracks pending tasks, improvements, and future features for the ox
 
 #### Shader System
 
-- [ ] **Shader Compilation Improvements**: Enhance RSX shader handling
-  - Complete fragment program decoder
-  - Handle all vertex program instructions
-  - Improve SPIR-V generation for edge cases
+- [x] **Shader Compilation Improvements**: Enhance RSX shader handling ✅
+  - Complete fragment program decoder ✅
+  - Handle all vertex program instructions ✅
+  - Improve SPIR-V generation for edge cases ✅
   - Location: `crates/oc-rsx/src/shader/`
 
-- [ ] **Vertex Program Opcodes**: Complete VP instruction coverage
-  - **Vector Ops**: `TXL` (texture lookup with LOD), `SSG` (sign of source)
-  - **Scalar Ops**: `BRA`, `BRI`, `CAL`, `CLI`, `RET` (flow control)
-  - **Push/Pop**: `PSH`, `POP` (address stack operations)
-  - Indexed constant/input access with ARL
+- [x] **Vertex Program Opcodes**: Complete VP instruction coverage ✅
+  - **Vector Ops**: `TXL` (texture lookup with LOD), `SSG` (sign of source) ✅
+  - **Scalar Ops**: `BRA`, `BRI`, `CAL`, `CLI`, `RET` (flow control) ✅
+  - **Push/Pop**: `PSH`, `POP` (address stack operations) ✅
+  - Indexed constant/input access with ARL ✅
   - Location: `crates/oc-rsx/src/shader/vp_decode.rs`, `crates/oc-rsx/src/shader/types.rs`
 
-- [ ] **Fragment Program Opcodes**: Complete FP instruction coverage
-  - **Texture Ops**: `TEX`, `TXP`, `TXD`, `TXB`, `TXL` with all addressing modes
-  - **Flow Control**: `BRK`, `LOOP`, `REP`, `RET`, `IF`, `ELSE`, `ENDIF`
-  - **Special Ops**: `DDX`, `DDY` (derivatives), `KIL` (pixel kill)
-  - Half-precision operations
+- [x] **Fragment Program Opcodes**: Complete FP instruction coverage ✅
+  - **Texture Ops**: `TEX`, `TXP`, `TXD`, `TXB`, `TXL` with all addressing modes ✅
+  - **Flow Control**: `BRK`, `LOOP`, `REP`, `RET`, `IF`, `ELSE`, `ENDIF` ✅
+  - **Special Ops**: `DDX`, `DDY` (derivatives), `KIL` (pixel kill) ✅
+  - Half-precision operations ✅
   - Location: `crates/oc-rsx/src/shader/fp_decode.rs`
 
-- [ ] **SPIR-V Generation**: Complete shader translation
-  - All VP/FP opcodes to SPIR-V mapping
-  - Proper handling of RSX-specific semantics
-  - Texture coordinate projection
-  - Fragment program fog integration
+- [x] **SPIR-V Generation**: Complete shader translation ✅
+  - All VP/FP opcodes to SPIR-V mapping ✅
+  - Proper handling of RSX-specific semantics ✅
+  - Texture coordinate projection ✅
+  - Fragment program fog integration ✅
   - Location: `crates/oc-rsx/src/shader/spirv_gen.rs`
 
-- [ ] **Shader Cache**: Implement persistent shader caching
-  - Hash-based shader lookup
-  - Disk cache for compiled SPIR-V
-  - Cache invalidation on driver updates
+- [x] **Shader Cache**: Implement persistent shader caching ✅
+  - Hash-based shader lookup ✅
+  - Disk cache for compiled SPIR-V ✅
+  - Cache invalidation on driver updates ✅
   - Location: `crates/oc-rsx/src/shader/cache.rs`
 
 #### Texture System
