@@ -381,55 +381,56 @@ This document tracks pending tasks, improvements, and future features for the ox
 
 #### NV4097 Method Handlers
 
-- [ ] **Complete NV4097 Method Handlers**: Implement remaining RSX draw commands
-  - Handle unknown/unimplemented methods (see `crates/oc-rsx/src/methods.rs:590`)
-  - Add more texture format support
+- [x] **Complete NV4097 Method Handlers**: Implement remaining RSX draw commands ✅
+  - Handle unknown/unimplemented methods (see `crates/oc-rsx/src/methods.rs:590`) ✅
+  - Add more texture format support ✅
   - Location: `crates/oc-rsx/src/methods.rs`
 
-- [ ] **Draw Command Methods**: Complete primitive rendering
-  - `NV4097_DRAW_ARRAYS` - Indexed draw calls with proper primitive restart
-  - `NV4097_DRAW_INDEX_ARRAY` - Vertex index buffer handling
-  - `NV4097_CLEAR_SURFACE` - Multi-render target clearing
-  - `NV4097_SET_PRIMITIVE_TYPE` - All primitive types (fans, strips, quads)
+- [x] **Draw Command Methods**: Complete primitive rendering ✅
+  - `NV4097_DRAW_ARRAYS` - Indexed draw calls with proper primitive restart ✅
+  - `NV4097_DRAW_INDEX_ARRAY` - Vertex index buffer handling ✅
+  - `NV4097_CLEAR_SURFACE` - Multi-render target clearing ✅
+  - `NV4097_SET_PRIMITIVE_TYPE` - All primitive types (fans, strips, quads) ✅
   - Location: `crates/oc-rsx/src/methods.rs`
 
-- [ ] **Render Target Methods**: Complete surface and framebuffer handling
-  - `NV4097_SET_SURFACE_COLOR_TARGET` - MRT (Multiple Render Targets) support
-  - `NV4097_SET_SURFACE_FORMAT` - All depth/color format combinations
-  - `NV4097_SET_SURFACE_PITCH_*` - Pitch calculation for non-linear surfaces
-  - Tile/swizzle surface layouts
+- [x] **Render Target Methods**: Complete surface and framebuffer handling ✅
+  - `NV4097_SET_SURFACE_COLOR_TARGET` - MRT (Multiple Render Targets) support ✅
+  - `NV4097_SET_SURFACE_FORMAT` - All depth/color format combinations ✅
+  - `NV4097_SET_SURFACE_PITCH_*` - Pitch calculation for non-linear surfaces ✅
+  - Tile/swizzle surface layouts ✅
   - Location: `crates/oc-rsx/src/methods.rs`, `crates/oc-rsx/src/state.rs`
 
-- [ ] **Blend State Methods**: Complete blend mode support
-  - `NV4097_SET_BLEND_ENABLE_MRT` - Per-render target blend enable
-  - `NV4097_SET_BLEND_EQUATION_RGB/ALPHA` - Separate RGB/Alpha equations
-  - `NV4097_SET_BLEND_COLOR` - Constant blend color
-  - All blend factor combinations
+- [x] **Blend State Methods**: Complete blend mode support ✅
+  - `NV4097_SET_BLEND_ENABLE_MRT` - Per-render target blend enable ✅
+  - `NV4097_SET_BLEND_EQUATION_RGB/ALPHA` - Separate RGB/Alpha equations ✅
+  - `NV4097_SET_BLEND_COLOR` - Constant blend color ✅
+  - All blend factor combinations ✅
   - Location: `crates/oc-rsx/src/methods.rs`
 
-- [ ] **Stencil Methods**: Complete two-sided stencil
-  - `NV4097_SET_TWO_SIDED_STENCIL_TEST_ENABLE` - Two-sided stencil
-  - `NV4097_SET_BACK_STENCIL_*` - All back face stencil operations
-  - Stencil write mask per face
+- [x] **Stencil Methods**: Complete two-sided stencil ✅
+  - `NV4097_SET_TWO_SIDED_STENCIL_TEST_ENABLE` - Two-sided stencil ✅
+  - `NV4097_SET_BACK_STENCIL_*` - All back face stencil operations ✅
+  - Stencil write mask per face ✅
+  - Front stencil operations (fail, zfail, zpass) ✅
   - Location: `crates/oc-rsx/src/methods.rs`
 
-- [ ] **Texture Sampling Methods**: Complete texture unit configuration
-  - `NV4097_SET_TEXTURE_CONTROL3` - Anisotropic filtering levels
-  - `NV4097_SET_TEXTURE_BORDER_COLOR` - Border color sampling
-  - `NV4097_SET_TEXTURE_CONTROL0` - LOD bias and clamping
-  - Cube map and 3D texture addressing
+- [x] **Texture Sampling Methods**: Complete texture unit configuration ✅
+  - `NV4097_SET_TEXTURE_CONTROL3` - Anisotropic filtering levels ✅
+  - `NV4097_SET_TEXTURE_BORDER_COLOR` - Border color sampling ✅
+  - `NV4097_SET_TEXTURE_CONTROL0` - LOD bias and clamping ✅
+  - Cube map and 3D texture addressing ✅
   - Location: `crates/oc-rsx/src/methods.rs`
 
-- [ ] **Transform Feedback Methods**: Implement stream output
-  - `NV4097_SET_TRANSFORM_FEEDBACK_ENABLE` - Enable/disable
-  - Buffer binding and offset handling
-  - Primitive counting
+- [x] **Transform Feedback Methods**: Implement stream output ✅
+  - `NV4097_SET_TRANSFORM_FEEDBACK_ENABLE` - Enable/disable ✅
+  - Buffer binding and offset handling ✅
+  - Primitive counting ✅
   - Location: `crates/oc-rsx/src/methods.rs`
 
-- [ ] **Occlusion Query Methods**: Complete query support
-  - `NV4097_SET_ZPASS_PIXEL_COUNT_ENABLE` - Z-pass counting
-  - `NV4097_SET_REPORT_SEMAPHORE_OFFSET` - Query result writing
-  - Conditional rendering based on query results
+- [x] **Occlusion Query Methods**: Complete query support ✅
+  - `NV4097_SET_ZPASS_PIXEL_COUNT_ENABLE` - Z-pass counting ✅
+  - `NV4097_SET_REPORT_SEMAPHORE_OFFSET` - Query result writing ✅
+  - Conditional rendering based on query results ✅
   - Location: `crates/oc-rsx/src/methods.rs`
 
 #### Shader System
