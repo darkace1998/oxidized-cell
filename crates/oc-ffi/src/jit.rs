@@ -130,6 +130,107 @@ impl From<i32> for PpuExitReason {
     }
 }
 
+/// SPU execution context structure
+/// 
+/// This structure holds the complete SPU state and is passed to JIT-compiled
+/// code for reading and writing registers. The SPU has 128 128-bit registers.
+/// Matches the C++ `oc_spu_context_t`.
+#[repr(C)]
+#[derive(Clone)]
+pub struct SpuContext {
+    /// 128 vector registers (128-bit each, stored as 4 x u32)
+    pub gpr: [[u32; 4]; 128],
+    
+    /// SPU PC (Local Store address, 18 bits used, within 256KB)
+    pub pc: u32,
+    
+    /// Link Register (for BRSL/BRASL)
+    pub lr: u32,
+    
+    /// Next PC after block execution
+    pub next_pc: u32,
+    
+    /// SPU Status Register (for stop instruction status)
+    pub status: u32,
+    
+    /// Channel count register values (for rchcnt instruction)
+    pub channel_count: [u32; 32],
+    
+    /// Number of instructions executed in this block
+    pub instructions_executed: u32,
+    
+    /// Execution result/status
+    /// 0 = normal, 1 = branch, 2 = stop, 3 = breakpoint, 4 = error
+    pub exit_reason: i32,
+    
+    /// Local Storage base pointer (256KB SPU local memory)
+    pub local_storage: *mut u8,
+    
+    /// Local Storage size (256KB)
+    pub local_storage_size: u32,
+    
+    /// SPU ID (0-7 for Cell's SPUs)
+    pub spu_id: u8,
+    
+    /// Decrementer value
+    pub decrementer: u32,
+    
+    /// MFC tag mask for DMA completion
+    pub mfc_tag_mask: u32,
+    
+    /// Padding for alignment
+    _padding: [u8; 3],
+}
+
+impl Default for SpuContext {
+    fn default() -> Self {
+        Self {
+            gpr: [[0; 4]; 128],
+            pc: 0,
+            lr: 0,
+            next_pc: 0,
+            status: 0,
+            channel_count: [0; 32],
+            instructions_executed: 0,
+            exit_reason: 0,
+            local_storage: std::ptr::null_mut(),
+            local_storage_size: 0x40000, // 256KB
+            spu_id: 0,
+            decrementer: 0,
+            mfc_tag_mask: 0,
+            _padding: [0; 3],
+        }
+    }
+}
+
+/// Exit reason codes from SPU JIT execution
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum SpuExitReason {
+    /// Block completed normally
+    Normal = 0,
+    /// Block ended with branch
+    Branch = 1,
+    /// Stop instruction encountered
+    Stop = 2,
+    /// Breakpoint hit
+    Breakpoint = 3,
+    /// Execution error
+    Error = 4,
+}
+
+impl From<i32> for SpuExitReason {
+    fn from(value: i32) -> Self {
+        match value {
+            0 => SpuExitReason::Normal,
+            1 => SpuExitReason::Branch,
+            2 => SpuExitReason::Stop,
+            3 => SpuExitReason::Breakpoint,
+            _ => SpuExitReason::Error,
+        }
+    }
+}
+
 // FFI declarations for PPU JIT
 extern "C" {
     fn oc_ppu_jit_create() -> *mut PpuJit;

@@ -354,26 +354,28 @@ This document tracks pending tasks, improvements, and future features for the ox
 
 #### JIT Execution & Debugging
 
-- [ ] **Execution Context**: Complete context management
-  - **PPU Context**: All 32 GPR, 32 FPR, 32 VR, CR, LR, CTR, XER, FPSCR, VSCR
-  - **SPU Context**: 128 128-bit registers, local storage pointer
-  - **Exit Reason Codes**: Normal, Branch, Syscall, Breakpoint, Error
-  - **Memory Base**: Memory pointer for load/store operations
-  - Location: `crates/oc-ffi/src/jit.rs` (PpuContext, SpuContext)
+- [x] **Execution Context**: Complete context management ✅
+  - **PPU Context**: All 32 GPR, 32 FPR, 32 VR, CR, LR, CTR, XER, FPSCR, VSCR ✅
+  - **SPU Context**: 128 128-bit registers, local storage pointer ✅
+  - **Exit Reason Codes**: Normal, Branch, Syscall/Stop, Breakpoint, Error ✅
+  - **Memory Base**: Memory pointer for load/store operations ✅
+  - Location: `crates/oc-ffi/src/jit.rs` (PpuContext, SpuContext), `cpp/include/oc_ffi.h`
 
-- [ ] **Breakpoint Integration**: Complete debugger support
-  - **Software Breakpoints**: Insert breakpoints in compiled code
-  - **Breakpoint Tracking**: Per-address breakpoint management
-  - **Code Patching**: Patch compiled code for breakpoints
-  - **Breakpoint Exit**: Exit JIT execution on breakpoint hit
-  - Location: `cpp/src/ppu_jit.cpp` (BreakpointManager struct)
+- [x] **Breakpoint Integration**: Complete debugger support ✅
+  - **Software Breakpoints**: Insert breakpoints in compiled code ✅
+  - **Breakpoint Tracking**: Per-address breakpoint management with hit counts ✅
+  - **Code Patching**: Patch compiled code for breakpoints ✅
+  - **Breakpoint Exit**: Exit JIT execution on breakpoint hit ✅
+  - **Breakpoint Statistics**: Track set/hit/patches ✅
+  - Location: `cpp/src/ppu_jit.cpp` (BreakpointManager, BreakpointEntry structs)
 
-- [ ] **JIT Profiling**: Add performance profiling
-  - **Execution Counting**: Count block executions
-  - **Time Measurement**: Measure compilation and execution time
-  - **Hot Block Detection**: Identify performance-critical blocks
-  - **IR Dump**: Dump LLVM IR for debugging
-  - Location: `cpp/src/ppu_jit.cpp`, `cpp/src/spu_jit.cpp`
+- [x] **JIT Profiling**: Add performance profiling ✅
+  - **Execution Counting**: Count block executions ✅
+  - **Time Measurement**: Measure compilation and execution time ✅
+  - **Hot Block Detection**: Identify performance-critical blocks ✅
+  - **IR Dump**: Dump LLVM IR for debugging (flag enabled) ✅
+  - **Profiling Statistics**: Track compilations, executions, and hot blocks ✅
+  - Location: `cpp/src/ppu_jit.cpp` (JitProfiler), `cpp/src/spu_jit.cpp` (SpuJitProfiler)
 
 ### Graphics (RSX)
 

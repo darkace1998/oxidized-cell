@@ -884,9 +884,206 @@ int oc_ppu_jit_execute(oc_ppu_jit_t* jit, oc_ppu_context_t* context, uint32_t ad
  */
 int oc_ppu_jit_execute_block(oc_ppu_jit_t* jit, oc_ppu_context_t* context, uint32_t address);
 
+// PPU JIT Enhanced Breakpoint APIs
+
+/**
+ * Add breakpoint with original instruction for code patching
+ */
+void oc_ppu_jit_add_breakpoint_with_instr(oc_ppu_jit_t* jit, uint32_t address, uint32_t original_instr);
+
+/**
+ * Get original instruction at breakpoint
+ */
+uint32_t oc_ppu_jit_get_original_instruction(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Record a breakpoint hit
+ */
+void oc_ppu_jit_record_breakpoint_hit(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Get breakpoint hit count
+ */
+uint64_t oc_ppu_jit_get_breakpoint_hit_count(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Apply code patch at breakpoint site
+ */
+int oc_ppu_jit_apply_breakpoint_patch(oc_ppu_jit_t* jit, uint32_t address, void* patch_site);
+
+/**
+ * Get number of active breakpoints
+ */
+size_t oc_ppu_jit_get_breakpoint_count(oc_ppu_jit_t* jit);
+
+/**
+ * Get breakpoint statistics
+ */
+void oc_ppu_jit_get_breakpoint_stats(oc_ppu_jit_t* jit, uint64_t* total_set, 
+                                      uint64_t* total_hit, uint64_t* patches_applied,
+                                      uint64_t* patches_removed);
+
+/**
+ * Reset breakpoint statistics
+ */
+void oc_ppu_jit_reset_breakpoint_stats(oc_ppu_jit_t* jit);
+
+/**
+ * Clear all breakpoints
+ */
+void oc_ppu_jit_clear_breakpoints(oc_ppu_jit_t* jit);
+
+// PPU JIT Profiling APIs
+
+/**
+ * Enable/disable JIT profiling
+ */
+void oc_ppu_jit_profiling_enable(oc_ppu_jit_t* jit, int enable);
+
+/**
+ * Check if profiling is enabled
+ */
+int oc_ppu_jit_profiling_is_enabled(oc_ppu_jit_t* jit);
+
+/**
+ * Set hot block threshold (execution count)
+ */
+void oc_ppu_jit_profiling_set_hot_threshold(oc_ppu_jit_t* jit, uint64_t threshold);
+
+/**
+ * Get hot block threshold
+ */
+uint64_t oc_ppu_jit_profiling_get_hot_threshold(oc_ppu_jit_t* jit);
+
+/**
+ * Register a block for profiling
+ */
+void oc_ppu_jit_profiling_register_block(oc_ppu_jit_t* jit, uint32_t address, uint32_t instr_count);
+
+/**
+ * Record block compilation time
+ */
+void oc_ppu_jit_profiling_record_compilation(oc_ppu_jit_t* jit, uint32_t address, uint64_t compile_time_ns);
+
+/**
+ * Record block execution
+ */
+void oc_ppu_jit_profiling_record_execution(oc_ppu_jit_t* jit, uint32_t address, uint64_t exec_time_ns);
+
+/**
+ * Get execution count for a block
+ */
+uint64_t oc_ppu_jit_profiling_get_execution_count(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Check if block is hot
+ */
+int oc_ppu_jit_profiling_is_hot(oc_ppu_jit_t* jit, uint32_t address);
+
+/**
+ * Get hot block addresses
+ */
+size_t oc_ppu_jit_profiling_get_hot_blocks(oc_ppu_jit_t* jit, uint32_t* addresses, size_t max_count);
+
+/**
+ * Get profiling statistics
+ */
+void oc_ppu_jit_profiling_get_stats(oc_ppu_jit_t* jit, uint64_t* blocks_compiled,
+                                     uint64_t* total_compile_time_ns,
+                                     uint64_t* total_executions,
+                                     uint64_t* total_exec_time_ns,
+                                     uint64_t* hot_block_count);
+
+/**
+ * Get average compilation time
+ */
+uint64_t oc_ppu_jit_profiling_get_avg_compile_time(oc_ppu_jit_t* jit);
+
+/**
+ * Get average execution time
+ */
+uint64_t oc_ppu_jit_profiling_get_avg_exec_time(oc_ppu_jit_t* jit);
+
+/**
+ * Reset all profiling data
+ */
+void oc_ppu_jit_profiling_reset(oc_ppu_jit_t* jit);
+
+/**
+ * Enable/disable IR dump for debugging
+ */
+void oc_ppu_jit_profiling_enable_ir_dump(oc_ppu_jit_t* jit, int enable);
+
+/**
+ * Check if IR dump is enabled
+ */
+int oc_ppu_jit_profiling_is_ir_dump_enabled(oc_ppu_jit_t* jit);
+
 // ============================================================================
 // SPU JIT Compiler
 // ============================================================================
+
+/**
+ * SPU execution context structure
+ * 
+ * This structure holds the complete SPU state and is passed to JIT-compiled
+ * code for reading and writing registers. The SPU has 128 128-bit registers.
+ */
+typedef struct oc_spu_context_t {
+    // 128 vector registers (128-bit each, stored as 4 x uint32_t)
+    uint32_t gpr[128][4];
+    
+    // SPU PC (Local Store address, 18 bits used, within 256KB)
+    uint32_t pc;
+    
+    // Link Register (for BRSL/BRASL)
+    uint32_t lr;
+    
+    // Next PC after block execution
+    uint32_t next_pc;
+    
+    // SPU Status Register (for stop instruction status)
+    uint32_t status;
+    
+    // Channel count register values (for rchcnt instruction)
+    uint32_t channel_count[32];
+    
+    // Number of instructions executed in this block
+    uint32_t instructions_executed;
+    
+    // Execution result/status
+    // 0 = normal, 1 = branch, 2 = stop, 3 = breakpoint, 4 = error
+    int32_t exit_reason;
+    
+    // Local Store base pointer (256KB SPU local memory)
+    void* local_storage;
+    
+    // Local Store size (256KB)
+    uint32_t local_storage_size;
+    
+    // SPU ID (0-7 for Cell's SPUs)
+    uint8_t spu_id;
+    
+    // Decrementer value
+    uint32_t decrementer;
+    
+    // MFC tag mask for DMA completion
+    uint32_t mfc_tag_mask;
+    
+    // Padding for alignment
+    uint8_t _padding[3];
+} oc_spu_context_t;
+
+/**
+ * SPU exit reason codes
+ */
+typedef enum {
+    OC_SPU_EXIT_NORMAL = 0,      // Block completed normally
+    OC_SPU_EXIT_BRANCH = 1,      // Block ended with branch
+    OC_SPU_EXIT_STOP = 2,        // Stop instruction encountered
+    OC_SPU_EXIT_BREAKPOINT = 3,  // Breakpoint hit
+    OC_SPU_EXIT_ERROR = 4        // Execution error
+} oc_spu_exit_reason_t;
 
 /**
  * SPU JIT compiler handle
@@ -1270,6 +1467,69 @@ void oc_spu_jit_get_dma_stats(oc_spu_jit_t* jit,
  * Reset MFC DMA statistics
  */
 void oc_spu_jit_reset_dma_stats(oc_spu_jit_t* jit);
+
+// SPU JIT Execution APIs
+
+/**
+ * Execute JIT-compiled SPU code with context
+ * 
+ * @param jit JIT compiler handle
+ * @param context SPU context (registers read/written here)
+ * @param address Start address in local storage
+ * @return Number of instructions executed, or negative on error
+ */
+int oc_spu_jit_execute(oc_spu_jit_t* jit, oc_spu_context_t* context, uint32_t address);
+
+/**
+ * Execute a single SPU JIT block
+ */
+int oc_spu_jit_execute_block(oc_spu_jit_t* jit, oc_spu_context_t* context, uint32_t address);
+
+// SPU JIT Profiling APIs
+
+/**
+ * Enable/disable SPU JIT profiling
+ */
+void oc_spu_jit_profiling_enable(oc_spu_jit_t* jit, int enable);
+
+/**
+ * Check if SPU profiling is enabled
+ */
+int oc_spu_jit_profiling_is_enabled(oc_spu_jit_t* jit);
+
+/**
+ * Set hot block threshold
+ */
+void oc_spu_jit_profiling_set_hot_threshold(oc_spu_jit_t* jit, uint64_t threshold);
+
+/**
+ * Record block execution
+ */
+void oc_spu_jit_profiling_record_execution(oc_spu_jit_t* jit, uint32_t address, uint64_t exec_time_ns);
+
+/**
+ * Get execution count for a block
+ */
+uint64_t oc_spu_jit_profiling_get_execution_count(oc_spu_jit_t* jit, uint32_t address);
+
+/**
+ * Check if block is hot
+ */
+int oc_spu_jit_profiling_is_hot(oc_spu_jit_t* jit, uint32_t address);
+
+/**
+ * Get profiling statistics
+ */
+void oc_spu_jit_profiling_get_stats(oc_spu_jit_t* jit, uint64_t* blocks_compiled,
+                                     uint64_t* total_compile_time_ns,
+                                     uint64_t* total_executions,
+                                     uint64_t* total_exec_time_ns,
+                                     uint64_t* hot_block_count);
+
+/**
+ * Reset SPU profiling data
+ */
+void oc_spu_jit_profiling_reset(oc_spu_jit_t* jit);
 
 // ============================================================================
 // RSX Shader Compiler

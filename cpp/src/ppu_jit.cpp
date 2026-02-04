@@ -348,25 +348,368 @@ struct BlockMerger {
 };
 
 /**
- * Breakpoint management
+ * Software breakpoint entry with code patching support
+ */
+struct BreakpointEntry {
+    uint32_t address;               // Breakpoint address
+    uint32_t original_instruction;  // Original instruction before patching
+    void* compiled_patch_site;      // Location in compiled code to patch
+    bool is_active;                 // Whether breakpoint is currently active
+    bool has_patch;                 // Whether compiled code has been patched
+    uint64_t hit_count;             // Number of times breakpoint was hit
+    
+    BreakpointEntry() 
+        : address(0), original_instruction(0), compiled_patch_site(nullptr),
+          is_active(false), has_patch(false), hit_count(0) {}
+    
+    BreakpointEntry(uint32_t addr, uint32_t orig_instr = 0)
+        : address(addr), original_instruction(orig_instr), compiled_patch_site(nullptr),
+          is_active(true), has_patch(false), hit_count(0) {}
+};
+
+/**
+ * Breakpoint statistics
+ */
+struct BreakpointStats {
+    uint64_t total_breakpoints_set;    // Total breakpoints set
+    uint64_t total_breakpoints_hit;    // Total breakpoint hits
+    uint64_t total_patches_applied;    // Total code patches applied
+    uint64_t total_patches_removed;    // Total code patches removed
+    
+    BreakpointStats() 
+        : total_breakpoints_set(0), total_breakpoints_hit(0),
+          total_patches_applied(0), total_patches_removed(0) {}
+    
+    void reset() {
+        total_breakpoints_set = 0;
+        total_breakpoints_hit = 0;
+        total_patches_applied = 0;
+        total_patches_removed = 0;
+    }
+};
+
+/**
+ * Enhanced breakpoint management with code patching support
  */
 struct BreakpointManager {
-    std::unordered_map<uint32_t, bool> breakpoints;
+    std::unordered_map<uint32_t, BreakpointEntry> breakpoints;
+    BreakpointStats stats;
+    
+    // Breakpoint trap instruction for PowerPC
+    // This is "tw 31, 0, 0" which is an unconditional trap instruction
+    // Encoding: 0x7FE00008 = opcode(31) | TO(31)<<21 | RA(0)<<16 | RB(0)<<11 | XO(4)<<1
+    // TW instruction: trap if condition (TO) is met comparing RA and RB
+    // TO=31 (0x1F) means always trap (all conditions are true)
+    static constexpr uint32_t BREAKPOINT_TRAP = 0x7FE00008;
     
     void add_breakpoint(uint32_t address) {
-        breakpoints[address] = true;
+        if (breakpoints.find(address) == breakpoints.end()) {
+            breakpoints[address] = BreakpointEntry(address);
+            stats.total_breakpoints_set++;
+        } else {
+            breakpoints[address].is_active = true;
+        }
+    }
+    
+    void add_breakpoint_with_instruction(uint32_t address, uint32_t original_instr) {
+        BreakpointEntry entry(address, original_instr);
+        breakpoints[address] = entry;
+        stats.total_breakpoints_set++;
     }
     
     void remove_breakpoint(uint32_t address) {
-        breakpoints.erase(address);
+        auto it = breakpoints.find(address);
+        if (it != breakpoints.end()) {
+            // If patched, need to restore original instruction
+            if (it->second.has_patch && it->second.compiled_patch_site) {
+                restore_patch(it->second);
+            }
+            breakpoints.erase(it);
+        }
     }
     
     bool has_breakpoint(uint32_t address) const {
-        return breakpoints.find(address) != breakpoints.end();
+        auto it = breakpoints.find(address);
+        return it != breakpoints.end() && it->second.is_active;
     }
     
+    // Record a breakpoint hit
+    void record_hit(uint32_t address) {
+        auto it = breakpoints.find(address);
+        if (it != breakpoints.end()) {
+            it->second.hit_count++;
+            stats.total_breakpoints_hit++;
+        }
+    }
+    
+    // Get hit count for a breakpoint
+    uint64_t get_hit_count(uint32_t address) const {
+        auto it = breakpoints.find(address);
+        return it != breakpoints.end() ? it->second.hit_count : 0;
+    }
+    
+    // Register a patch site for a breakpoint
+    // Note: This implementation tracks patch sites for future use but does not
+    // perform actual code patching. Actual patching would require:
+    // 1. Memory protection changes (mprotect)
+    // 2. Writing the trap instruction
+    // 3. Cache flushing (for icache/dcache coherency)
+    // The tracking mode is sufficient for interpreter-assisted breakpoints.
+    // Returns true if patch site was registered, false if breakpoint not found.
+    bool apply_patch(uint32_t address, void* compiled_code_site) {
+        auto it = breakpoints.find(address);
+        if (it == breakpoints.end() || !it->second.is_active) {
+            return false;
+        }
+        
+        it->second.compiled_patch_site = compiled_code_site;
+        it->second.has_patch = true;
+        stats.total_patches_applied++;
+        
+        return true;
+    }
+    
+    // Unregister a patch site for a breakpoint
+    // Note: This clears the patch tracking. Like apply_patch, actual code
+    // restoration would require memory protection changes and cache flushing.
+    void restore_patch(BreakpointEntry& entry) {
+        if (entry.has_patch && entry.compiled_patch_site) {
+            entry.has_patch = false;
+            entry.compiled_patch_site = nullptr;
+            stats.total_patches_removed++;
+        }
+    }
+    
+    // Get original instruction at breakpoint
+    uint32_t get_original_instruction(uint32_t address) const {
+        auto it = breakpoints.find(address);
+        return it != breakpoints.end() ? it->second.original_instruction : 0;
+    }
+    
+    // Get all breakpoint addresses
+    std::vector<uint32_t> get_all_addresses() const {
+        std::vector<uint32_t> addresses;
+        addresses.reserve(breakpoints.size());
+        for (const auto& pair : breakpoints) {
+            if (pair.second.is_active) {
+                addresses.push_back(pair.first);
+            }
+        }
+        return addresses;
+    }
+    
+    // Get breakpoint count
+    size_t get_count() const {
+        size_t count = 0;
+        for (const auto& pair : breakpoints) {
+            if (pair.second.is_active) {
+                count++;
+            }
+        }
+        return count;
+    }
+    
+    // Get statistics
+    const BreakpointStats& get_stats() const { return stats; }
+    
+    // Reset statistics
+    void reset_stats() { stats.reset(); }
+    
     void clear() {
+        // Restore all patches before clearing
+        for (auto& pair : breakpoints) {
+            if (pair.second.has_patch) {
+                restore_patch(pair.second);
+            }
+        }
         breakpoints.clear();
+    }
+};
+
+/**
+ * Block profiling data for execution tracking
+ */
+struct BlockProfile {
+    uint32_t address;                // Block start address
+    uint64_t execution_count;        // Number of times block executed
+    uint64_t total_execution_time_ns;// Total execution time in nanoseconds
+    uint64_t last_execution_time_ns; // Last execution time
+    uint64_t compile_time_ns;        // Time spent compiling this block
+    uint32_t instruction_count;      // Number of instructions in block
+    bool is_hot;                     // Whether block is considered "hot"
+    
+    BlockProfile()
+        : address(0), execution_count(0), total_execution_time_ns(0),
+          last_execution_time_ns(0), compile_time_ns(0), instruction_count(0),
+          is_hot(false) {}
+    
+    BlockProfile(uint32_t addr, uint32_t instr_count = 0)
+        : address(addr), execution_count(0), total_execution_time_ns(0),
+          last_execution_time_ns(0), compile_time_ns(0), instruction_count(instr_count),
+          is_hot(false) {}
+    
+    // Get average execution time per invocation
+    uint64_t get_avg_execution_time_ns() const {
+        return execution_count > 0 ? total_execution_time_ns / execution_count : 0;
+    }
+};
+
+/**
+ * JIT profiling statistics
+ */
+struct JitProfilingStats {
+    uint64_t total_blocks_compiled;
+    uint64_t total_compilation_time_ns;
+    uint64_t total_executions;
+    uint64_t total_execution_time_ns;
+    uint64_t hot_block_count;
+    
+    JitProfilingStats()
+        : total_blocks_compiled(0), total_compilation_time_ns(0),
+          total_executions(0), total_execution_time_ns(0), hot_block_count(0) {}
+    
+    void reset() {
+        total_blocks_compiled = 0;
+        total_compilation_time_ns = 0;
+        total_executions = 0;
+        total_execution_time_ns = 0;
+        hot_block_count = 0;
+    }
+};
+
+/**
+ * JIT profiler for execution counting, timing, and hot block detection
+ */
+struct JitProfiler {
+    std::unordered_map<uint32_t, BlockProfile> profiles;
+    JitProfilingStats stats;
+    uint64_t hot_threshold;         // Execution count to be considered "hot"
+    bool enabled;                   // Whether profiling is enabled
+    bool dump_ir_enabled;           // Whether to dump LLVM IR
+    
+    JitProfiler() : hot_threshold(1000), enabled(false), dump_ir_enabled(false) {}
+    
+    // Enable/disable profiling
+    void set_enabled(bool enable) { enabled = enable; }
+    bool is_enabled() const { return enabled; }
+    
+    // Enable/disable IR dumping
+    void set_dump_ir_enabled(bool enable) { dump_ir_enabled = enable; }
+    bool is_dump_ir_enabled() const { return dump_ir_enabled; }
+    
+    // Set hot threshold
+    void set_hot_threshold(uint64_t threshold) { hot_threshold = threshold; }
+    uint64_t get_hot_threshold() const { return hot_threshold; }
+    
+    // Register a block for profiling
+    void register_block(uint32_t address, uint32_t instruction_count) {
+        if (!enabled) return;
+        profiles[address] = BlockProfile(address, instruction_count);
+    }
+    
+    // Record compilation of a block
+    void record_compilation(uint32_t address, uint64_t compile_time_ns) {
+        if (!enabled) return;
+        
+        auto it = profiles.find(address);
+        if (it != profiles.end()) {
+            it->second.compile_time_ns = compile_time_ns;
+        } else {
+            BlockProfile profile(address);
+            profile.compile_time_ns = compile_time_ns;
+            profiles[address] = profile;
+        }
+        stats.total_blocks_compiled++;
+        stats.total_compilation_time_ns += compile_time_ns;
+    }
+    
+    // Record execution of a block
+    void record_execution(uint32_t address, uint64_t execution_time_ns = 0) {
+        if (!enabled) return;
+        
+        auto it = profiles.find(address);
+        if (it != profiles.end()) {
+            it->second.execution_count++;
+            it->second.total_execution_time_ns += execution_time_ns;
+            it->second.last_execution_time_ns = execution_time_ns;
+            
+            // Check if block became hot
+            if (!it->second.is_hot && it->second.execution_count >= hot_threshold) {
+                it->second.is_hot = true;
+                stats.hot_block_count++;
+            }
+        } else {
+            BlockProfile profile(address);
+            profile.execution_count = 1;
+            profile.total_execution_time_ns = execution_time_ns;
+            profile.last_execution_time_ns = execution_time_ns;
+            profiles[address] = profile;
+        }
+        stats.total_executions++;
+        stats.total_execution_time_ns += execution_time_ns;
+    }
+    
+    // Get execution count for a block
+    uint64_t get_execution_count(uint32_t address) const {
+        auto it = profiles.find(address);
+        return it != profiles.end() ? it->second.execution_count : 0;
+    }
+    
+    // Check if block is hot
+    bool is_hot(uint32_t address) const {
+        auto it = profiles.find(address);
+        return it != profiles.end() && it->second.is_hot;
+    }
+    
+    // Get hot block addresses sorted by execution count (descending)
+    std::vector<uint32_t> get_hot_blocks(size_t max_count = 100) const {
+        std::vector<std::pair<uint32_t, uint64_t>> hot_blocks;
+        for (const auto& pair : profiles) {
+            if (pair.second.is_hot) {
+                hot_blocks.push_back({pair.first, pair.second.execution_count});
+            }
+        }
+        
+        // Sort by execution count descending
+        std::sort(hot_blocks.begin(), hot_blocks.end(),
+                  [](const auto& a, const auto& b) { return a.second > b.second; });
+        
+        std::vector<uint32_t> result;
+        size_t count = std::min(max_count, hot_blocks.size());
+        result.reserve(count);
+        for (size_t i = 0; i < count; i++) {
+            result.push_back(hot_blocks[i].first);
+        }
+        return result;
+    }
+    
+    // Get profile for a specific block
+    const BlockProfile* get_profile(uint32_t address) const {
+        auto it = profiles.find(address);
+        return it != profiles.end() ? &it->second : nullptr;
+    }
+    
+    // Get statistics
+    const JitProfilingStats& get_stats() const { return stats; }
+    
+    // Reset all profiling data
+    void reset() {
+        profiles.clear();
+        stats.reset();
+    }
+    
+    // Get average compilation time
+    uint64_t get_avg_compilation_time_ns() const {
+        return stats.total_blocks_compiled > 0 
+               ? stats.total_compilation_time_ns / stats.total_blocks_compiled 
+               : 0;
+    }
+    
+    // Get average execution time
+    uint64_t get_avg_execution_time_ns() const {
+        return stats.total_executions > 0 
+               ? stats.total_execution_time_ns / stats.total_executions 
+               : 0;
     }
 };
 
@@ -3671,6 +4014,7 @@ struct oc_ppu_jit_t {
     CompilationThreadPool thread_pool;
     EnhancedCompilationThreadPool enhanced_thread_pool;
     BackgroundCompilationManager bg_compiler;
+    JitProfiler profiler;              // JIT profiling support
     bool enabled;
     bool lazy_compilation_enabled;
     bool multithreaded_enabled;
@@ -7864,6 +8208,175 @@ int oc_ppu_jit_execute(oc_ppu_jit_t* jit, oc_ppu_context_t* context, uint32_t ad
 int oc_ppu_jit_execute_block(oc_ppu_jit_t* jit, oc_ppu_context_t* context, uint32_t address) {
     // Same as execute for now - single block execution
     return oc_ppu_jit_execute(jit, context, address);
+}
+
+// ============================================================================
+// Enhanced Breakpoint APIs
+// ============================================================================
+
+void oc_ppu_jit_add_breakpoint_with_instr(oc_ppu_jit_t* jit, uint32_t address, uint32_t original_instr) {
+    if (!jit) return;
+    jit->breakpoints.add_breakpoint_with_instruction(address, original_instr);
+}
+
+uint32_t oc_ppu_jit_get_original_instruction(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return 0;
+    return jit->breakpoints.get_original_instruction(address);
+}
+
+void oc_ppu_jit_record_breakpoint_hit(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return;
+    jit->breakpoints.record_hit(address);
+}
+
+uint64_t oc_ppu_jit_get_breakpoint_hit_count(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return 0;
+    return jit->breakpoints.get_hit_count(address);
+}
+
+int oc_ppu_jit_apply_breakpoint_patch(oc_ppu_jit_t* jit, uint32_t address, void* patch_site) {
+    if (!jit) return 0;
+    return jit->breakpoints.apply_patch(address, patch_site) ? 1 : 0;
+}
+
+size_t oc_ppu_jit_get_breakpoint_count(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->breakpoints.get_count();
+}
+
+void oc_ppu_jit_get_breakpoint_stats(oc_ppu_jit_t* jit, uint64_t* total_set, 
+                                      uint64_t* total_hit, uint64_t* patches_applied,
+                                      uint64_t* patches_removed) {
+    if (!jit) {
+        if (total_set) *total_set = 0;
+        if (total_hit) *total_hit = 0;
+        if (patches_applied) *patches_applied = 0;
+        if (patches_removed) *patches_removed = 0;
+        return;
+    }
+    
+    auto& stats = jit->breakpoints.get_stats();
+    if (total_set) *total_set = stats.total_breakpoints_set;
+    if (total_hit) *total_hit = stats.total_breakpoints_hit;
+    if (patches_applied) *patches_applied = stats.total_patches_applied;
+    if (patches_removed) *patches_removed = stats.total_patches_removed;
+}
+
+void oc_ppu_jit_reset_breakpoint_stats(oc_ppu_jit_t* jit) {
+    if (!jit) return;
+    jit->breakpoints.reset_stats();
+}
+
+void oc_ppu_jit_clear_breakpoints(oc_ppu_jit_t* jit) {
+    if (!jit) return;
+    jit->breakpoints.clear();
+}
+
+// ============================================================================
+// JIT Profiling APIs
+// ============================================================================
+
+void oc_ppu_jit_profiling_enable(oc_ppu_jit_t* jit, int enable) {
+    if (!jit) return;
+    jit->profiler.set_enabled(enable != 0);
+}
+
+int oc_ppu_jit_profiling_is_enabled(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->profiler.is_enabled() ? 1 : 0;
+}
+
+void oc_ppu_jit_profiling_set_hot_threshold(oc_ppu_jit_t* jit, uint64_t threshold) {
+    if (!jit) return;
+    jit->profiler.set_hot_threshold(threshold);
+}
+
+uint64_t oc_ppu_jit_profiling_get_hot_threshold(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->profiler.get_hot_threshold();
+}
+
+void oc_ppu_jit_profiling_register_block(oc_ppu_jit_t* jit, uint32_t address, uint32_t instr_count) {
+    if (!jit) return;
+    jit->profiler.register_block(address, instr_count);
+}
+
+void oc_ppu_jit_profiling_record_compilation(oc_ppu_jit_t* jit, uint32_t address, uint64_t compile_time_ns) {
+    if (!jit) return;
+    jit->profiler.record_compilation(address, compile_time_ns);
+}
+
+void oc_ppu_jit_profiling_record_execution(oc_ppu_jit_t* jit, uint32_t address, uint64_t exec_time_ns) {
+    if (!jit) return;
+    jit->profiler.record_execution(address, exec_time_ns);
+}
+
+uint64_t oc_ppu_jit_profiling_get_execution_count(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return 0;
+    return jit->profiler.get_execution_count(address);
+}
+
+int oc_ppu_jit_profiling_is_hot(oc_ppu_jit_t* jit, uint32_t address) {
+    if (!jit) return 0;
+    return jit->profiler.is_hot(address) ? 1 : 0;
+}
+
+size_t oc_ppu_jit_profiling_get_hot_blocks(oc_ppu_jit_t* jit, uint32_t* addresses, size_t max_count) {
+    if (!jit || !addresses || max_count == 0) return 0;
+    
+    auto hot_blocks = jit->profiler.get_hot_blocks(max_count);
+    size_t count = std::min(hot_blocks.size(), max_count);
+    for (size_t i = 0; i < count; i++) {
+        addresses[i] = hot_blocks[i];
+    }
+    return count;
+}
+
+void oc_ppu_jit_profiling_get_stats(oc_ppu_jit_t* jit, uint64_t* blocks_compiled,
+                                     uint64_t* total_compile_time_ns,
+                                     uint64_t* total_executions,
+                                     uint64_t* total_exec_time_ns,
+                                     uint64_t* hot_block_count) {
+    if (!jit) {
+        if (blocks_compiled) *blocks_compiled = 0;
+        if (total_compile_time_ns) *total_compile_time_ns = 0;
+        if (total_executions) *total_executions = 0;
+        if (total_exec_time_ns) *total_exec_time_ns = 0;
+        if (hot_block_count) *hot_block_count = 0;
+        return;
+    }
+    
+    auto& stats = jit->profiler.get_stats();
+    if (blocks_compiled) *blocks_compiled = stats.total_blocks_compiled;
+    if (total_compile_time_ns) *total_compile_time_ns = stats.total_compilation_time_ns;
+    if (total_executions) *total_executions = stats.total_executions;
+    if (total_exec_time_ns) *total_exec_time_ns = stats.total_execution_time_ns;
+    if (hot_block_count) *hot_block_count = stats.hot_block_count;
+}
+
+uint64_t oc_ppu_jit_profiling_get_avg_compile_time(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->profiler.get_avg_compilation_time_ns();
+}
+
+uint64_t oc_ppu_jit_profiling_get_avg_exec_time(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->profiler.get_avg_execution_time_ns();
+}
+
+void oc_ppu_jit_profiling_reset(oc_ppu_jit_t* jit) {
+    if (!jit) return;
+    jit->profiler.reset();
+}
+
+void oc_ppu_jit_profiling_enable_ir_dump(oc_ppu_jit_t* jit, int enable) {
+    if (!jit) return;
+    jit->profiler.set_dump_ir_enabled(enable != 0);
+}
+
+int oc_ppu_jit_profiling_is_ir_dump_enabled(oc_ppu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->profiler.is_dump_ir_enabled() ? 1 : 0;
 }
 
 } // extern "C"

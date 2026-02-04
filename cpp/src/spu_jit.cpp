@@ -1676,6 +1676,130 @@ public:
 #endif
 
 /**
+ * SPU Block profiling data for execution tracking
+ */
+struct SpuBlockProfile {
+    uint32_t address;                // Block start address
+    uint64_t execution_count;        // Number of times block executed
+    uint64_t total_execution_time_ns;// Total execution time in nanoseconds
+    uint64_t compile_time_ns;        // Time spent compiling this block
+    uint32_t instruction_count;      // Number of instructions in block
+    bool is_hot;                     // Whether block is considered "hot"
+    
+    SpuBlockProfile()
+        : address(0), execution_count(0), total_execution_time_ns(0),
+          compile_time_ns(0), instruction_count(0), is_hot(false) {}
+    
+    SpuBlockProfile(uint32_t addr, uint32_t instr_count = 0)
+        : address(addr), execution_count(0), total_execution_time_ns(0),
+          compile_time_ns(0), instruction_count(instr_count), is_hot(false) {}
+};
+
+/**
+ * SPU JIT profiling statistics
+ */
+struct SpuJitProfilingStats {
+    uint64_t total_blocks_compiled;
+    uint64_t total_compilation_time_ns;
+    uint64_t total_executions;
+    uint64_t total_execution_time_ns;
+    uint64_t hot_block_count;
+    
+    SpuJitProfilingStats()
+        : total_blocks_compiled(0), total_compilation_time_ns(0),
+          total_executions(0), total_execution_time_ns(0), hot_block_count(0) {}
+    
+    void reset() {
+        total_blocks_compiled = 0;
+        total_compilation_time_ns = 0;
+        total_executions = 0;
+        total_execution_time_ns = 0;
+        hot_block_count = 0;
+    }
+};
+
+/**
+ * SPU JIT profiler for execution counting, timing, and hot block detection
+ */
+struct SpuJitProfiler {
+    std::unordered_map<uint32_t, SpuBlockProfile> profiles;
+    SpuJitProfilingStats stats;
+    uint64_t hot_threshold;         // Execution count to be considered "hot"
+    bool enabled;                   // Whether profiling is enabled
+    
+    SpuJitProfiler() : hot_threshold(1000), enabled(false) {}
+    
+    // Enable/disable profiling
+    void set_enabled(bool enable) { enabled = enable; }
+    bool is_enabled() const { return enabled; }
+    
+    // Set hot threshold
+    void set_hot_threshold(uint64_t threshold) { hot_threshold = threshold; }
+    uint64_t get_hot_threshold() const { return hot_threshold; }
+    
+    // Record compilation of a block
+    void record_compilation(uint32_t address, uint64_t compile_time_ns) {
+        if (!enabled) return;
+        
+        auto it = profiles.find(address);
+        if (it != profiles.end()) {
+            it->second.compile_time_ns = compile_time_ns;
+        } else {
+            SpuBlockProfile profile(address);
+            profile.compile_time_ns = compile_time_ns;
+            profiles[address] = profile;
+        }
+        stats.total_blocks_compiled++;
+        stats.total_compilation_time_ns += compile_time_ns;
+    }
+    
+    // Record execution of a block
+    void record_execution(uint32_t address, uint64_t execution_time_ns = 0) {
+        if (!enabled) return;
+        
+        auto it = profiles.find(address);
+        if (it != profiles.end()) {
+            it->second.execution_count++;
+            it->second.total_execution_time_ns += execution_time_ns;
+            
+            // Check if block became hot
+            if (!it->second.is_hot && it->second.execution_count >= hot_threshold) {
+                it->second.is_hot = true;
+                stats.hot_block_count++;
+            }
+        } else {
+            SpuBlockProfile profile(address);
+            profile.execution_count = 1;
+            profile.total_execution_time_ns = execution_time_ns;
+            profiles[address] = profile;
+        }
+        stats.total_executions++;
+        stats.total_execution_time_ns += execution_time_ns;
+    }
+    
+    // Get execution count for a block
+    uint64_t get_execution_count(uint32_t address) const {
+        auto it = profiles.find(address);
+        return it != profiles.end() ? it->second.execution_count : 0;
+    }
+    
+    // Check if block is hot
+    bool is_hot(uint32_t address) const {
+        auto it = profiles.find(address);
+        return it != profiles.end() && it->second.is_hot;
+    }
+    
+    // Get statistics
+    const SpuJitProfilingStats& get_stats() const { return stats; }
+    
+    // Reset all profiling data
+    void reset() {
+        profiles.clear();
+        stats.reset();
+    }
+};
+
+/**
  * SPU JIT compiler structure
  */
 struct oc_spu_jit_t {
@@ -1685,6 +1809,7 @@ struct oc_spu_jit_t {
     MfcDmaManager mfc_manager;
     LoopOptimizer loop_optimizer;
     SimdIntrinsicManager simd_manager;
+    SpuJitProfiler profiler;         // JIT profiling support
     bool enabled;
     bool channel_ops_enabled;
     bool mfc_dma_enabled;
@@ -4305,6 +4430,129 @@ void oc_spu_jit_get_dma_stats(oc_spu_jit_t* jit,
 void oc_spu_jit_reset_dma_stats(oc_spu_jit_t* jit) {
     if (!jit) return;
     jit->mfc_manager.reset_stats();
+}
+
+// ============================================================================
+// SPU JIT Execution APIs
+// ============================================================================
+
+/**
+ * SPU JIT function signature type
+ */
+typedef void (*SpuJitFunctionPtr)(oc_spu_context_t* context, void* local_storage);
+
+int oc_spu_jit_execute(oc_spu_jit_t* jit, oc_spu_context_t* context, uint32_t address) {
+    if (!jit || !context) return -1;
+    
+    // SPU addresses are within Local Storage (0-256KB)
+    if (address >= 0x40000) {
+        context->exit_reason = OC_SPU_EXIT_ERROR;
+        return -3;
+    }
+    
+    // Check for breakpoint at this address
+    if (jit->breakpoints.has_breakpoint(address)) {
+        context->exit_reason = OC_SPU_EXIT_BREAKPOINT;
+        return 0;
+    }
+    
+    // Get compiled code
+    SpuBasicBlock* block = jit->cache.find_block(address);
+    if (!block || !block->compiled_code) {
+        // Not compiled - return error so interpreter can handle
+        context->exit_reason = OC_SPU_EXIT_ERROR;
+        return -2;
+    }
+    
+    // Set up context for execution
+    context->instructions_executed = 0;
+    context->exit_reason = OC_SPU_EXIT_NORMAL;
+    context->next_pc = address + (block->instructions.size() * 4);
+    
+    // Record execution for profiling
+    jit->profiler.record_execution(address, 0);
+    
+    // Cast compiled code to function pointer and call
+    SpuJitFunctionPtr func = reinterpret_cast<SpuJitFunctionPtr>(block->compiled_code);
+    
+    // Execute the compiled block
+    func(context, context->local_storage);
+    
+    // Update execution count
+    context->instructions_executed = static_cast<uint32_t>(block->instructions.size());
+    
+    // Update PC based on exit reason
+    if (context->exit_reason == OC_SPU_EXIT_NORMAL) {
+        context->pc = context->next_pc;
+    }
+    
+    return static_cast<int>(context->instructions_executed);
+}
+
+int oc_spu_jit_execute_block(oc_spu_jit_t* jit, oc_spu_context_t* context, uint32_t address) {
+    // Same as execute for now - single block execution
+    return oc_spu_jit_execute(jit, context, address);
+}
+
+// ============================================================================
+// SPU JIT Profiling APIs
+// ============================================================================
+
+void oc_spu_jit_profiling_enable(oc_spu_jit_t* jit, int enable) {
+    if (!jit) return;
+    jit->profiler.set_enabled(enable != 0);
+}
+
+int oc_spu_jit_profiling_is_enabled(oc_spu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->profiler.is_enabled() ? 1 : 0;
+}
+
+void oc_spu_jit_profiling_set_hot_threshold(oc_spu_jit_t* jit, uint64_t threshold) {
+    if (!jit) return;
+    jit->profiler.set_hot_threshold(threshold);
+}
+
+void oc_spu_jit_profiling_record_execution(oc_spu_jit_t* jit, uint32_t address, uint64_t exec_time_ns) {
+    if (!jit) return;
+    jit->profiler.record_execution(address, exec_time_ns);
+}
+
+uint64_t oc_spu_jit_profiling_get_execution_count(oc_spu_jit_t* jit, uint32_t address) {
+    if (!jit) return 0;
+    return jit->profiler.get_execution_count(address);
+}
+
+int oc_spu_jit_profiling_is_hot(oc_spu_jit_t* jit, uint32_t address) {
+    if (!jit) return 0;
+    return jit->profiler.is_hot(address) ? 1 : 0;
+}
+
+void oc_spu_jit_profiling_get_stats(oc_spu_jit_t* jit, uint64_t* blocks_compiled,
+                                     uint64_t* total_compile_time_ns,
+                                     uint64_t* total_executions,
+                                     uint64_t* total_exec_time_ns,
+                                     uint64_t* hot_block_count) {
+    if (!jit) {
+        if (blocks_compiled) *blocks_compiled = 0;
+        if (total_compile_time_ns) *total_compile_time_ns = 0;
+        if (total_executions) *total_executions = 0;
+        if (total_exec_time_ns) *total_exec_time_ns = 0;
+        if (hot_block_count) *hot_block_count = 0;
+        return;
+    }
+    
+    auto& stats = jit->profiler.get_stats();
+    if (blocks_compiled) *blocks_compiled = stats.total_blocks_compiled;
+    if (total_compile_time_ns) *total_compile_time_ns = stats.total_compilation_time_ns;
+    if (total_executions) *total_executions = stats.total_executions;
+    if (total_exec_time_ns) *total_exec_time_ns = stats.total_execution_time_ns;
+    if (hot_block_count) *hot_block_count = stats.hot_block_count;
+}
+
+void oc_spu_jit_profiling_reset(oc_spu_jit_t* jit) {
+    if (!jit) return;
+    jit->profiler.reset();
 }
 
 } // extern "C"
