@@ -470,23 +470,24 @@ This document tracks pending tasks, improvements, and future features for the ox
 
 #### Texture System
 
-- [ ] **Texture Format Support**: Complete format handling
-  - **Standard Formats**: All ARGB/RGBA/BGR variants
-  - **Compressed Formats**: DXT1/3/5 decompression fallback
-  - **HDR Formats**: `W16_Z16_Y16_X16_FLOAT`, `W32_Z32_Y32_X32_FLOAT`
-  - **Depth Formats**: `DEPTH24_D8`, `DEPTH16`, `DEPTH24_D8_FLOAT`
+- [x] **Texture Format Support**: Complete format handling ✅
+  - **Standard Formats**: All ARGB/RGBA/BGR variants ✅
+  - **Compressed Formats**: DXT1/3/5 decompression fallback (dxt module) ✅
+  - **HDR Formats**: `W16_Z16_Y16_X16_FLOAT`, `W32_Z32_Y32_X32_FLOAT` ✅
+  - **Depth Formats**: `DEPTH24_D8`, `DEPTH16`, `DEPTH24_D8_FLOAT` ✅
   - Location: `crates/oc-rsx/src/texture.rs`
 
-- [ ] **Texture Swizzle/Tile**: Implement memory layout conversion
-  - Linear to tiled conversion
-  - Morton/Z-order swizzling
-  - Pitch calculation for arbitrary widths
+- [x] **Texture Swizzle/Tile**: Implement memory layout conversion ✅
+  - Linear to tiled conversion (linear_to_tiled, tiled_to_linear) ✅
+  - Morton/Z-order swizzling (morton_encode, morton_decode) ✅
+  - Pitch calculation for arbitrary widths (calculate_pitch, calculate_pitch_aligned) ✅
+  - RSX-specific swizzle (rsx_swizzle_address, linear_to_rsx_swizzle) ✅
   - Location: `crates/oc-rsx/src/texture.rs`
 
-- [ ] **Mipmap Generation**: Complete mipmap handling
-  - Automatic mipmap generation
-  - Proper LOD selection
-  - Trilinear filtering
+- [x] **Mipmap Generation**: Complete mipmap handling ✅
+  - Automatic mipmap generation (generate_mipmaps_rgba8, box filter) ✅
+  - Proper LOD selection (calculate_lod, clamp_lod, level_offset) ✅
+  - Trilinear filtering (TrilinearConfig, trilinear_blend_factor) ✅
   - Location: `crates/oc-rsx/src/texture.rs`
 
 #### Vulkan Backend
@@ -1203,11 +1204,12 @@ This document tracks pending tasks, improvements, and future features for the ox
 | SPIR-V Texture | 🟡 Partial | Basic sampling, projection incomplete |
 | SPIR-V Flow Control | 🔴 Minimal | Not implemented |
 | Shader Cache | 🟡 Partial | Runtime cache, disk cache incomplete |
-| Texture DXT | ✅ Complete | DXT1/3/5 via Vulkan |
+| Texture DXT | ✅ Complete | DXT1/3/5 decompression fallback implemented |
 | Texture ARGB | ✅ Complete | All ARGB variants |
-| Texture HDR | 🟡 Partial | Float16 done, Float32 incomplete |
-| Texture Depth | 🟡 Partial | DEPTH24_D8, DEPTH16 done; float depth incomplete |
-| Texture Swizzle | 🔴 Minimal | Linear only, tiled incomplete |
+| Texture HDR | ✅ Complete | Float16 and Float32 formats |
+| Texture Depth | ✅ Complete | DEPTH24_D8, DEPTH16, DEPTH24_D8_FLOAT |
+| Texture Swizzle | ✅ Complete | Morton/Z-order, linear/tiled, RSX-specific swizzle |
+| Mipmap Generation | ✅ Complete | Box filter, LOD selection, trilinear config |
 | Vulkan Pipeline | ✅ Complete | Basic pipeline creation, layout |
 | Vulkan Descriptor | ✅ Complete | Set layout, pool, sets |
 | Vulkan Sync | 🟡 Partial | Fences, semaphores; timeline incomplete |
