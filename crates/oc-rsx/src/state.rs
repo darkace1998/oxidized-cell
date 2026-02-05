@@ -1,5 +1,8 @@
 //! RSX graphics state
 
+/// Default maximum LOD for texture sampling
+pub const DEFAULT_MAX_LOD: f32 = 1000.0;
+
 /// RSX graphics state
 #[derive(Debug, Clone)]
 pub struct RsxState {
@@ -144,9 +147,50 @@ pub struct RsxState {
     
     // Transform feedback state
     pub transform_feedback_enable: bool,
+    /// Transform feedback buffer offsets (4 buffers)
+    pub transform_feedback_buffer_offset: [u32; 4],
+    /// Transform feedback buffer sizes (4 buffers)
+    pub transform_feedback_buffer_size: [u32; 4],
+    /// Transform feedback output stride per buffer
+    pub transform_feedback_stride: [u32; 4],
     
     // Shader control state
     pub shader_control: u32,
+    
+    // Blend color state (RGBA constant for blending)
+    pub blend_color: [f32; 4],
+    
+    // Front stencil operations (back stencil already exists)
+    pub stencil_op_fail: u32,
+    pub stencil_op_zfail: u32,
+    pub stencil_op_zpass: u32,
+    pub stencil_write_mask: u8,
+    
+    // Extended texture sampling state
+    pub texture_control3: [u32; 16],  // Anisotropic filtering, etc.
+    pub texture_lod_bias: [f32; 16],  // LOD bias per texture unit
+    pub texture_lod_min: [f32; 16],   // Min LOD clamp
+    pub texture_lod_max: [f32; 16],   // Max LOD clamp
+    pub texture_type: [u32; 16],      // 1D, 2D, 3D, Cube
+    
+    // Occlusion query extended state
+    pub occlusion_query_result_offset: u32,
+    pub conditional_render_enable: bool,
+    pub conditional_render_mode: u32,
+    
+    // Draw call state (set by draw commands)
+    pub draw_first: u32,
+    pub draw_count: u32,
+    pub draw_index_offset: u32,
+    pub draw_index_type: u32,  // 0 = u16, 1 = u32
+    
+    // Surface extended state
+    pub surface_type: u32,      // Linear, Swizzle, Tile
+    pub surface_antialias: u32, // MSAA mode
+    pub surface_depth_format: u32,
+    pub surface_color_format: u32,
+    pub surface_log2_width: u8,
+    pub surface_log2_height: u8,
     
     // Vertex program constants (512 vec4 registers)
     pub vertex_constants: [[f32; 4]; 512],
@@ -267,8 +311,40 @@ impl RsxState {
             semaphore_offset: 0,
             // Transform feedback state
             transform_feedback_enable: false,
+            transform_feedback_buffer_offset: [0; 4],
+            transform_feedback_buffer_size: [0; 4],
+            transform_feedback_stride: [0; 4],
             // Shader control state
             shader_control: 0,
+            // Blend color state
+            blend_color: [0.0; 4],
+            // Front stencil operations
+            stencil_op_fail: 0,
+            stencil_op_zfail: 0,
+            stencil_op_zpass: 0,
+            stencil_write_mask: 0xFF,
+            // Extended texture sampling state
+            texture_control3: [0; 16],
+            texture_lod_bias: [0.0; 16],
+            texture_lod_min: [0.0; 16],
+            texture_lod_max: [DEFAULT_MAX_LOD; 16],
+            texture_type: [0; 16],
+            // Occlusion query extended state
+            occlusion_query_result_offset: 0,
+            conditional_render_enable: false,
+            conditional_render_mode: 0,
+            // Draw call state
+            draw_first: 0,
+            draw_count: 0,
+            draw_index_offset: 0,
+            draw_index_type: 0,
+            // Surface extended state
+            surface_type: 0,
+            surface_antialias: 0,
+            surface_depth_format: 0,
+            surface_color_format: 0,
+            surface_log2_width: 0,
+            surface_log2_height: 0,
             vertex_constants: [[0.0; 4]; 512],
             vertex_constant_load_slot: 0,
             fragment_constants: Vec::new(),

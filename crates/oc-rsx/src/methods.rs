@@ -44,7 +44,8 @@ pub const NV4097_SET_BLEND_ENABLE: u32 = 0x0310;
 pub const NV4097_SET_BLEND_FUNC_SFACTOR: u32 = 0x0314;
 pub const NV4097_SET_BLEND_FUNC_DFACTOR: u32 = 0x0318;
 pub const NV4097_SET_BLEND_EQUATION: u32 = 0x0340;
-pub const NV4097_SET_BLEND_COLOR: u32 = 0x0350;
+pub const NV4097_SET_BLEND_COLOR: u32 = 0x0358;  // Blend constant color (RGBA packed)
+pub const NV4097_SET_BLEND_COLOR2: u32 = 0x035C; // Extended blend color
 
 // Depth/stencil methods
 pub const NV4097_SET_DEPTH_TEST_ENABLE: u32 = 0x030C;
@@ -52,10 +53,10 @@ pub const NV4097_SET_DEPTH_FUNC: u32 = 0x0374;
 pub const NV4097_SET_DEPTH_MASK: u32 = 0x0378;
 pub const NV4097_SET_STENCIL_TEST_ENABLE: u32 = 0x0348;
 pub const NV4097_SET_STENCIL_FUNC: u32 = 0x034C;
-pub const NV4097_SET_STENCIL_OP_FAIL: u32 = 0x0350;
-pub const NV4097_SET_STENCIL_OP_ZFAIL: u32 = 0x0354;
-pub const NV4097_SET_STENCIL_OP_ZPASS: u32 = 0x0358;
-pub const NV4097_SET_STENCIL_MASK: u32 = 0x035C;
+pub const NV4097_SET_STENCIL_OP_FAIL: u32 = 0x0460;
+pub const NV4097_SET_STENCIL_OP_ZFAIL: u32 = 0x0464;
+pub const NV4097_SET_STENCIL_OP_ZPASS: u32 = 0x0468;
+pub const NV4097_SET_STENCIL_MASK: u32 = 0x046C;  // Write mask
 pub const NV4097_SET_STENCIL_FUNC_REF: u32 = 0x0360;
 pub const NV4097_SET_STENCIL_FUNC_MASK: u32 = 0x0364;
 
@@ -139,6 +140,21 @@ pub const NV4097_TEXTURE_READ_SEMAPHORE_RELEASE: u32 = 0x0D70;
 
 // Transform feedback methods
 pub const NV4097_SET_TRANSFORM_FEEDBACK_ENABLE: u32 = 0x1D88;
+pub const NV4097_SET_TRANSFORM_FEEDBACK_BUFFER_OFFSET: u32 = 0x1D8C;  // Base + index * 4
+pub const NV4097_SET_TRANSFORM_FEEDBACK_BUFFER_SIZE: u32 = 0x1D9C;
+pub const NV4097_SET_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS: u32 = 0x1DAC;
+
+// Conditional rendering methods
+pub const NV4097_SET_CONDITIONAL_RENDER_ENABLE: u32 = 0x1DC0;
+pub const NV4097_SET_CONDITIONAL_RENDER_MODE: u32 = 0x1DC4;
+
+// Additional surface methods
+pub const NV4097_SET_SURFACE_CLIP_ID: u32 = 0x0220;
+pub const NV4097_SET_SURFACE_TYPE: u32 = 0x0224;
+
+// Index array configuration
+pub const NV4097_SET_INDEX_ARRAY_ADDRESS: u32 = 0x1688;
+pub const NV4097_SET_INDEX_ARRAY_DMA: u32 = 0x168C;
 
 // Vertex program methods
 pub const NV4097_SET_VERTEX_PROGRAM_START_SLOT: u32 = 0x0480;
@@ -162,6 +178,7 @@ pub const NV4097_DRAW_INDEX_ARRAY: u32 = 0x1814;
 pub const NV4097_INLINE_ARRAY: u32 = 0x1818;
 pub const NV4097_ARRAY_ELEMENT16: u32 = 0x181C;
 pub const NV4097_ARRAY_ELEMENT32: u32 = 0x1820;
+pub const NV4097_SET_PRIMITIVE_TYPE: u32 = 0x1824;  // Set primitive type for draw
 
 // Vertex attribute methods
 pub const NV4097_SET_VERTEX_DATA_ARRAY_FORMAT: u32 = 0x1900;
@@ -175,11 +192,140 @@ pub const NV4097_SET_TEXTURE_FILTER: u32 = 0x1A0C;
 pub const NV4097_SET_TEXTURE_ADDRESS: u32 = 0x1A10;
 pub const NV4097_SET_TEXTURE_IMAGE_RECT: u32 = 0x1A14;
 pub const NV4097_SET_TEXTURE_BORDER_COLOR: u32 = 0x1A18;
+pub const NV4097_SET_TEXTURE_CONTROL3: u32 = 0x1A1C;  // Anisotropic filtering, etc.
+
+// Primitive type constants
+pub const NV4097_PRIMITIVE_POINTS: u32 = 0x0001;
+pub const NV4097_PRIMITIVE_LINES: u32 = 0x0002;
+pub const NV4097_PRIMITIVE_LINE_LOOP: u32 = 0x0003;
+pub const NV4097_PRIMITIVE_LINE_STRIP: u32 = 0x0004;
+pub const NV4097_PRIMITIVE_TRIANGLES: u32 = 0x0005;
+pub const NV4097_PRIMITIVE_TRIANGLE_STRIP: u32 = 0x0006;
+pub const NV4097_PRIMITIVE_TRIANGLE_FAN: u32 = 0x0007;
+pub const NV4097_PRIMITIVE_QUADS: u32 = 0x0008;
+pub const NV4097_PRIMITIVE_QUAD_STRIP: u32 = 0x0009;
+pub const NV4097_PRIMITIVE_POLYGON: u32 = 0x000A;
+
+// Surface color format constants
+pub const NV4097_SURFACE_FORMAT_X1R5G5B5_Z1R5G5B5: u32 = 0x01;
+pub const NV4097_SURFACE_FORMAT_X1R5G5B5_O1R5G5B5: u32 = 0x02;
+pub const NV4097_SURFACE_FORMAT_R5G6B5: u32 = 0x03;
+pub const NV4097_SURFACE_FORMAT_X8R8G8B8_Z8R8G8B8: u32 = 0x04;
+pub const NV4097_SURFACE_FORMAT_X8R8G8B8_O8R8G8B8: u32 = 0x05;
+pub const NV4097_SURFACE_FORMAT_A8R8G8B8: u32 = 0x08;
+pub const NV4097_SURFACE_FORMAT_B8: u32 = 0x09;
+pub const NV4097_SURFACE_FORMAT_G8B8: u32 = 0x0A;
+pub const NV4097_SURFACE_FORMAT_F_W16Z16Y16X16: u32 = 0x0B;
+pub const NV4097_SURFACE_FORMAT_F_W32Z32Y32X32: u32 = 0x0C;
+pub const NV4097_SURFACE_FORMAT_F_X32: u32 = 0x0D;
+pub const NV4097_SURFACE_FORMAT_X8B8G8R8_Z8B8G8R8: u32 = 0x0E;
+pub const NV4097_SURFACE_FORMAT_X8B8G8R8_O8B8G8R8: u32 = 0x0F;
+pub const NV4097_SURFACE_FORMAT_A8B8G8R8: u32 = 0x10;
+
+// Surface depth format constants
+pub const NV4097_SURFACE_DEPTH_FORMAT_Z16: u32 = 0x01;
+pub const NV4097_SURFACE_DEPTH_FORMAT_Z24S8: u32 = 0x02;
+
+// Surface type constants
+pub const NV4097_SURFACE_TYPE_LINEAR: u32 = 0x01;
+pub const NV4097_SURFACE_TYPE_SWIZZLE: u32 = 0x02;
+pub const NV4097_SURFACE_TYPE_TILE: u32 = 0x03;
+
+// Blend factor constants
+pub const NV4097_BLEND_ZERO: u32 = 0x0000;
+pub const NV4097_BLEND_ONE: u32 = 0x0001;
+pub const NV4097_BLEND_SRC_COLOR: u32 = 0x0300;
+pub const NV4097_BLEND_ONE_MINUS_SRC_COLOR: u32 = 0x0301;
+pub const NV4097_BLEND_SRC_ALPHA: u32 = 0x0302;
+pub const NV4097_BLEND_ONE_MINUS_SRC_ALPHA: u32 = 0x0303;
+pub const NV4097_BLEND_DST_ALPHA: u32 = 0x0304;
+pub const NV4097_BLEND_ONE_MINUS_DST_ALPHA: u32 = 0x0305;
+pub const NV4097_BLEND_DST_COLOR: u32 = 0x0306;
+pub const NV4097_BLEND_ONE_MINUS_DST_COLOR: u32 = 0x0307;
+pub const NV4097_BLEND_SRC_ALPHA_SATURATE: u32 = 0x0308;
+pub const NV4097_BLEND_CONSTANT_COLOR: u32 = 0x8001;
+pub const NV4097_BLEND_ONE_MINUS_CONSTANT_COLOR: u32 = 0x8002;
+pub const NV4097_BLEND_CONSTANT_ALPHA: u32 = 0x8003;
+pub const NV4097_BLEND_ONE_MINUS_CONSTANT_ALPHA: u32 = 0x8004;
+
+// Blend equation constants
+pub const NV4097_BLEND_EQUATION_ADD: u32 = 0x8006;
+pub const NV4097_BLEND_EQUATION_MIN: u32 = 0x8007;
+pub const NV4097_BLEND_EQUATION_MAX: u32 = 0x8008;
+pub const NV4097_BLEND_EQUATION_SUBTRACT: u32 = 0x800A;
+pub const NV4097_BLEND_EQUATION_REVERSE_SUBTRACT: u32 = 0x800B;
+
+// Stencil operation constants
+pub const NV4097_STENCIL_OP_KEEP: u32 = 0x1E00;
+pub const NV4097_STENCIL_OP_ZERO: u32 = 0x0000;
+pub const NV4097_STENCIL_OP_REPLACE: u32 = 0x1E01;
+pub const NV4097_STENCIL_OP_INCR: u32 = 0x1E02;
+pub const NV4097_STENCIL_OP_DECR: u32 = 0x1E03;
+pub const NV4097_STENCIL_OP_INVERT: u32 = 0x150A;
+pub const NV4097_STENCIL_OP_INCR_WRAP: u32 = 0x8507;
+pub const NV4097_STENCIL_OP_DECR_WRAP: u32 = 0x8508;
+
+// Comparison function constants (for depth/stencil/alpha)
+pub const NV4097_COMPARE_FUNC_NEVER: u32 = 0x0200;
+pub const NV4097_COMPARE_FUNC_LESS: u32 = 0x0201;
+pub const NV4097_COMPARE_FUNC_EQUAL: u32 = 0x0202;
+pub const NV4097_COMPARE_FUNC_LEQUAL: u32 = 0x0203;
+pub const NV4097_COMPARE_FUNC_GREATER: u32 = 0x0204;
+pub const NV4097_COMPARE_FUNC_NOTEQUAL: u32 = 0x0205;
+pub const NV4097_COMPARE_FUNC_GEQUAL: u32 = 0x0206;
+pub const NV4097_COMPARE_FUNC_ALWAYS: u32 = 0x0207;
+
+// Logic operation constants
+pub const NV4097_LOGIC_OP_CLEAR: u32 = 0x1500;
+pub const NV4097_LOGIC_OP_AND: u32 = 0x1501;
+pub const NV4097_LOGIC_OP_AND_REVERSE: u32 = 0x1502;
+pub const NV4097_LOGIC_OP_COPY: u32 = 0x1503;
+pub const NV4097_LOGIC_OP_AND_INVERTED: u32 = 0x1504;
+pub const NV4097_LOGIC_OP_NOOP: u32 = 0x1505;
+pub const NV4097_LOGIC_OP_XOR: u32 = 0x1506;
+pub const NV4097_LOGIC_OP_OR: u32 = 0x1507;
+pub const NV4097_LOGIC_OP_NOR: u32 = 0x1508;
+pub const NV4097_LOGIC_OP_EQUIV: u32 = 0x1509;
+pub const NV4097_LOGIC_OP_INVERT: u32 = 0x150A;
+pub const NV4097_LOGIC_OP_OR_REVERSE: u32 = 0x150B;
+pub const NV4097_LOGIC_OP_COPY_INVERTED: u32 = 0x150C;
+pub const NV4097_LOGIC_OP_OR_INVERTED: u32 = 0x150D;
+pub const NV4097_LOGIC_OP_NAND: u32 = 0x150E;
+pub const NV4097_LOGIC_OP_SET: u32 = 0x150F;
+
+// Texture type constants
+pub const NV4097_TEXTURE_TYPE_1D: u32 = 0x01;
+pub const NV4097_TEXTURE_TYPE_2D: u32 = 0x02;
+pub const NV4097_TEXTURE_TYPE_3D: u32 = 0x03;
+pub const NV4097_TEXTURE_TYPE_CUBE: u32 = 0x04;
+
+// Clear surface flags
+pub const NV4097_CLEAR_Z: u32 = 0x01;
+pub const NV4097_CLEAR_S: u32 = 0x02;
+pub const NV4097_CLEAR_R: u32 = 0x10;
+pub const NV4097_CLEAR_G: u32 = 0x20;
+pub const NV4097_CLEAR_B: u32 = 0x40;
+pub const NV4097_CLEAR_A: u32 = 0x80;
+pub const NV4097_CLEAR_COLOR: u32 = NV4097_CLEAR_R | NV4097_CLEAR_G | NV4097_CLEAR_B | NV4097_CLEAR_A;
+pub const NV4097_CLEAR_ALL: u32 = NV4097_CLEAR_Z | NV4097_CLEAR_S | NV4097_CLEAR_COLOR;
 
 /// Handler for NV4097 methods
 pub struct MethodHandler;
 
 impl MethodHandler {
+    /// Parse draw command data into first vertex/index and count
+    /// The format is: (count << 24) | first for small counts, or full data for larger counts
+    fn parse_draw_command(data: u32) -> (u32, u32) {
+        let first = data & 0x00FFFFFF;
+        let count = (data >> 24) & 0xFF;
+        // If count is 0 in upper byte, it means the entire word is the count
+        if count == 0 {
+            (0, data)
+        } else {
+            (first, count)
+        }
+    }
+    
     /// Execute a method
     pub fn execute(method: u32, data: u32, state: &mut RsxState) {
         match method {
@@ -287,6 +433,25 @@ impl MethodHandler {
             }
             NV4097_SET_STENCIL_FUNC_MASK => {
                 state.stencil_mask = data as u8;
+            }
+            NV4097_SET_STENCIL_OP_FAIL => {
+                state.stencil_op_fail = data;
+            }
+            NV4097_SET_STENCIL_OP_ZFAIL => {
+                state.stencil_op_zfail = data;
+            }
+            NV4097_SET_STENCIL_OP_ZPASS => {
+                state.stencil_op_zpass = data;
+            }
+            NV4097_SET_STENCIL_MASK => {
+                state.stencil_write_mask = data as u8;
+            }
+            NV4097_SET_BLEND_COLOR => {
+                // Blend color is packed as RGBA (8 bits each)
+                state.blend_color[0] = ((data >> 16) & 0xFF) as f32 / 255.0;  // R
+                state.blend_color[1] = ((data >> 8) & 0xFF) as f32 / 255.0;   // G
+                state.blend_color[2] = (data & 0xFF) as f32 / 255.0;          // B
+                state.blend_color[3] = ((data >> 24) & 0xFF) as f32 / 255.0;  // A
             }
 
             // Cull face
@@ -471,6 +636,19 @@ impl MethodHandler {
             NV4097_SET_TRANSFORM_FEEDBACK_ENABLE => {
                 state.transform_feedback_enable = data != 0;
             }
+            
+            // Conditional rendering
+            NV4097_SET_CONDITIONAL_RENDER_ENABLE => {
+                state.conditional_render_enable = data != 0;
+            }
+            NV4097_SET_CONDITIONAL_RENDER_MODE => {
+                state.conditional_render_mode = data;
+            }
+            
+            // Surface type
+            NV4097_SET_SURFACE_TYPE => {
+                state.surface_type = data;
+            }
 
             // Shader control
             NV4097_SET_SHADER_CONTROL => {
@@ -488,9 +666,38 @@ impl MethodHandler {
                 state.vertex_attrib_output_mask = data;
             }
 
-            // Draw commands - These need special handling
-            NV4097_DRAW_ARRAYS | NV4097_DRAW_INDEX_ARRAY | NV4097_INLINE_ARRAY |
-            NV4097_ARRAY_ELEMENT16 | NV4097_ARRAY_ELEMENT32 => {
+            // Draw commands - record state and log for RSX thread
+            NV4097_DRAW_ARRAYS => {
+                let (first, count) = Self::parse_draw_command(data);
+                state.draw_first = first;
+                state.draw_count = count;
+                tracing::trace!("DRAW_ARRAYS: first={}, count={}", state.draw_first, state.draw_count);
+            }
+            NV4097_DRAW_INDEX_ARRAY => {
+                let (first, count) = Self::parse_draw_command(data);
+                state.draw_first = first;
+                state.draw_count = count;
+                tracing::trace!("DRAW_INDEX_ARRAY: first={}, count={}", state.draw_first, state.draw_count);
+            }
+            NV4097_CLEAR_SURFACE => {
+                // Clear surface with specified flags
+                // Bit 0: Clear Z, Bit 1: Clear Stencil
+                // Bits 4-7: Clear Color (R, G, B, A)
+                let clear_z = (data & NV4097_CLEAR_Z) != 0;
+                let clear_s = (data & NV4097_CLEAR_S) != 0;
+                let clear_r = (data & NV4097_CLEAR_R) != 0;
+                let clear_g = (data & NV4097_CLEAR_G) != 0;
+                let clear_b = (data & NV4097_CLEAR_B) != 0;
+                let clear_a = (data & NV4097_CLEAR_A) != 0;
+                tracing::trace!(
+                    "CLEAR_SURFACE: Z={}, S={}, R={}, G={}, B={}, A={}",
+                    clear_z, clear_s, clear_r, clear_g, clear_b, clear_a
+                );
+            }
+            NV4097_SET_PRIMITIVE_TYPE => {
+                state.primitive_type = data;
+            }
+            NV4097_INLINE_ARRAY | NV4097_ARRAY_ELEMENT16 | NV4097_ARRAY_ELEMENT32 => {
                 // These are handled by the RSX thread, not just state updates
                 tracing::trace!("Draw command: method=0x{:04X}, data=0x{:08X}", method, data);
             }
@@ -586,12 +793,96 @@ impl MethodHandler {
                     if index < state.texture_border_color.len() {
                         state.texture_border_color[index] = data;
                     }
+                } else if method >= NV4097_SET_TEXTURE_CONTROL3 
+                    && method < NV4097_SET_TEXTURE_CONTROL3 + (16 * 0x20) 
+                    && (method - NV4097_SET_TEXTURE_CONTROL3) % 0x20 == 0 {
+                    // Texture Control 3 - contains anisotropic filtering level, etc.
+                    let index = ((method - NV4097_SET_TEXTURE_CONTROL3) / 0x20) as usize;
+                    if index < state.texture_control3.len() {
+                        state.texture_control3[index] = data;
+                        // Extract texture depth/type from the format
+                        state.texture_depth[index] = (data >> 20) & 0xFFF;
+                        state.texture_type[index] = (data >> 4) & 0x03;
+                    }
+                }
+                // Transform feedback buffer offsets (4 buffers, spaced 4 bytes apart)
+                else if method >= NV4097_SET_TRANSFORM_FEEDBACK_BUFFER_OFFSET 
+                    && method < NV4097_SET_TRANSFORM_FEEDBACK_BUFFER_OFFSET + 16 {
+                    let index = ((method - NV4097_SET_TRANSFORM_FEEDBACK_BUFFER_OFFSET) / 4) as usize;
+                    if index < 4 {
+                        state.transform_feedback_buffer_offset[index] = data;
+                    }
+                } else if method >= NV4097_SET_TRANSFORM_FEEDBACK_BUFFER_SIZE 
+                    && method < NV4097_SET_TRANSFORM_FEEDBACK_BUFFER_SIZE + 16 {
+                    let index = ((method - NV4097_SET_TRANSFORM_FEEDBACK_BUFFER_SIZE) / 4) as usize;
+                    if index < 4 {
+                        state.transform_feedback_buffer_size[index] = data;
+                    }
                 } else {
                     // Unknown or unimplemented method
                     tracing::trace!("Unimplemented NV4097 method: 0x{:04X}", method);
                 }
             }
         }
+    }
+    
+    /// Parse surface format into color and depth format components
+    pub fn parse_surface_format(format: u32) -> (u32, u32, u32, u8, u8) {
+        // Surface format is encoded as:
+        // bits 0-3: color format
+        // bits 4-7: depth format  
+        // bits 8-11: type (linear, swizzle, tile)
+        // bits 12-15: antialias mode
+        // bits 16-23: log2 width
+        // bits 24-31: log2 height
+        let color_format = format & 0x1F;
+        let depth_format = (format >> 5) & 0x07;
+        let surface_type = (format >> 8) & 0x0F;
+        let log2_width = ((format >> 16) & 0xFF) as u8;
+        let log2_height = ((format >> 24) & 0xFF) as u8;
+        
+        (color_format, depth_format, surface_type, log2_width, log2_height)
+    }
+    
+    /// Get the bytes per pixel for a given color format
+    pub fn color_format_bpp(format: u32) -> u32 {
+        match format {
+            NV4097_SURFACE_FORMAT_B8 => 1,
+            NV4097_SURFACE_FORMAT_G8B8 | NV4097_SURFACE_FORMAT_R5G6B5 |
+            NV4097_SURFACE_FORMAT_X1R5G5B5_Z1R5G5B5 | NV4097_SURFACE_FORMAT_X1R5G5B5_O1R5G5B5 => 2,
+            NV4097_SURFACE_FORMAT_A8R8G8B8 | NV4097_SURFACE_FORMAT_X8R8G8B8_Z8R8G8B8 |
+            NV4097_SURFACE_FORMAT_X8R8G8B8_O8R8G8B8 | NV4097_SURFACE_FORMAT_A8B8G8R8 |
+            NV4097_SURFACE_FORMAT_X8B8G8R8_Z8B8G8R8 | NV4097_SURFACE_FORMAT_X8B8G8R8_O8B8G8R8 |
+            NV4097_SURFACE_FORMAT_F_X32 => 4,
+            NV4097_SURFACE_FORMAT_F_W16Z16Y16X16 => 8,
+            NV4097_SURFACE_FORMAT_F_W32Z32Y32X32 => 16,
+            _ => 4, // Default to 32-bit
+        }
+    }
+    
+    /// Get the bytes per pixel for a given depth format
+    pub fn depth_format_bpp(format: u32) -> u32 {
+        match format {
+            NV4097_SURFACE_DEPTH_FORMAT_Z16 => 2,
+            NV4097_SURFACE_DEPTH_FORMAT_Z24S8 => 4,
+            _ => 4, // Default to 32-bit
+        }
+    }
+    
+    /// Calculate surface pitch for swizzled surfaces
+    /// Returns power-of-two aligned pitch, or None if calculation would overflow
+    pub fn calculate_swizzle_pitch(width: u32, bpp: u32) -> Option<u32> {
+        // Swizzled surfaces have power-of-two aligned pitch
+        let min_pitch = width.checked_mul(bpp)?;
+        Some(min_pitch.next_power_of_two())
+    }
+    
+    /// Check if a primitive type supports primitive restart
+    pub fn primitive_supports_restart(prim_type: u32) -> bool {
+        matches!(prim_type, 
+            NV4097_PRIMITIVE_TRIANGLE_STRIP | NV4097_PRIMITIVE_TRIANGLE_FAN |
+            NV4097_PRIMITIVE_LINE_STRIP | NV4097_PRIMITIVE_LINE_LOOP |
+            NV4097_PRIMITIVE_QUAD_STRIP)
     }
 }
 
