@@ -314,6 +314,448 @@ impl ResolutionPresets {
     pub const PS3_FHD: (u32, u32) = (1920, 1080);
 }
 
+// ============================================================================
+// Bilinear Interpolation
+// ============================================================================
+
+/// Bilinear interpolation sampler
+#[derive(Debug, Clone, Copy)]
+pub struct BilinearSampler {
+    /// Width of the source image
+    pub src_width: u32,
+    /// Height of the source image
+    pub src_height: u32,
+}
+
+impl BilinearSampler {
+    /// Create a new bilinear sampler
+    pub fn new(src_width: u32, src_height: u32) -> Self {
+        Self { src_width, src_height }
+    }
+
+    /// Linear interpolation between two values
+    #[inline]
+    pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
+        a + (b - a) * t
+    }
+
+    /// Bilinear interpolation of four samples
+    /// 
+    /// Samples are ordered: top-left, top-right, bottom-left, bottom-right
+    pub fn sample_bilinear(tl: f32, tr: f32, bl: f32, br: f32, tx: f32, ty: f32) -> f32 {
+        let top = Self::lerp(tl, tr, tx);
+        let bottom = Self::lerp(bl, br, tx);
+        Self::lerp(top, bottom, ty)
+    }
+
+    /// Calculate source coordinates for a destination pixel
+    pub fn map_coords(&self, dst_x: u32, dst_y: u32, dst_width: u32, dst_height: u32) -> (f32, f32) {
+        // Map destination pixel to source coordinates
+        let src_x = (dst_x as f32 + 0.5) * (self.src_width as f32 / dst_width as f32) - 0.5;
+        let src_y = (dst_y as f32 + 0.5) * (self.src_height as f32 / dst_height as f32) - 0.5;
+        (src_x.max(0.0), src_y.max(0.0))
+    }
+
+    /// Get the four sample positions and weights for bilinear interpolation
+    pub fn get_sample_info(&self, src_x: f32, src_y: f32) -> BilinearSampleInfo {
+        let x0 = src_x.floor() as u32;
+        let y0 = src_y.floor() as u32;
+        let x1 = (x0 + 1).min(self.src_width.saturating_sub(1));
+        let y1 = (y0 + 1).min(self.src_height.saturating_sub(1));
+        let tx = src_x - src_x.floor();
+        let ty = src_y - src_y.floor();
+
+        BilinearSampleInfo {
+            x0, y0, x1, y1, tx, ty,
+        }
+    }
+}
+
+/// Sample positions and weights for bilinear interpolation
+#[derive(Debug, Clone, Copy)]
+pub struct BilinearSampleInfo {
+    /// Top-left X coordinate
+    pub x0: u32,
+    /// Top-left Y coordinate
+    pub y0: u32,
+    /// Bottom-right X coordinate
+    pub x1: u32,
+    /// Bottom-right Y coordinate
+    pub y1: u32,
+    /// Horizontal interpolation factor
+    pub tx: f32,
+    /// Vertical interpolation factor
+    pub ty: f32,
+}
+
+// ============================================================================
+// Bicubic Interpolation
+// ============================================================================
+
+/// Bicubic interpolation sampler
+/// Uses Catmull-Rom spline (a = -0.5)
+#[derive(Debug, Clone, Copy)]
+pub struct BicubicSampler {
+    /// Width of the source image
+    pub src_width: u32,
+    /// Height of the source image
+    pub src_height: u32,
+    /// Sharpness parameter (default: -0.5 for Catmull-Rom)
+    pub a: f32,
+}
+
+impl BicubicSampler {
+    /// Create a new bicubic sampler with Catmull-Rom spline
+    pub fn new(src_width: u32, src_height: u32) -> Self {
+        Self { 
+            src_width, 
+            src_height,
+            a: -0.5, // Catmull-Rom
+        }
+    }
+
+    /// Create with custom sharpness parameter
+    pub fn with_sharpness(src_width: u32, src_height: u32, a: f32) -> Self {
+        Self { src_width, src_height, a }
+    }
+
+    /// Cubic kernel function
+    /// 
+    /// The cubic kernel is defined as:
+    /// - For |t| <= 1: (a+2)|t|^3 - (a+3)|t|^2 + 1
+    /// - For 1 < |t| < 2: a|t|^3 - 5a|t|^2 + 8a|t| - 4a
+    /// - Otherwise: 0
+    pub fn cubic_kernel(&self, t: f32) -> f32 {
+        let t_abs = t.abs();
+        let a = self.a;
+
+        if t_abs <= 1.0 {
+            (a + 2.0) * t_abs.powi(3) - (a + 3.0) * t_abs.powi(2) + 1.0
+        } else if t_abs < 2.0 {
+            a * t_abs.powi(3) - 5.0 * a * t_abs.powi(2) + 8.0 * a * t_abs - 4.0 * a
+        } else {
+            0.0
+        }
+    }
+
+    /// Get kernel weights for 4 samples
+    pub fn get_weights(&self, t: f32) -> [f32; 4] {
+        [
+            self.cubic_kernel(t + 1.0),
+            self.cubic_kernel(t),
+            self.cubic_kernel(t - 1.0),
+            self.cubic_kernel(t - 2.0),
+        ]
+    }
+
+    /// Calculate source coordinates for a destination pixel
+    pub fn map_coords(&self, dst_x: u32, dst_y: u32, dst_width: u32, dst_height: u32) -> (f32, f32) {
+        let src_x = (dst_x as f32 + 0.5) * (self.src_width as f32 / dst_width as f32) - 0.5;
+        let src_y = (dst_y as f32 + 0.5) * (self.src_height as f32 / dst_height as f32) - 0.5;
+        (src_x.max(0.0), src_y.max(0.0))
+    }
+
+    /// Get the 16 sample positions for bicubic interpolation
+    pub fn get_sample_positions(&self, src_x: f32, src_y: f32) -> BicubicSampleInfo {
+        let x_center = src_x.floor() as i32;
+        let y_center = src_y.floor() as i32;
+        let tx = src_x - src_x.floor();
+        let ty = src_y - src_y.floor();
+
+        // Calculate clamped coordinates
+        let max_x = self.src_width.saturating_sub(1) as i32;
+        let max_y = self.src_height.saturating_sub(1) as i32;
+
+        let x = [
+            (x_center - 1).clamp(0, max_x) as u32,
+            x_center.clamp(0, max_x) as u32,
+            (x_center + 1).clamp(0, max_x) as u32,
+            (x_center + 2).clamp(0, max_x) as u32,
+        ];
+
+        let y = [
+            (y_center - 1).clamp(0, max_y) as u32,
+            y_center.clamp(0, max_y) as u32,
+            (y_center + 1).clamp(0, max_y) as u32,
+            (y_center + 2).clamp(0, max_y) as u32,
+        ];
+
+        BicubicSampleInfo {
+            x,
+            y,
+            weights_x: self.get_weights(tx),
+            weights_y: self.get_weights(ty),
+        }
+    }
+
+    /// Interpolate 4 values using the cubic kernel
+    /// 
+    /// If the weight sum is near zero (which shouldn't happen with valid inputs),
+    /// falls back to samples[1] which is the center-left sample closest to the
+    /// interpolation point (since samples are indexed -1, 0, +1, +2 relative to center).
+    pub fn interpolate_1d(samples: [f32; 4], weights: [f32; 4]) -> f32 {
+        let sum: f32 = weights.iter().sum();
+        if sum.abs() < 1e-6 {
+            // Fallback to center-left sample (index 1 corresponds to floor(x))
+            return samples[1];
+        }
+        (samples[0] * weights[0] + samples[1] * weights[1] + 
+         samples[2] * weights[2] + samples[3] * weights[3]) / sum
+    }
+}
+
+/// Sample positions and weights for bicubic interpolation
+#[derive(Debug, Clone, Copy)]
+pub struct BicubicSampleInfo {
+    /// X coordinates for 4 samples
+    pub x: [u32; 4],
+    /// Y coordinates for 4 samples
+    pub y: [u32; 4],
+    /// Horizontal kernel weights
+    pub weights_x: [f32; 4],
+    /// Vertical kernel weights
+    pub weights_y: [f32; 4],
+}
+
+// ============================================================================
+// Lanczos Resampling
+// ============================================================================
+
+/// Lanczos resampling sampler
+#[derive(Debug, Clone, Copy)]
+pub struct LanczosSampler {
+    /// Width of the source image
+    pub src_width: u32,
+    /// Height of the source image
+    pub src_height: u32,
+    /// Number of lobes (typically 2, 3, or 4)
+    pub lobes: u32,
+}
+
+impl LanczosSampler {
+    /// Create a new Lanczos sampler with 3 lobes (common choice)
+    pub fn new(src_width: u32, src_height: u32) -> Self {
+        Self { src_width, src_height, lobes: 3 }
+    }
+
+    /// Create with custom number of lobes
+    pub fn with_lobes(src_width: u32, src_height: u32, lobes: u32) -> Self {
+        Self { src_width, src_height, lobes: lobes.clamp(1, 8) }
+    }
+
+    /// Sinc function: sin(πx) / (πx)
+    fn sinc(x: f32) -> f32 {
+        if x.abs() < 1e-6 {
+            1.0
+        } else {
+            let pi_x = std::f32::consts::PI * x;
+            pi_x.sin() / pi_x
+        }
+    }
+
+    /// Lanczos kernel
+    pub fn lanczos_kernel(&self, x: f32) -> f32 {
+        let a = self.lobes as f32;
+        if x.abs() >= a {
+            0.0
+        } else {
+            Self::sinc(x) * Self::sinc(x / a)
+        }
+    }
+
+    /// Get kernel weights for the given number of samples
+    pub fn get_weights(&self, t: f32) -> Vec<f32> {
+        let a = self.lobes as i32;
+        let mut weights = Vec::with_capacity((2 * a) as usize);
+        
+        for i in (-a + 1)..=a {
+            weights.push(self.lanczos_kernel(t - i as f32));
+        }
+        
+        weights
+    }
+}
+
+// ============================================================================
+// Aspect Ratio Handling
+// ============================================================================
+
+/// Aspect ratio helper
+#[derive(Debug, Clone, Copy)]
+pub struct AspectRatioHelper {
+    /// Source aspect ratio
+    pub source_aspect: f32,
+    /// Target aspect ratio
+    pub target_aspect: f32,
+}
+
+impl AspectRatioHelper {
+    /// Common aspect ratios
+    pub const RATIO_4_3: f32 = 4.0 / 3.0;
+    pub const RATIO_16_9: f32 = 16.0 / 9.0;
+    pub const RATIO_16_10: f32 = 16.0 / 10.0;
+    pub const RATIO_21_9: f32 = 21.0 / 9.0;
+
+    /// Create from width/height
+    pub fn new(src_width: u32, src_height: u32, dst_width: u32, dst_height: u32) -> Self {
+        Self {
+            source_aspect: src_width as f32 / src_height as f32,
+            target_aspect: dst_width as f32 / dst_height as f32,
+        }
+    }
+
+    /// Create from explicit ratios
+    pub fn from_ratios(source: f32, target: f32) -> Self {
+        Self {
+            source_aspect: source,
+            target_aspect: target,
+        }
+    }
+
+    /// Check if aspect ratios match (within tolerance)
+    pub fn ratios_match(&self, tolerance: f32) -> bool {
+        (self.source_aspect - self.target_aspect).abs() < tolerance
+    }
+
+    /// Calculate correction mode
+    pub fn correction_mode(&self) -> AspectCorrectionMode {
+        if self.ratios_match(0.01) {
+            AspectCorrectionMode::None
+        } else if self.source_aspect > self.target_aspect {
+            AspectCorrectionMode::Letterbox
+        } else {
+            AspectCorrectionMode::Pillarbox
+        }
+    }
+
+    /// Calculate letterbox/pillarbox bars
+    pub fn calculate_bars(&self, target_width: u32, target_height: u32) -> (u32, u32) {
+        match self.correction_mode() {
+            AspectCorrectionMode::None => (0, 0),
+            AspectCorrectionMode::Letterbox => {
+                // Source is wider - add bars top/bottom
+                let content_height = (target_width as f32 / self.source_aspect).round() as u32;
+                let bar_height = target_height.saturating_sub(content_height) / 2;
+                (0, bar_height)
+            }
+            AspectCorrectionMode::Pillarbox => {
+                // Source is taller - add bars left/right
+                let content_width = (target_height as f32 * self.source_aspect).round() as u32;
+                let bar_width = target_width.saturating_sub(content_width) / 2;
+                (bar_width, 0)
+            }
+        }
+    }
+
+    /// Calculate content rectangle within target
+    pub fn content_rect(&self, target_width: u32, target_height: u32) -> ContentRect {
+        let (bar_x, bar_y) = self.calculate_bars(target_width, target_height);
+        
+        ContentRect {
+            x: bar_x,
+            y: bar_y,
+            width: target_width.saturating_sub(bar_x * 2),
+            height: target_height.saturating_sub(bar_y * 2),
+        }
+    }
+}
+
+/// Aspect ratio correction mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AspectCorrectionMode {
+    /// No correction needed
+    None,
+    /// Black bars on top and bottom
+    Letterbox,
+    /// Black bars on left and right
+    Pillarbox,
+}
+
+/// Content rectangle after aspect ratio correction
+#[derive(Debug, Clone, Copy)]
+pub struct ContentRect {
+    /// X offset
+    pub x: u32,
+    /// Y offset
+    pub y: u32,
+    /// Content width
+    pub width: u32,
+    /// Content height
+    pub height: u32,
+}
+
+// ============================================================================
+// FSR 1.0 Configuration
+// ============================================================================
+
+/// FSR 1.0 (FidelityFX Super Resolution) configuration
+/// This is a spatial upscaling solution with edge-adaptive sharpening
+#[derive(Debug, Clone, Copy)]
+pub struct Fsr1Config {
+    /// Sharpness (0.0 = sharpest, 2.0 = least sharp)
+    pub sharpness: f32,
+    /// Input sharpening before upscale
+    pub input_sharpening: f32,
+}
+
+impl Default for Fsr1Config {
+    fn default() -> Self {
+        Self {
+            sharpness: 0.2, // Balanced default
+            input_sharpening: 0.0,
+        }
+    }
+}
+
+impl Fsr1Config {
+    /// Maximum sharpness preset
+    pub fn max_sharpness() -> Self {
+        Self {
+            sharpness: 0.0,
+            input_sharpening: 0.1,
+        }
+    }
+
+    /// Balanced preset
+    pub fn balanced() -> Self {
+        Self::default()
+    }
+
+    /// Soft preset (less sharpening)
+    pub fn soft() -> Self {
+        Self {
+            sharpness: 1.0,
+            input_sharpening: 0.0,
+        }
+    }
+
+    /// Quality presets based on upscale ratio
+    /// 
+    /// The percentages in comments indicate the internal render resolution as
+    /// a percentage of the target resolution. A scale of 2.0x means rendering
+    /// at 50% resolution and upscaling to 100%.
+    /// 
+    /// - scale >= 2.0: Performance (50% internal resolution, most aggressive upscaling)
+    /// - scale >= 1.5: Balanced (67% internal resolution)
+    /// - scale >= 1.3: Quality (77% internal resolution)
+    /// - scale < 1.3: Ultra Quality (83%+ internal resolution)
+    pub fn for_quality_mode(scale: f32) -> Self {
+        if scale >= 2.0 {
+            // Performance mode (50% internal res) - needs more sharpening
+            Self { sharpness: 0.0, input_sharpening: 0.1 }
+        } else if scale >= 1.5 {
+            // Balanced mode (67% internal res)
+            Self { sharpness: 0.2, input_sharpening: 0.0 }
+        } else if scale >= 1.3 {
+            // Quality mode (77% internal res)
+            Self { sharpness: 0.5, input_sharpening: 0.0 }
+        } else {
+            // Ultra quality (83%+ internal res)
+            Self { sharpness: 1.0, input_sharpening: 0.0 }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,5 +854,67 @@ mod tests {
         assert_eq!(stats.source_resolution, (1920, 1080));
         assert_eq!(stats.internal_resolution, (3840, 2160));
         assert_eq!(stats.output_resolution, (1920, 1080));
+    }
+
+    #[test]
+    fn test_bilinear_lerp() {
+        assert_eq!(BilinearSampler::lerp(0.0, 1.0, 0.0), 0.0);
+        assert_eq!(BilinearSampler::lerp(0.0, 1.0, 1.0), 1.0);
+        assert_eq!(BilinearSampler::lerp(0.0, 1.0, 0.5), 0.5);
+    }
+
+    #[test]
+    fn test_bilinear_sample_info() {
+        let sampler = BilinearSampler::new(100, 100);
+        let info = sampler.get_sample_info(50.5, 50.5);
+        
+        assert_eq!(info.x0, 50);
+        assert_eq!(info.x1, 51);
+        assert!((info.tx - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_bicubic_kernel() {
+        let sampler = BicubicSampler::new(100, 100);
+        
+        // At center (t=0), kernel should be 1.0
+        assert!((sampler.cubic_kernel(0.0) - 1.0).abs() < 0.001);
+        // At t=1, kernel should be 0 for Catmull-Rom
+        assert!(sampler.cubic_kernel(1.0).abs() < 0.001);
+        // At t>=2, kernel should be 0
+        assert_eq!(sampler.cubic_kernel(2.0), 0.0);
+    }
+
+    #[test]
+    fn test_lanczos_kernel() {
+        let sampler = LanczosSampler::new(100, 100);
+        
+        // At center (x=0), should be 1.0
+        assert!((sampler.lanczos_kernel(0.0) - 1.0).abs() < 0.001);
+        // At x >= lobes, should be 0
+        assert_eq!(sampler.lanczos_kernel(3.0), 0.0);
+    }
+
+    #[test]
+    fn test_aspect_ratio_letterbox() {
+        // 16:9 source to 4:3 target should be letterboxed
+        let helper = AspectRatioHelper::from_ratios(16.0/9.0, 4.0/3.0);
+        assert_eq!(helper.correction_mode(), AspectCorrectionMode::Letterbox);
+    }
+
+    #[test]
+    fn test_aspect_ratio_pillarbox() {
+        // 4:3 source to 16:9 target should be pillarboxed
+        let helper = AspectRatioHelper::from_ratios(4.0/3.0, 16.0/9.0);
+        assert_eq!(helper.correction_mode(), AspectCorrectionMode::Pillarbox);
+    }
+
+    #[test]
+    fn test_fsr1_config_presets() {
+        let max = Fsr1Config::max_sharpness();
+        let soft = Fsr1Config::soft();
+        
+        // Max sharpness has lower sharpness value (0.0 = sharpest)
+        assert!(max.sharpness < soft.sharpness);
     }
 }

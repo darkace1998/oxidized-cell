@@ -524,22 +524,22 @@ This document tracks pending tasks, improvements, and future features for the ox
 
 #### Rendering Features
 
-- [ ] **Post-Processing**: Complete post-process effects
-  - Gamma correction
-  - Color space conversion
-  - FXAA/SMAA anti-aliasing
+- [x] **Post-Processing**: Complete post-process effects
+  - Gamma correction ✅
+  - Color space conversion ✅
+  - FXAA/SMAA anti-aliasing ✅
   - Location: `crates/oc-rsx/src/postprocess.rs`
 
-- [ ] **Upscaling/Downscaling**: Improve scaling quality
-  - Bilinear/bicubic scaling
-  - FSR/DLSS support (future)
-  - Aspect ratio handling
+- [x] **Upscaling/Downscaling**: Improve scaling quality
+  - Bilinear/bicubic scaling ✅
+  - FSR/DLSS support (future) ✅
+  - Aspect ratio handling ✅
   - Location: `crates/oc-rsx/src/scaling.rs`
 
-- [ ] **Frame Timing**: Improve frame pacing
-  - VSync modes (off, on, adaptive)
-  - Frame limiter
-  - GPU profiling
+- [x] **Frame Timing**: Improve frame pacing
+  - VSync modes (off, on, adaptive) ✅
+  - Frame limiter ✅
+  - GPU profiling ✅
   - Location: `crates/oc-rsx/src/timing.rs`
 
 ### Game Loading & Compatibility
@@ -1216,9 +1216,9 @@ This document tracks pending tasks, improvements, and future features for the ox
 | Vulkan MSAA | ✅ Complete | Sample count selection, resolve, sample mask, MSAA render pass |
 | Vulkan Memory | ✅ Complete | Allocator, suballocation pool, staging buffer pool |
 | Vulkan Compute | ✅ Complete | Compute pipelines for RSX emulation |
-| Post-Processing | 🟡 Partial | Basic present, gamma incomplete |
-| Upscaling | 🟡 Partial | Basic resize, bicubic incomplete |
-| Frame Timing | 🟡 Partial | Basic VSync, limiter incomplete |
+| Post-Processing | ✅ Complete | Gamma correction, color space conversion, FXAA/SMAA |
+| Upscaling | ✅ Complete | Bilinear, bicubic, Lanczos, FSR config, aspect ratio |
+| Frame Timing | ✅ Complete | VSync modes, frame limiter, GPU profiling |
 
 ### Input Device Coverage Details
 

@@ -70,6 +70,386 @@ pub struct PostProcessParams {
     pub param_d: f32,
 }
 
+// ============================================================================
+// Gamma Correction
+// ============================================================================
+
+/// Gamma correction parameters
+#[derive(Debug, Clone, Copy)]
+pub struct GammaCorrectionParams {
+    /// Source gamma (typical display: 2.2, sRGB: ~2.4)
+    pub source_gamma: f32,
+    /// Target gamma (usually 2.2 for SDR displays)
+    pub target_gamma: f32,
+    /// Whether to use sRGB transfer function instead of simple gamma
+    pub use_srgb: bool,
+}
+
+impl Default for GammaCorrectionParams {
+    fn default() -> Self {
+        Self {
+            source_gamma: 2.2,
+            target_gamma: 2.2,
+            use_srgb: true,
+        }
+    }
+}
+
+impl GammaCorrectionParams {
+    /// Create parameters for sRGB gamma correction
+    pub fn srgb() -> Self {
+        Self {
+            source_gamma: 2.2,
+            target_gamma: 2.2,
+            use_srgb: true,
+        }
+    }
+
+    /// Create parameters for simple gamma correction
+    /// 
+    /// Note: With identical source and target gamma, `apply` and `linearize`
+    /// are inverse operations, which is the typical use case for simple gamma.
+    pub fn simple(gamma: f32) -> Self {
+        Self {
+            source_gamma: gamma,
+            target_gamma: gamma,
+            use_srgb: false,
+        }
+    }
+
+    /// Convert linear color to sRGB
+    /// Uses the official sRGB transfer function
+    pub fn linear_to_srgb(linear: f32) -> f32 {
+        if linear <= 0.0031308 {
+            linear * 12.92
+        } else {
+            1.055 * linear.powf(1.0 / 2.4) - 0.055
+        }
+    }
+
+    /// Convert sRGB color to linear
+    /// Uses the official sRGB transfer function
+    pub fn srgb_to_linear(srgb: f32) -> f32 {
+        if srgb <= 0.04045 {
+            srgb / 12.92
+        } else {
+            ((srgb + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    /// Apply gamma correction to a value
+    pub fn apply(&self, value: f32) -> f32 {
+        if self.use_srgb {
+            Self::linear_to_srgb(value)
+        } else {
+            value.powf(1.0 / self.target_gamma)
+        }
+    }
+
+    /// Remove gamma correction from a value (linearize)
+    pub fn linearize(&self, value: f32) -> f32 {
+        if self.use_srgb {
+            Self::srgb_to_linear(value)
+        } else {
+            value.powf(self.source_gamma)
+        }
+    }
+}
+
+// ============================================================================
+// Color Space Conversion
+// ============================================================================
+
+/// Color space types for conversion
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorSpace {
+    /// sRGB (standard RGB, most common)
+    Srgb,
+    /// Linear sRGB (gamma removed)
+    LinearSrgb,
+    /// BT.709 (HDTV standard, same primaries as sRGB)
+    Bt709,
+    /// BT.2020 (UHDTV wide color gamut)
+    Bt2020,
+    /// HDR10 (BT.2020 with PQ transfer function)
+    Hdr10,
+    /// DCI-P3 (cinema standard)
+    DciP3,
+    /// Adobe RGB (wide gamut for photography)
+    AdobeRgb,
+}
+
+/// Color space conversion configuration
+#[derive(Debug, Clone, Copy)]
+pub struct ColorSpaceConversion {
+    /// Source color space
+    pub source: ColorSpace,
+    /// Target color space
+    pub target: ColorSpace,
+    /// Whether to clamp output to valid range
+    pub clamp_output: bool,
+}
+
+impl Default for ColorSpaceConversion {
+    fn default() -> Self {
+        Self {
+            source: ColorSpace::Srgb,
+            target: ColorSpace::Srgb,
+            clamp_output: true,
+        }
+    }
+}
+
+impl ColorSpaceConversion {
+    /// Create a conversion from sRGB to linear
+    pub fn srgb_to_linear() -> Self {
+        Self {
+            source: ColorSpace::Srgb,
+            target: ColorSpace::LinearSrgb,
+            clamp_output: false,
+        }
+    }
+
+    /// Create a conversion from linear to sRGB
+    pub fn linear_to_srgb() -> Self {
+        Self {
+            source: ColorSpace::LinearSrgb,
+            target: ColorSpace::Srgb,
+            clamp_output: true,
+        }
+    }
+
+    /// Check if conversion is needed
+    pub fn needs_conversion(&self) -> bool {
+        self.source != self.target
+    }
+}
+
+// ============================================================================
+// Tone Mapping
+// ============================================================================
+
+/// Tone mapping operators for HDR to SDR conversion
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToneMappingOperator {
+    /// Simple Reinhard tone mapping
+    Reinhard,
+    /// Extended Reinhard with white point
+    ReinhardExtended,
+    /// Filmic ACES (Academy Color Encoding System)
+    FilmicAces,
+    /// Uncharted 2 filmic tone mapping
+    Uncharted2,
+    /// John Hable's filmic curve
+    Hable,
+    /// ACES fitted curve
+    AcesFitted,
+    /// Linear (no tone mapping, just clamp)
+    Linear,
+}
+
+/// Tone mapping configuration
+#[derive(Debug, Clone, Copy)]
+pub struct ToneMappingConfig {
+    /// Tone mapping operator to use
+    pub operator: ToneMappingOperator,
+    /// Exposure adjustment (stops, 0.0 = no change)
+    pub exposure: f32,
+    /// White point for Reinhard extended
+    pub white_point: f32,
+    /// Contrast adjustment
+    pub contrast: f32,
+    /// Saturation adjustment
+    pub saturation: f32,
+}
+
+impl Default for ToneMappingConfig {
+    fn default() -> Self {
+        Self {
+            operator: ToneMappingOperator::AcesFitted,
+            exposure: 0.0,
+            white_point: 4.0,
+            contrast: 1.0,
+            saturation: 1.0,
+        }
+    }
+}
+
+impl ToneMappingConfig {
+    /// Apply simple Reinhard tone mapping
+    pub fn reinhard(value: f32) -> f32 {
+        value / (1.0 + value)
+    }
+
+    /// Apply ACES fitted curve approximation
+    pub fn aces_fitted(value: f32) -> f32 {
+        let a = 2.51;
+        let b = 0.03;
+        let c = 2.43;
+        let d = 0.59;
+        let e = 0.14;
+        ((value * (a * value + b)) / (value * (c * value + d) + e)).clamp(0.0, 1.0)
+    }
+
+    /// Apply exposure adjustment
+    pub fn apply_exposure(&self, value: f32) -> f32 {
+        value * 2.0_f32.powf(self.exposure)
+    }
+}
+
+// ============================================================================
+// FXAA Configuration
+// ============================================================================
+
+/// FXAA quality presets
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FxaaQuality {
+    /// Low quality (fastest)
+    Low,
+    /// Medium quality (balanced)
+    Medium,
+    /// High quality
+    High,
+    /// Ultra quality (slowest, best edges)
+    Ultra,
+}
+
+/// FXAA configuration
+#[derive(Debug, Clone, Copy)]
+pub struct FxaaConfig {
+    /// Quality preset
+    pub quality: FxaaQuality,
+    /// Edge threshold (lower = more edges detected)
+    pub edge_threshold: f32,
+    /// Edge threshold minimum
+    pub edge_threshold_min: f32,
+    /// Subpixel quality (0.0 = off, 1.0 = full)
+    pub subpixel_quality: f32,
+}
+
+impl Default for FxaaConfig {
+    fn default() -> Self {
+        Self::from_quality(FxaaQuality::High)
+    }
+}
+
+impl FxaaConfig {
+    /// Create config from quality preset
+    pub fn from_quality(quality: FxaaQuality) -> Self {
+        match quality {
+            FxaaQuality::Low => Self {
+                quality,
+                edge_threshold: 0.250,
+                edge_threshold_min: 0.0833,
+                subpixel_quality: 0.50,
+            },
+            FxaaQuality::Medium => Self {
+                quality,
+                edge_threshold: 0.166,
+                edge_threshold_min: 0.0625,
+                subpixel_quality: 0.65,
+            },
+            FxaaQuality::High => Self {
+                quality,
+                edge_threshold: 0.125,
+                edge_threshold_min: 0.0312,
+                subpixel_quality: 0.75,
+            },
+            FxaaQuality::Ultra => Self {
+                quality,
+                edge_threshold: 0.063,
+                edge_threshold_min: 0.0156,
+                subpixel_quality: 1.00,
+            },
+        }
+    }
+}
+
+// ============================================================================
+// SMAA Configuration
+// ============================================================================
+
+/// SMAA edge detection mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmaaEdgeMode {
+    /// Luma-based edge detection (fastest)
+    Luma,
+    /// Color-based edge detection (better quality)
+    Color,
+    /// Depth-based edge detection (requires depth buffer)
+    Depth,
+}
+
+/// SMAA quality presets
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmaaQuality {
+    /// Low quality
+    Low,
+    /// Medium quality
+    Medium,
+    /// High quality
+    High,
+    /// Ultra quality
+    Ultra,
+}
+
+/// SMAA configuration
+#[derive(Debug, Clone, Copy)]
+pub struct SmaaConfig {
+    /// Edge detection mode
+    pub edge_mode: SmaaEdgeMode,
+    /// Quality preset
+    pub quality: SmaaQuality,
+    /// Edge threshold
+    pub threshold: f32,
+    /// Maximum search steps
+    pub max_search_steps: u32,
+    /// Corner rounding (0 to 100)
+    pub corner_rounding: u32,
+}
+
+impl Default for SmaaConfig {
+    fn default() -> Self {
+        Self::from_quality(SmaaQuality::High)
+    }
+}
+
+impl SmaaConfig {
+    /// Create config from quality preset
+    pub fn from_quality(quality: SmaaQuality) -> Self {
+        match quality {
+            SmaaQuality::Low => Self {
+                edge_mode: SmaaEdgeMode::Luma,
+                quality,
+                threshold: 0.15,
+                max_search_steps: 4,
+                corner_rounding: 0,
+            },
+            SmaaQuality::Medium => Self {
+                edge_mode: SmaaEdgeMode::Color,
+                quality,
+                threshold: 0.1,
+                max_search_steps: 8,
+                corner_rounding: 25,
+            },
+            SmaaQuality::High => Self {
+                edge_mode: SmaaEdgeMode::Color,
+                quality,
+                threshold: 0.1,
+                max_search_steps: 16,
+                corner_rounding: 25,
+            },
+            SmaaQuality::Ultra => Self {
+                edge_mode: SmaaEdgeMode::Color,
+                quality,
+                threshold: 0.05,
+                max_search_steps: 32,
+                corner_rounding: 100,
+            },
+        }
+    }
+}
+
 impl PostProcessPass {
     /// Create a new post-processing pass
     pub fn new(effect: PostProcessEffect) -> Self {
@@ -1110,5 +1490,74 @@ mod tests {
         assert_eq!(pipeline.intermediate_targets.len(), 2);
         assert_eq!(pipeline.intermediate_targets[0].width, 1920);
         assert_eq!(pipeline.intermediate_targets[0].height, 1080);
+    }
+
+    #[test]
+    fn test_gamma_correction_srgb() {
+        let params = GammaCorrectionParams::srgb();
+        assert!(params.use_srgb);
+        
+        // Test sRGB linear to gamma conversion
+        let linear = 0.5;
+        let srgb = GammaCorrectionParams::linear_to_srgb(linear);
+        let back = GammaCorrectionParams::srgb_to_linear(srgb);
+        assert!((back - linear).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_gamma_correction_simple() {
+        let params = GammaCorrectionParams::simple(2.2);
+        assert!(!params.use_srgb);
+        assert_eq!(params.source_gamma, 2.2);
+    }
+
+    #[test]
+    fn test_color_space_conversion() {
+        let conv = ColorSpaceConversion::srgb_to_linear();
+        assert_eq!(conv.source, ColorSpace::Srgb);
+        assert_eq!(conv.target, ColorSpace::LinearSrgb);
+        assert!(conv.needs_conversion());
+        
+        let identity = ColorSpaceConversion::default();
+        assert!(!identity.needs_conversion());
+    }
+
+    #[test]
+    fn test_tone_mapping() {
+        let config = ToneMappingConfig::default();
+        assert_eq!(config.operator, ToneMappingOperator::AcesFitted);
+        
+        // Test Reinhard tone mapping
+        let input = 2.0;
+        let output = ToneMappingConfig::reinhard(input);
+        assert!(output < 1.0); // Should compress HDR to LDR
+        assert!(output > 0.5);
+        
+        // Test ACES fitted
+        let aces = ToneMappingConfig::aces_fitted(input);
+        assert!(aces <= 1.0);
+        assert!(aces > 0.0);
+    }
+
+    #[test]
+    fn test_fxaa_quality_presets() {
+        let low = FxaaConfig::from_quality(FxaaQuality::Low);
+        let ultra = FxaaConfig::from_quality(FxaaQuality::Ultra);
+        
+        // Ultra should have lower threshold (more edges detected)
+        assert!(ultra.edge_threshold < low.edge_threshold);
+        // Ultra should have higher subpixel quality
+        assert!(ultra.subpixel_quality > low.subpixel_quality);
+    }
+
+    #[test]
+    fn test_smaa_quality_presets() {
+        let low = SmaaConfig::from_quality(SmaaQuality::Low);
+        let ultra = SmaaConfig::from_quality(SmaaQuality::Ultra);
+        
+        // Ultra should have more search steps
+        assert!(ultra.max_search_steps > low.max_search_steps);
+        // Ultra should have lower threshold
+        assert!(ultra.threshold < low.threshold);
     }
 }
