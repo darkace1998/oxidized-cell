@@ -26,7 +26,7 @@ pub mod self_file;
 // Re-export main types
 pub use elf::{ElfLoader, Elf64Header, Elf64Phdr, Elf64Shdr, Symbol};
 pub use self_file::{SelfLoader, SelfHeader, AppInfo};
-pub use prx::{PrxLoader, PrxModule, PrxExport, PrxImport, ExportType, ImportType};
+pub use prx::{PrxLoader, PrxModule, PrxExport, PrxImport, ExportType, ImportType, PrxLoadingStats, PrxDependency};
 pub use crypto::{CryptoEngine, KeyType, KeyEntry, SelfKeySet, KeyStats};
-pub use firmware::{PupLoader, PupHeader, PupEntryId, FirmwareVersion, FirmwareFile}; 
+pub use firmware::{PupLoader, PupHeader, PupEntryId, FirmwareVersion, FirmwareFile, FirmwareStatus}; 
 pub use pkg::{PkgLoader, PkgHeader, PkgType, PkgFileEntry, PkgMetadataEntry};

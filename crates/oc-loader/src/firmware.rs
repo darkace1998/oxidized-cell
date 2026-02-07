@@ -3,7 +3,7 @@
 //! This module provides parsing and handling of PS3 firmware files.
 
 use oc_core::error::LoaderError;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// PUP (PlayStation Update Package) file magic
 pub const PUP_MAGIC: [u8; 8] = [0x53, 0x43, 0x45, 0x55, 0x46, 0x00, 0x00, 0x00]; // "SCEUF\0\0\0"
@@ -116,6 +116,111 @@ impl FirmwareVersion {
     /// Convert to display string
     pub fn to_string(&self) -> String {
         format!("{}.{:02}", self.major, self.minor)
+    }
+}
+
+/// Firmware status for detecting and reporting firmware state
+#[derive(Debug, Clone)]
+pub struct FirmwareStatus {
+    /// Whether firmware is installed
+    pub installed: bool,
+    /// Installed firmware version (if any)
+    pub version: Option<FirmwareVersion>,
+    /// Path to installed firmware
+    pub path: Option<std::path::PathBuf>,
+    /// List of missing components
+    pub missing_components: Vec<String>,
+    /// List of available components
+    pub available_components: Vec<String>,
+}
+
+impl FirmwareStatus {
+    /// Create a new empty firmware status
+    pub fn new() -> Self {
+        Self {
+            installed: false,
+            version: None,
+            path: None,
+            missing_components: Vec::new(),
+            available_components: Vec::new(),
+        }
+    }
+
+    /// Check firmware status at the given path
+    pub fn check(firmware_path: &std::path::Path) -> Self {
+        use std::fs;
+        
+        let mut status = Self::new();
+        
+        if !firmware_path.exists() {
+            status.missing_components.push("Firmware directory not found".to_string());
+            return status;
+        }
+        
+        status.path = Some(firmware_path.to_path_buf());
+        
+        // Check for version.txt
+        let version_file = firmware_path.join("version.txt");
+        if let Ok(version_str) = fs::read_to_string(&version_file) {
+            status.version = FirmwareVersion::parse(version_str.trim());
+            status.available_components.push("version.txt".to_string());
+        } else {
+            status.missing_components.push("version.txt".to_string());
+        }
+        
+        // Check for essential components
+        let essential_files = [
+            ("vsh/module/lv2_kernel.self", "LV2 Kernel"),
+            ("vsh/module/vsh.self", "VSH Module"),
+            ("sys/external", "External Libraries"),
+        ];
+        
+        for (path, name) in &essential_files {
+            let full_path = firmware_path.join(path);
+            if full_path.exists() {
+                status.available_components.push(name.to_string());
+            } else {
+                status.missing_components.push(name.to_string());
+            }
+        }
+        
+        // Firmware is considered installed if we have version and LV2 kernel
+        status.installed = status.version.is_some() && 
+            status.available_components.contains(&"LV2 Kernel".to_string());
+        
+        status
+    }
+    
+    /// Get a user-friendly error message if firmware is not properly installed
+    pub fn get_error_message(&self) -> Option<String> {
+        if self.installed {
+            return None;
+        }
+        
+        let mut msg = String::from("PS3 firmware is not properly installed.\n\n");
+        
+        if self.missing_components.is_empty() {
+            msg.push_str("The firmware directory exists but appears to be incomplete.\n");
+        } else {
+            msg.push_str("Missing components:\n");
+            for component in &self.missing_components {
+                msg.push_str(&format!("  - {}\n", component));
+            }
+        }
+        
+        msg.push_str("\nTo install firmware:\n");
+        msg.push_str("1. Download the official PS3 firmware (PS3UPDAT.PUP) from playstation.com\n");
+        msg.push_str("2. Place it in the 'firmware/' directory\n");
+        msg.push_str("3. The emulator will automatically extract the necessary files\n\n");
+        msg.push_str("Alternatively, you can extract the firmware manually and place it in 'dev_flash/'");
+        
+        Some(msg)
+    }
+}
+
+impl Default for FirmwareStatus {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -342,6 +447,90 @@ impl PupLoader {
 
         info!("Firmware {} installed successfully", version.to_string());
         Ok(version)
+    }
+    
+    /// Auto-install firmware from a PUP file if found in common locations
+    ///
+    /// This looks for PS3UPDAT.PUP in common locations and automatically
+    /// extracts it to the target directory.
+    pub fn auto_install(target_dir: &std::path::Path) -> Result<Option<FirmwareVersion>, LoaderError> {
+        use std::fs;
+        
+        // Check if firmware is already installed
+        let status = FirmwareStatus::check(target_dir);
+        if status.installed {
+            info!("Firmware already installed: version {}", 
+                status.version.as_ref().map(|v| v.to_string()).unwrap_or_default());
+            return Ok(status.version);
+        }
+        
+        // Look for PUP files in common locations
+        let pup_search_paths = [
+            "firmware/PS3UPDAT.PUP",
+            "firmware/ps3updat.pup",
+            "PS3UPDAT.PUP",
+            "ps3updat.pup",
+            "../firmware/PS3UPDAT.PUP",
+        ];
+        
+        for pup_path in &pup_search_paths {
+            let path = std::path::Path::new(pup_path);
+            if path.exists() {
+                info!("Found firmware update file: {}", pup_path);
+                
+                // Read the PUP file
+                let pup_data = fs::read(path).map_err(|e| {
+                    LoaderError::InvalidPup(format!("Failed to read PUP file {}: {}", pup_path, e))
+                })?;
+                
+                // Verify it's a valid PUP
+                if !Self::is_pup(&pup_data) {
+                    warn!("File {} is not a valid PUP file, skipping", pup_path);
+                    continue;
+                }
+                
+                // Create target directory if it doesn't exist
+                fs::create_dir_all(target_dir).map_err(|e| {
+                    LoaderError::InvalidPup(format!("Failed to create firmware directory: {}", e))
+                })?;
+                
+                // Install the firmware
+                let mut loader = Self::new();
+                let version = loader.install(&pup_data, target_dir)?;
+                
+                info!("Automatically installed firmware version {}", version.to_string());
+                return Ok(Some(version));
+            }
+        }
+        
+        // No PUP file found
+        debug!("No firmware update file found in common locations");
+        Ok(None)
+    }
+    
+    /// Get a detailed error message for missing firmware
+    pub fn get_missing_firmware_error() -> String {
+        let mut msg = String::from(
+            "PS3 firmware is required to run encrypted games (SELF/EBOOT.BIN files).\n\n"
+        );
+        
+        msg.push_str("The emulator cannot decrypt PS3 executables without the official firmware.\n\n");
+        
+        msg.push_str("To install firmware:\n");
+        msg.push_str("─────────────────────\n");
+        msg.push_str("1. Download the official PS3 firmware from:\n");
+        msg.push_str("   https://www.playstation.com/en-us/support/hardware/ps3/system-software/\n\n");
+        msg.push_str("2. Place the downloaded file (PS3UPDAT.PUP) in one of these locations:\n");
+        msg.push_str("   • firmware/PS3UPDAT.PUP (recommended)\n");
+        msg.push_str("   • ./PS3UPDAT.PUP (current directory)\n\n");
+        msg.push_str("3. Restart the emulator - firmware will be extracted automatically\n\n");
+        
+        msg.push_str("Alternative:\n");
+        msg.push_str("────────────\n");
+        msg.push_str("• Use decrypted game files (EBOOT.ELF instead of EBOOT.BIN)\n");
+        msg.push_str("• These can be created with PS3 decryption tools\n");
+        
+        msg
     }
 }
 

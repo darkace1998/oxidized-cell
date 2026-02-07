@@ -544,15 +544,30 @@ This document tracks pending tasks, improvements, and future features for the ox
 
 ### Game Loading & Compatibility
 
-- [ ] **Game Loading Pipeline**: Complete the game loading workflow
-  - Improve ELF/SELF loading reliability
-  - Better PRX shared library handling
-  - Enhanced NID symbol resolution
+- [x] **Game Loading Pipeline**: Complete the game loading workflow ✅
+  - Improve ELF/SELF loading reliability ✅
+  - Better PRX shared library handling ✅
+    - Added `PrxLoadingStats` struct for tracking loading statistics
+    - Added `PrxDependency` struct for dependency tracking
+    - Added methods: `get_stats()`, `get_dependencies()`, `get_unsatisfied_dependencies()`
+    - Added `get_import_resolution_status()` for per-module status
+  - Enhanced NID symbol resolution ✅
+    - Expanded NID database from 11 to 100+ entries
+    - Added system calls: process, thread, memory, mutex, cond, semaphore, event, timer, PRX, SPU
+    - Added filesystem (cellFs*), network (cellNet*), graphics (cellGcm*)
+    - Added audio (cellAudio*), input (cellPad*, cellKb*), savedata, sysutil, video out
+    - Added `lookup_nid()` and `get_nid_database_size()` methods
   - Location: `crates/oc-loader/src/`, `crates/oc-integration/src/loader.rs`
 
-- [ ] **Firmware Installation**: Improve firmware extraction and key handling
-  - Better error messages for missing firmware
-  - Automatic key extraction from PS3UPDAT.PUP
+- [x] **Firmware Installation**: Improve firmware extraction and key handling ✅
+  - Better error messages for missing firmware ✅
+    - Added `FirmwareStatus` struct for firmware detection and reporting
+    - Added `get_error_message()` with detailed installation instructions
+    - Added `get_missing_firmware_error()` static method
+  - Automatic key extraction from PS3UPDAT.PUP ✅
+    - Added `auto_install()` method that searches common locations
+    - Searches: firmware/PS3UPDAT.PUP, ./PS3UPDAT.PUP, etc.
+    - Automatically extracts and installs if PUP found
   - Location: `crates/oc-loader/src/firmware.rs`
 
 ---
