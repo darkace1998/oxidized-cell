@@ -492,34 +492,34 @@ This document tracks pending tasks, improvements, and future features for the ox
 
 #### Vulkan Backend
 
-- [ ] **Vulkan Backend Enhancements**: Complete Vulkan graphics implementation
-  - Multi-sample anti-aliasing (MSAA)
-  - More texture compression formats
-  - Compute shader support for RSX emulation
+- [x] **Vulkan Backend Enhancements**: Complete Vulkan graphics implementation ✅
+  - Multi-sample anti-aliasing (MSAA) ✅
+  - More texture compression formats ✅
+  - Compute shader support for RSX emulation ✅
   - Location: `crates/oc-rsx/src/backend/vulkan.rs`
 
-- [ ] **Pipeline State Management**: Optimize pipeline creation
-  - Pipeline caching and reuse
-  - Dynamic state for viewport/scissor
-  - Separate blend state per attachment
+- [x] **Pipeline State Management**: Optimize pipeline creation ✅
+  - Pipeline caching and reuse ✅
+  - Dynamic state for viewport/scissor ✅
+  - Separate blend state per attachment ✅
   - Location: `crates/oc-rsx/src/backend/vulkan.rs`
 
-- [ ] **Memory Management**: Improve GPU memory handling
-  - Suballocation for small buffers
-  - Staging buffer pooling
-  - Memory type selection optimization
+- [x] **Memory Management**: Improve GPU memory handling ✅
+  - Suballocation for small buffers ✅
+  - Staging buffer pooling ✅
+  - Memory type selection optimization ✅
   - Location: `crates/oc-rsx/src/backend/vulkan.rs`
 
-- [ ] **Synchronization**: Complete sync primitive handling
-  - Fence management for frame pacing
-  - Semaphore-based GPU/CPU sync
-  - Timeline semaphores for RSX semaphores
+- [x] **Synchronization**: Complete sync primitive handling ✅
+  - Fence management for frame pacing ✅
+  - Semaphore-based GPU/CPU sync ✅
+  - Timeline semaphores for RSX semaphores ✅
   - Location: `crates/oc-rsx/src/backend/vulkan.rs`
 
-- [ ] **MSAA Support**: Implement multi-sample anti-aliasing
-  - Sample count selection (2x, 4x, 8x)
-  - MSAA resolve to non-MSAA targets
-  - Sample mask handling
+- [x] **MSAA Support**: Implement multi-sample anti-aliasing ✅
+  - Sample count selection (2x, 4x, 8x) ✅
+  - MSAA resolve to non-MSAA targets ✅
+  - Sample mask handling ✅
   - Location: `crates/oc-rsx/src/backend/vulkan.rs`
 
 #### Rendering Features
@@ -1210,11 +1210,12 @@ This document tracks pending tasks, improvements, and future features for the ox
 | Texture Depth | ✅ Complete | DEPTH24_D8, DEPTH16, DEPTH24_D8_FLOAT |
 | Texture Swizzle | ✅ Complete | Morton/Z-order, linear/tiled, RSX-specific swizzle |
 | Mipmap Generation | ✅ Complete | Box filter, LOD selection, trilinear config |
-| Vulkan Pipeline | ✅ Complete | Basic pipeline creation, layout |
+| Vulkan Pipeline | ✅ Complete | Pipeline creation, caching, dynamic state, per-attachment blend |
 | Vulkan Descriptor | ✅ Complete | Set layout, pool, sets |
-| Vulkan Sync | 🟡 Partial | Fences, semaphores; timeline incomplete |
-| Vulkan MSAA | 🔴 Minimal | Sample count only, resolve incomplete |
-| Vulkan Memory | 🟡 Partial | Allocator, suballocation incomplete |
+| Vulkan Sync | ✅ Complete | Fences, semaphores, timeline semaphores, fence pool |
+| Vulkan MSAA | ✅ Complete | Sample count selection, resolve, sample mask, MSAA render pass |
+| Vulkan Memory | ✅ Complete | Allocator, suballocation pool, staging buffer pool |
+| Vulkan Compute | ✅ Complete | Compute pipelines for RSX emulation |
 | Post-Processing | 🟡 Partial | Basic present, gamma incomplete |
 | Upscaling | 🟡 Partial | Basic resize, bicubic incomplete |
 | Frame Timing | 🟡 Partial | Basic VSync, limiter incomplete |
