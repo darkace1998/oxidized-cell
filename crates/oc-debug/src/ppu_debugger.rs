@@ -17,6 +17,42 @@ pub enum DebugState {
     Stepping,
     /// Step over (step but skip function calls)
     SteppingOver,
+    /// Step out (run until function returns)
+    SteppingOut,
+}
+
+/// Watch expression for debugging
+#[derive(Debug, Clone)]
+pub struct WatchExpression {
+    /// Unique ID for this watch
+    pub id: u32,
+    /// Human-readable name/description
+    pub name: String,
+    /// Watch type
+    pub watch_type: WatchType,
+    /// Current value (cached)
+    pub current_value: u64,
+    /// Previous value (for change detection)
+    pub previous_value: u64,
+    /// Has the value changed since last update
+    pub changed: bool,
+}
+
+/// Type of watch expression
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchType {
+    /// Watch a GPR register (index 0-31)
+    Gpr(usize),
+    /// Watch a memory address (address, size in bytes: 1, 2, 4, or 8)
+    Memory(u32, u8),
+    /// Watch the LR register
+    Lr,
+    /// Watch the CTR register
+    Ctr,
+    /// Watch the CR register
+    Cr,
+    /// Watch the XER register
+    Xer,
 }
 
 /// Call stack entry
@@ -63,8 +99,16 @@ pub struct PpuDebugger {
     cycle_count: u64,
     /// Step over return address (for step-over functionality)
     step_over_return_addr: Option<u64>,
+    /// Step out target stack depth (for step-out functionality)
+    step_out_target_depth: Option<usize>,
     /// Memory manager for memory inspection
     memory: Option<Arc<MemoryManager>>,
+    /// Watch expressions
+    watches: Vec<WatchExpression>,
+    /// Next watch ID
+    next_watch_id: u32,
+    /// Function symbol table for call stack names (address -> name)
+    symbol_table: std::collections::HashMap<u64, String>,
 }
 
 impl Default for PpuDebugger {
@@ -85,7 +129,11 @@ impl PpuDebugger {
             call_stack: Vec::new(),
             cycle_count: 0,
             step_over_return_addr: None,
+            step_out_target_depth: None,
             memory: None,
+            watches: Vec::new(),
+            next_watch_id: 1,
+            symbol_table: std::collections::HashMap::new(),
         }
     }
 
@@ -112,6 +160,7 @@ impl PpuDebugger {
     pub fn resume(&mut self) {
         self.state = DebugState::Running;
         self.step_over_return_addr = None;
+        self.step_out_target_depth = None;
         tracing::info!("PPU debugger: resumed");
     }
 
@@ -127,6 +176,20 @@ impl PpuDebugger {
         // Set return address to current PC + 4 (after the current instruction)
         self.step_over_return_addr = Some(current_pc + 4);
         tracing::debug!("PPU debugger: step over, return at 0x{:016x}", current_pc + 4);
+    }
+
+    /// Step out (run until returning from current function)
+    pub fn step_out(&mut self) {
+        if self.call_stack.is_empty() {
+            // No call stack, just resume
+            tracing::warn!("PPU debugger: step out with empty call stack, resuming");
+            self.resume();
+            return;
+        }
+        self.state = DebugState::SteppingOut;
+        // Target depth is one less than current (we want to return from current function)
+        self.step_out_target_depth = Some(self.call_stack.len().saturating_sub(1));
+        tracing::debug!("PPU debugger: step out, target depth {}", self.call_stack.len().saturating_sub(1));
     }
 
     /// Check if execution should stop before executing an instruction
@@ -163,6 +226,25 @@ impl PpuDebugger {
                 }
                 false
             }
+            DebugState::SteppingOut => {
+                // Check if we've returned from the target function
+                if let Some(target_depth) = self.step_out_target_depth {
+                    if self.call_stack.len() <= target_depth {
+                        self.state = DebugState::Paused;
+                        self.step_out_target_depth = None;
+                        tracing::info!("PPU debugger: step out complete at 0x{:016x}", pc);
+                        return true;
+                    }
+                }
+                // Also check breakpoints while stepping out
+                if self.breakpoints.check_execution(pc).is_some() {
+                    tracing::info!("PPU debugger: breakpoint hit at 0x{:016x}", pc);
+                    self.state = DebugState::Paused;
+                    self.step_out_target_depth = None;
+                    return true;
+                }
+                false
+            }
         }
     }
 
@@ -192,11 +274,13 @@ impl PpuDebugger {
 
     /// Track function call (when bl instruction is executed)
     pub fn track_call(&mut self, from_addr: u64, to_addr: u64, lr: u64, sp: u64) {
+        // Look up function name in symbol table
+        let name = self.symbol_table.get(&to_addr).cloned();
         let entry = CallStackEntry {
             function_addr: to_addr,
             return_addr: lr,
             stack_ptr: sp,
-            name: None,
+            name,
         };
         self.call_stack.push(entry);
         tracing::trace!("PPU call: 0x{:016x} -> 0x{:016x}", from_addr, to_addr);
@@ -305,6 +389,126 @@ impl PpuDebugger {
     /// Get debug state
     pub fn is_running(&self) -> bool {
         self.state == DebugState::Running
+    }
+
+    // === Watch Expression Methods ===
+
+    /// Add a watch expression
+    pub fn add_watch(&mut self, name: &str, watch_type: WatchType) -> u32 {
+        let id = self.next_watch_id;
+        self.next_watch_id += 1;
+        
+        let watch = WatchExpression {
+            id,
+            name: name.to_string(),
+            watch_type,
+            current_value: 0,
+            previous_value: 0,
+            changed: false,
+        };
+        
+        self.watches.push(watch);
+        tracing::debug!("PPU debugger: added watch '{}' (id={})", name, id);
+        id
+    }
+
+    /// Remove a watch expression by ID
+    pub fn remove_watch(&mut self, id: u32) -> bool {
+        if let Some(pos) = self.watches.iter().position(|w| w.id == id) {
+            self.watches.remove(pos);
+            tracing::debug!("PPU debugger: removed watch id={}", id);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Update all watch expressions with current values from thread
+    pub fn update_watches(&mut self, thread: &PpuThread) {
+        for watch in &mut self.watches {
+            watch.previous_value = watch.current_value;
+            
+            let new_value = match watch.watch_type {
+                WatchType::Gpr(idx) => {
+                    if idx < 32 { thread.regs.gpr[idx] } else { 0 }
+                }
+                WatchType::Memory(addr, size) => {
+                    if let Some(ref mem) = self.memory {
+                        match size {
+                            1 => mem.read::<u8>(addr).unwrap_or(0) as u64,
+                            2 => mem.read::<u16>(addr).unwrap_or(0) as u64,
+                            4 => mem.read::<u32>(addr).unwrap_or(0) as u64,
+                            8 => mem.read::<u64>(addr).unwrap_or(0),
+                            _ => 0,
+                        }
+                    } else {
+                        0
+                    }
+                }
+                WatchType::Lr => thread.regs.lr,
+                WatchType::Ctr => thread.regs.ctr,
+                WatchType::Cr => thread.regs.cr as u64,
+                WatchType::Xer => thread.regs.xer,
+            };
+            
+            watch.current_value = new_value;
+            watch.changed = watch.current_value != watch.previous_value;
+        }
+    }
+
+    /// Get all watch expressions
+    pub fn get_watches(&self) -> &[WatchExpression] {
+        &self.watches
+    }
+
+    /// Get watches that have changed since last update
+    pub fn get_changed_watches(&self) -> Vec<&WatchExpression> {
+        self.watches.iter().filter(|w| w.changed).collect()
+    }
+
+    /// Clear all watch expressions
+    pub fn clear_watches(&mut self) {
+        self.watches.clear();
+        tracing::debug!("PPU debugger: cleared all watches");
+    }
+
+    // === Symbol Table Methods ===
+
+    /// Add a symbol to the symbol table
+    pub fn add_symbol(&mut self, address: u64, name: &str) {
+        self.symbol_table.insert(address, name.to_string());
+    }
+
+    /// Look up a symbol name by address
+    pub fn lookup_symbol(&self, address: u64) -> Option<&str> {
+        self.symbol_table.get(&address).map(|s| s.as_str())
+    }
+
+    /// Load symbols from a map (address -> name)
+    pub fn load_symbols(&mut self, symbols: std::collections::HashMap<u64, String>) {
+        self.symbol_table.extend(symbols);
+        tracing::info!("PPU debugger: loaded {} symbols", self.symbol_table.len());
+    }
+
+    /// Clear the symbol table
+    pub fn clear_symbols(&mut self) {
+        self.symbol_table.clear();
+    }
+
+    /// Get call stack with resolved function names
+    pub fn get_call_stack_with_names(&self) -> Vec<CallStackEntry> {
+        self.call_stack.iter().map(|entry| {
+            let mut resolved = entry.clone();
+            if resolved.name.is_none() {
+                resolved.name = self.lookup_symbol(entry.function_addr).map(String::from);
+            }
+            resolved
+        }).collect()
+    }
+
+    /// Get number of symbols loaded
+    pub fn symbol_count(&self) -> usize {
+        self.symbol_table.len()
     }
 }
 

@@ -590,28 +590,33 @@ This document tracks pending tasks, improvements, and future features for the ox
 
 ### Debugging & Development Tools
 
-- [ ] **PPU Debugger Enhancements**: Improve debugging experience
-  - Step-over and step-out functionality
-  - Watch expressions
-  - Call stack visualization
+- [x] **PPU Debugger Enhancements**: Improve debugging experience
+  - Step-over and step-out functionality ✅
+  - Watch expressions ✅
+  - Call stack visualization ✅
+  - Symbol table for function name resolution ✅
   - Location: `crates/oc-debug/src/ppu_debugger.rs`
 
-- [ ] **SPU Debugger**: Add SPU-specific debugging features
-  - Local storage viewer
-  - Channel state inspection
-  - DMA queue visualization
+- [x] **SPU Debugger**: Add SPU-specific debugging features
+  - Local storage viewer ✅
+  - Channel state inspection (extended to all 32 channels) ✅
+  - DMA queue visualization ✅
+  - Hexdump viewer ✅
+  - Pattern search in local storage ✅
   - Location: `crates/oc-debug/src/spu_debugger.rs`
 
-- [ ] **RSX Debugger**: Improve graphics debugging
-  - Render target inspection
-  - Command buffer visualization
-  - Shader debugging with step-through
+- [x] **RSX Debugger**: Improve graphics debugging
+  - Render target inspection ✅
+  - Command buffer visualization ✅
+  - Shader debugging with step-through ✅
+  - Draw call analysis ✅
   - Location: `crates/oc-debug/src/rsx_debugger.rs`
 
-- [ ] **Profiler Integration**: Expand performance profiling
-  - Per-frame timing breakdown
-  - Hot path identification
-  - Memory access patterns
+- [x] **Profiler Integration**: Expand performance profiling
+  - Per-frame timing breakdown ✅
+  - Hot path identification ✅
+  - Memory access patterns ✅
+  - Memory region hotspot analysis ✅
   - Location: `crates/oc-debug/src/profiler.rs`
 
 ### Audio System

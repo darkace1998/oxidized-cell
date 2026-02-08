@@ -47,6 +47,60 @@ pub struct MfcCommandDebugInfo {
     pub status: String,
 }
 
+/// DMA queue visualization
+#[derive(Debug, Clone)]
+pub struct DmaQueueVisualization {
+    /// Pending DMA commands
+    pub pending_commands: Vec<MfcCommandDebugInfo>,
+    /// Completed DMA tags (bit mask)
+    pub completed_tags: u32,
+    /// Tag mask for waiting
+    pub tag_mask: u32,
+    /// Total DMA transfers since reset
+    pub total_transfers: u64,
+    /// Total bytes transferred
+    pub total_bytes: u64,
+}
+
+/// Local storage region info for visualization
+#[derive(Debug, Clone)]
+pub struct LocalStorageRegion {
+    /// Region start address
+    pub start: u32,
+    /// Region end address (exclusive)
+    pub end: u32,
+    /// Region name/description
+    pub name: String,
+    /// Region type
+    pub region_type: LocalStorageRegionType,
+}
+
+/// Type of local storage region
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalStorageRegionType {
+    /// Code section
+    Code,
+    /// Data section
+    Data,
+    /// Stack
+    Stack,
+    /// DMA buffer
+    DmaBuffer,
+    /// Unknown/Other
+    Unknown,
+}
+
+/// Local storage hexdump line
+#[derive(Debug, Clone)]
+pub struct HexdumpLine {
+    /// Address
+    pub address: u32,
+    /// Hex bytes (up to 16)
+    pub hex: String,
+    /// ASCII representation
+    pub ascii: String,
+}
+
 /// SPU debugger
 pub struct SpuDebugger {
     /// Debug state per SPU (indexed by SPU ID)
@@ -318,6 +372,107 @@ impl SpuDebugger {
     /// Check if SPU is running
     pub fn is_running(&self, spu_id: usize) -> bool {
         spu_id < 6 && self.states[spu_id] == SpuDebugState::Running
+    }
+
+    /// Get DMA queue visualization
+    pub fn get_dma_visualization(&self, thread: &SpuThread) -> DmaQueueVisualization {
+        DmaQueueVisualization {
+            pending_commands: self.get_mfc_queue(thread),
+            completed_tags: thread.mfc.get_tag_status(),
+            tag_mask: thread.mfc.get_tag_mask(),
+            total_transfers: 0, // Would need MFC stats
+            total_bytes: 0,
+        }
+    }
+
+    /// Get hexdump of local storage region
+    pub fn get_hexdump(&self, thread: &SpuThread, start: u32, lines: usize) -> Vec<HexdumpLine> {
+        let mut result = Vec::with_capacity(lines);
+        let bytes_per_line = 16;
+        
+        for line in 0..lines {
+            let addr = (start + (line as u32 * bytes_per_line)) & (SPU_LS_SIZE as u32 - 1);
+            let mut hex_parts = Vec::new();
+            let mut ascii_parts = Vec::new();
+            
+            for i in 0..bytes_per_line {
+                let byte_addr = (addr + i) & (SPU_LS_SIZE as u32 - 1);
+                let byte = thread.local_storage[byte_addr as usize];
+                hex_parts.push(format!("{:02X}", byte));
+                
+                // ASCII representation (printable chars only)
+                let ch = if byte >= 0x20 && byte < 0x7F {
+                    byte as char
+                } else {
+                    '.'
+                };
+                ascii_parts.push(ch);
+            }
+            
+            result.push(HexdumpLine {
+                address: addr,
+                hex: hex_parts.join(" "),
+                ascii: ascii_parts.into_iter().collect(),
+            });
+        }
+        
+        result
+    }
+
+    /// Get extended channel info (all 32 SPU channels)
+    pub fn get_extended_channel_info(&self, thread: &SpuThread) -> Vec<ChannelDebugInfo> {
+        let mut info = self.get_channel_info(thread);
+        
+        // Add more channels
+        let additional_channels = [
+            (2, "SPU_WrEventMask"),
+            (5, "SPU_RdMachStat"),
+            (7, "SPU_WrSRR0"),
+            (11, "SPU_RdSRR0"),
+            (13, "SPU_RdEventAck"),
+            (14, "SPU_WrEventAck"),
+            (15, "SPU_RdInMbox"),
+            (28, "SPU_WrOutMbox"),
+            (29, "SPU_RdOutMbox"),
+            (30, "SPU_WrOutIntrMbox"),
+        ];
+        
+        for (channel, name) in additional_channels {
+            info.push(ChannelDebugInfo {
+                name: name.to_string(),
+                channel,
+                value: None,
+                count: thread.channels.get_count(channel),
+                stalled: false,
+            });
+        }
+        
+        // Sort by channel number
+        info.sort_by_key(|c| c.channel);
+        info
+    }
+
+    /// Search local storage for a byte pattern
+    pub fn search_local_storage(&self, thread: &SpuThread, pattern: &[u8]) -> Vec<u32> {
+        let mut results = Vec::new();
+        if pattern.is_empty() {
+            return results;
+        }
+        
+        for addr in 0..(SPU_LS_SIZE - pattern.len()) {
+            let mut found = true;
+            for (i, &byte) in pattern.iter().enumerate() {
+                if thread.local_storage[addr + i] != byte {
+                    found = false;
+                    break;
+                }
+            }
+            if found {
+                results.push(addr as u32);
+            }
+        }
+        
+        results
     }
 }
 
