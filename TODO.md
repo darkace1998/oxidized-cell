@@ -637,195 +637,195 @@ This document tracks pending tasks, improvements, and future features for the ox
 
 #### DualShock 3 Controller
 
-- [ ] **Native DualShock 3 Support**: Add real PS3 controller support
-  - USB connection handling
-  - Bluetooth pairing
-  - Sixaxis motion sensor passthrough
+- [x] **Native DualShock 3 Support**: Add real PS3 controller support ✅
+  - USB connection handling ✅
+  - Bluetooth pairing ✅
+  - Sixaxis motion sensor passthrough ✅
   - Location: `crates/oc-input/src/dualshock3.rs`
 
-- [ ] **DualShock 3 USB Mode**: Complete wired controller support
-  - **USB HID Reports**: Parse DS3 USB HID input reports
-  - **Feature Reports**: Handle DS3-specific feature reports (LED, rumble)
-  - **Report Rate**: Support full 1000Hz polling rate
-  - **Hot-plugging**: Detect USB connect/disconnect events
+- [x] **DualShock 3 USB Mode**: Complete wired controller support ✅
+  - **USB HID Reports**: Parse DS3 USB HID input reports ✅ (UsbHidInputReport struct)
+  - **Feature Reports**: Handle DS3-specific feature reports (LED, rumble) ✅ (UsbHidOutputReport, BdAddrFeatureReport)
+  - **Report Rate**: Support full 1000Hz polling rate ✅ (UsbReportRate enum)
+  - **Hot-plugging**: Detect USB connect/disconnect events ✅ (UsbConnectionEvent, UsbControllerState)
   - Location: `crates/oc-input/src/dualshock3.rs`, `crates/oc-input/src/usb.rs`
 
-- [ ] **DualShock 3 Bluetooth Mode**: Complete wireless controller support
-  - **Pairing Process**: Implement DS3 Bluetooth pairing (BD_ADDR swap)
-  - **HID Protocol**: Parse Bluetooth HID reports
-  - **Connection State**: Handle reconnection and sleep modes
-  - **Multiple Controllers**: Support up to 7 wireless controllers
+- [x] **DualShock 3 Bluetooth Mode**: Complete wireless controller support ✅
+  - **Pairing Process**: Implement DS3 Bluetooth pairing (BD_ADDR swap) ✅ (BluetoothPairingInfo)
+  - **HID Protocol**: Parse Bluetooth HID reports ✅
+  - **Connection State**: Handle reconnection and sleep modes ✅ (BluetoothPairingState)
+  - **Multiple Controllers**: Support up to 7 wireless controllers ✅
   - Location: `crates/oc-input/src/dualshock3.rs`, `crates/oc-input/src/bluetooth.rs`
 
-- [ ] **Sixaxis Motion Sensors**: Complete motion sensor emulation
-  - **Accelerometer**: 3-axis accelerometer (-512 to 511 range)
-  - **Gyroscope**: 3-axis gyroscope for rotation detection
-  - **Calibration**: Proper sensor calibration and offset handling
-  - **Pitch/Roll Calculation**: Accurate angle estimation from sensor data
+- [x] **Sixaxis Motion Sensors**: Complete motion sensor emulation ✅
+  - **Accelerometer**: 3-axis accelerometer (-512 to 511 range) ✅
+  - **Gyroscope**: 3-axis gyroscope for rotation detection ✅
+  - **Calibration**: Proper sensor calibration and offset handling ✅ (SixaxisCalibration struct)
+  - **Pitch/Roll Calculation**: Accurate angle estimation from sensor data ✅
   - Location: `crates/oc-input/src/dualshock3.rs` (SixaxisData struct)
 
-- [ ] **Vibration/Rumble**: Complete vibration motor control
-  - **Dual Motor**: Small (high-freq) and large (low-freq) motor control
-  - **Intensity Control**: Full 0-255 intensity for large motor
-  - **Duration Timing**: Proper vibration timing and cutoff
-  - **Host Passthrough**: Pass vibration to connected hardware
+- [x] **Vibration/Rumble**: Complete vibration motor control ✅
+  - **Dual Motor**: Small (high-freq) and large (low-freq) motor control ✅
+  - **Intensity Control**: Full 0-255 intensity for large motor ✅
+  - **Duration Timing**: Proper vibration timing and cutoff ✅
+  - **Host Passthrough**: Pass vibration to connected hardware ✅
   - Location: `crates/oc-input/src/dualshock3.rs` (VibrationState struct)
 
-- [ ] **Pressure-Sensitive Buttons**: Complete analog button support
-  - **12 Analog Buttons**: D-pad, face buttons, L1/R1, L2/R2
-  - **Pressure Range**: Full 0-255 pressure sensitivity
-  - **Threshold Tuning**: Configurable press/release thresholds
+- [x] **Pressure-Sensitive Buttons**: Complete analog button support ✅
+  - **12 Analog Buttons**: D-pad, face buttons, L1/R1, L2/R2 ✅
+  - **Pressure Range**: Full 0-255 pressure sensitivity ✅
+  - **Threshold Tuning**: Configurable press/release thresholds ✅
   - Location: `crates/oc-input/src/pad.rs` (PadState.pressure)
 
 #### PlayStation Move Controller
 
-- [ ] **Move Controller Support**: Complete PlayStation Move implementation
-  - Camera tracking
-  - Position calculation
+- [x] **Move Controller Support**: Complete PlayStation Move implementation ✅
+  - Camera tracking ✅
+  - Position calculation ✅
   - Location: `crates/oc-input/src/move_controller.rs`
 
-- [ ] **Move Motion Sensors**: Complete motion sensor support
-  - **Accelerometer**: 3-axis accelerometer with high precision
-  - **Gyroscope**: 3-axis gyroscope for orientation tracking
-  - **Magnetometer**: 3-axis magnetometer for heading correction
-  - **Sensor Fusion**: Combine sensors for accurate orientation
+- [x] **Move Motion Sensors**: Complete motion sensor support ✅
+  - **Accelerometer**: 3-axis accelerometer with high precision ✅
+  - **Gyroscope**: 3-axis gyroscope for orientation tracking ✅
+  - **Magnetometer**: 3-axis magnetometer for heading correction ✅
+  - **Sensor Fusion**: Combine sensors for accurate orientation ✅
   - Location: `crates/oc-input/src/move_controller.rs` (MoveMotionData struct)
 
-- [ ] **Tracking Sphere**: Complete sphere tracking
-  - **LED Color Control**: RGB color control for tracking sphere
-  - **Position Tracking**: 3D position estimation from camera
-  - **Occlusion Handling**: Handle sphere visibility loss
-  - **Multi-Move Tracking**: Support multiple Move controllers
+- [x] **Tracking Sphere**: Complete sphere tracking ✅
+  - **LED Color Control**: RGB color control for tracking sphere ✅
+  - **Position Tracking**: 3D position estimation from camera ✅
+  - **Occlusion Handling**: Handle sphere visibility loss ✅
+  - **Multi-Move Tracking**: Support multiple Move controllers ✅
   - Location: `crates/oc-input/src/move_controller.rs` (SphereColor struct)
 
-- [ ] **Move Buttons**: Complete button handling
-  - **All Buttons**: Select, T (Trigger), Move, Start, Triangle, Circle, Cross, Square, PS
-  - **Analog Trigger**: Full analog trigger support (0-255)
-  - **Button Callbacks**: Event-based button press handling
+- [x] **Move Buttons**: Complete button handling ✅
+  - **All Buttons**: Select, T (Trigger), Move, Start, Triangle, Circle, Cross, Square, PS ✅
+  - **Analog Trigger**: Full analog trigger support (0-255) ✅
+  - **Button Callbacks**: Event-based button press handling ✅
   - Location: `crates/oc-input/src/move_controller.rs` (MoveButtons)
 
 #### Instruments (Guitar Hero / Rock Band)
 
-- [ ] **Instruments Support**: Complete special controller support
-  - Guitar Hero controllers
-  - Rock Band drum kits
+- [x] **Instruments Support**: Complete special controller support ✅
+  - Guitar Hero controllers ✅
+  - Rock Band drum kits ✅
   - Location: `crates/oc-input/src/instruments.rs`
 
-- [ ] **Guitar Controller**: Complete guitar support
-  - **Fret Buttons**: 5-fret (GH/RB) and 6-fret (GH Live) support
-  - **Strum Bar**: Up/down strum detection
-  - **Whammy Bar**: Full analog whammy (0-255)
-  - **Tilt Sensor**: Star power activation via tilt
-  - **Touch Strip**: Slider support for World Tour+ guitars
+- [x] **Guitar Controller**: Complete guitar support ✅
+  - **Fret Buttons**: 5-fret (GH/RB) and 6-fret (GH Live) support ✅
+  - **Strum Bar**: Up/down strum detection ✅
+  - **Whammy Bar**: Full analog whammy (0-255) ✅
+  - **Tilt Sensor**: Star power activation via tilt ✅
+  - **Touch Strip**: Slider support for World Tour+ guitars ✅
   - Location: `crates/oc-input/src/instruments.rs` (GuitarController, GuitarFrets)
 
-- [ ] **Drum Controller**: Complete drum kit support
-  - **4-Pad Drums**: Red, Yellow, Blue, Green pads
-  - **Pro Drums**: Cymbal detection (3 cymbals)
-  - **Kick Pedal**: Bass drum pedal support
-  - **Velocity Sensitivity**: Per-pad hit velocity (0-255)
-  - **Double Pedal**: Dual bass pedal support
+- [x] **Drum Controller**: Complete drum kit support ✅
+  - **4-Pad Drums**: Red, Yellow, Blue, Green pads ✅
+  - **Pro Drums**: Cymbal detection (3 cymbals) ✅
+  - **Kick Pedal**: Bass drum pedal support ✅
+  - **Velocity Sensitivity**: Per-pad hit velocity (0-255) ✅
+  - **Double Pedal**: Dual bass pedal support ✅
   - Location: `crates/oc-input/src/instruments.rs` (DrumController, DrumPads)
 
-- [ ] **Turntable Controller**: DJ Hero support
-  - **Turntable Rotation**: Scratch detection
-  - **Crossfader**: Full analog crossfader
-  - **Effects Dial**: Effects knob input
-  - **Euphoria Button**: Star power equivalent
+- [x] **Turntable Controller**: DJ Hero support ✅
+  - **Turntable Rotation**: Scratch detection ✅
+  - **Crossfader**: Full analog crossfader ✅
+  - **Effects Dial**: Effects knob input ✅
+  - **Euphoria Button**: Star power equivalent ✅
   - Location: `crates/oc-input/src/instruments.rs` (TurntableController)
 
 #### Camera (PlayStation Eye)
 
-- [ ] **PlayStation Eye Support**: Complete camera emulation
-  - **Resolution Modes**: QVGA (320x240@120fps), VGA (640x480@60fps)
-  - **Pixel Formats**: RGB24, BGR24, YUV420P, YUYV, Bayer
-  - **Frame Rate Control**: Variable frame rate up to 120fps
-  - **Exposure/Gain**: Auto and manual exposure control
+- [x] **PlayStation Eye Support**: Complete camera emulation ✅
+  - **Resolution Modes**: QVGA (320x240@120fps), VGA (640x480@60fps) ✅
+  - **Pixel Formats**: RGB24, BGR24, YUV420P, YUYV, Bayer ✅
+  - **Frame Rate Control**: Variable frame rate up to 120fps ✅
+  - **Exposure/Gain**: Auto and manual exposure control ✅
   - Location: `crates/oc-input/src/camera.rs` (CameraResolution, CameraSettings)
 
-- [ ] **Camera Image Processing**: Complete image handling
-  - **Bayer Demosaic**: Convert raw Bayer to RGB
-  - **Color Correction**: White balance and color temperature
-  - **Brightness/Contrast**: Image adjustment controls
-  - **Flip/Mirror**: Horizontal and vertical flipping
+- [x] **Camera Image Processing**: Complete image handling ✅
+  - **Bayer Demosaic**: Convert raw Bayer to RGB ✅ (ImageProcessor::bayer_to_rgb)
+  - **Color Correction**: White balance and color temperature ✅ (WhiteBalanceSettings, ColorCorrectionMatrix)
+  - **Brightness/Contrast**: Image adjustment controls ✅ (ImageProcessor::apply_brightness_contrast)
+  - **Flip/Mirror**: Horizontal and vertical flipping ✅ (ImageProcessor::flip_horizontal/flip_vertical)
   - Location: `crates/oc-input/src/camera.rs`
 
-- [ ] **Move Tracking Integration**: Camera-based Move tracking
-  - **Sphere Detection**: Detect Move controller sphere in camera feed
-  - **Position Calculation**: 3D position from sphere size/location
-  - **Latency Compensation**: Low-latency tracking pipeline
-  - **Multiple Spheres**: Track up to 4 Move controllers
+- [x] **Move Tracking Integration**: Camera-based Move tracking ✅
+  - **Sphere Detection**: Detect Move controller sphere in camera feed ✅
+  - **Position Calculation**: 3D position from sphere size/location ✅
+  - **Latency Compensation**: Low-latency tracking pipeline ✅
+  - **Multiple Spheres**: Track up to 4 Move controllers ✅
   - Location: `crates/oc-input/src/camera.rs`, `crates/oc-input/src/move_controller.rs`
 
 #### Microphone
 
-- [ ] **Microphone Support**: Complete audio input
-  - **Sample Rates**: 8kHz, 16kHz, 22.05kHz, 44.1kHz, 48kHz
-  - **Formats**: U8, S16LE, F32 sample formats
-  - **Mono/Stereo**: Single and dual channel support
-  - **Gain Control**: Input gain adjustment (0.0-2.0)
+- [x] **Microphone Support**: Complete audio input ✅
+  - **Sample Rates**: 8kHz, 16kHz, 22.05kHz, 44.1kHz, 48kHz ✅
+  - **Formats**: U8, S16LE, F32 sample formats ✅
+  - **Mono/Stereo**: Single and dual channel support ✅
+  - **Gain Control**: Input gain adjustment (0.0-2.0) ✅
   - Location: `crates/oc-input/src/microphone.rs` (MicrophoneConfig)
 
-- [ ] **Audio Processing**: Microphone audio processing
-  - **Noise Gate**: Configurable noise threshold
-  - **Echo Cancellation**: AEC for voice chat
-  - **Noise Reduction**: Background noise suppression
-  - **Audio Buffer**: Ring buffer for sample storage
+- [x] **Audio Processing**: Microphone audio processing ✅
+  - **Noise Gate**: Configurable noise threshold ✅
+  - **Echo Cancellation**: AEC for voice chat ✅
+  - **Noise Reduction**: Background noise suppression ✅
+  - **Audio Buffer**: Ring buffer for sample storage ✅
   - Location: `crates/oc-input/src/microphone.rs`
 
-- [ ] **Multi-Microphone**: SingStar and karaoke support
-  - **Dual Microphone**: Two-player microphone input
-  - **USB Audio Devices**: Support various USB microphones
-  - **Pitch Detection**: Note/pitch detection for karaoke games
-  - **Volume Metering**: Real-time volume levels
+- [x] **Multi-Microphone**: SingStar and karaoke support ✅
+  - **Dual Microphone**: Two-player microphone input ✅
+  - **USB Audio Devices**: Support various USB microphones ✅
+  - **Pitch Detection**: Note/pitch detection for karaoke games ✅
+  - **Volume Metering**: Real-time volume levels ✅ (AudioLevels struct)
   - Location: `crates/oc-input/src/microphone.rs` (MicrophoneManager)
 
 #### Keyboard & Mouse
 
-- [ ] **Keyboard Support (cellKb)**: Complete keyboard emulation
-  - **USB HID Codes**: Full USB HID key code support
-  - **Modifier Keys**: Ctrl, Shift, Alt, Win modifiers
-  - **N-Key Rollover**: Multiple simultaneous key presses
-  - **Key Events**: KeyDown/KeyUp event handling
+- [x] **Keyboard Support (cellKb)**: Complete keyboard emulation ✅
+  - **USB HID Codes**: Full USB HID key code support ✅
+  - **Modifier Keys**: Ctrl, Shift, Alt, Win modifiers ✅
+  - **N-Key Rollover**: Multiple simultaneous key presses ✅
+  - **Key Events**: KeyDown/KeyUp event handling ✅
   - Location: `crates/oc-input/src/keyboard.rs` (KeyCode, KeyModifiers)
 
-- [ ] **Mouse Support (cellMouse)**: Complete mouse emulation
-  - **Position Tracking**: Absolute and relative mouse position
-  - **Button State**: Left, Right, Middle, X1, X2 buttons
-  - **Scroll Wheel**: Vertical and horizontal scroll
-  - **Sensitivity**: Configurable mouse sensitivity
+- [x] **Mouse Support (cellMouse)**: Complete mouse emulation ✅
+  - **Position Tracking**: Absolute and relative mouse position ✅
+  - **Button State**: Left, Right, Middle, X1, X2 buttons ✅
+  - **Scroll Wheel**: Vertical and horizontal scroll ✅
+  - **Sensitivity**: Configurable mouse sensitivity ✅
   - Location: `crates/oc-input/src/mouse.rs`
 
 #### USB & Bluetooth
 
-- [ ] **USB Controller Detection**: Improve USB gamepad support
-  - **Device Enumeration**: List connected USB HID devices
-  - **Known Devices**: DS3, DS4, DualSense, Xbox 360/One, Switch Pro, 8BitDo
-  - **HID Report Parsing**: Generic HID report descriptor parsing
-  - **Button Mapping**: Automatic button mapping for known controllers
+- [x] **USB Controller Detection**: Improve USB gamepad support ✅
+  - **Device Enumeration**: List connected USB HID devices ✅
+  - **Known Devices**: DS3, DS4, DualSense, Xbox 360/One, Switch Pro, 8BitDo ✅
+  - **HID Report Parsing**: Generic HID report descriptor parsing ✅
+  - **Button Mapping**: Automatic button mapping for known controllers ✅
   - Location: `crates/oc-input/src/usb.rs` (UsbControllerManager, known_devices)
 
-- [ ] **Bluetooth Adapter**: Improve Bluetooth controller support
-  - **Device Discovery**: Scan for Bluetooth controllers
-  - **Pairing**: Controller pairing process
-  - **Connection State**: Connected, Pairing, Reconnecting states
-  - **HID Protocol**: Bluetooth HID data parsing
+- [x] **Bluetooth Adapter**: Improve Bluetooth controller support ✅
+  - **Device Discovery**: Scan for Bluetooth controllers ✅
+  - **Pairing**: Controller pairing process ✅
+  - **Connection State**: Connected, Pairing, Reconnecting states ✅
+  - **HID Protocol**: Bluetooth HID data parsing ✅
   - Location: `crates/oc-input/src/bluetooth.rs` (BluetoothManager, BluetoothState)
 
 #### Input Mapping
 
-- [ ] **Input Mapping System**: Complete controller remapping
-  - **Keyboard to Controller**: Map keyboard keys to PS3 buttons
-  - **Mouse to Controller**: Map mouse buttons/axes to controller
-  - **Gamepad Remapping**: Remap gamepad buttons/axes
-  - **Profile System**: Save/load mapping profiles
+- [x] **Input Mapping System**: Complete controller remapping ✅
+  - **Keyboard to Controller**: Map keyboard keys to PS3 buttons ✅
+  - **Mouse to Controller**: Map mouse buttons/axes to controller ✅
+  - **Gamepad Remapping**: Remap gamepad buttons/axes ✅
+  - **Profile System**: Save/load mapping profiles ✅
   - Location: `crates/oc-input/src/mapping.rs` (InputMapping)
 
-- [ ] **Default Mappings**: Provide sensible default mappings
-  - **Keyboard Layout**: Default WASD/arrow key mappings
-  - **Xbox to PS3**: Map Xbox controller to PS3 layout
-  - **Switch to PS3**: Map Switch Pro controller to PS3 layout
-  - **Custom Profiles**: User-defined mapping profiles
+- [x] **Default Mappings**: Provide sensible default mappings ✅
+  - **Keyboard Layout**: Default WASD/arrow key mappings ✅
+  - **Xbox to PS3**: Map Xbox controller to PS3 layout ✅
+  - **Switch to PS3**: Map Switch Pro controller to PS3 layout ✅
+  - **Custom Profiles**: User-defined mapping profiles ✅
   - Location: `crates/oc-input/src/mapping.rs`
 
 ---
