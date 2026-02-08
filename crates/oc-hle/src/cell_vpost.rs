@@ -1061,17 +1061,90 @@ mod tests {
         };
         let mut handle = 0;
 
-        // Test the API function (open returns success, close uses new manager so may fail)
+        // HLE functions use the global manager instance from context.rs
         unsafe {
             assert_eq!(cell_vpost_open(&cfg, &resource, &mut handle), 0);
         }
         assert!(handle > 0);
-        // Note: cell_vpost_close uses a temporary manager instance (TODO: use global)
-        // so it will return an error. Test the manager directly for lifecycle:
-        let mut manager = VpostManager::new();
-        let h = manager.open(pic_format, pic_format, 0x100000).unwrap();
-        assert!(h > 0);
-        assert_eq!(manager.close(h), Ok(()));
+        
+        // Close should succeed using the global manager
+        let close_result = cell_vpost_close(handle);
+        assert_eq!(close_result, 0);
+    }
+
+    #[test]
+    fn test_vpost_edge_cases() {
+        // Test invalid handle operations
+        let invalid_handle = 0xFFFFFFFF;
+        
+        // Operations on invalid handle should return error
+        assert_ne!(cell_vpost_close(invalid_handle), 0);
+        
+        // cell_vpost_exec with invalid handle should also fail
+        let ctrl_param = CellVpostCtrlParam {
+            in_buffer_addr: 0,
+            out_buffer_addr: 0,
+            pic_info: std::ptr::null(),
+        };
+        let mut pic_info = CellVpostPictureInfo {
+            in_width: 0,
+            in_height: 0,
+            in_pitch: 0,
+            in_chroma_offset: [0, 0],
+            in_alpha_offset: 0,
+            out_width: 0,
+            out_height: 0,
+            out_pitch: 0,
+            out_chroma_offset: [0, 0],
+            out_alpha_offset: 0,
+        };
+        let result = unsafe {
+            cell_vpost_exec(
+                invalid_handle,
+                std::ptr::null(),
+                &ctrl_param,
+                std::ptr::null_mut(),
+                &mut pic_info,
+            )
+        };
+        assert_ne!(result, 0);
+    }
+
+    #[test]
+    fn test_vpost_null_parameter_validation() {
+        // Note: cell_vpost_open treats null resource as using default values (not an error)
+        // Only null config and null handle are actual errors
+        let pic_format = CellVpostPictureFormat {
+            format_type: 0,
+            color_matrix: 0,
+            alpha: 0,
+        };
+        let resource = CellVpostResource {
+            mem_addr: 0,
+            mem_size: 0x100000,
+            ppu_thread_priority: 1001,
+            ppu_thread_stack_size: 0x4000,
+        };
+        let cfg = CellVpostCfg {
+            in_pic_format: pic_format,
+            out_pic_format: pic_format,
+            resource: &resource,
+        };
+        let mut handle = 0;
+
+        unsafe {
+            // Null config should fail
+            assert_ne!(cell_vpost_open(std::ptr::null(), &resource, &mut handle), 0);
+            
+            // Null handle should fail
+            assert_ne!(cell_vpost_open(&cfg, &resource, std::ptr::null_mut()), 0);
+            
+            // Note: Null resource is valid - uses default mem_size
+            // (tested here for documentation)
+            let result = cell_vpost_open(&cfg, std::ptr::null(), &mut handle);
+            assert_eq!(result, 0); // Should succeed with default mem_size
+            cell_vpost_close(handle);
+        }
     }
 
     #[test]

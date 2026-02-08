@@ -1707,8 +1707,7 @@ mod tests {
 
     #[test]
     fn test_dmux_lifecycle() {
-        // Note: These HLE functions currently create temporary managers
-        // TODO markers indicate need for global manager instance
+        // HLE functions use the global manager instance from context.rs
         let dmux_type = CellDmuxType {
             stream_type: 0,
             reserved: [0, 0],
@@ -1726,25 +1725,102 @@ mod tests {
         };
         let mut handle = 0;
         
-        // Open should succeed
+        // Open should succeed using the global manager
         let result = unsafe { cell_dmux_open(&dmux_type, &resource, &cb, &mut handle) };
         assert_eq!(result, 0);
         assert!(handle > 0);
         
-        // Close may fail since we're using temporary managers
-        // This is expected until global manager is implemented
+        // Close should also succeed using the global manager
+        let close_result = cell_dmux_close(handle);
+        assert_eq!(close_result, 0);
     }
 
     #[test]
     fn test_dmux_stream_operations() {
-        // Note: These operations currently use temporary managers
-        // TODO markers indicate need for global manager instance
-        let handle = 1;
+        // HLE functions use the global manager instance from context.rs
+        // First open a demuxer to get a valid handle
+        let dmux_type = CellDmuxType {
+            stream_type: 0,
+            reserved: [0, 0],
+        };
+        let resource = CellDmuxResource {
+            mem_addr: 0,
+            mem_size: 0x100000,
+            ppu_thread_priority: 1001,
+            spu_thread_priority: 250,
+            num_spu_threads: 1,
+        };
+        let cb = CellDmuxCb {
+            cb_msg: 0,
+            cb_arg: 0,
+        };
+        let mut handle = 0;
         
-        // These may return errors since manager is temporary
-        // The important thing is they don't panic
-        let _ = cell_dmux_set_stream(handle, 0x1000, 0x10000, 0);
-        let _ = cell_dmux_reset_stream(handle);
+        unsafe { cell_dmux_open(&dmux_type, &resource, &cb, &mut handle) };
+        
+        // Stream operations should work with valid handle
+        let result = cell_dmux_set_stream(handle, 0x1000, 0x10000, 0);
+        assert_eq!(result, 0);
+        
+        let reset_result = cell_dmux_reset_stream(handle);
+        assert_eq!(reset_result, 0);
+        
+        // Cleanup
+        cell_dmux_close(handle);
+    }
+
+    #[test]
+    fn test_dmux_edge_cases() {
+        // Note: This test resets global context to ensure a clean state since tests
+        // may run in sequence (--test-threads=1) and share the global context.
+        // This is necessary to test "invalid handle" behavior correctly.
+        crate::context::reset_hle_context();
+        
+        // Test invalid handle operations - use a handle that definitely doesn't exist
+        let invalid_handle = 0x12345678;
+        
+        // Operations on invalid handle should return error
+        assert_ne!(cell_dmux_close(invalid_handle), 0, "close should fail for invalid handle");
+        assert_ne!(cell_dmux_set_stream(invalid_handle, 0x1000, 0x10000, 0), 0, "set_stream should fail for invalid handle");
+        assert_ne!(cell_dmux_reset_stream(invalid_handle), 0, "reset_stream should fail for invalid handle");
+        assert_ne!(cell_dmux_disable_es(invalid_handle, 0), 0, "disable_es should fail for invalid handle");
+        assert_ne!(cell_dmux_reset_es(invalid_handle, 0), 0, "reset_es should fail for invalid handle");
+        // Note: release_au is a no-op by design (AU already removed in get_au), so it always succeeds
+    }
+
+    #[test]
+    fn test_dmux_null_parameter_validation() {
+        // Test null parameter validation
+        unsafe {
+            let mut handle = 0;
+            let dmux_type = CellDmuxType {
+                stream_type: 0,
+                reserved: [0, 0],
+            };
+            let resource = CellDmuxResource {
+                mem_addr: 0,
+                mem_size: 0x100000,
+                ppu_thread_priority: 1001,
+                spu_thread_priority: 250,
+                num_spu_threads: 1,
+            };
+            let cb = CellDmuxCb {
+                cb_msg: 0,
+                cb_arg: 0,
+            };
+            
+            // Null dmux_type
+            assert_eq!(cell_dmux_open(std::ptr::null(), &resource, &cb, &mut handle), CELL_DMUX_ERROR_ARG);
+            
+            // Null resource
+            assert_eq!(cell_dmux_open(&dmux_type, std::ptr::null(), &cb, &mut handle), CELL_DMUX_ERROR_ARG);
+            
+            // Null callback
+            assert_eq!(cell_dmux_open(&dmux_type, &resource, std::ptr::null(), &mut handle), CELL_DMUX_ERROR_ARG);
+            
+            // Null handle
+            assert_eq!(cell_dmux_open(&dmux_type, &resource, &cb, std::ptr::null_mut()), CELL_DMUX_ERROR_ARG);
+        }
     }
 
     #[test]

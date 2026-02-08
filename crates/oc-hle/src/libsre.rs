@@ -525,9 +525,7 @@ mod tests {
 
     #[test]
     fn test_sre_compile() {
-        // Note: cell_sre_compile currently uses placeholder implementation
-        // and writes a placeholder pattern ID. The actual compilation
-        // through the global regex manager is marked as TODO.
+        // HLE functions use the global regex manager instance from context.rs
         let pattern = b"test.*pattern\0";
         let mut compiled = 0;
         
@@ -535,9 +533,59 @@ mod tests {
         assert_eq!(result, 0);
         assert!(compiled > 0);
         
-        // Note: cell_sre_free now properly goes through global manager,
-        // but the pattern wasn't actually registered there by cell_sre_compile
-        // since memory read is not yet implemented. This is expected.
+        // Free should succeed using the global manager
+        let free_result = cell_sre_free(compiled);
+        assert_eq!(free_result, 0);
+    }
+
+    #[test]
+    fn test_sre_compile_and_match() {
+        // Test complete compile -> match -> free cycle with global manager
+        let pattern = b"hello\\s+world\0";
+        let mut compiled = 0;
+        
+        let result = unsafe { cell_sre_compile(pattern.as_ptr(), 0, &mut compiled) };
+        assert_eq!(result, 0);
+        
+        // Match should work
+        let text = b"hello   world";
+        let mut matches = [SreMatch { start: 0, end: 0 }; 10];
+        let mut num_matches = 0;
+        
+        let match_result = unsafe {
+            cell_sre_match(
+                compiled,
+                text.as_ptr(),
+                text.len() as u32,
+                matches.as_mut_ptr(),
+                10,
+                &mut num_matches,
+            )
+        };
+        assert_eq!(match_result, 0);
+        assert_eq!(num_matches, 1);
+        assert_eq!(matches[0].start, 0);
+        assert_eq!(matches[0].end, 13);
+        
+        // Free
+        cell_sre_free(compiled);
+    }
+
+    #[test]
+    fn test_sre_edge_cases() {
+        // Test invalid pattern ID operations
+        let invalid_pattern = 0xFFFFFFFF;
+        
+        // Free on invalid should return error (but not panic)
+        assert_ne!(cell_sre_free(invalid_pattern), 0);
+        
+        // Test empty pattern - should fail without modifying compiled
+        let empty = b"\0";
+        let mut compiled = 0xDEADBEEF; // Set to known value
+        let result = unsafe { cell_sre_compile(empty.as_ptr(), 0, &mut compiled) };
+        assert_ne!(result, 0);
+        // Output parameter should be unmodified on failure
+        assert_eq!(compiled, 0xDEADBEEF);
     }
 
     #[test]
@@ -569,14 +617,15 @@ mod tests {
 
     #[test]
     fn test_sre_match() {
-        let pattern = 1; // Assume compiled
+        // Compile a pattern first through the global manager
+        let pattern_id = crate::context::get_hle_context_mut().regex.compile("test", 0).unwrap();
         let text = b"test string";
         let mut matches = [SreMatch { start: 0, end: 0 }; 10];
         let mut num_matches = 0;
         
         let result = unsafe {
             cell_sre_match(
-                pattern,
+                pattern_id,
                 text.as_ptr(),
                 text.len() as u32,
                 matches.as_mut_ptr(),
@@ -586,10 +635,16 @@ mod tests {
         };
         
         assert_eq!(result, 0);
+        assert_eq!(num_matches, 1);
+        
+        // Cleanup
+        crate::context::get_hle_context_mut().regex.free(pattern_id);
     }
 
     #[test]
     fn test_sre_match_validation() {
+        // Compile a valid pattern for null text test
+        let pattern_id = crate::context::get_hle_context_mut().regex.compile("test", 0).unwrap();
         let text = b"test";
         let mut matches = [SreMatch::default(); 10];
         let mut num_matches = 0;
@@ -598,20 +653,24 @@ mod tests {
             // Invalid pattern (0)
             assert!(cell_sre_match(0, text.as_ptr(), 4, matches.as_mut_ptr(), 10, &mut num_matches) != 0);
             
-            // Null text
-            assert!(cell_sre_match(1, std::ptr::null(), 4, matches.as_mut_ptr(), 10, &mut num_matches) != 0);
+            // Null text with valid pattern
+            assert!(cell_sre_match(pattern_id, std::ptr::null(), 4, matches.as_mut_ptr(), 10, &mut num_matches) != 0);
         }
+        
+        // Cleanup
+        crate::context::get_hle_context_mut().regex.free(pattern_id);
     }
 
     #[test]
     fn test_sre_search() {
-        let pattern = 1; // Assume compiled
+        // Compile a pattern first through the global manager
+        let pattern_id = crate::context::get_hle_context_mut().regex.compile("test", 0).unwrap();
         let text = b"test string";
         let mut match_result = SreMatch { start: 0, end: 0 };
         
-        let _result = unsafe {
+        let result = unsafe {
             cell_sre_search(
-                pattern,
+                pattern_id,
                 text.as_ptr(),
                 text.len() as u32,
                 0,
@@ -619,11 +678,19 @@ mod tests {
             )
         };
         
-        // Result may be -1 (not found) since we're not actually matching
+        // Should find "test" at position 0-4
+        assert_eq!(result, 0);
+        assert_eq!(match_result.start, 0);
+        assert_eq!(match_result.end, 4);
+        
+        // Cleanup
+        crate::context::get_hle_context_mut().regex.free(pattern_id);
     }
 
     #[test]
     fn test_sre_search_validation() {
+        // Compile a valid pattern for testing
+        let pattern_id = crate::context::get_hle_context_mut().regex.compile("test", 0).unwrap();
         let text = b"test";
         let mut match_result = SreMatch::default();
         
@@ -632,15 +699,20 @@ mod tests {
             assert!(cell_sre_search(0, text.as_ptr(), 4, 0, &mut match_result) != 0);
             
             // Null text
-            assert!(cell_sre_search(1, std::ptr::null(), 4, 0, &mut match_result) != 0);
+            assert!(cell_sre_search(pattern_id, std::ptr::null(), 4, 0, &mut match_result) != 0);
             
             // Invalid offset
-            assert!(cell_sre_search(1, text.as_ptr(), 4, 10, &mut match_result) != 0);
+            assert!(cell_sre_search(pattern_id, text.as_ptr(), 4, 10, &mut match_result) != 0);
         }
+        
+        // Cleanup
+        crate::context::get_hle_context_mut().regex.free(pattern_id);
     }
 
     #[test]
     fn test_sre_replace_validation() {
+        // Compile a valid pattern for testing
+        let pattern_id = crate::context::get_hle_context_mut().regex.compile("test", 0).unwrap();
         let text = b"test";
         let replacement = b"new";
         let mut output = [0u8; 100];
@@ -648,13 +720,17 @@ mod tests {
         
         unsafe {
             // Valid call
-            assert_eq!(cell_sre_replace(1, text.as_ptr(), 4, replacement.as_ptr(), 3, 
+            assert_eq!(cell_sre_replace(pattern_id, text.as_ptr(), 4, replacement.as_ptr(), 3, 
                 output.as_mut_ptr(), 100, &mut result_len), 0);
+            assert_eq!(&output[..result_len as usize], b"new");
             
             // Invalid pattern (0)
             assert!(cell_sre_replace(0, text.as_ptr(), 4, replacement.as_ptr(), 3,
                 output.as_mut_ptr(), 100, &mut result_len) != 0);
         }
+        
+        // Cleanup
+        crate::context::get_hle_context_mut().regex.free(pattern_id);
     }
 
     #[test]

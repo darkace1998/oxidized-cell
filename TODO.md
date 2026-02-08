@@ -576,15 +576,16 @@ This document tracks pending tasks, improvements, and future features for the ox
 
 ### HLE Module Improvements
 
-- [ ] **Global Manager Instances**: Fix TODO markers for HLE module managers
-  - `cell_dmux.rs`: Implement global demuxer manager instance (see `cellDmuxOpen` function)
-  - `cell_vpost.rs`: Use global video post-processor manager (see `cell_vpost_close` function)
-  - `libsre.rs`: Use global regex manager instance (see regex tests)
+- [x] **Global Manager Instances**: Fix TODO markers for HLE module managers
+  - `cell_dmux.rs`: Implement global demuxer manager instance (see `cellDmuxOpen` function) ✅
+  - `cell_vpost.rs`: Use global video post-processor manager (see `cell_vpost_close` function) ✅
+  - `libsre.rs`: Use global regex manager instance (see regex tests) ✅
   - Location: `crates/oc-hle/src/`
 
-- [ ] **HLE Edge Cases**: Handle remaining edge cases in HLE modules
-  - Look for TODO comments in source code
-  - Add unit tests for edge cases
+- [x] **HLE Edge Cases**: Handle remaining edge cases in HLE modules
+  - Updated outdated TODO comments ✅
+  - Added unit tests for edge cases (invalid handles, null parameters) ✅
+  - Tests now properly use global managers ✅
   - Location: `crates/oc-hle/src/`
 
 ### Debugging & Development Tools
