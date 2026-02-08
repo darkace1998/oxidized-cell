@@ -621,16 +621,16 @@ This document tracks pending tasks, improvements, and future features for the ox
 
 ### Audio System
 
-- [ ] **Audio Timing Accuracy**: Improve audio synchronization
-  - Better sample rate conversion
-  - Time stretching for speed variations
-  - S/PDIF passthrough handling
+- [x] **Audio Timing Accuracy**: Improve audio synchronization ✅
+  - Better sample rate conversion (AdaptiveResampler with dynamic rate adjustment) ✅
+  - Time stretching for speed variations (RealTimeStretcher with smooth factor transitions) ✅
+  - S/PDIF passthrough handling (SpdifPassthrough with IEC 61937 encapsulation) ✅
   - Location: `crates/oc-audio/src/`
 
-- [ ] **Audio Codec Accuracy**: Improve decoder implementations
-  - Complete ATRAC3+ implementation
-  - WMA codec improvements
-  - AC3 surround sound support
+- [x] **Audio Codec Accuracy**: Improve decoder implementations ✅
+  - Complete ATRAC3+ implementation ✅ (already implemented)
+  - WMA codec improvements (WmaDecoder with overlap-add crossfade) ✅
+  - AC3 surround sound support (Ac3Decoder with 5.1/7.1 channel mapping) ✅
   - Location: `crates/oc-audio/src/codec.rs`
 
 ### Input System

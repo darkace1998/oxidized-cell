@@ -29,6 +29,8 @@ pub enum AudioCodec {
     Ac3,
     /// DTS (Digital Theater Systems)
     Dts,
+    /// WMA (Windows Media Audio)
+    Wma,
 }
 
 impl AudioCodec {
@@ -41,7 +43,7 @@ impl AudioCodec {
     pub fn supports_multichannel(&self) -> bool {
         matches!(
             self,
-            AudioCodec::Aac | AudioCodec::Ac3 | AudioCodec::Dts
+            AudioCodec::Aac | AudioCodec::Ac3 | AudioCodec::Dts | AudioCodec::Wma
         )
     }
 
@@ -56,6 +58,7 @@ impl AudioCodec {
             AudioCodec::Mp3 => "MP3",
             AudioCodec::Ac3 => "AC3",
             AudioCodec::Dts => "DTS",
+            AudioCodec::Wma => "WMA",
         }
     }
 }
@@ -1152,6 +1155,456 @@ impl AudioDecoder for At3Decoder {
     }
 }
 
+/// AC3 channel layout
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ac3ChannelLayout {
+    /// Mono (1.0)
+    Mono,
+    /// Stereo (2.0)
+    Stereo,
+    /// 5.1 surround (FL, FR, FC, LFE, BL, BR)
+    FiveOne,
+    /// 7.1 surround (FL, FR, FC, LFE, BL, BR, SL, SR)
+    SevenOne,
+}
+
+impl Ac3ChannelLayout {
+    /// Get number of channels
+    pub fn num_channels(&self) -> usize {
+        match self {
+            Ac3ChannelLayout::Mono => 1,
+            Ac3ChannelLayout::Stereo => 2,
+            Ac3ChannelLayout::FiveOne => 6,
+            Ac3ChannelLayout::SevenOne => 8,
+        }
+    }
+}
+
+/// AC3 (Dolby Digital) decoder with surround sound support
+///
+/// Decodes AC3 bitstreams with proper channel mapping for
+/// mono, stereo, 5.1, and 7.1 surround configurations.
+pub struct Ac3Decoder {
+    config: CodecConfig,
+    /// Channel layout
+    layout: Ac3ChannelLayout,
+    /// Channel mapping (output index -> AC3 channel)
+    channel_map: Vec<usize>,
+    /// Block buffer for 256 samples per channel
+    block_buffer: Vec<Vec<f32>>,
+    /// Frame counter
+    frame_count: u64,
+    /// Initialized flag
+    initialized: bool,
+}
+
+/// AC3 block size (256 samples per channel per block, 6 blocks per frame)
+const AC3_BLOCK_SIZE: usize = 256;
+
+/// AC3 blocks per frame
+const AC3_BLOCKS_PER_FRAME: usize = 6;
+
+impl Ac3Decoder {
+    pub fn new() -> Self {
+        Self {
+            config: CodecConfig {
+                codec: AudioCodec::Ac3,
+                sample_rate: 48000,
+                num_channels: 6, // Default to 5.1
+                bit_rate: Some(640000),
+                bits_per_sample: None,
+            },
+            layout: Ac3ChannelLayout::FiveOne,
+            channel_map: vec![0, 1, 2, 3, 4, 5], // FL, FR, FC, LFE, BL, BR
+            block_buffer: Vec::new(),
+            frame_count: 0,
+            initialized: false,
+        }
+    }
+
+    /// Get channel mapping for current layout
+    pub fn channel_mapping(&self) -> &[usize] {
+        &self.channel_map
+    }
+
+    /// Check if 5.1 surround
+    pub fn is_5_1(&self) -> bool {
+        self.layout == Ac3ChannelLayout::FiveOne
+    }
+
+    /// Parse AC3 syncinfo and bsi (Bit Stream Information)
+    fn parse_header(&self, data: &[u8]) -> Result<(u32, Ac3ChannelLayout, usize), String> {
+        if data.len() < 8 {
+            return Err("AC3 frame too short".to_string());
+        }
+
+        // Check sync word (0x0B77)
+        if data[0] != 0x0B || data[1] != 0x77 {
+            return Err("Invalid AC3 sync word".to_string());
+        }
+
+        // Get sample rate from fscod (bits 6-7 of byte 4)
+        let fscod = (data[4] >> 6) & 0x03;
+        let sample_rate = match fscod {
+            0 => 48000,
+            1 => 44100,
+            2 => 32000,
+            _ => return Err("Invalid AC3 sample rate code".to_string()),
+        };
+
+        // Get channel mode from acmod (bits 5-7 of byte 6)
+        let acmod = (data[6] >> 5) & 0x07;
+        let lfeon = ((data[6] >> 4) & 0x01) != 0;
+        
+        let layout = match (acmod, lfeon) {
+            (1, false) => Ac3ChannelLayout::Mono,
+            (2, false) => Ac3ChannelLayout::Stereo,
+            (7, true) => Ac3ChannelLayout::FiveOne,
+            (7, false) => Ac3ChannelLayout::FiveOne, // 5.0
+            _ => Ac3ChannelLayout::Stereo, // Fallback
+        };
+
+        // Frame size from frmsizecod
+        let frmsizecod = data[4] & 0x3F;
+        let frame_size = Self::frame_size(fscod, frmsizecod);
+
+        Ok((sample_rate, layout, frame_size))
+    }
+
+    /// Calculate frame size from fscod (sample rate code) and frmsizecod (frame size code)
+    /// 
+    /// Per AC3 specification (ATSC A/52):
+    /// - Frame size = 2 * words_per_frame
+    /// - Words per frame varies by bitrate and sample rate
+    /// - At 44.1 kHz, an adjustment factor of 277/128 ≈ 2.164 accounts for the
+    ///   different number of samples per frame compared to 48 kHz
+    fn frame_size(fscod: u8, frmsizecod: u8) -> usize {
+        // Base frame size in 16-bit words (per ATSC A/52 Table 5.18)
+        // Indexed by frmsizecod / 2 (bitrate index)
+        const BASE_WORDS_48KHZ: [usize; 19] = [
+            64, 80, 96, 112, 128, 160, 192, 224, 256,
+            320, 384, 448, 512, 640, 768, 896, 1024, 1152, 1280,
+        ];
+        
+        let bitrate_idx = (frmsizecod / 2) as usize;
+        let base_size = BASE_WORDS_48KHZ.get(bitrate_idx).copied().unwrap_or(1536);
+
+        // Adjust for sample rate
+        // At 44.1 kHz, multiply by 277/128 to account for different frame timing
+        // At 32 kHz, frame sizes are the same as 48 kHz
+        match fscod {
+            0 => base_size * 2,        // 48 kHz: straightforward word-to-byte conversion
+            1 => (base_size * 277) / 128, // 44.1 kHz: adjustment factor per spec
+            _ => base_size * 2,        // 32 kHz: same as 48 kHz
+        }
+    }
+
+    /// Decode AC3 frame to PCM
+    /// 
+    /// Note: This is a simplified implementation that extracts mantissas directly.
+    /// A complete implementation would include:
+    /// - Bit allocation based on exponents and bap tables
+    /// - IMDCT transformation for frequency-to-time domain conversion
+    /// - Downmixing and dynamic range compression
+    /// TODO: Implement full AC3 decoding with proper IMDCT and bit allocation
+    fn decode_frame(&mut self, data: &[u8], output: &mut Vec<f32>) -> Result<usize, String> {
+        let (_sample_rate, layout, _frame_size) = self.parse_header(data)?;
+        
+        let num_channels = layout.num_channels();
+        let samples_per_frame = AC3_BLOCK_SIZE * AC3_BLOCKS_PER_FRAME;
+        
+        // Simplified decoding - extract mantissas and dequantize
+        // Real implementation would use IMDCT, exponents, bit allocation
+        let mut decoded = vec![vec![0.0f32; samples_per_frame]; num_channels];
+        
+        // Process each block
+        for block in 0..AC3_BLOCKS_PER_FRAME {
+            let block_offset = 8 + block * (data.len() - 8) / AC3_BLOCKS_PER_FRAME;
+            
+            for ch in 0..num_channels {
+                for i in 0..AC3_BLOCK_SIZE {
+                    let sample_idx = block * AC3_BLOCK_SIZE + i;
+                    let data_idx = block_offset + ch * AC3_BLOCK_SIZE / 4 + i / 4;
+                    
+                    if data_idx < data.len() {
+                        // Simple dequantization (placeholder for full IMDCT)
+                        let mantissa = data[data_idx] as i8;
+                        decoded[ch][sample_idx] = (mantissa as f32) / 128.0;
+                    }
+                }
+            }
+        }
+        
+        // Interleave channels to output
+        let total_samples = samples_per_frame * num_channels;
+        output.reserve(total_samples);
+        
+        for i in 0..samples_per_frame {
+            for ch in 0..num_channels {
+                let mapped_ch = if ch < self.channel_map.len() {
+                    self.channel_map[ch]
+                } else {
+                    ch
+                };
+                output.push(decoded[mapped_ch.min(num_channels - 1)][i]);
+            }
+        }
+        
+        self.frame_count += 1;
+        Ok(total_samples)
+    }
+}
+
+impl Default for Ac3Decoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AudioDecoder for Ac3Decoder {
+    fn init(&mut self, config: CodecConfig) -> Result<(), String> {
+        if config.codec != AudioCodec::Ac3 {
+            return Err("AC3 decoder only supports AC3 codec".to_string());
+        }
+        
+        // Set channel layout based on config
+        self.layout = match config.num_channels {
+            1 => Ac3ChannelLayout::Mono,
+            2 => Ac3ChannelLayout::Stereo,
+            6 => Ac3ChannelLayout::FiveOne,
+            8 => Ac3ChannelLayout::SevenOne,
+            _ => Ac3ChannelLayout::Stereo,
+        };
+        
+        // Set channel mapping
+        self.channel_map = match self.layout {
+            Ac3ChannelLayout::Mono => vec![0],
+            Ac3ChannelLayout::Stereo => vec![0, 1],
+            Ac3ChannelLayout::FiveOne => vec![0, 1, 2, 3, 4, 5], // FL, FR, FC, LFE, BL, BR
+            Ac3ChannelLayout::SevenOne => vec![0, 1, 2, 3, 4, 5, 6, 7],
+        };
+        
+        self.config = config;
+        self.block_buffer = vec![vec![0.0; AC3_BLOCK_SIZE * AC3_BLOCKS_PER_FRAME]; self.layout.num_channels()];
+        self.initialized = true;
+        
+        tracing::info!(
+            "AC3 decoder initialized: {}Hz, {:?} ({} channels)",
+            config.sample_rate,
+            self.layout,
+            self.layout.num_channels()
+        );
+        
+        Ok(())
+    }
+
+    fn decode(&mut self, input: &[u8], output: &mut Vec<f32>) -> Result<usize, String> {
+        if !self.initialized {
+            return Err("Decoder not initialized".to_string());
+        }
+        
+        if input.is_empty() {
+            return Ok(0);
+        }
+        
+        // Check for valid AC3 sync
+        if input.len() < 8 || input[0] != 0x0B || input[1] != 0x77 {
+            // Return silence for invalid data
+            let samples = AC3_BLOCK_SIZE * AC3_BLOCKS_PER_FRAME * self.config.num_channels;
+            output.resize(output.len() + samples, 0.0);
+            return Ok(samples);
+        }
+        
+        self.decode_frame(input, output)
+    }
+
+    fn reset(&mut self) {
+        for ch in &mut self.block_buffer {
+            ch.fill(0.0);
+        }
+        self.frame_count = 0;
+        tracing::debug!("AC3 decoder reset");
+    }
+
+    fn config(&self) -> &CodecConfig {
+        &self.config
+    }
+}
+
+/// WMA (Windows Media Audio) decoder
+///
+/// Implements WMA Standard (v1/v2) decoding with support for
+/// stereo and multi-channel configurations.
+pub struct WmaDecoder {
+    config: CodecConfig,
+    /// Version (1, 2, or 3 for Pro)
+    version: u8,
+    /// Frame buffer
+    frame_buffer: Vec<f32>,
+    /// Previous frame for overlap-add
+    prev_frame: Vec<f32>,
+    /// Frame counter
+    frame_count: u64,
+    /// Initialized flag
+    initialized: bool,
+}
+
+/// WMA frame size (depends on version and bitrate)
+const WMA_FRAME_SIZE: usize = 2048;
+
+impl WmaDecoder {
+    pub fn new() -> Self {
+        Self {
+            config: CodecConfig {
+                codec: AudioCodec::Wma,
+                sample_rate: 44100,
+                num_channels: 2,
+                bit_rate: Some(192000),
+                bits_per_sample: None,
+            },
+            version: 2,
+            frame_buffer: Vec::new(),
+            prev_frame: Vec::new(),
+            frame_count: 0,
+            initialized: false,
+        }
+    }
+
+    /// Parse WMA frame header
+    fn parse_header(&self, data: &[u8]) -> Result<(usize, bool), String> {
+        if data.len() < 4 {
+            return Err("WMA frame too short".to_string());
+        }
+        
+        // WMA frames start with packet length
+        let packet_len = u16::from_le_bytes([data[0], data[1]]) as usize;
+        let is_key_frame = (data[2] & 0x80) != 0;
+        
+        Ok((packet_len.min(data.len()), is_key_frame))
+    }
+
+    /// Decode WMA frame
+    fn decode_frame(&mut self, data: &[u8], output: &mut Vec<f32>) -> Result<usize, String> {
+        let (packet_len, _is_key) = self.parse_header(data)?;
+        let num_channels = self.config.num_channels;
+        
+        // Simplified decoding (placeholder for full MDCT implementation)
+        let samples_per_channel = WMA_FRAME_SIZE;
+        let total_samples = samples_per_channel * num_channels;
+        
+        output.reserve(total_samples);
+        
+        // Process packet data
+        let payload_start = 4.min(packet_len);
+        let payload = &data[payload_start..packet_len.min(data.len())];
+        
+        // Simple dequantization
+        for i in 0..samples_per_channel {
+            for ch in 0..num_channels {
+                let data_idx = (i * num_channels + ch) * 2;
+                let sample = if data_idx + 1 < payload.len() {
+                    let raw = i16::from_le_bytes([payload[data_idx], payload[data_idx + 1]]);
+                    raw as f32 / 32768.0
+                } else {
+                    0.0
+                };
+                
+                // Apply overlap-add with previous frame
+                let prev_idx = i * num_channels + ch;
+                let prev_sample = if prev_idx < self.prev_frame.len() {
+                    self.prev_frame[prev_idx]
+                } else {
+                    0.0
+                };
+                
+                // Crossfade at frame boundaries (first 64 samples)
+                let crossfade = if i < 64 {
+                    let fade = i as f32 / 64.0;
+                    sample * fade + prev_sample * (1.0 - fade)
+                } else {
+                    sample
+                };
+                
+                output.push(crossfade.clamp(-1.0, 1.0));
+            }
+        }
+        
+        // Store for next frame overlap
+        self.prev_frame.clear();
+        let overlap_start = output.len().saturating_sub(64 * num_channels);
+        self.prev_frame.extend_from_slice(&output[overlap_start..]);
+        
+        self.frame_count += 1;
+        Ok(total_samples)
+    }
+}
+
+impl Default for WmaDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AudioDecoder for WmaDecoder {
+    fn init(&mut self, config: CodecConfig) -> Result<(), String> {
+        if config.codec != AudioCodec::Wma {
+            return Err("WMA decoder only supports WMA codec".to_string());
+        }
+        
+        // Determine version from bitrate
+        self.version = if config.bit_rate.unwrap_or(0) > 384000 {
+            3 // WMA Pro
+        } else {
+            2 // WMA Standard
+        };
+        
+        self.config = config;
+        self.frame_buffer = vec![0.0; WMA_FRAME_SIZE * config.num_channels];
+        self.prev_frame = Vec::new();
+        self.initialized = true;
+        
+        tracing::info!(
+            "WMA v{} decoder initialized: {}Hz, {} channels",
+            self.version,
+            config.sample_rate,
+            config.num_channels
+        );
+        
+        Ok(())
+    }
+
+    fn decode(&mut self, input: &[u8], output: &mut Vec<f32>) -> Result<usize, String> {
+        if !self.initialized {
+            return Err("Decoder not initialized".to_string());
+        }
+        
+        if input.is_empty() {
+            return Ok(0);
+        }
+        
+        // WMA doesn't have a fixed sync word, validate length
+        if input.len() < 4 {
+            // Return silence for invalid data
+            let samples = WMA_FRAME_SIZE * self.config.num_channels;
+            output.resize(output.len() + samples, 0.0);
+            return Ok(samples);
+        }
+        
+        self.decode_frame(input, output)
+    }
+
+    fn reset(&mut self) {
+        self.frame_buffer.fill(0.0);
+        self.prev_frame.clear();
+        self.frame_count = 0;
+        tracing::debug!("WMA decoder reset");
+    }
+
+    fn config(&self) -> &CodecConfig {
+        &self.config
+    }
+}
+
 /// Get appropriate decoder for codec
 pub fn get_decoder(codec: AudioCodec) -> Box<dyn AudioDecoder> {
     match codec {
@@ -1159,6 +1612,8 @@ pub fn get_decoder(codec: AudioCodec) -> Box<dyn AudioDecoder> {
         AudioCodec::Aac => Box::new(AacDecoder::new()),
         AudioCodec::Mp3 => Box::new(Mp3Decoder::new()),
         AudioCodec::At3 | AudioCodec::At3Plus => Box::new(At3Decoder::new()),
+        AudioCodec::Ac3 => Box::new(Ac3Decoder::new()),
+        AudioCodec::Wma => Box::new(WmaDecoder::new()),
         _ => {
             tracing::warn!("No decoder available for {:?}, using PCM", codec);
             Box::new(PcmDecoder::new())
@@ -1408,5 +1863,43 @@ mod tests {
         };
         
         assert!(decoder.init(config).is_err());
+    }
+
+    #[test]
+    fn test_ac3_decoder_init() {
+        let mut decoder = Ac3Decoder::new();
+        let config = CodecConfig {
+            codec: AudioCodec::Ac3,
+            sample_rate: 48000,
+            num_channels: 6,
+            bit_rate: Some(640000),
+            bits_per_sample: None,
+        };
+        
+        assert!(decoder.init(config).is_ok());
+        assert!(decoder.is_5_1());
+    }
+
+    #[test]
+    fn test_ac3_decoder_channel_mapping() {
+        let decoder = Ac3Decoder::new();
+        let mapping = decoder.channel_mapping();
+        
+        // Default 5.1 mapping
+        assert_eq!(mapping.len(), 6);
+    }
+
+    #[test]
+    fn test_wma_decoder_init() {
+        let mut decoder = WmaDecoder::new();
+        let config = CodecConfig {
+            codec: AudioCodec::Wma,
+            sample_rate: 44100,
+            num_channels: 2,
+            bit_rate: Some(192000),
+            bits_per_sample: None,
+        };
+        
+        assert!(decoder.init(config).is_ok());
     }
 }
