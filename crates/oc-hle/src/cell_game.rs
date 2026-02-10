@@ -1259,6 +1259,9 @@ impl GameManager {
         self.attributes &= !CELL_GAME_ATTRIBUTE_PATCH;
     }
 
+    /// Default version string used when a patch's PARAM.SFO cannot be parsed.
+    const DEFAULT_PATCH_VERSION: &'static str = "01.01";
+
     /// Read patch version from a PARAM.SFO file in the patch directory
     fn read_patch_version(&self, patch_dir: &std::path::Path) -> String {
         let sfo_path = patch_dir.join("PARAM.SFO");
@@ -1267,11 +1270,10 @@ impl GameManager {
             // Full parsing is in load_param_sfo; here we just extract the version
             if data.len() > 20 && data[0..4] == [0x00, 0x50, 0x53, 0x46] {
                 // For HLE we return a stub version; real impl would parse SFO
-                return "01.01".to_string();
+                return Self::DEFAULT_PATCH_VERSION.to_string();
             }
         }
-        // Default patch version
-        "01.01".to_string()
+        Self::DEFAULT_PATCH_VERSION.to_string()
     }
 
     /// Count files in a directory recursively

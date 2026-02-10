@@ -58,16 +58,16 @@ The module system registers 50+ function NIDs but all map to dummy return values
 
 #### cellFs (`cell_fs.rs`) — Fully Implemented
 Core file I/O, async I/O, and directory operations work. Minor gaps:
-- [ ] Add encrypted content reading for MSELF-flagged files
-- [ ] Implement `cellFsTruncate` and `cellFsFtruncate`
-- [ ] Add `cellFsGetFreeSize` for device storage queries
-- [ ] Support `/dev_bdvd` and `/dev_usb` device path prefixes
+- [x] Add encrypted content reading for MSELF-flagged files
+- [x] Implement `cellFsTruncate` and `cellFsFtruncate`
+- [x] Add `cellFsGetFreeSize` for device storage queries
+- [x] Support `/dev_bdvd` and `/dev_usb` device path prefixes
 
 #### cellGame (`cell_game.rs`) — Fully Implemented
 Game data detection and PARAM.SFO parsing work. Minor gaps:
-- [ ] Add game patch detection and merge logic
-- [ ] Implement `cellGameGetLocalWebContentPath` for web-content titles
-- [ ] Support DLC enumeration (`cellGameGetContentInfoList`)
+- [x] Add game patch detection and merge logic
+- [x] Implement `cellGameGetLocalWebContentPath` for web-content titles
+- [x] Support DLC enumeration (`cellGameGetContentInfoList`)
 
 ### Game Loading Pipeline
 - [ ] Complete end-to-end game boot sequence in `crates/oc-integration/`

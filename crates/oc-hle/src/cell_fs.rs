@@ -325,7 +325,7 @@ impl FsManager {
                 let idx = &suffix[..3];
                 let rest = &suffix[3..];
                 return self.resolve_device_path(
-                    &format!("{}{}", rest, ""),
+                    rest,
                     &format!("usb/{}", idx),
                 );
             }
