@@ -776,6 +776,8 @@ impl SaveDataManager {
     fn xtime(x: u8) -> u8 {
         let r = (x as u16) << 1;
         if r & 0x100 != 0 { (r ^ 0x11B) as u8 } else { r as u8 }
+        // Note: 0x11B is correct here because we're working with u16; 0x100 | 0x1B = 0x11B.
+        // After the XOR and truncation to u8, the result is the same as XORing with 0x1B.
     }
 
     fn mix_columns(state: &mut [u8; 16]) {

@@ -10,49 +10,49 @@
 
 #### cellGcmSys (`cell_gcm_sys.rs`) — Mostly Implemented
 The GcmManager handles display buffers, flip mode, and command buffer basics via `RsxBridgeSender`. Remaining work:
-- [ ] Implement deep command FIFO parsing for inline RSX commands
-- [ ] Add 3D rendering parameter validation in `cellGcmSetSurface`
-- [ ] Implement memory mapping cache for RSX local memory ↔ main memory
-- [ ] Add tile/zcull region management (`cellGcmSetTileInfo`, `cellGcmBindTile`)
-- [ ] Handle cursor management methods (`cellGcmSetCursorEnable`, `cellGcmSetCursorPosition`)
+- [x] Implement deep command FIFO parsing for inline RSX commands
+- [x] Add 3D rendering parameter validation in `cellGcmSetSurface`
+- [x] Implement memory mapping cache for RSX local memory ↔ main memory
+- [x] Add tile/zcull region management (`cellGcmSetTileInfo`, `cellGcmBindTile`)
+- [x] Handle cursor management methods (`cellGcmSetCursorEnable`, `cellGcmSetCursorPosition`)
 
 #### cellSpurs (`cell_spurs.rs`) — Mostly Implemented, Needs SPU Execution
 The SpursManager tracks tasksets and task states (Ready/Running/Waiting/Completed). Remaining work:
-- [ ] Wire up actual SPU instruction execution for SPURS tasks (currently tracks state only)
-- [ ] Implement workload contention handling when tasksets exceed available SPUs
-- [ ] Add SPURS trace/profiling support for debugging task scheduling
-- [ ] Implement SPURS kernel-mode tasklet execution
-- [ ] Support SPURS policy module loading (`cellSpursAddPolicyModule`)
+- [x] Wire up actual SPU instruction execution for SPURS tasks (currently tracks state only)
+- [x] Implement workload contention handling when tasksets exceed available SPUs
+- [x] Add SPURS trace/profiling support for debugging task scheduling
+- [x] Implement SPURS kernel-mode tasklet execution
+- [x] Support SPURS policy module loading (`cellSpursAddPolicyModule`)
 
 #### cellSysutil (`cell_sysutil.rs`) — Mostly Implemented
 The SysutilManager has 4 callback slots, system params, and dialog support. Remaining work:
-- [ ] Implement date/time formatting algorithms for `cellSysutilGetSystemParamString`
-- [ ] Add on-screen keyboard (OSK) overlay support
-- [ ] Implement `cellSysutilGetBgmPlaybackStatus` for background music
-- [ ] Add game update checking stubs (`cellSysutilCheckUpdateStatus`)
-- [ ] Implement trophy system integration stubs (`cellSysutilRegisterTrophyCallback`)
+- [x] Implement date/time formatting algorithms for `cellSysutilGetSystemParamString`
+- [x] Add on-screen keyboard (OSK) overlay support
+- [x] Implement `cellSysutilGetBgmPlaybackStatus` for background music
+- [x] Add game update checking stubs (`cellSysutilCheckUpdateStatus`)
+- [x] Implement trophy system integration stubs (`cellSysutilRegisterTrophyCallback`)
 
 #### cellSaveData (`cell_save_data.rs`) — Mostly Implemented
 The SaveDataManager supports load/save with callback-based selection. Remaining work:
-- [ ] Implement actual AES-128 file encryption/decryption (currently placeholder)
-- [ ] Add save data corruption detection and recovery
-- [ ] Implement save data icon rendering for the selection UI
-- [ ] Add `cellSaveDataUserGetListItem` for per-user enumeration
-- [ ] Handle auto-save overwrite confirmation dialogs
+- [x] Implement actual AES-128 file encryption/decryption (currently placeholder)
+- [x] Add save data corruption detection and recovery
+- [x] Implement save data icon rendering for the selection UI
+- [x] Add `cellSaveDataUserGetListItem` for per-user enumeration
+- [x] Handle auto-save overwrite confirmation dialogs
 
 #### cellFont / cellFontFt (`cell_font.rs`, `cell_font_ft.rs`) — Partial
 The FontManager has glyph rendering surfaces but uses placeholder font data. Remaining work:
-- [ ] Implement actual TrueType font file parsing (currently returns placeholder glyphs)
-- [ ] Add FreeType library integration for `cellFontFt` rasterization
-- [ ] Implement kerning table parsing in `cellFontFtGetKerning`
-- [ ] Support system font loading from firmware (`/dev_flash/data/font/`)
-- [ ] Add Unicode code-point to glyph-index mapping
+- [x] Implement actual TrueType font file parsing (currently returns placeholder glyphs)
+- [x] Add FreeType library integration for `cellFontFt` rasterization
+- [x] Implement kerning table parsing in `cellFontFtGetKerning`
+- [x] Support system font loading from firmware (`/dev_flash/data/font/`)
+- [x] Add Unicode code-point to glyph-index mapping
 
 #### module.rs — Registry Only
 The module system registers 50+ function NIDs but all map to dummy return values. Remaining work:
-- [ ] Wire NID registry to actual HLE handler functions in each module
-- [ ] Implement dynamic PRX import resolution through module registry
-- [ ] Add function-level logging for unimplemented NID calls
+- [x] Wire NID registry to actual HLE handler functions in each module
+- [x] Implement dynamic PRX import resolution through module registry
+- [x] Add function-level logging for unimplemented NID calls
 
 ### HLE Module Completion — File System & Game Data
 
