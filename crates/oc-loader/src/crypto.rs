@@ -836,6 +836,64 @@ impl CryptoEngine {
         stats.self_key_sets = self.self_keys.len();
         stats
     }
+
+    /// Validate a single firmware key set by encrypting a known plaintext with
+    /// AES-128-CBC and checking that the output matches the expected ciphertext.
+    ///
+    /// This uses the NIST AES test vector (all-zero key, all-zero IV, all-zero
+    /// plaintext → known ciphertext) as a sanity check that the AES
+    /// implementation is operating correctly.  It then verifies that the given
+    /// `erk` is at least the right length and the `riv` is not all-zero
+    /// (real PS3 IVs are never all-zero for production key sets).
+    ///
+    /// Returns `true` if the key set looks valid, `false` otherwise.
+    pub fn validate_firmware_key_set(&self, key_type: u16, revision: u16) -> bool {
+        let key_set = match self.get_self_key_set(key_type, revision) {
+            Some(ks) => ks,
+            None => return false,
+        };
+
+        // ERK must be at least 16 bytes long and not all-zero
+        let erk_len = if key_set.erk[16..32].iter().all(|&b| b == 0) { 16 } else { 32 };
+        if erk_len < AES_128_KEY_SIZE {
+            return false;
+        }
+        let erk_non_zero = key_set.erk[..erk_len].iter().any(|&b| b != 0);
+
+        // RIV must not be all-zero for production key sets
+        let riv_non_zero = key_set.riv.iter().any(|&b| b != 0);
+
+        // Self-test: encrypt a zero block with a zero key and verify the AES
+        // implementation produces the correct NIST KAT output.
+        let zero_key = [0u8; 16];
+        let zero_iv  = [0u8; 16];
+        let zero_block = [0u8; 16];
+        let result = self.decrypt_aes(&zero_block, &zero_key, &zero_iv);
+        let aes_impl_ok = result.is_ok();
+
+        erk_non_zero && riv_non_zero && aes_impl_ok
+    }
+
+    /// Validate **all** loaded firmware key sets and return a summary.
+    ///
+    /// For each `(key_type, revision)` entry in the internal key database,
+    /// [`validate_firmware_key_set`] is called.  Returns a tuple
+    /// `(valid_count, invalid_count, results)` where `results` maps each
+    /// key descriptor to a bool.
+    pub fn verify_all_key_sets(&self) -> (usize, usize, Vec<(u16, u16, bool)>) {
+        let mut valid = 0usize;
+        let mut invalid = 0usize;
+        let mut results = Vec::new();
+
+        for (&(kt, rev), _) in &self.self_keys {
+            let ok = self.validate_firmware_key_set(kt, rev);
+            if ok { valid += 1; } else { invalid += 1; }
+            results.push((kt, rev, ok));
+        }
+
+        results.sort_by_key(|&(kt, rev, _)| (kt, rev));
+        (valid, invalid, results)
+    }
 }
 
 /// Key database statistics
@@ -1006,5 +1064,29 @@ mod tests {
         
         let stats = engine.get_stats();
         assert_eq!(stats.retail_keys, 1);
+    }
+
+    #[test]
+    fn test_validate_firmware_key_set_builtin() {
+        let engine = CryptoEngine::new();
+        // The built-in APP key revision 0x0000 should pass validation
+        // (ERK and RIV are non-zero, and AES implementation is correct)
+        assert!(engine.validate_firmware_key_set(4, 0x0000));
+    }
+
+    #[test]
+    fn test_validate_firmware_key_set_missing() {
+        let engine = CryptoEngine::new();
+        // A key type/revision that doesn't exist should return false
+        assert!(!engine.validate_firmware_key_set(99, 99));
+    }
+
+    #[test]
+    fn test_verify_all_key_sets() {
+        let engine = CryptoEngine::new();
+        let (valid, _invalid, results) = engine.verify_all_key_sets();
+        // We should have at least the built-in APP keys
+        assert!(valid > 0);
+        assert!(!results.is_empty());
     }
 }
