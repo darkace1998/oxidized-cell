@@ -70,10 +70,10 @@ Game data detection and PARAM.SFO parsing work. Minor gaps:
 - [x] Support DLC enumeration (`cellGameGetContentInfoList`)
 
 ### Game Loading Pipeline
-- [ ] Complete end-to-end game boot sequence in `crates/oc-integration/`
-- [ ] Verify ELF/SELF decryption with real firmware keys (`crates/oc-loader/`)
-- [ ] Implement PRX dependency resolution and loading order
-- [ ] Handle PLT stub patching for HLE dispatch
+- [x] Complete end-to-end game boot sequence in `crates/oc-integration/`
+- [x] Verify ELF/SELF decryption with real firmware keys (`crates/oc-loader/`)
+- [x] Implement PRX dependency resolution and loading order
+- [x] Handle PLT stub patching for HLE dispatch
 
 ### JIT Compiler — PPU (`cpp/src/ppu_jit.cpp`)
 

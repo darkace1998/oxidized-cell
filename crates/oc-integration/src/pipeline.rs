@@ -1711,7 +1711,7 @@ impl GamePipeline {
         info!("Step 7/11: {} PRX modules loaded", game.prx_modules.len());
 
         // ── Step 8: Create initial PPU thread ──────────────────────────
-        let thread_info = self.create_initial_ppu_thread(
+        let mut thread_info = self.create_initial_ppu_thread(
             game.entry_point, &stack_info, &tls_info, game.toc,
         )?;
         info!("Step 8/11: Main PPU thread created");
@@ -1725,7 +1725,6 @@ impl GamePipeline {
         info!("Step 10/11: TLS initialised for main thread");
 
         // ── Step 11: Mark ready for execution ──────────────────────────
-        let mut thread_info = thread_info;
         self.start_execution(&mut thread_info)?;
         info!("Step 11/11: Main thread started");
 
