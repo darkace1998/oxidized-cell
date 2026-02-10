@@ -1647,6 +1647,52 @@ void oc_atomic_load128(const void* ptr, oc_v128_t* result);
  */
 void oc_atomic_store128(void* ptr, const oc_v128_t* value);
 
+// ============================================================================
+// PPU JIT Block Linking APIs
+// ============================================================================
+
+void oc_ppu_jit_link_add(oc_ppu_jit_t* jit, uint32_t source, uint32_t target, int conditional);
+int oc_ppu_jit_link_blocks(oc_ppu_jit_t* jit, uint32_t source, uint32_t target);
+void oc_ppu_jit_unlink_source(oc_ppu_jit_t* jit, uint32_t source);
+void oc_ppu_jit_unlink_target(oc_ppu_jit_t* jit, uint32_t target);
+void* oc_ppu_jit_link_get_target(oc_ppu_jit_t* jit, uint32_t source, uint32_t target);
+void oc_ppu_jit_link_record_hit(oc_ppu_jit_t* jit);
+void oc_ppu_jit_link_record_miss(oc_ppu_jit_t* jit);
+void oc_ppu_jit_link_get_stats(oc_ppu_jit_t* jit, uint64_t* total_links,
+                                uint64_t* active_links, uint64_t* hits,
+                                uint64_t* misses, uint64_t* unlinks);
+size_t oc_ppu_jit_link_get_count(oc_ppu_jit_t* jit);
+size_t oc_ppu_jit_link_get_active(oc_ppu_jit_t* jit);
+void oc_ppu_jit_link_reset_stats(oc_ppu_jit_t* jit);
+void oc_ppu_jit_link_clear(oc_ppu_jit_t* jit);
+
+// ============================================================================
+// PPU JIT Trace Compilation APIs
+// ============================================================================
+
+void oc_ppu_jit_trace_set_hot_threshold(oc_ppu_jit_t* jit, uint64_t threshold);
+uint64_t oc_ppu_jit_trace_get_hot_threshold(oc_ppu_jit_t* jit);
+void oc_ppu_jit_trace_set_max_length(oc_ppu_jit_t* jit, size_t length);
+void oc_ppu_jit_trace_detect(oc_ppu_jit_t* jit, uint32_t header,
+                              const uint32_t* block_addrs, size_t count,
+                              uint32_t back_edge);
+int oc_ppu_jit_trace_record_execution(oc_ppu_jit_t* jit, uint32_t header);
+void oc_ppu_jit_trace_mark_compiled(oc_ppu_jit_t* jit, uint32_t header, void* code);
+void* oc_ppu_jit_trace_get_compiled(oc_ppu_jit_t* jit, uint32_t header);
+int oc_ppu_jit_trace_is_header(oc_ppu_jit_t* jit, uint32_t address);
+void oc_ppu_jit_trace_get_stats(oc_ppu_jit_t* jit, uint64_t* detected,
+                                 uint64_t* compiled, uint64_t* loops,
+                                 uint64_t* linear, uint64_t* executions,
+                                 uint64_t* aborts);
+void oc_ppu_jit_trace_reset_stats(oc_ppu_jit_t* jit);
+void oc_ppu_jit_trace_clear(oc_ppu_jit_t* jit);
+
+// ============================================================================
+// PPU JIT Code Verification API
+// ============================================================================
+
+int oc_ppu_jit_verify_codegen(oc_ppu_jit_t* jit);
+
 #ifdef __cplusplus
 }
 #endif

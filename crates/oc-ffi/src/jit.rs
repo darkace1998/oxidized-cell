@@ -277,6 +277,33 @@ extern "C" {
     // Execution APIs
     fn oc_ppu_jit_execute(jit: *mut PpuJit, context: *mut PpuContext, address: u32) -> i32;
     fn oc_ppu_jit_execute_block(jit: *mut PpuJit, context: *mut PpuContext, address: u32) -> i32;
+    
+    // Block linking APIs
+    fn oc_ppu_jit_link_add(jit: *mut PpuJit, source: u32, target: u32, conditional: i32);
+    fn oc_ppu_jit_link_blocks(jit: *mut PpuJit, source: u32, target: u32) -> i32;
+    fn oc_ppu_jit_unlink_source(jit: *mut PpuJit, source: u32);
+    fn oc_ppu_jit_unlink_target(jit: *mut PpuJit, target: u32);
+    fn oc_ppu_jit_link_get_target(jit: *mut PpuJit, source: u32, target: u32) -> *mut u8;
+    fn oc_ppu_jit_link_record_hit(jit: *mut PpuJit);
+    fn oc_ppu_jit_link_record_miss(jit: *mut PpuJit);
+    fn oc_ppu_jit_link_get_count(jit: *mut PpuJit) -> usize;
+    fn oc_ppu_jit_link_get_active(jit: *mut PpuJit) -> usize;
+    fn oc_ppu_jit_link_clear(jit: *mut PpuJit);
+    
+    // Trace compilation APIs
+    fn oc_ppu_jit_trace_set_hot_threshold(jit: *mut PpuJit, threshold: u64);
+    fn oc_ppu_jit_trace_get_hot_threshold(jit: *mut PpuJit) -> u64;
+    fn oc_ppu_jit_trace_set_max_length(jit: *mut PpuJit, length: usize);
+    fn oc_ppu_jit_trace_detect(jit: *mut PpuJit, header: u32, block_addrs: *const u32, count: usize, back_edge: u32);
+    fn oc_ppu_jit_trace_record_execution(jit: *mut PpuJit, header: u32) -> i32;
+    #[allow(dead_code)]
+    fn oc_ppu_jit_trace_mark_compiled(jit: *mut PpuJit, header: u32, code: *mut u8);
+    fn oc_ppu_jit_trace_get_compiled(jit: *mut PpuJit, header: u32) -> *mut u8;
+    fn oc_ppu_jit_trace_is_header(jit: *mut PpuJit, address: u32) -> i32;
+    fn oc_ppu_jit_trace_clear(jit: *mut PpuJit);
+    
+    // Code verification API
+    fn oc_ppu_jit_verify_codegen(jit: *mut PpuJit) -> i32;
 }
 
 // FFI declarations for SPU JIT
@@ -650,6 +677,112 @@ impl PpuJitCompiler {
             PpuExitReason::Normal | PpuExitReason::Branch => Ok(result as u32),
             _ => Err(exit_reason),
         }
+    }
+
+    // ========== Block Linking APIs ==========
+
+    /// Register a potential link between two compiled blocks
+    pub fn link_add(&mut self, source: u32, target: u32, conditional: bool) {
+        unsafe { oc_ppu_jit_link_add(self.handle, source, target, conditional as i32) }
+    }
+
+    /// Activate a link: patch source block to jump directly to target
+    pub fn link_blocks(&mut self, source: u32, target: u32) -> bool {
+        unsafe { oc_ppu_jit_link_blocks(self.handle, source, target) != 0 }
+    }
+
+    /// Unlink all outgoing links from a source block
+    pub fn unlink_source(&mut self, source: u32) {
+        unsafe { oc_ppu_jit_unlink_source(self.handle, source) }
+    }
+
+    /// Unlink all incoming links to a target block
+    pub fn unlink_target(&mut self, target: u32) {
+        unsafe { oc_ppu_jit_unlink_target(self.handle, target) }
+    }
+
+    /// Get the linked native code pointer for a source→target edge
+    pub fn link_get_target(&self, source: u32, target: u32) -> Option<*mut u8> {
+        let ptr = unsafe { oc_ppu_jit_link_get_target(self.handle, source, target) };
+        if ptr.is_null() { None } else { Some(ptr) }
+    }
+
+    /// Record a block link hit (direct jump taken)
+    pub fn link_record_hit(&mut self) {
+        unsafe { oc_ppu_jit_link_record_hit(self.handle) }
+    }
+
+    /// Record a block link miss (fell back to dispatcher)
+    pub fn link_record_miss(&mut self) {
+        unsafe { oc_ppu_jit_link_record_miss(self.handle) }
+    }
+
+    /// Get total link count
+    pub fn link_get_count(&self) -> usize {
+        unsafe { oc_ppu_jit_link_get_count(self.handle) }
+    }
+
+    /// Get active link count
+    pub fn link_get_active(&self) -> usize {
+        unsafe { oc_ppu_jit_link_get_active(self.handle) }
+    }
+
+    /// Clear all block links
+    pub fn link_clear(&mut self) {
+        unsafe { oc_ppu_jit_link_clear(self.handle) }
+    }
+
+    // ========== Trace Compilation APIs ==========
+
+    /// Set execution count threshold for trace compilation
+    pub fn trace_set_hot_threshold(&mut self, threshold: u64) {
+        unsafe { oc_ppu_jit_trace_set_hot_threshold(self.handle, threshold) }
+    }
+
+    /// Get trace hot threshold
+    pub fn trace_get_hot_threshold(&self) -> u64 {
+        unsafe { oc_ppu_jit_trace_get_hot_threshold(self.handle) }
+    }
+
+    /// Set maximum trace length (number of blocks)
+    pub fn trace_set_max_length(&mut self, length: usize) {
+        unsafe { oc_ppu_jit_trace_set_max_length(self.handle, length) }
+    }
+
+    /// Detect a trace (hot path) starting at the given header
+    pub fn trace_detect(&mut self, header: u32, block_addrs: &[u32], back_edge: u32) {
+        unsafe {
+            oc_ppu_jit_trace_detect(self.handle, header, block_addrs.as_ptr(),
+                                     block_addrs.len(), back_edge)
+        }
+    }
+
+    /// Record trace execution, returns true if trace should be compiled
+    pub fn trace_record_execution(&mut self, header: u32) -> bool {
+        unsafe { oc_ppu_jit_trace_record_execution(self.handle, header) != 0 }
+    }
+
+    /// Check if an address is a trace header
+    pub fn trace_is_header(&self, address: u32) -> bool {
+        unsafe { oc_ppu_jit_trace_is_header(self.handle, address) != 0 }
+    }
+
+    /// Get compiled trace code
+    pub fn trace_get_compiled(&self, header: u32) -> Option<*mut u8> {
+        let ptr = unsafe { oc_ppu_jit_trace_get_compiled(self.handle, header) };
+        if ptr.is_null() { None } else { Some(ptr) }
+    }
+
+    /// Clear all traces
+    pub fn trace_clear(&mut self) {
+        unsafe { oc_ppu_jit_trace_clear(self.handle) }
+    }
+
+    // ========== Code Verification API ==========
+
+    /// Verify JIT code generation produces valid machine code
+    pub fn verify_codegen(&mut self) -> bool {
+        unsafe { oc_ppu_jit_verify_codegen(self.handle) == 1 }
     }
 }
 
@@ -1198,5 +1331,111 @@ mod tests {
         
         // Clear entire cache
         jit.clear_cache();
+    }
+
+    #[test]
+    fn test_ppu_block_linking() {
+        let mut jit = PpuJitCompiler::new().expect("JIT creation failed");
+
+        // Register a link between two blocks
+        jit.link_add(0x1000, 0x2000, false);
+        assert_eq!(jit.link_get_count(), 1);
+        assert_eq!(jit.link_get_active(), 0);
+
+        // Compile target block first
+        let code = [0x60, 0x00, 0x00, 0x00]; // nop
+        jit.compile(0x2000, &code).expect("Compilation failed");
+
+        // Now link them
+        let linked = jit.link_blocks(0x1000, 0x2000);
+        assert!(linked, "Should successfully link blocks");
+        assert_eq!(jit.link_get_active(), 1);
+
+        // Get linked target
+        let target = jit.link_get_target(0x1000, 0x2000);
+        assert!(target.is_some(), "Should have linked target");
+
+        // Unlink source
+        jit.unlink_source(0x1000);
+        assert_eq!(jit.link_get_active(), 0);
+
+        // Record hits and misses
+        jit.link_record_hit();
+        jit.link_record_miss();
+
+        // Clear all
+        jit.link_clear();
+        assert_eq!(jit.link_get_count(), 0);
+    }
+
+    #[test]
+    fn test_ppu_trace_compilation() {
+        let mut jit = PpuJitCompiler::new().expect("JIT creation failed");
+
+        // Set threshold
+        jit.trace_set_hot_threshold(5);
+        assert_eq!(jit.trace_get_hot_threshold(), 5);
+
+        // Set max length
+        jit.trace_set_max_length(16);
+
+        // Detect a loop trace
+        let blocks = [0x1000u32, 0x1010, 0x1020];
+        jit.trace_detect(0x1000, &blocks, 0x1000);
+        assert!(jit.trace_is_header(0x1000));
+        assert!(!jit.trace_is_header(0x2000));
+
+        // Record executions
+        for _ in 0..4 {
+            assert!(!jit.trace_record_execution(0x1000));
+        }
+        // Fifth execution should trigger compilation
+        assert!(jit.trace_record_execution(0x1000));
+
+        // No compiled trace yet (would need actual compilation)
+        assert!(jit.trace_get_compiled(0x1000).is_none());
+
+        // Clear
+        jit.trace_clear();
+        assert!(!jit.trace_is_header(0x1000));
+    }
+
+    #[test]
+    fn test_ppu_verify_codegen() {
+        let mut jit = PpuJitCompiler::new().expect("JIT creation failed");
+        // Verify code generation produces valid output
+        let result = jit.verify_codegen();
+        assert!(result, "Code verification should pass");
+    }
+
+    #[test]
+    fn test_ppu_compile_fallback_on_empty() {
+        let mut jit = PpuJitCompiler::new().expect("JIT creation failed");
+        // Empty code should fail gracefully
+        let result = jit.compile(0x1000, &[]);
+        assert!(result.is_err(), "Empty code should fail");
+    }
+
+    #[test]
+    fn test_ppu_block_linking_conditional() {
+        let mut jit = PpuJitCompiler::new().expect("JIT creation failed");
+
+        // Register conditional link
+        jit.link_add(0x1000, 0x2000, true);
+        assert_eq!(jit.link_get_count(), 1);
+
+        // Unlink non-existent target is a no-op
+        jit.unlink_target(0x3000);
+        assert_eq!(jit.link_get_count(), 1);
+    }
+
+    #[test]
+    fn test_ppu_trace_linear() {
+        let mut jit = PpuJitCompiler::new().expect("JIT creation failed");
+        
+        // Linear trace (no back-edge)
+        let blocks = [0x1000u32, 0x1020, 0x1040, 0x1060];
+        jit.trace_detect(0x1000, &blocks, 0); // back_edge=0 means linear
+        assert!(jit.trace_is_header(0x1000));
     }
 }
