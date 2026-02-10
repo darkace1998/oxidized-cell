@@ -434,6 +434,202 @@ impl Default for FrameSmoother {
     }
 }
 
+// ============================================================================
+// GPU Profiling
+// ============================================================================
+
+/// GPU profiler for measuring GPU-side timing
+#[derive(Debug)]
+pub struct GpuProfiler {
+    /// Whether profiling is enabled
+    enabled: bool,
+    /// Frame timing history
+    frame_times: VecDeque<Duration>,
+    /// Maximum history size
+    history_size: usize,
+    /// Current frame start timestamp (in nanoseconds)
+    frame_start_ns: Option<u64>,
+    /// Named profile samples for the current frame
+    current_samples: Vec<GpuProfileSample>,
+    /// Total frames profiled
+    total_frames: u64,
+    /// GPU timestamp period (nanoseconds per tick)
+    timestamp_period: f32,
+}
+
+/// A named GPU profile sample
+#[derive(Debug, Clone)]
+pub struct GpuProfileSample {
+    /// Sample name
+    pub name: String,
+    /// Duration in nanoseconds
+    pub duration_ns: u64,
+    /// Nested depth (for hierarchical display)
+    pub depth: u32,
+}
+
+impl GpuProfiler {
+    /// Create a new GPU profiler
+    pub fn new() -> Self {
+        Self {
+            enabled: false,
+            frame_times: VecDeque::with_capacity(120),
+            history_size: 120,
+            frame_start_ns: None,
+            current_samples: Vec::new(),
+            total_frames: 0,
+            timestamp_period: 1.0, // Default 1ns per tick
+        }
+    }
+
+    /// Create with timestamp period (nanoseconds per GPU timestamp tick)
+    pub fn with_timestamp_period(period: f32) -> Self {
+        let mut profiler = Self::new();
+        profiler.timestamp_period = period;
+        profiler
+    }
+
+    /// Enable/disable profiling
+    pub fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+    }
+
+    /// Check if profiling is enabled
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// Begin frame profiling
+    pub fn begin_frame(&mut self, timestamp_ns: u64) {
+        if !self.enabled {
+            return;
+        }
+        self.frame_start_ns = Some(timestamp_ns);
+        self.current_samples.clear();
+    }
+
+    /// End frame profiling
+    pub fn end_frame(&mut self, timestamp_ns: u64) {
+        if !self.enabled {
+            return;
+        }
+
+        if let Some(start) = self.frame_start_ns.take() {
+            let frame_time_ns = timestamp_ns.saturating_sub(start);
+            let frame_time = Duration::from_nanos(frame_time_ns);
+
+            if self.frame_times.len() >= self.history_size {
+                self.frame_times.pop_front();
+            }
+            self.frame_times.push_back(frame_time);
+            self.total_frames += 1;
+        }
+    }
+
+    /// Add a profile sample
+    pub fn add_sample(&mut self, name: impl Into<String>, start_ns: u64, end_ns: u64, depth: u32) {
+        if !self.enabled {
+            return;
+        }
+
+        self.current_samples.push(GpuProfileSample {
+            name: name.into(),
+            duration_ns: end_ns.saturating_sub(start_ns),
+            depth,
+        });
+    }
+
+    /// Convert GPU timestamp ticks to nanoseconds
+    pub fn ticks_to_ns(&self, ticks: u64) -> u64 {
+        (ticks as f32 * self.timestamp_period) as u64
+    }
+
+    /// Get average GPU frame time
+    pub fn average_frame_time(&self) -> Duration {
+        if self.frame_times.is_empty() {
+            return Duration::ZERO;
+        }
+        let sum: Duration = self.frame_times.iter().sum();
+        sum / self.frame_times.len() as u32
+    }
+
+    /// Get current GPU FPS
+    pub fn current_fps(&self) -> f64 {
+        let avg = self.average_frame_time();
+        if avg.is_zero() {
+            0.0
+        } else {
+            1.0 / avg.as_secs_f64()
+        }
+    }
+
+    /// Get minimum frame time
+    pub fn min_frame_time(&self) -> Duration {
+        self.frame_times.iter().min().copied().unwrap_or(Duration::ZERO)
+    }
+
+    /// Get maximum frame time
+    pub fn max_frame_time(&self) -> Duration {
+        self.frame_times.iter().max().copied().unwrap_or(Duration::ZERO)
+    }
+
+    /// Get current frame samples
+    pub fn current_samples(&self) -> &[GpuProfileSample] {
+        &self.current_samples
+    }
+
+    /// Get total frames profiled
+    pub fn total_frames(&self) -> u64 {
+        self.total_frames
+    }
+
+    /// Reset profiling statistics
+    pub fn reset(&mut self) {
+        self.frame_times.clear();
+        self.current_samples.clear();
+        self.total_frames = 0;
+        self.frame_start_ns = None;
+    }
+
+    /// Get comprehensive statistics
+    pub fn stats(&self) -> GpuProfilingStats {
+        GpuProfilingStats {
+            enabled: self.enabled,
+            total_frames: self.total_frames,
+            average_frame_time: self.average_frame_time(),
+            min_frame_time: self.min_frame_time(),
+            max_frame_time: self.max_frame_time(),
+            current_fps: self.current_fps(),
+            sample_count: self.current_samples.len(),
+        }
+    }
+}
+
+impl Default for GpuProfiler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// GPU profiling statistics
+#[derive(Debug, Clone)]
+pub struct GpuProfilingStats {
+    /// Whether profiling is enabled
+    pub enabled: bool,
+    /// Total frames profiled
+    pub total_frames: u64,
+    /// Average GPU frame time
+    pub average_frame_time: Duration,
+    /// Minimum frame time in history
+    pub min_frame_time: Duration,
+    /// Maximum frame time in history
+    pub max_frame_time: Duration,
+    /// Current GPU FPS
+    pub current_fps: f64,
+    /// Number of samples in current frame
+    pub sample_count: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -521,5 +717,55 @@ mod tests {
         timer.reset_stats();
         assert_eq!(timer.total_frames(), 0);
         assert_eq!(timer.dropped_frames(), 0);
+    }
+
+    #[test]
+    fn test_gpu_profiler_creation() {
+        let profiler = GpuProfiler::new();
+        assert!(!profiler.is_enabled());
+        assert_eq!(profiler.total_frames(), 0);
+    }
+
+    #[test]
+    fn test_gpu_profiler_frame_timing() {
+        let mut profiler = GpuProfiler::new();
+        profiler.set_enabled(true);
+        
+        // Simulate frame with 16ms (16_000_000 ns)
+        profiler.begin_frame(0);
+        profiler.end_frame(16_000_000);
+        
+        profiler.begin_frame(16_000_000);
+        profiler.end_frame(32_000_000);
+        
+        assert_eq!(profiler.total_frames(), 2);
+        
+        let avg = profiler.average_frame_time();
+        assert!((avg.as_millis() as i64 - 16).abs() <= 1);
+    }
+
+    #[test]
+    fn test_gpu_profiler_samples() {
+        let mut profiler = GpuProfiler::new();
+        profiler.set_enabled(true);
+        
+        profiler.begin_frame(0);
+        profiler.add_sample("render_pass", 1000, 5000, 0);
+        profiler.add_sample("draw_calls", 1500, 4500, 1);
+        profiler.end_frame(16_000_000);
+        
+        assert_eq!(profiler.current_samples().len(), 2);
+        assert_eq!(profiler.current_samples()[0].name, "render_pass");
+        assert_eq!(profiler.current_samples()[0].duration_ns, 4000);
+    }
+
+    #[test]
+    fn test_gpu_profiler_stats() {
+        let mut profiler = GpuProfiler::with_timestamp_period(1.0);
+        profiler.set_enabled(true);
+        
+        let stats = profiler.stats();
+        assert!(stats.enabled);
+        assert_eq!(stats.total_frames, 0);
     }
 }

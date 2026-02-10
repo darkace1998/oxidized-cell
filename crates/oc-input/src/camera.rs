@@ -582,4 +582,408 @@ mod tests {
         manager.disconnect(0);
         assert!(manager.list_connected().is_empty());
     }
+
+    #[test]
+    fn test_bayer_demosaic() {
+        let mut processor = ImageProcessor::new();
+        processor.settings.resolution = CameraResolution::QVGA;
+        
+        // Create simple test Bayer pattern
+        let width = 320;
+        let height = 240;
+        let bayer = vec![128u8; width * height];
+        
+        let rgb = processor.bayer_to_rgb(&bayer, width as u32, height as u32);
+        assert_eq!(rgb.len(), width * height * 3);
+    }
+
+    #[test]
+    fn test_brightness_contrast() {
+        let mut processor = ImageProcessor::new();
+        processor.settings.brightness = 150;
+        processor.settings.contrast = 200;
+        
+        let input = vec![128u8; 100 * 3]; // 100 gray pixels
+        let output = processor.apply_brightness_contrast(&input);
+        
+        // Brightness increased, so output should be brighter
+        assert!(output[0] > 128);
+    }
+
+    #[test]
+    fn test_white_balance() {
+        let settings = WhiteBalanceSettings {
+            mode: WhiteBalanceMode::Manual,
+            red_gain: 1.2,
+            blue_gain: 0.9,
+            color_temperature: 5500,
+        };
+        
+        let processor = ImageProcessor::with_white_balance(settings);
+        assert!((processor.white_balance.red_gain - 1.2).abs() < 0.001);
+    }
+}
+
+// =============================================================================
+// Camera Image Processing
+// =============================================================================
+
+/// Image processor for camera feed
+pub struct ImageProcessor {
+    /// Processing settings
+    pub settings: CameraSettings,
+    /// White balance settings
+    pub white_balance: WhiteBalanceSettings,
+}
+
+impl ImageProcessor {
+    /// Create new image processor
+    pub fn new() -> Self {
+        Self {
+            settings: CameraSettings::default(),
+            white_balance: WhiteBalanceSettings::default(),
+        }
+    }
+
+    /// Create with specific white balance settings
+    pub fn with_white_balance(white_balance: WhiteBalanceSettings) -> Self {
+        Self {
+            settings: CameraSettings::default(),
+            white_balance,
+        }
+    }
+
+    /// Convert raw Bayer pattern to RGB using bilinear interpolation
+    /// This implements a basic GBRG Bayer demosaicing algorithm
+    pub fn bayer_to_rgb(&self, bayer: &[u8], width: u32, height: u32) -> Vec<u8> {
+        let w = width as usize;
+        let h = height as usize;
+        let mut rgb = vec![0u8; w * h * 3];
+
+        // GBRG Bayer pattern (PS Eye uses this):
+        // Row 0: G B G B G B ...
+        // Row 1: R G R G R G ...
+        // Row 2: G B G B G B ...
+        // Row 3: R G R G R G ...
+
+        // Helper to safely get pixel value with boundary clamping
+        let get_pixel = |x: i32, y: i32| -> u16 {
+            let cx = x.clamp(0, w as i32 - 1) as usize;
+            let cy = y.clamp(0, h as i32 - 1) as usize;
+            bayer[cy * w + cx] as u16
+        };
+
+        for y in 0..h {
+            for x in 0..w {
+                let idx = y * w + x;
+                let rgb_idx = idx * 3;
+                let xi = x as i32;
+                let yi = y as i32;
+
+                let (r, g, b) = if y % 2 == 0 {
+                    // Even row (G B G B...)
+                    if x % 2 == 0 {
+                        // Green pixel at (even x, even y)
+                        let g = bayer[idx];
+                        let r = (get_pixel(xi, yi - 1) + get_pixel(xi, yi + 1)) / 2;
+                        let b = (get_pixel(xi - 1, yi) + get_pixel(xi + 1, yi)) / 2;
+                        (r as u8, g, b as u8)
+                    } else {
+                        // Blue pixel at (odd x, even y)
+                        let b = bayer[idx];
+                        let g = (get_pixel(xi - 1, yi) + get_pixel(xi + 1, yi) +
+                                 get_pixel(xi, yi - 1) + get_pixel(xi, yi + 1)) / 4;
+                        let r = (get_pixel(xi - 1, yi - 1) + get_pixel(xi + 1, yi - 1) +
+                                 get_pixel(xi - 1, yi + 1) + get_pixel(xi + 1, yi + 1)) / 4;
+                        (r as u8, g as u8, b)
+                    }
+                } else {
+                    // Odd row (R G R G...)
+                    if x % 2 == 0 {
+                        // Red pixel at (even x, odd y)
+                        let r = bayer[idx];
+                        let g = (get_pixel(xi - 1, yi) + get_pixel(xi + 1, yi) +
+                                 get_pixel(xi, yi - 1) + get_pixel(xi, yi + 1)) / 4;
+                        let b = (get_pixel(xi - 1, yi - 1) + get_pixel(xi + 1, yi - 1) +
+                                 get_pixel(xi - 1, yi + 1) + get_pixel(xi + 1, yi + 1)) / 4;
+                        (r, g as u8, b as u8)
+                    } else {
+                        // Green pixel at (odd x, odd y)
+                        let g = bayer[idx];
+                        let r = (get_pixel(xi - 1, yi) + get_pixel(xi + 1, yi)) / 2;
+                        let b = (get_pixel(xi, yi - 1) + get_pixel(xi, yi + 1)) / 2;
+                        (r as u8, g, b as u8)
+                    }
+                };
+
+                rgb[rgb_idx] = r;
+                rgb[rgb_idx + 1] = g;
+                rgb[rgb_idx + 2] = b;
+            }
+        }
+
+        rgb
+    }
+
+    /// Apply brightness and contrast adjustments
+    pub fn apply_brightness_contrast(&self, rgb: &[u8]) -> Vec<u8> {
+        let brightness = self.settings.brightness as f32 - 128.0;
+        let contrast = self.settings.contrast as f32 / 128.0;
+
+        rgb.iter()
+            .map(|&pixel| {
+                // Apply contrast around midpoint (128), then add brightness
+                let adjusted = ((pixel as f32 - 128.0) * contrast + 128.0 + brightness)
+                    .clamp(0.0, 255.0) as u8;
+                adjusted
+            })
+            .collect()
+    }
+
+    /// Apply white balance adjustment
+    pub fn apply_white_balance(&self, rgb: &[u8]) -> Vec<u8> {
+        let red_gain = self.white_balance.red_gain;
+        let blue_gain = self.white_balance.blue_gain;
+
+        rgb.chunks(3)
+            .flat_map(|pixel| {
+                let r = (pixel[0] as f32 * red_gain).clamp(0.0, 255.0) as u8;
+                let g = pixel[1]; // Green channel unchanged
+                let b = (pixel[2] as f32 * blue_gain).clamp(0.0, 255.0) as u8;
+                [r, g, b]
+            })
+            .collect()
+    }
+
+    /// Flip image horizontally
+    pub fn flip_horizontal(&self, rgb: &[u8], width: u32, height: u32) -> Vec<u8> {
+        let w = width as usize;
+        let h = height as usize;
+        let mut result = vec![0u8; w * h * 3];
+
+        for y in 0..h {
+            for x in 0..w {
+                let src_idx = (y * w + x) * 3;
+                let dst_idx = (y * w + (w - 1 - x)) * 3;
+                result[dst_idx..dst_idx + 3].copy_from_slice(&rgb[src_idx..src_idx + 3]);
+            }
+        }
+
+        result
+    }
+
+    /// Flip image vertically
+    pub fn flip_vertical(&self, rgb: &[u8], width: u32, height: u32) -> Vec<u8> {
+        let w = width as usize;
+        let h = height as usize;
+        let row_size = w * 3;
+        let mut result = vec![0u8; w * h * 3];
+
+        for y in 0..h {
+            let src_row = y * row_size;
+            let dst_row = (h - 1 - y) * row_size;
+            result[dst_row..dst_row + row_size].copy_from_slice(&rgb[src_row..src_row + row_size]);
+        }
+
+        result
+    }
+
+    /// Process a raw frame (apply all enabled adjustments)
+    pub fn process_frame(&self, frame: &CameraFrame) -> CameraFrame {
+        let mut data = frame.data.clone();
+        let width = frame.width;
+        let height = frame.height;
+
+        // Convert from Bayer if needed
+        if frame.format == CameraPixelFormat::BayerGB {
+            data = self.bayer_to_rgb(&data, width, height);
+        }
+
+        // Apply brightness/contrast
+        if self.settings.brightness != 128 || self.settings.contrast != 128 {
+            data = self.apply_brightness_contrast(&data);
+        }
+
+        // Apply white balance
+        if !self.settings.auto_white_balance {
+            data = self.apply_white_balance(&data);
+        }
+
+        // Apply flips
+        if self.settings.flip_h {
+            data = self.flip_horizontal(&data, width, height);
+        }
+        if self.settings.flip_v {
+            data = self.flip_vertical(&data, width, height);
+        }
+
+        CameraFrame {
+            data,
+            width,
+            height,
+            format: CameraPixelFormat::RGB24,
+            timestamp: frame.timestamp,
+            sequence: frame.sequence,
+        }
+    }
+}
+
+impl Default for ImageProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// White balance mode
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhiteBalanceMode {
+    /// Automatic white balance
+    Auto,
+    /// Manual white balance with gains
+    Manual,
+    /// Preset for daylight
+    Daylight,
+    /// Preset for cloudy conditions
+    Cloudy,
+    /// Preset for incandescent lighting
+    Incandescent,
+    /// Preset for fluorescent lighting
+    Fluorescent,
+}
+
+impl Default for WhiteBalanceMode {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+/// White balance settings
+#[derive(Debug, Clone, Copy)]
+pub struct WhiteBalanceSettings {
+    /// White balance mode
+    pub mode: WhiteBalanceMode,
+    /// Red channel gain (1.0 = no change)
+    pub red_gain: f32,
+    /// Blue channel gain (1.0 = no change)
+    pub blue_gain: f32,
+    /// Color temperature (Kelvin, for Auto/Manual modes)
+    pub color_temperature: u16,
+}
+
+impl Default for WhiteBalanceSettings {
+    fn default() -> Self {
+        Self {
+            mode: WhiteBalanceMode::Auto,
+            red_gain: 1.0,
+            blue_gain: 1.0,
+            color_temperature: 5500, // Daylight
+        }
+    }
+}
+
+impl WhiteBalanceSettings {
+    /// Create preset for specific lighting conditions
+    pub fn preset(mode: WhiteBalanceMode) -> Self {
+        let (red_gain, blue_gain, temp) = match mode {
+            WhiteBalanceMode::Daylight => (1.0, 1.0, 5500),
+            WhiteBalanceMode::Cloudy => (1.05, 0.95, 6500),
+            WhiteBalanceMode::Incandescent => (0.9, 1.2, 3200),
+            WhiteBalanceMode::Fluorescent => (0.95, 1.1, 4200),
+            _ => (1.0, 1.0, 5500),
+        };
+
+        Self {
+            mode,
+            red_gain,
+            blue_gain,
+            color_temperature: temp,
+        }
+    }
+
+    /// Estimate gains from color temperature
+    pub fn from_color_temperature(kelvin: u16) -> Self {
+        // Approximate RGB gains from color temperature
+        // Based on Planckian locus approximation
+        let temp = kelvin.clamp(1000, 15000) as f32;
+        
+        let red_gain = if temp <= 6600.0 {
+            1.0
+        } else {
+            1.2929 * ((temp - 6000.0) / 100.0).powf(-0.1332)
+        };
+
+        // Blue gain calculation with minimum value to preserve blue channel
+        let blue_gain = if temp >= 6600.0 {
+            1.0
+        } else {
+            // Use a minimum of 0.15 to maintain some blue presence even at very low temperatures
+            let calculated = 0.5668 * ((temp.max(2001.0) - 2000.0) / 100.0).powf(0.3109);
+            calculated.max(0.15)
+        };
+
+        Self {
+            mode: WhiteBalanceMode::Manual,
+            red_gain: red_gain.clamp(0.5, 2.0),
+            blue_gain: blue_gain.clamp(0.15, 2.0),
+            color_temperature: kelvin,
+        }
+    }
+}
+
+/// Color correction matrix (3x3)
+#[derive(Debug, Clone, Copy)]
+pub struct ColorCorrectionMatrix {
+    /// Matrix coefficients [row][col]
+    pub matrix: [[f32; 3]; 3],
+}
+
+impl Default for ColorCorrectionMatrix {
+    fn default() -> Self {
+        // Identity matrix (no correction)
+        Self {
+            matrix: [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+        }
+    }
+}
+
+impl ColorCorrectionMatrix {
+    /// Apply color correction to RGB values
+    pub fn apply(&self, r: u8, g: u8, b: u8) -> (u8, u8, u8) {
+        let rf = r as f32;
+        let gf = g as f32;
+        let bf = b as f32;
+
+        let new_r = (self.matrix[0][0] * rf + self.matrix[0][1] * gf + self.matrix[0][2] * bf)
+            .clamp(0.0, 255.0) as u8;
+        let new_g = (self.matrix[1][0] * rf + self.matrix[1][1] * gf + self.matrix[1][2] * bf)
+            .clamp(0.0, 255.0) as u8;
+        let new_b = (self.matrix[2][0] * rf + self.matrix[2][1] * gf + self.matrix[2][2] * bf)
+            .clamp(0.0, 255.0) as u8;
+
+        (new_r, new_g, new_b)
+    }
+
+    /// Create saturation adjustment matrix
+    pub fn saturation(amount: f32) -> Self {
+        // Grayscale coefficients
+        let lr = 0.2126;
+        let lg = 0.7152;
+        let lb = 0.0722;
+        let s = amount;
+        let sr = (1.0 - s) * lr;
+        let sg = (1.0 - s) * lg;
+        let sb = (1.0 - s) * lb;
+
+        Self {
+            matrix: [
+                [sr + s, sg, sb],
+                [sr, sg + s, sb],
+                [sr, sg, sb + s],
+            ],
+        }
+    }
 }

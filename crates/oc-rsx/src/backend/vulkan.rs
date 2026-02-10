@@ -129,6 +129,554 @@ pub struct VulkanBackend {
     vertex_buffers: Vec<(u32, vk::Buffer, Option<Allocation>, u64)>,
     /// Index buffer (buffer, allocation, size, index_type)
     index_buffer: Option<(vk::Buffer, Option<Allocation>, u64, vk::IndexType)>,
+    /// Pipeline cache for reusing compiled pipelines
+    pipeline_cache_handle: Option<vk::PipelineCache>,
+    /// Cached pipelines by hash key
+    pipeline_cache: std::collections::HashMap<u64, vk::Pipeline>,
+    /// MSAA sample mask for sample coverage
+    sample_mask: u32,
+    /// Suballocation pool for small buffers
+    suballocation_pool: Option<SuballocationPool>,
+    /// Staging buffer pool for uploads
+    staging_pool: Option<StagingBufferPool>,
+    /// Fence pool for frame pacing
+    fence_pool: FencePool,
+    /// Timeline semaphore for RSX semaphores (Vulkan 1.2+)
+    timeline_semaphore: Option<vk::Semaphore>,
+    /// Current timeline value
+    timeline_value: u64,
+    /// Compute pipeline layout for RSX emulation
+    compute_pipeline_layout: Option<vk::PipelineLayout>,
+    /// Compute pipelines
+    compute_pipelines: std::collections::HashMap<String, vk::Pipeline>,
+    /// Compute descriptor set layout
+    compute_descriptor_set_layout: Option<vk::DescriptorSetLayout>,
+    /// Dynamic states enabled for pipelines
+    dynamic_states_enabled: Vec<vk::DynamicState>,
+    /// Per-attachment blend states (up to 4 MRT)
+    per_attachment_blend: [BlendAttachmentConfig; 4],
+}
+
+/// Small buffer suballocation pool
+#[derive(Debug)]
+pub struct SuballocationPool {
+    /// Pool of suballocations
+    blocks: Vec<SuballocationBlock>,
+    /// Block size
+    block_size: u64,
+    /// Alignment requirement
+    alignment: u64,
+    /// Statistics
+    stats: SuballocationStats,
+}
+
+/// A block in the suballocation pool
+#[derive(Debug)]
+struct SuballocationBlock {
+    buffer: vk::Buffer,
+    allocation: Option<Allocation>,
+    size: u64,
+    used: u64,
+    /// Free list: (offset, size)
+    free_list: Vec<(u64, u64)>,
+}
+
+/// Suballocation statistics
+#[derive(Debug, Default, Clone)]
+pub struct SuballocationStats {
+    /// Total bytes allocated
+    pub total_allocated: u64,
+    /// Total bytes used
+    pub total_used: u64,
+    /// Number of suballocations
+    pub allocation_count: u64,
+    /// Number of blocks
+    pub block_count: u64,
+}
+
+impl SuballocationPool {
+    /// Default block size: 4MB
+    const DEFAULT_BLOCK_SIZE: u64 = 4 * 1024 * 1024;
+    /// Default alignment: 256 bytes
+    const DEFAULT_ALIGNMENT: u64 = 256;
+    
+    /// Create a new suballocation pool
+    pub fn new() -> Self {
+        Self {
+            blocks: Vec::new(),
+            block_size: Self::DEFAULT_BLOCK_SIZE,
+            alignment: Self::DEFAULT_ALIGNMENT,
+            stats: SuballocationStats::default(),
+        }
+    }
+    
+    /// Create with custom block size
+    pub fn with_block_size(block_size: u64) -> Self {
+        Self {
+            blocks: Vec::new(),
+            block_size,
+            alignment: Self::DEFAULT_ALIGNMENT,
+            stats: SuballocationStats::default(),
+        }
+    }
+    
+    /// Allocate from pool, returns (buffer, offset)
+    pub fn allocate(
+        &mut self,
+        device: &ash::Device,
+        allocator: &Arc<Mutex<Allocator>>,
+        size: u64,
+        usage: vk::BufferUsageFlags,
+    ) -> Result<(vk::Buffer, u64), String> {
+        let aligned_size = (size + self.alignment - 1) & !(self.alignment - 1);
+        
+        // Try to find space in existing blocks
+        for block in &mut self.blocks {
+            if let Some((free_list_idx, (free_offset, free_size))) = block.free_list.iter()
+                .enumerate()
+                .find(|(_, (_, s))| *s >= aligned_size)
+                .map(|(i, &entry)| (i, entry))
+            {
+                block.free_list.remove(free_list_idx);
+                if free_size > aligned_size {
+                    block.free_list.push((free_offset + aligned_size, free_size - aligned_size));
+                }
+                block.used += aligned_size;
+                self.stats.total_used += aligned_size;
+                self.stats.allocation_count += 1;
+                return Ok((block.buffer, free_offset));
+            }
+        }
+        
+        // Need new block
+        let block_size = self.block_size.max(aligned_size);
+        
+        let buffer_info = vk::BufferCreateInfo::default()
+            .size(block_size)
+            .usage(usage | vk::BufferUsageFlags::TRANSFER_DST)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        
+        let buffer = unsafe {
+            device.create_buffer(&buffer_info, None)
+                .map_err(|e| format!("Failed to create suballocation block: {:?}", e))?
+        };
+        
+        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+        
+        let alloc_desc = AllocationCreateDesc {
+            name: "suballocation_block",
+            requirements,
+            location: MemoryLocation::GpuOnly,
+            linear: true,
+            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        };
+        
+        let allocation = allocator.lock().unwrap()
+            .allocate(&alloc_desc)
+            .map_err(|e| format!("Failed to allocate suballocation block memory: {:?}", e))?;
+        
+        unsafe {
+            device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
+                .map_err(|e| format!("Failed to bind suballocation block memory: {:?}", e))?;
+        }
+        
+        let mut block = SuballocationBlock {
+            buffer,
+            allocation: Some(allocation),
+            size: block_size,
+            used: aligned_size,
+            free_list: Vec::new(),
+        };
+        
+        if block_size > aligned_size {
+            block.free_list.push((aligned_size, block_size - aligned_size));
+        }
+        
+        let result_buffer = block.buffer;
+        self.blocks.push(block);
+        
+        self.stats.total_allocated += block_size;
+        self.stats.total_used += aligned_size;
+        self.stats.allocation_count += 1;
+        self.stats.block_count += 1;
+        
+        Ok((result_buffer, 0))
+    }
+    
+    /// Free a suballocation
+    pub fn free(&mut self, buffer: vk::Buffer, offset: u64, size: u64) {
+        let aligned_size = (size + self.alignment - 1) & !(self.alignment - 1);
+        
+        for block in &mut self.blocks {
+            if block.buffer == buffer {
+                block.free_list.push((offset, aligned_size));
+                block.used = block.used.saturating_sub(aligned_size);
+                self.stats.total_used = self.stats.total_used.saturating_sub(aligned_size);
+                self.stats.allocation_count = self.stats.allocation_count.saturating_sub(1);
+                
+                // Merge adjacent free regions
+                block.free_list.sort_by_key(|&(off, _)| off);
+                let mut i = 0;
+                while i + 1 < block.free_list.len() {
+                    let (off1, size1) = block.free_list[i];
+                    let (off2, size2) = block.free_list[i + 1];
+                    if off1 + size1 == off2 {
+                        block.free_list[i] = (off1, size1 + size2);
+                        block.free_list.remove(i + 1);
+                    } else {
+                        i += 1;
+                    }
+                }
+                break;
+            }
+        }
+    }
+    
+    /// Get statistics
+    pub fn stats(&self) -> &SuballocationStats {
+        &self.stats
+    }
+    
+    /// Cleanup and destroy pool
+    pub fn destroy(&mut self, device: &ash::Device, allocator: &Arc<Mutex<Allocator>>) {
+        for block in self.blocks.drain(..) {
+            unsafe {
+                device.destroy_buffer(block.buffer, None);
+            }
+            if let Some(alloc) = block.allocation {
+                allocator.lock().unwrap().free(alloc).ok();
+            }
+        }
+        self.stats = SuballocationStats::default();
+    }
+}
+
+impl Default for SuballocationPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Staging buffer pool for uploads
+#[derive(Debug)]
+pub struct StagingBufferPool {
+    /// Pool of available staging buffers
+    available: Vec<StagingBuffer>,
+    /// Currently in-use staging buffers
+    in_use: Vec<StagingBuffer>,
+    /// Default buffer size
+    default_size: u64,
+    /// Statistics
+    stats: StagingBufferStats,
+}
+
+/// A staging buffer
+#[derive(Debug)]
+struct StagingBuffer {
+    buffer: vk::Buffer,
+    allocation: Option<Allocation>,
+    size: u64,
+    /// Fence to track when buffer can be reused
+    fence: Option<vk::Fence>,
+}
+
+/// Staging buffer statistics
+#[derive(Debug, Default, Clone)]
+pub struct StagingBufferStats {
+    /// Total buffers created
+    pub buffers_created: u64,
+    /// Total buffers reused
+    pub buffers_reused: u64,
+    /// Total bytes transferred
+    pub bytes_transferred: u64,
+    /// Current pool size
+    pub pool_size: u64,
+}
+
+impl StagingBufferPool {
+    /// Default staging buffer size: 1MB
+    const DEFAULT_BUFFER_SIZE: u64 = 1024 * 1024;
+    
+    /// Create a new staging buffer pool
+    pub fn new() -> Self {
+        Self {
+            available: Vec::new(),
+            in_use: Vec::new(),
+            default_size: Self::DEFAULT_BUFFER_SIZE,
+            stats: StagingBufferStats::default(),
+        }
+    }
+    
+    /// Acquire a staging buffer for upload
+    pub fn acquire(
+        &mut self,
+        device: &ash::Device,
+        allocator: &Arc<Mutex<Allocator>>,
+        size: u64,
+    ) -> Result<(vk::Buffer, Option<Allocation>), String> {
+        let required_size = size.max(self.default_size);
+        
+        // Try to reclaim completed buffers
+        self.reclaim(device);
+        
+        // Find suitable buffer from pool
+        if let Some(idx) = self.available.iter().position(|b| b.size >= required_size) {
+            let buffer = self.available.remove(idx);
+            self.stats.buffers_reused += 1;
+            let result = (buffer.buffer, buffer.allocation);
+            return Ok(result);
+        }
+        
+        // Create new buffer
+        let buffer_info = vk::BufferCreateInfo::default()
+            .size(required_size)
+            .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        
+        let buffer = unsafe {
+            device.create_buffer(&buffer_info, None)
+                .map_err(|e| format!("Failed to create staging buffer: {:?}", e))?
+        };
+        
+        let requirements = unsafe { device.get_buffer_memory_requirements(buffer) };
+        
+        let alloc_desc = AllocationCreateDesc {
+            name: "staging_buffer",
+            requirements,
+            location: MemoryLocation::CpuToGpu,
+            linear: true,
+            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        };
+        
+        let allocation = allocator.lock().unwrap()
+            .allocate(&alloc_desc)
+            .map_err(|e| format!("Failed to allocate staging buffer memory: {:?}", e))?;
+        
+        unsafe {
+            device.bind_buffer_memory(buffer, allocation.memory(), allocation.offset())
+                .map_err(|e| format!("Failed to bind staging buffer memory: {:?}", e))?;
+        }
+        
+        self.stats.buffers_created += 1;
+        self.stats.pool_size += required_size;
+        
+        Ok((buffer, Some(allocation)))
+    }
+    
+    /// Release a staging buffer back to pool with a fence
+    pub fn release(&mut self, buffer: vk::Buffer, allocation: Option<Allocation>, size: u64, fence: Option<vk::Fence>) {
+        self.in_use.push(StagingBuffer {
+            buffer,
+            allocation,
+            size,
+            fence,
+        });
+    }
+    
+    /// Reclaim completed buffers
+    fn reclaim(&mut self, device: &ash::Device) {
+        let mut still_in_use = Vec::new();
+        
+        for buffer in self.in_use.drain(..) {
+            let ready = if let Some(fence) = buffer.fence {
+                match unsafe { device.get_fence_status(fence) } {
+                    Ok(signaled) => signaled,
+                    Err(e) => {
+                        // Log error but keep buffer in use to avoid premature reuse
+                        tracing::warn!("Fence status query failed: {:?}, keeping buffer in use", e);
+                        false
+                    }
+                }
+            } else {
+                true
+            };
+            
+            if ready {
+                self.available.push(StagingBuffer {
+                    buffer: buffer.buffer,
+                    allocation: buffer.allocation,
+                    size: buffer.size,
+                    fence: None,
+                });
+            } else {
+                still_in_use.push(buffer);
+            }
+        }
+        
+        self.in_use = still_in_use;
+    }
+    
+    /// Get statistics
+    pub fn stats(&self) -> &StagingBufferStats {
+        &self.stats
+    }
+    
+    /// Record bytes transferred
+    pub fn record_transfer(&mut self, bytes: u64) {
+        self.stats.bytes_transferred += bytes;
+    }
+    
+    /// Cleanup and destroy pool
+    pub fn destroy(&mut self, device: &ash::Device, allocator: &Arc<Mutex<Allocator>>) {
+        for buffer in self.available.drain(..).chain(self.in_use.drain(..)) {
+            unsafe {
+                device.destroy_buffer(buffer.buffer, None);
+            }
+            if let Some(alloc) = buffer.allocation {
+                allocator.lock().unwrap().free(alloc).ok();
+            }
+        }
+        self.stats = StagingBufferStats::default();
+    }
+}
+
+impl Default for StagingBufferPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Fence pool for frame pacing
+#[derive(Debug, Default)]
+pub struct FencePool {
+    /// Available fences
+    available: Vec<vk::Fence>,
+    /// In-use fences
+    in_use: Vec<vk::Fence>,
+}
+
+impl FencePool {
+    /// Create a new fence pool
+    pub fn new() -> Self {
+        Self::default()
+    }
+    
+    /// Acquire a fence
+    pub fn acquire(&mut self, device: &ash::Device) -> Result<vk::Fence, String> {
+        // Reclaim completed fences
+        self.reclaim(device);
+        
+        if let Some(fence) = self.available.pop() {
+            unsafe {
+                device.reset_fences(&[fence])
+                    .map_err(|e| format!("Failed to reset fence: {:?}", e))?;
+            }
+            self.in_use.push(fence);
+            return Ok(fence);
+        }
+        
+        // Create new fence
+        let fence_info = vk::FenceCreateInfo::default();
+        let fence = unsafe {
+            device.create_fence(&fence_info, None)
+                .map_err(|e| format!("Failed to create fence: {:?}", e))?
+        };
+        
+        self.in_use.push(fence);
+        Ok(fence)
+    }
+    
+    /// Release a fence back to pool
+    pub fn release(&mut self, fence: vk::Fence) {
+        if let Some(idx) = self.in_use.iter().position(|&f| f == fence) {
+            self.in_use.remove(idx);
+            self.available.push(fence);
+        }
+    }
+    
+    /// Reclaim completed fences
+    fn reclaim(&mut self, device: &ash::Device) {
+        let mut still_in_use = Vec::new();
+        
+        for fence in self.in_use.drain(..) {
+            let signaled = match unsafe { device.get_fence_status(fence) } {
+                Ok(status) => status,
+                Err(e) => {
+                    // Log error but keep fence in use to avoid premature reuse
+                    tracing::warn!("Fence status query failed: {:?}, keeping fence in use", e);
+                    false
+                }
+            };
+            if signaled {
+                self.available.push(fence);
+            } else {
+                still_in_use.push(fence);
+            }
+        }
+        
+        self.in_use = still_in_use;
+    }
+    
+    /// Wait for all in-use fences
+    pub fn wait_all(&self, device: &ash::Device, timeout: u64) -> Result<(), String> {
+        if self.in_use.is_empty() {
+            return Ok(());
+        }
+        unsafe {
+            device.wait_for_fences(&self.in_use, true, timeout)
+                .map_err(|e| format!("Failed to wait for fences: {:?}", e))
+        }
+    }
+    
+    /// Destroy all fences
+    pub fn destroy(&mut self, device: &ash::Device) {
+        for fence in self.available.drain(..).chain(self.in_use.drain(..)) {
+            unsafe {
+                device.destroy_fence(fence, None);
+            }
+        }
+    }
+}
+
+/// Per-attachment blend configuration
+#[derive(Debug, Clone, Copy)]
+pub struct BlendAttachmentConfig {
+    /// Whether blending is enabled
+    pub blend_enable: bool,
+    /// Source color blend factor
+    pub src_color_factor: vk::BlendFactor,
+    /// Destination color blend factor
+    pub dst_color_factor: vk::BlendFactor,
+    /// Color blend operation
+    pub color_blend_op: vk::BlendOp,
+    /// Source alpha blend factor
+    pub src_alpha_factor: vk::BlendFactor,
+    /// Destination alpha blend factor
+    pub dst_alpha_factor: vk::BlendFactor,
+    /// Alpha blend operation
+    pub alpha_blend_op: vk::BlendOp,
+    /// Color write mask
+    pub write_mask: vk::ColorComponentFlags,
+}
+
+impl Default for BlendAttachmentConfig {
+    fn default() -> Self {
+        Self {
+            blend_enable: false,
+            src_color_factor: vk::BlendFactor::ONE,
+            dst_color_factor: vk::BlendFactor::ZERO,
+            color_blend_op: vk::BlendOp::ADD,
+            src_alpha_factor: vk::BlendFactor::ONE,
+            dst_alpha_factor: vk::BlendFactor::ZERO,
+            alpha_blend_op: vk::BlendOp::ADD,
+            write_mask: vk::ColorComponentFlags::RGBA,
+        }
+    }
+}
+
+impl BlendAttachmentConfig {
+    /// Convert to Vulkan attachment state
+    pub fn to_vk(&self) -> vk::PipelineColorBlendAttachmentState {
+        vk::PipelineColorBlendAttachmentState::default()
+            .blend_enable(self.blend_enable)
+            .src_color_blend_factor(self.src_color_factor)
+            .dst_color_blend_factor(self.dst_color_factor)
+            .color_blend_op(self.color_blend_op)
+            .src_alpha_blend_factor(self.src_alpha_factor)
+            .dst_alpha_blend_factor(self.dst_alpha_factor)
+            .alpha_blend_op(self.alpha_blend_op)
+            .color_write_mask(self.write_mask)
+    }
 }
 
 impl VulkanBackend {
@@ -198,6 +746,19 @@ impl VulkanBackend {
             max_anisotropy: 16.0,
             vertex_buffers: Vec::new(),
             index_buffer: None,
+            pipeline_cache_handle: None,
+            pipeline_cache: std::collections::HashMap::new(),
+            sample_mask: 0xFFFFFFFF,
+            suballocation_pool: None,
+            staging_pool: None,
+            fence_pool: FencePool::new(),
+            timeline_semaphore: None,
+            timeline_value: 0,
+            compute_pipeline_layout: None,
+            compute_pipelines: std::collections::HashMap::new(),
+            compute_descriptor_set_layout: None,
+            dynamic_states_enabled: vec![vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR],
+            per_attachment_blend: [BlendAttachmentConfig::default(); 4],
         }
     }
 
@@ -259,6 +820,614 @@ impl VulkanBackend {
     /// Get anisotropic filtering level
     pub fn anisotropy_level(&self) -> f32 {
         self.anisotropy_level
+    }
+    
+    /// Set sample mask for MSAA sample coverage
+    pub fn set_sample_mask(&mut self, mask: u32) {
+        self.sample_mask = mask;
+    }
+    
+    /// Get sample mask
+    pub fn sample_mask(&self) -> u32 {
+        self.sample_mask
+    }
+    
+    /// Set per-attachment blend state
+    pub fn set_attachment_blend(&mut self, attachment: usize, config: BlendAttachmentConfig) {
+        if attachment < 4 {
+            self.per_attachment_blend[attachment] = config;
+        }
+    }
+    
+    /// Get per-attachment blend state
+    pub fn attachment_blend(&self, attachment: usize) -> Option<&BlendAttachmentConfig> {
+        self.per_attachment_blend.get(attachment)
+    }
+    
+    /// Enable dynamic states for pipelines
+    pub fn set_dynamic_states(&mut self, states: Vec<vk::DynamicState>) {
+        self.dynamic_states_enabled = states;
+    }
+    
+    /// Get enabled dynamic states
+    pub fn dynamic_states(&self) -> &[vk::DynamicState] {
+        &self.dynamic_states_enabled
+    }
+    
+    /// Create pipeline cache
+    pub fn create_pipeline_cache(&mut self) -> Result<(), String> {
+        let device = self.device.as_ref().ok_or("Device not initialized")?;
+        
+        let cache_info = vk::PipelineCacheCreateInfo::default();
+        
+        let cache = unsafe {
+            device.create_pipeline_cache(&cache_info, None)
+                .map_err(|e| format!("Failed to create pipeline cache: {:?}", e))?
+        };
+        
+        self.pipeline_cache_handle = Some(cache);
+        Ok(())
+    }
+    
+    /// Get cached pipeline by key (hash of pipeline state)
+    pub fn get_cached_pipeline(&self, key: u64) -> Option<vk::Pipeline> {
+        self.pipeline_cache.get(&key).copied()
+    }
+    
+    /// Store pipeline in cache
+    pub fn cache_pipeline(&mut self, key: u64, pipeline: vk::Pipeline) {
+        self.pipeline_cache.insert(key, pipeline);
+    }
+    
+    /// Get suballocation pool statistics
+    pub fn suballocation_stats(&self) -> Option<&SuballocationStats> {
+        self.suballocation_pool.as_ref().map(|p| p.stats())
+    }
+    
+    /// Get staging pool statistics
+    pub fn staging_stats(&self) -> Option<&StagingBufferStats> {
+        self.staging_pool.as_ref().map(|p| p.stats())
+    }
+    
+    /// Initialize suballocation pool
+    pub fn init_suballocation_pool(&mut self) {
+        self.suballocation_pool = Some(SuballocationPool::new());
+    }
+    
+    /// Initialize staging buffer pool
+    pub fn init_staging_pool(&mut self) {
+        self.staging_pool = Some(StagingBufferPool::new());
+    }
+    
+    /// Allocate small buffer from suballocation pool
+    pub fn allocate_small_buffer(
+        &mut self,
+        size: u64,
+        usage: vk::BufferUsageFlags,
+    ) -> Result<(vk::Buffer, u64), String> {
+        // Initialize pool if needed first
+        if self.suballocation_pool.is_none() {
+            self.init_suballocation_pool();
+        }
+        
+        // Now get references we need
+        let device = self.device.as_ref().ok_or("Device not initialized")?;
+        let allocator = self.allocator.as_ref().ok_or("Allocator not initialized")?;
+        
+        self.suballocation_pool
+            .as_mut()
+            .unwrap()
+            .allocate(device, allocator, size, usage)
+    }
+    
+    /// Free small buffer from suballocation pool
+    pub fn free_small_buffer(&mut self, buffer: vk::Buffer, offset: u64, size: u64) {
+        if let Some(pool) = &mut self.suballocation_pool {
+            pool.free(buffer, offset, size);
+        }
+    }
+    
+    /// Acquire staging buffer for upload
+    pub fn acquire_staging_buffer(&mut self, size: u64) -> Result<(vk::Buffer, Option<Allocation>), String> {
+        // Initialize pool if needed first
+        if self.staging_pool.is_none() {
+            self.init_staging_pool();
+        }
+        
+        // Now get references we need
+        let device = self.device.as_ref().ok_or("Device not initialized")?;
+        let allocator = self.allocator.as_ref().ok_or("Allocator not initialized")?;
+        
+        self.staging_pool
+            .as_mut()
+            .unwrap()
+            .acquire(device, allocator, size)
+    }
+    
+    /// Release staging buffer back to pool
+    pub fn release_staging_buffer(&mut self, buffer: vk::Buffer, allocation: Option<Allocation>, size: u64, fence: Option<vk::Fence>) {
+        if let Some(pool) = &mut self.staging_pool {
+            pool.release(buffer, allocation, size, fence);
+        }
+    }
+    
+    /// Acquire fence from pool
+    pub fn acquire_fence(&mut self) -> Result<vk::Fence, String> {
+        let device = self.device.as_ref().ok_or("Device not initialized")?;
+        self.fence_pool.acquire(device)
+    }
+    
+    /// Release fence back to pool
+    pub fn release_fence(&mut self, fence: vk::Fence) {
+        self.fence_pool.release(fence);
+    }
+    
+    /// Wait for all fences in pool
+    pub fn wait_all_fences(&self, timeout: u64) -> Result<(), String> {
+        let device = self.device.as_ref().ok_or("Device not initialized")?;
+        self.fence_pool.wait_all(device, timeout)
+    }
+    
+    /// Create timeline semaphore for RSX semaphore emulation
+    pub fn create_timeline_semaphore(&mut self) -> Result<(), String> {
+        let device = self.device.as_ref().ok_or("Device not initialized")?;
+        
+        let mut type_info = vk::SemaphoreTypeCreateInfo::default()
+            .semaphore_type(vk::SemaphoreType::TIMELINE)
+            .initial_value(0);
+        
+        let semaphore_info = vk::SemaphoreCreateInfo::default()
+            .push_next(&mut type_info);
+        
+        let semaphore = unsafe {
+            device.create_semaphore(&semaphore_info, None)
+                .map_err(|e| format!("Failed to create timeline semaphore: {:?}", e))?
+        };
+        
+        self.timeline_semaphore = Some(semaphore);
+        self.timeline_value = 0;
+        Ok(())
+    }
+    
+    /// Signal timeline semaphore
+    pub fn signal_timeline(&mut self, value: u64) -> Result<(), String> {
+        let device = self.device.as_ref().ok_or("Device not initialized")?;
+        let semaphore = self.timeline_semaphore.ok_or("Timeline semaphore not created")?;
+        
+        let signal_info = vk::SemaphoreSignalInfo::default()
+            .semaphore(semaphore)
+            .value(value);
+        
+        unsafe {
+            device.signal_semaphore(&signal_info)
+                .map_err(|e| format!("Failed to signal timeline semaphore: {:?}", e))?;
+        }
+        
+        self.timeline_value = value;
+        Ok(())
+    }
+    
+    /// Wait for timeline semaphore
+    pub fn wait_timeline(&self, value: u64, timeout: u64) -> Result<(), String> {
+        let device = self.device.as_ref().ok_or("Device not initialized")?;
+        let semaphore = self.timeline_semaphore.ok_or("Timeline semaphore not created")?;
+        
+        let wait_info = vk::SemaphoreWaitInfo::default()
+            .semaphores(std::slice::from_ref(&semaphore))
+            .values(std::slice::from_ref(&value));
+        
+        unsafe {
+            device.wait_semaphores(&wait_info, timeout)
+                .map_err(|e| format!("Failed to wait for timeline semaphore: {:?}", e))
+        }
+    }
+    
+    /// Get current timeline value
+    pub fn timeline_value(&self) -> u64 {
+        self.timeline_value
+    }
+    
+    /// Resolve MSAA image to non-MSAA target
+    pub fn resolve_msaa(
+        &self,
+        src_image: vk::Image,
+        dst_image: vk::Image,
+        width: u32,
+        height: u32,
+    ) -> Result<(), String> {
+        let device = self.device.as_ref().ok_or("Device not initialized")?;
+        let queue = self.graphics_queue.ok_or("Graphics queue not available")?;
+        let command_pool = self.command_pool.ok_or("Command pool not available")?;
+        
+        // Allocate one-time command buffer
+        let alloc_info = vk::CommandBufferAllocateInfo::default()
+            .command_pool(command_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+        
+        let cmd_buffer = unsafe {
+            device.allocate_command_buffers(&alloc_info)
+                .map_err(|e| format!("Failed to allocate command buffer: {:?}", e))?
+        }[0];
+        
+        let begin_info = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        
+        unsafe {
+            device.begin_command_buffer(cmd_buffer, &begin_info)
+                .map_err(|e| format!("Failed to begin command buffer: {:?}", e))?;
+            
+            // Image resolve
+            let resolve_region = vk::ImageResolve::default()
+                .src_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .dst_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .extent(vk::Extent3D { width, height, depth: 1 });
+            
+            device.cmd_resolve_image(
+                cmd_buffer,
+                src_image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                dst_image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[resolve_region],
+            );
+            
+            device.end_command_buffer(cmd_buffer)
+                .map_err(|e| format!("Failed to end command buffer: {:?}", e))?;
+            
+            let submit_info = vk::SubmitInfo::default()
+                .command_buffers(std::slice::from_ref(&cmd_buffer));
+            
+            device.queue_submit(queue, &[submit_info], vk::Fence::null())
+                .map_err(|e| format!("Failed to submit resolve command: {:?}", e))?;
+            
+            device.queue_wait_idle(queue)
+                .map_err(|e| format!("Failed to wait for queue: {:?}", e))?;
+            
+            device.free_command_buffers(command_pool, &[cmd_buffer]);
+        }
+        
+        Ok(())
+    }
+    
+    /// Create compute pipeline for RSX emulation
+    pub fn create_compute_pipeline(
+        &mut self,
+        shader_spirv: &[u32],
+        name: &str,
+    ) -> Result<vk::Pipeline, String> {
+        let device = self.device.as_ref().ok_or("Device not initialized")?;
+        
+        // Create shader module
+        let shader_info = vk::ShaderModuleCreateInfo::default()
+            .code(shader_spirv);
+        
+        let shader_module = unsafe {
+            device.create_shader_module(&shader_info, None)
+                .map_err(|e| format!("Failed to create compute shader module: {:?}", e))?
+        };
+        
+        // Create compute pipeline layout if needed
+        if self.compute_pipeline_layout.is_none() {
+            // Create descriptor set layout for compute
+            let bindings = [
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(0)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::COMPUTE),
+                vk::DescriptorSetLayoutBinding::default()
+                    .binding(1)
+                    .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                    .descriptor_count(1)
+                    .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            ];
+            
+            let layout_info = vk::DescriptorSetLayoutCreateInfo::default()
+                .bindings(&bindings);
+            
+            let desc_layout = unsafe {
+                device.create_descriptor_set_layout(&layout_info, None)
+                    .map_err(|e| format!("Failed to create compute descriptor layout: {:?}", e))?
+            };
+            self.compute_descriptor_set_layout = Some(desc_layout);
+            
+            // Create pipeline layout
+            let set_layouts = [desc_layout];
+            let push_constant_range = vk::PushConstantRange::default()
+                .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                .offset(0)
+                .size(64); // 64 bytes (16 floats at 4 bytes each) for compute params
+            
+            let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
+                .set_layouts(&set_layouts)
+                .push_constant_ranges(std::slice::from_ref(&push_constant_range));
+            
+            let layout = unsafe {
+                device.create_pipeline_layout(&pipeline_layout_info, None)
+                    .map_err(|e| format!("Failed to create compute pipeline layout: {:?}", e))?
+            };
+            self.compute_pipeline_layout = Some(layout);
+        }
+        
+        // Create compute pipeline
+        let main_name = std::ffi::CStr::from_bytes_with_nul(b"main\0").unwrap();
+        
+        let stage_info = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::COMPUTE)
+            .module(shader_module)
+            .name(main_name);
+        
+        let pipeline_info = vk::ComputePipelineCreateInfo::default()
+            .stage(stage_info)
+            .layout(self.compute_pipeline_layout.unwrap());
+        
+        let cache = self.pipeline_cache_handle.unwrap_or(vk::PipelineCache::null());
+        
+        let pipeline = unsafe {
+            let result = device.create_compute_pipelines(cache, &[pipeline_info], None)
+                .map_err(|e| format!("Failed to create compute pipeline: {:?}", e.1))?;
+            
+            // Clean up shader module
+            device.destroy_shader_module(shader_module, None);
+            
+            result[0]
+        };
+        
+        // Store in cache
+        self.compute_pipelines.insert(name.to_string(), pipeline);
+        
+        Ok(pipeline)
+    }
+    
+    /// Get compute pipeline by name
+    pub fn get_compute_pipeline(&self, name: &str) -> Option<vk::Pipeline> {
+        self.compute_pipelines.get(name).copied()
+    }
+    
+    /// Dispatch compute shader
+    pub fn dispatch_compute(
+        &self,
+        pipeline_name: &str,
+        groups_x: u32,
+        groups_y: u32,
+        groups_z: u32,
+    ) -> Result<(), String> {
+        let device = self.device.as_ref().ok_or("Device not initialized")?;
+        let cmd_buffer = self.current_cmd_buffer.ok_or("No active command buffer")?;
+        let pipeline = self.compute_pipelines.get(pipeline_name)
+            .ok_or("Compute pipeline not found")?;
+        
+        unsafe {
+            device.cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::COMPUTE, *pipeline);
+            device.cmd_dispatch(cmd_buffer, groups_x, groups_y, groups_z);
+        }
+        
+        Ok(())
+    }
+    
+    /// Create render pass with MSAA support
+    pub fn create_msaa_render_pass(&mut self) -> Result<vk::RenderPass, String> {
+        let device = self.device.as_ref().ok_or("Device not initialized")?;
+        
+        // MSAA color attachment
+        let msaa_color_attachment = vk::AttachmentDescription::default()
+            .format(vk::Format::B8G8R8A8_UNORM)
+            .samples(self.msaa_samples)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        
+        // Resolve attachment (non-MSAA)
+        let resolve_attachment = vk::AttachmentDescription::default()
+            .format(vk::Format::B8G8R8A8_UNORM)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
+        
+        // MSAA depth attachment
+        let msaa_depth_attachment = vk::AttachmentDescription::default()
+            .format(vk::Format::D24_UNORM_S8_UINT)
+            .samples(self.msaa_samples)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::CLEAR)
+            .stencil_store_op(vk::AttachmentStoreOp::STORE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        
+        let attachments = [msaa_color_attachment, resolve_attachment, msaa_depth_attachment];
+        
+        let color_attachment_ref = vk::AttachmentReference::default()
+            .attachment(0)
+            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        
+        let resolve_attachment_ref = vk::AttachmentReference::default()
+            .attachment(1)
+            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        
+        let depth_attachment_ref = vk::AttachmentReference::default()
+            .attachment(2)
+            .layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        
+        let color_refs = [color_attachment_ref];
+        let resolve_refs = [resolve_attachment_ref];
+        
+        let subpass = vk::SubpassDescription::default()
+            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+            .color_attachments(&color_refs)
+            .resolve_attachments(&resolve_refs)
+            .depth_stencil_attachment(&depth_attachment_ref);
+        
+        let dependency = vk::SubpassDependency::default()
+            .src_subpass(vk::SUBPASS_EXTERNAL)
+            .dst_subpass(0)
+            .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS)
+            .src_access_mask(vk::AccessFlags::empty())
+            .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS)
+            .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE);
+        
+        let render_pass_info = vk::RenderPassCreateInfo::default()
+            .attachments(&attachments)
+            .subpasses(std::slice::from_ref(&subpass))
+            .dependencies(std::slice::from_ref(&dependency));
+        
+        unsafe {
+            device.create_render_pass(&render_pass_info, None)
+                .map_err(|e| format!("Failed to create MSAA render pass: {:?}", e))
+        }
+    }
+    
+    /// Create MSAA images for rendering
+    pub fn create_msaa_images(&mut self) -> Result<(), String> {
+        if self.msaa_samples == vk::SampleCountFlags::TYPE_1 {
+            return Ok(()); // No MSAA needed
+        }
+        
+        let device = self.device.as_ref().ok_or("Device not initialized")?;
+        let allocator = self.allocator.as_ref().ok_or("Allocator not initialized")?;
+        
+        // Create MSAA color image
+        let image_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(vk::Format::B8G8R8A8_UNORM)
+            .extent(vk::Extent3D {
+                width: self.width,
+                height: self.height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(self.msaa_samples)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSIENT_ATTACHMENT)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        
+        let msaa_color_image = unsafe {
+            device.create_image(&image_info, None)
+                .map_err(|e| format!("Failed to create MSAA color image: {:?}", e))?
+        };
+        
+        let requirements = unsafe { device.get_image_memory_requirements(msaa_color_image) };
+        
+        let alloc_desc = AllocationCreateDesc {
+            name: "msaa_color_image",
+            requirements,
+            location: MemoryLocation::GpuOnly,
+            linear: false,
+            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        };
+        
+        let allocation = allocator.lock().unwrap()
+            .allocate(&alloc_desc)
+            .map_err(|e| format!("Failed to allocate MSAA color image memory: {:?}", e))?;
+        
+        unsafe {
+            device.bind_image_memory(msaa_color_image, allocation.memory(), allocation.offset())
+                .map_err(|e| format!("Failed to bind MSAA color image memory: {:?}", e))?;
+        }
+        
+        // Create image view
+        let view_info = vk::ImageViewCreateInfo::default()
+            .image(msaa_color_image)
+            .view_type(vk::ImageViewType::TYPE_2D)
+            .format(vk::Format::B8G8R8A8_UNORM)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            });
+        
+        let msaa_color_view = unsafe {
+            device.create_image_view(&view_info, None)
+                .map_err(|e| format!("Failed to create MSAA color image view: {:?}", e))?
+        };
+        
+        self.msaa_color_images.push(msaa_color_image);
+        self.msaa_color_image_views.push(msaa_color_view);
+        self.msaa_color_allocations.push(allocation);
+        
+        // Create MSAA depth image
+        let depth_info = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(vk::Format::D24_UNORM_S8_UINT)
+            .extent(vk::Extent3D {
+                width: self.width,
+                height: self.height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(self.msaa_samples)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::TRANSIENT_ATTACHMENT)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        
+        let msaa_depth_image = unsafe {
+            device.create_image(&depth_info, None)
+                .map_err(|e| format!("Failed to create MSAA depth image: {:?}", e))?
+        };
+        
+        let depth_requirements = unsafe { device.get_image_memory_requirements(msaa_depth_image) };
+        
+        let depth_alloc_desc = AllocationCreateDesc {
+            name: "msaa_depth_image",
+            requirements: depth_requirements,
+            location: MemoryLocation::GpuOnly,
+            linear: false,
+            allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+        };
+        
+        let depth_allocation = allocator.lock().unwrap()
+            .allocate(&depth_alloc_desc)
+            .map_err(|e| format!("Failed to allocate MSAA depth image memory: {:?}", e))?;
+        
+        unsafe {
+            device.bind_image_memory(msaa_depth_image, depth_allocation.memory(), depth_allocation.offset())
+                .map_err(|e| format!("Failed to bind MSAA depth image memory: {:?}", e))?;
+        }
+        
+        let depth_view_info = vk::ImageViewCreateInfo::default()
+            .image(msaa_depth_image)
+            .view_type(vk::ImageViewType::TYPE_2D)
+            .format(vk::Format::D24_UNORM_S8_UINT)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            });
+        
+        let msaa_depth_view = unsafe {
+            device.create_image_view(&depth_view_info, None)
+                .map_err(|e| format!("Failed to create MSAA depth image view: {:?}", e))?
+        };
+        
+        self.msaa_depth_image = Some(msaa_depth_image);
+        self.msaa_depth_image_view = Some(msaa_depth_view);
+        self.msaa_depth_allocation = Some(depth_allocation);
+        
+        Ok(())
     }
 
     /// Create Vulkan instance

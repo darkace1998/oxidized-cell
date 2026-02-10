@@ -79,6 +79,81 @@ pub struct VertexAttributeDebugInfo {
     pub enabled: bool,
 }
 
+/// Shader debug state for step-through debugging
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShaderDebugState {
+    /// Not debugging shaders
+    Inactive,
+    /// Paused at shader instruction
+    Paused,
+    /// Stepping through shader
+    Stepping,
+}
+
+/// Shader debug info for vertex/fragment programs
+#[derive(Debug, Clone)]
+pub struct ShaderDebugInfo {
+    /// Shader type
+    pub shader_type: ShaderType,
+    /// Program offset/address
+    pub address: u32,
+    /// Program size in bytes
+    pub size: u32,
+    /// Number of instructions
+    pub instruction_count: usize,
+    /// Current instruction index (for debugging)
+    pub current_instruction: usize,
+    /// Input registers used
+    pub inputs_used: Vec<String>,
+    /// Output registers written
+    pub outputs_written: Vec<String>,
+    /// Constant registers used
+    pub constants_used: Vec<u32>,
+    /// Texture samplers used
+    pub samplers_used: Vec<u32>,
+}
+
+/// Shader type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShaderType {
+    /// Vertex program
+    Vertex,
+    /// Fragment program
+    Fragment,
+}
+
+/// Shader instruction debug info
+#[derive(Debug, Clone)]
+pub struct ShaderInstructionDebugInfo {
+    /// Instruction index
+    pub index: usize,
+    /// Raw instruction data
+    pub raw_data: Vec<u32>,
+    /// Disassembled instruction
+    pub disasm: String,
+    /// Destination register
+    pub dst: Option<String>,
+    /// Source registers
+    pub src: Vec<String>,
+    /// Is this a texture operation
+    pub is_texture_op: bool,
+    /// Is this a flow control operation
+    pub is_flow_control: bool,
+}
+
+/// Command buffer region for visualization
+#[derive(Debug, Clone)]
+pub struct CommandBufferRegion {
+    /// Start address in command buffer
+    pub start: u32,
+    /// End address
+    pub end: u32,
+    /// Description of what this region contains
+    pub description: String,
+    /// Commands in this region
+    pub commands: Vec<RsxCommandEntry>,
+}
+
 /// RSX debugger
 pub struct RsxDebugger {
     /// Debug state
@@ -93,6 +168,14 @@ pub struct RsxDebugger {
     pub frame_count: u64,
     /// Commands in current frame
     pub commands_this_frame: u64,
+    /// Shader debug state
+    pub shader_debug_state: ShaderDebugState,
+    /// Current vertex program debug info
+    vertex_program_debug: Option<ShaderDebugInfo>,
+    /// Current fragment program debug info
+    fragment_program_debug: Option<ShaderDebugInfo>,
+    /// Command buffer regions for visualization
+    command_buffer_regions: Vec<CommandBufferRegion>,
 }
 
 impl Default for RsxDebugger {
@@ -111,6 +194,10 @@ impl RsxDebugger {
             break_on_method: None,
             frame_count: 0,
             commands_this_frame: 0,
+            shader_debug_state: ShaderDebugState::Inactive,
+            vertex_program_debug: None,
+            fragment_program_debug: None,
+            command_buffer_regions: Vec::new(),
         }
     }
 
@@ -321,6 +408,130 @@ impl RsxDebugger {
     /// Check if RSX is running
     pub fn is_running(&self) -> bool {
         self.state == RsxDebugState::Running
+    }
+
+    // === Shader Debugging Methods ===
+
+    /// Start shader debugging
+    pub fn start_shader_debug(&mut self) {
+        self.shader_debug_state = ShaderDebugState::Paused;
+        tracing::info!("RSX shader debugging started");
+    }
+
+    /// Stop shader debugging
+    pub fn stop_shader_debug(&mut self) {
+        self.shader_debug_state = ShaderDebugState::Inactive;
+        self.vertex_program_debug = None;
+        self.fragment_program_debug = None;
+        tracing::info!("RSX shader debugging stopped");
+    }
+
+    /// Step to next shader instruction
+    pub fn step_shader(&mut self) {
+        if self.shader_debug_state == ShaderDebugState::Paused {
+            self.shader_debug_state = ShaderDebugState::Stepping;
+        }
+    }
+
+    /// Set vertex program debug info
+    pub fn set_vertex_program_debug(&mut self, info: ShaderDebugInfo) {
+        self.vertex_program_debug = Some(info);
+    }
+
+    /// Set fragment program debug info
+    pub fn set_fragment_program_debug(&mut self, info: ShaderDebugInfo) {
+        self.fragment_program_debug = Some(info);
+    }
+
+    /// Get vertex program debug info
+    pub fn get_vertex_program_debug(&self) -> Option<&ShaderDebugInfo> {
+        self.vertex_program_debug.as_ref()
+    }
+
+    /// Get fragment program debug info
+    pub fn get_fragment_program_debug(&self) -> Option<&ShaderDebugInfo> {
+        self.fragment_program_debug.as_ref()
+    }
+
+    /// Check if shader debugging is active
+    pub fn is_shader_debugging(&self) -> bool {
+        self.shader_debug_state != ShaderDebugState::Inactive
+    }
+
+    // === Command Buffer Visualization Methods ===
+
+    /// Add a command buffer region for visualization
+    pub fn add_command_buffer_region(&mut self, start: u32, end: u32, description: &str) {
+        self.command_buffer_regions.push(CommandBufferRegion {
+            start,
+            end,
+            description: description.to_string(),
+            commands: Vec::new(),
+        });
+    }
+
+    /// Get command buffer regions
+    pub fn get_command_buffer_regions(&self) -> &[CommandBufferRegion] {
+        &self.command_buffer_regions
+    }
+
+    /// Clear command buffer regions
+    pub fn clear_command_buffer_regions(&mut self) {
+        self.command_buffer_regions.clear();
+    }
+
+    /// Analyze command history and group by draw calls
+    pub fn analyze_command_history(&self) -> Vec<CommandBufferRegion> {
+        let mut regions = Vec::new();
+        let mut current_region_start = 0;
+        let mut current_region_cmds = Vec::new();
+        let mut in_draw = false;
+        
+        for (i, cmd) in self.command_history.iter().enumerate() {
+            current_region_cmds.push(cmd.clone());
+            
+            // Check for draw start (BEGIN)
+            if cmd.method == 0x1808 && cmd.data != 0 {
+                in_draw = true;
+            }
+            
+            // Check for draw end (END)
+            if cmd.method == 0x1808 && cmd.data == 0 && in_draw {
+                in_draw = false;
+                regions.push(CommandBufferRegion {
+                    start: current_region_start as u32,
+                    end: i as u32,
+                    description: format!("Draw call {}", regions.len()),
+                    commands: current_region_cmds.clone(),
+                });
+                current_region_start = i + 1;
+                current_region_cmds.clear();
+            }
+            
+            // Check for clear
+            if cmd.method == 0x1D94 {
+                regions.push(CommandBufferRegion {
+                    start: current_region_start as u32,
+                    end: i as u32,
+                    description: "Clear".to_string(),
+                    commands: current_region_cmds.clone(),
+                });
+                current_region_start = i + 1;
+                current_region_cmds.clear();
+            }
+        }
+        
+        // Add remaining commands
+        if !current_region_cmds.is_empty() {
+            regions.push(CommandBufferRegion {
+                start: current_region_start as u32,
+                end: self.command_history.len() as u32,
+                description: "Pending commands".to_string(),
+                commands: current_region_cmds,
+            });
+        }
+        
+        regions
     }
 
     /// Get method name from register address

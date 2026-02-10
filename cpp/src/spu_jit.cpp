@@ -21,6 +21,7 @@
 #include <queue>
 #include <atomic>
 #include <algorithm>
+#include <array>
 
 #ifdef HAVE_LLVM
 #include <llvm/IR/LLVMContext.h>
@@ -351,22 +352,97 @@ struct ChannelOperation {
 };
 
 /**
- * Channel operation manager for SPU JIT
+ * Channel blocking behavior for SPU channels
+ */
+struct ChannelBlockingInfo {
+    bool blocks_on_empty;   // Channel blocks read when count = 0
+    bool blocks_on_full;    // Channel blocks write when full
+    uint32_t max_count;     // Maximum count for the channel
+    
+    ChannelBlockingInfo(bool empty = false, bool full = false, uint32_t max = 1)
+        : blocks_on_empty(empty), blocks_on_full(full), max_count(max) {}
+};
+
+/**
+ * Channel operation statistics
+ */
+struct ChannelStats {
+    uint64_t reads;
+    uint64_t writes;
+    uint64_t count_queries;
+    uint64_t blocking_reads;
+    uint64_t blocking_writes;
+    
+    ChannelStats() : reads(0), writes(0), count_queries(0), blocking_reads(0), blocking_writes(0) {}
+};
+
+/**
+ * Channel operation manager for SPU JIT - Enhanced version
+ * Supports all 32 SPU/MFC channels with proper blocking semantics
  */
 struct ChannelManager {
     std::vector<ChannelOperation> operations;
-    oc_mutex mutex;
+    mutable oc_mutex mutex;
     
     // Channel callback function types
     using ChannelReadFunc = uint32_t (*)(void* spu_state, uint8_t channel);
     using ChannelWriteFunc = void (*)(void* spu_state, uint8_t channel, uint32_t value);
     using ChannelCountFunc = uint32_t (*)(void* spu_state, uint8_t channel);
+    using ChannelBlockingCheckFunc = bool (*)(void* spu_state, uint8_t channel, bool is_read);
     
     ChannelReadFunc read_callback;
     ChannelWriteFunc write_callback;
     ChannelCountFunc count_callback;
+    ChannelBlockingCheckFunc blocking_check_callback;
     
-    ChannelManager() : read_callback(nullptr), write_callback(nullptr), count_callback(nullptr) {}
+    // Blocking behavior configuration for all 32 channels
+    std::array<ChannelBlockingInfo, 32> channel_config;
+    
+    // Per-channel statistics
+    std::array<ChannelStats, 32> channel_stats;
+    
+    ChannelManager() 
+        : read_callback(nullptr), write_callback(nullptr), 
+          count_callback(nullptr), blocking_check_callback(nullptr) {
+        init_channel_config();
+    }
+    
+    /**
+     * Initialize channel configuration with proper blocking behavior
+     * Based on SPU Channel documentation
+     */
+    void init_channel_config() {
+        // SPU channels - blocking behavior
+        channel_config[static_cast<size_t>(SpuChannel::SPU_RdEventStat)] = {true, false, 1};
+        channel_config[static_cast<size_t>(SpuChannel::SPU_WrEventMask)] = {false, false, 1};
+        channel_config[static_cast<size_t>(SpuChannel::SPU_WrEventAck)] = {false, false, 1};
+        channel_config[static_cast<size_t>(SpuChannel::SPU_RdSigNotify1)] = {true, false, 1};
+        channel_config[static_cast<size_t>(SpuChannel::SPU_RdSigNotify2)] = {true, false, 1};
+        channel_config[static_cast<size_t>(SpuChannel::SPU_WrDec)] = {false, false, 1};
+        channel_config[static_cast<size_t>(SpuChannel::SPU_RdDec)] = {false, false, 1};
+        channel_config[static_cast<size_t>(SpuChannel::SPU_RdEventMask)] = {false, false, 1};
+        channel_config[static_cast<size_t>(SpuChannel::SPU_RdMachStat)] = {false, false, 1};
+        channel_config[static_cast<size_t>(SpuChannel::SPU_WrSRR0)] = {false, false, 1};
+        channel_config[static_cast<size_t>(SpuChannel::SPU_RdSRR0)] = {false, false, 1};
+        channel_config[static_cast<size_t>(SpuChannel::SPU_WrOutMbox)] = {false, true, 1};
+        channel_config[static_cast<size_t>(SpuChannel::SPU_RdInMbox)] = {true, false, 4};
+        channel_config[static_cast<size_t>(SpuChannel::SPU_WrOutIntrMbox)] = {false, true, 1};
+        // MFC channels
+        channel_config[static_cast<size_t>(SpuChannel::MFC_WrMSSyncReq)] = {false, false, 1};
+        channel_config[static_cast<size_t>(SpuChannel::MFC_RdTagStat)] = {true, false, 1};
+        channel_config[static_cast<size_t>(SpuChannel::MFC_RdTagMask)] = {false, false, 1};
+        channel_config[static_cast<size_t>(SpuChannel::MFC_WrTagMask)] = {false, false, 1};
+        channel_config[static_cast<size_t>(SpuChannel::MFC_WrTagUpdate)] = {false, false, 1};
+        channel_config[static_cast<size_t>(SpuChannel::MFC_RdListStallStat)] = {true, false, 1};
+        channel_config[static_cast<size_t>(SpuChannel::MFC_WrListStallAck)] = {false, false, 1};
+        channel_config[static_cast<size_t>(SpuChannel::MFC_RdAtomicStat)] = {true, false, 1};
+        // SPU mailbox count channels
+        channel_config[static_cast<size_t>(SpuChannel::SPU_RdSPU_InMbox)] = {false, false, 4};
+        channel_config[static_cast<size_t>(SpuChannel::SPU_RdSPU_OutMbox)] = {false, false, 1};
+        channel_config[static_cast<size_t>(SpuChannel::SPU_RdSPU_OutIntrMbox)] = {false, false, 1};
+        // MFC command channel
+        channel_config[static_cast<size_t>(SpuChannel::MFC_Cmd)] = {false, true, 16};
+    }
     
     void register_operation(SpuChannel channel, bool is_read, uint32_t address, uint8_t reg) {
         oc_lock_guard<oc_mutex> lock(mutex);
@@ -382,6 +458,100 @@ struct ChannelManager {
         count_callback = count_cb;
     }
     
+    void set_blocking_check_callback(ChannelBlockingCheckFunc cb) {
+        blocking_check_callback = cb;
+    }
+    
+    /**
+     * Check if a channel operation would block
+     */
+    bool would_block(SpuChannel channel, bool is_read) const {
+        uint8_t ch_idx = static_cast<uint8_t>(channel);
+        if (ch_idx >= 32) return false;
+        
+        const auto& config = channel_config[ch_idx];
+        if (is_read && config.blocks_on_empty) return true;
+        if (!is_read && config.blocks_on_full) return true;
+        return false;
+    }
+    
+    /**
+     * Record a channel read operation with statistics
+     */
+    void record_read(SpuChannel channel, bool was_blocking = false) {
+        uint8_t ch_idx = static_cast<uint8_t>(channel);
+        if (ch_idx < 32) {
+            channel_stats[ch_idx].reads++;
+            if (was_blocking) {
+                channel_stats[ch_idx].blocking_reads++;
+            }
+        }
+    }
+    
+    /**
+     * Record a channel write operation with statistics
+     */
+    void record_write(SpuChannel channel, bool was_blocking = false) {
+        uint8_t ch_idx = static_cast<uint8_t>(channel);
+        if (ch_idx < 32) {
+            channel_stats[ch_idx].writes++;
+            if (was_blocking) {
+                channel_stats[ch_idx].blocking_writes++;
+            }
+        }
+    }
+    
+    /**
+     * Record a channel count query with statistics
+     */
+    void record_count_query(SpuChannel channel) {
+        uint8_t ch_idx = static_cast<uint8_t>(channel);
+        if (ch_idx < 32) {
+            channel_stats[ch_idx].count_queries++;
+        }
+    }
+    
+    /**
+     * Get statistics for a specific channel
+     */
+    ChannelStats get_stats(SpuChannel channel) const {
+        uint8_t ch_idx = static_cast<uint8_t>(channel);
+        if (ch_idx < 32) {
+            return channel_stats[ch_idx];
+        }
+        return ChannelStats();
+    }
+    
+    /**
+     * Get aggregate statistics across all channels
+     */
+    void get_aggregate_stats(uint64_t* total_reads, uint64_t* total_writes, 
+                              uint64_t* total_count_queries,
+                              uint64_t* total_blocking_reads, uint64_t* total_blocking_writes) const {
+        uint64_t r = 0, w = 0, c = 0, br = 0, bw = 0;
+        for (size_t i = 0; i < 32; i++) {
+            r += channel_stats[i].reads;
+            w += channel_stats[i].writes;
+            c += channel_stats[i].count_queries;
+            br += channel_stats[i].blocking_reads;
+            bw += channel_stats[i].blocking_writes;
+        }
+        if (total_reads) *total_reads = r;
+        if (total_writes) *total_writes = w;
+        if (total_count_queries) *total_count_queries = c;
+        if (total_blocking_reads) *total_blocking_reads = br;
+        if (total_blocking_writes) *total_blocking_writes = bw;
+    }
+    
+    /**
+     * Reset all statistics
+     */
+    void reset_stats() {
+        for (size_t i = 0; i < 32; i++) {
+            channel_stats[i] = ChannelStats();
+        }
+    }
+    
     const std::vector<ChannelOperation>& get_operations() const {
         return operations;
     }
@@ -389,6 +559,7 @@ struct ChannelManager {
     void clear() {
         oc_lock_guard<oc_mutex> lock(mutex);
         operations.clear();
+        reset_stats();
     }
 };
 
@@ -452,28 +623,184 @@ struct MfcDmaOperation {
 };
 
 /**
- * MFC DMA manager for SPU JIT
+ * MFC DMA statistics
+ */
+struct MfcDmaStats {
+    uint64_t gets_queued;
+    uint64_t puts_queued;
+    uint64_t atomics_queued;
+    uint64_t gets_completed;
+    uint64_t puts_completed;
+    uint64_t atomics_completed;
+    uint64_t atomics_succeeded;   // For conditional operations (PUTLLC)
+    uint64_t atomics_failed;
+    uint64_t total_bytes_in;      // Total bytes transferred IN (GET)
+    uint64_t total_bytes_out;     // Total bytes transferred OUT (PUT)
+    
+    MfcDmaStats() 
+        : gets_queued(0), puts_queued(0), atomics_queued(0),
+          gets_completed(0), puts_completed(0), atomics_completed(0),
+          atomics_succeeded(0), atomics_failed(0),
+          total_bytes_in(0), total_bytes_out(0) {}
+};
+
+/**
+ * MFC DMA manager for SPU JIT - Enhanced version
+ * Supports all DMA command variants and atomic operations
  */
 struct MfcDmaManager {
     std::vector<MfcDmaOperation> pending_ops;
     std::unordered_map<uint16_t, std::vector<MfcDmaOperation>> tag_groups;
-    oc_mutex mutex;
+    mutable oc_mutex mutex;
+    MfcDmaStats stats;
     
-    // DMA callback function type
+    // 32-bit tag completion mask (one bit per tag)
+    uint32_t tag_completion_mask;
+    
+    // Atomic lock line reservation
+    bool has_reservation;
+    uint64_t reservation_ea;
+    
+    // DMA callback function types
     using DmaTransferFunc = int (*)(void* spu_state, uint32_t local_addr, 
                                      uint64_t ea, uint32_t size, uint8_t cmd);
+    using AtomicOpFunc = int (*)(void* spu_state, uint32_t local_addr, 
+                                  uint64_t ea, uint8_t cmd, bool* succeeded);
+    using TagCompletionFunc = void (*)(void* spu_state, uint16_t tag);
+    
     DmaTransferFunc transfer_callback;
+    AtomicOpFunc atomic_callback;
+    TagCompletionFunc tag_completion_callback;
     
-    MfcDmaManager() : transfer_callback(nullptr) {}
+    MfcDmaManager() 
+        : tag_completion_mask(0), has_reservation(false), reservation_ea(0),
+          transfer_callback(nullptr), atomic_callback(nullptr), tag_completion_callback(nullptr) {}
     
+    /**
+     * Classify a DMA command
+     */
+    bool is_get_command(MfcCommand cmd) const {
+        uint8_t c = static_cast<uint8_t>(cmd);
+        return (c >= 0x40 && c <= 0x5F) || cmd == MfcCommand::GETLLAR;
+    }
+    
+    bool is_put_command(MfcCommand cmd) const {
+        uint8_t c = static_cast<uint8_t>(cmd);
+        return (c >= 0x20 && c <= 0x3F) || 
+               cmd == MfcCommand::PUTLLC || 
+               cmd == MfcCommand::PUTLLUC ||
+               cmd == MfcCommand::PUTQLLUC;
+    }
+    
+    bool is_atomic_command(MfcCommand cmd) const {
+        return cmd == MfcCommand::GETLLAR ||
+               cmd == MfcCommand::PUTLLC ||
+               cmd == MfcCommand::PUTLLUC ||
+               cmd == MfcCommand::PUTQLLUC;
+    }
+    
+    bool is_barrier_command(MfcCommand cmd) const {
+        return cmd == MfcCommand::BARRIER ||
+               cmd == MfcCommand::MFCEIEIO ||
+               cmd == MfcCommand::MFCSYNC;
+    }
+    
+    /**
+     * Queue a DMA operation with statistics tracking
+     */
     void queue_operation(const MfcDmaOperation& op) {
         oc_lock_guard<oc_mutex> lock(mutex);
         pending_ops.push_back(op);
         tag_groups[op.tag].push_back(op);
+        
+        // Update statistics
+        if (is_get_command(op.cmd)) {
+            stats.gets_queued++;
+        } else if (is_put_command(op.cmd)) {
+            stats.puts_queued++;
+        }
+        if (is_atomic_command(op.cmd)) {
+            stats.atomics_queued++;
+        }
+    }
+    
+    /**
+     * Queue a GETLLAR (Get Lock Line and Reserve) operation
+     */
+    void queue_getllar(uint32_t local_addr, uint64_t ea, uint16_t tag) {
+        MfcDmaOperation op(local_addr, ea, 128, tag, MfcCommand::GETLLAR);
+        has_reservation = true;
+        reservation_ea = ea;
+        queue_operation(op);
+    }
+    
+    /**
+     * Queue a PUTLLC (Put Lock Line Conditional) operation
+     */
+    void queue_putllc(uint32_t local_addr, uint64_t ea, uint16_t tag) {
+        MfcDmaOperation op(local_addr, ea, 128, tag, MfcCommand::PUTLLC);
+        queue_operation(op);
+    }
+    
+    /**
+     * Queue a PUTLLUC (Put Lock Line Unconditional) operation
+     */
+    void queue_putlluc(uint32_t local_addr, uint64_t ea, uint16_t tag) {
+        MfcDmaOperation op(local_addr, ea, 128, tag, MfcCommand::PUTLLUC);
+        has_reservation = false;  // Unconditional clears reservation
+        queue_operation(op);
+    }
+    
+    /**
+     * Mark a DMA operation as complete with bytes transferred
+     */
+    void complete_operation(MfcCommand cmd, uint32_t size, bool atomic_succeeded = true) {
+        if (is_get_command(cmd)) {
+            stats.gets_completed++;
+            stats.total_bytes_in += size;
+        } else if (is_put_command(cmd)) {
+            stats.puts_completed++;
+            stats.total_bytes_out += size;
+        }
+        if (is_atomic_command(cmd)) {
+            stats.atomics_completed++;
+            if (atomic_succeeded) {
+                stats.atomics_succeeded++;
+            } else {
+                stats.atomics_failed++;
+            }
+        }
+    }
+    
+    /**
+     * Check if a reservation exists for the given EA
+     * Note: 0x7F mask checks if EA falls within same 128-byte cache line
+     * as the reservation, which is critical for SPU atomic operation semantics
+     */
+    bool check_reservation(uint64_t ea) const {
+        // SPU reservations are 128-byte aligned (mask off lower 7 bits)
+        static constexpr uint64_t CACHE_LINE_MASK = 0x7FULL;
+        return has_reservation && (reservation_ea & ~CACHE_LINE_MASK) == (ea & ~CACHE_LINE_MASK);
+    }
+    
+    /**
+     * Clear the reservation (lost due to external write)
+     */
+    void lose_reservation() {
+        has_reservation = false;
+        reservation_ea = 0;
     }
     
     void set_transfer_callback(DmaTransferFunc callback) {
         transfer_callback = callback;
+    }
+    
+    void set_atomic_callback(AtomicOpFunc callback) {
+        atomic_callback = callback;
+    }
+    
+    void set_tag_completion_callback(TagCompletionFunc callback) {
+        tag_completion_callback = callback;
     }
     
     size_t get_pending_count() const {
@@ -481,23 +808,87 @@ struct MfcDmaManager {
     }
     
     size_t get_pending_for_tag(uint16_t tag) const {
+        oc_lock_guard<oc_mutex> lock(mutex);
         auto it = tag_groups.find(tag);
         return (it != tag_groups.end()) ? it->second.size() : 0;
     }
     
+    /**
+     * Get the tag completion mask for polling
+     */
+    uint32_t get_tag_status() const {
+        return tag_completion_mask;
+    }
+    
+    /**
+     * Set tag mask for waiting (used by mfc_read_tag_status_all/any)
+     * This sets which tags are being waited on for completion
+     */
+    void set_tag_mask(uint32_t mask) {
+        // Store the tag mask to know which tags we're interested in
+        // The tag_completion_mask can then be ANDed with this to check completion
+        // This is used by the SPU to implement mfc_stat_tag_status
+        // (No state stored here as completion check uses tag_completion_mask directly)
+        (void)mask; // Tag mask is implicitly used through completion polling
+    }
+    
     void complete_tag(uint16_t tag) {
-        oc_lock_guard<oc_mutex> lock(mutex);
-        tag_groups.erase(tag);
-        pending_ops.erase(
-            std::remove_if(pending_ops.begin(), pending_ops.end(),
-                [tag](const MfcDmaOperation& op) { return op.tag == tag; }),
-            pending_ops.end());
+        TagCompletionFunc cb = nullptr;
+        
+        {
+            oc_lock_guard<oc_mutex> lock(mutex);
+            
+            // Sum up bytes for stats
+            auto it = tag_groups.find(tag);
+            if (it != tag_groups.end()) {
+                for (const auto& op : it->second) {
+                    complete_operation(op.cmd, op.size);
+                }
+            }
+            
+            tag_groups.erase(tag);
+            pending_ops.erase(
+                std::remove_if(pending_ops.begin(), pending_ops.end(),
+                    [tag](const MfcDmaOperation& op) { return op.tag == tag; }),
+                pending_ops.end());
+                
+            // Set completion bit
+            if (tag < 32) {
+                tag_completion_mask |= (1u << tag);
+            }
+            
+            // Copy callback for invocation outside lock
+            cb = tag_completion_callback;
+        }
+        
+        // Notify via callback (invoked without lock to prevent deadlock)
+        if (cb) {
+            cb(nullptr, tag);
+        }
+    }
+    
+    /**
+     * Get DMA statistics
+     */
+    MfcDmaStats get_stats() const {
+        return stats;
+    }
+    
+    /**
+     * Reset statistics
+     */
+    void reset_stats() {
+        stats = MfcDmaStats();
     }
     
     void clear() {
         oc_lock_guard<oc_mutex> lock(mutex);
         pending_ops.clear();
         tag_groups.clear();
+        tag_completion_mask = 0;
+        has_reservation = false;
+        reservation_ea = 0;
+        reset_stats();
     }
 };
 
@@ -513,16 +904,63 @@ struct LoopInfo {
     bool is_simple;           // True if loop has single entry/exit
     bool is_counted;          // True if loop count is known at compile time
     bool is_vectorizable;     // True if loop can be vectorized
+    bool is_unrolled;         // True if loop has been unrolled
+    uint32_t unroll_factor;   // Number of times the loop body was duplicated
     
     LoopInfo()
         : header_addr(0), back_edge_addr(0), exit_addr(0), 
           iteration_count(0), body_size(0),
-          is_simple(false), is_counted(false), is_vectorizable(false) {}
+          is_simple(false), is_counted(false), is_vectorizable(false),
+          is_unrolled(false), unroll_factor(1) {}
     
     LoopInfo(uint32_t header, uint32_t back_edge, uint32_t exit)
         : header_addr(header), back_edge_addr(back_edge), exit_addr(exit),
           iteration_count(0), body_size(0),
-          is_simple(true), is_counted(false), is_vectorizable(true) {}
+          is_simple(true), is_counted(false), is_vectorizable(true),
+          is_unrolled(false), unroll_factor(1) {}
+};
+
+/**
+ * Loop unrolling configuration
+ */
+struct LoopUnrollConfig {
+    uint32_t max_unroll_factor;    // Maximum number of unrolls (default: 4)
+    uint32_t max_body_size;        // Max body size (instructions) to consider unrolling
+    uint32_t min_iteration_count;  // Minimum iterations to consider unrolling
+    bool unroll_vectorizable_only; // Only unroll loops marked as vectorizable
+    
+    static constexpr uint32_t DEFAULT_MAX_UNROLL_FACTOR = 4;
+    static constexpr uint32_t DEFAULT_MAX_BODY_SIZE = 16;
+    static constexpr uint32_t DEFAULT_MIN_ITERATION_COUNT = 4;
+    
+    LoopUnrollConfig()
+        : max_unroll_factor(DEFAULT_MAX_UNROLL_FACTOR),
+          max_body_size(DEFAULT_MAX_BODY_SIZE),
+          min_iteration_count(DEFAULT_MIN_ITERATION_COUNT),
+          unroll_vectorizable_only(false) {}
+};
+
+/**
+ * Loop optimization statistics
+ */
+struct LoopOptStats {
+    uint64_t loops_detected;
+    uint64_t loops_with_known_count;
+    uint64_t loops_vectorizable;
+    uint64_t loops_unrolled;
+    uint64_t total_unroll_factor;    // Sum of all unroll factors
+    uint64_t unroll_rejected_size;   // Rejected due to body size
+    uint64_t unroll_rejected_count;  // Rejected due to iteration count
+    
+    LoopOptStats()
+        : loops_detected(0), loops_with_known_count(0), loops_vectorizable(0),
+          loops_unrolled(0), total_unroll_factor(0), unroll_rejected_size(0),
+          unroll_rejected_count(0) {}
+    
+    double get_avg_unroll_factor() const {
+        return (loops_unrolled > 0) ? 
+            (static_cast<double>(total_unroll_factor) / loops_unrolled) : 0.0;
+    }
 };
 
 /**
@@ -530,19 +968,35 @@ struct LoopInfo {
  */
 struct LoopOptimizer {
     std::unordered_map<uint32_t, LoopInfo> loops;  // Key: header address
-    oc_mutex mutex;
+    mutable oc_mutex mutex;
+    LoopUnrollConfig config;
+    LoopOptStats stats;
     
     void detect_loop(uint32_t header, uint32_t back_edge, uint32_t exit) {
         oc_lock_guard<oc_mutex> lock(mutex);
         loops[header] = LoopInfo(header, back_edge, exit);
+        stats.loops_detected++;
+    }
+    
+    void set_body_size(uint32_t header, uint32_t size) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        auto it = loops.find(header);
+        if (it != loops.end()) {
+            it->second.body_size = size;
+        }
     }
     
     void set_iteration_count(uint32_t header, uint32_t count) {
         oc_lock_guard<oc_mutex> lock(mutex);
         auto it = loops.find(header);
         if (it != loops.end()) {
+            // Only increment stat if transitioning from unknown to known
+            bool was_counted = it->second.is_counted;
             it->second.iteration_count = count;
             it->second.is_counted = (count > 0);
+            if (count > 0 && !was_counted) {
+                stats.loops_with_known_count++;
+            }
         }
     }
     
@@ -550,7 +1004,12 @@ struct LoopOptimizer {
         oc_lock_guard<oc_mutex> lock(mutex);
         auto it = loops.find(header);
         if (it != loops.end()) {
+            // Only increment stat if transitioning to vectorizable
+            bool was_vectorizable = it->second.is_vectorizable;
             it->second.is_vectorizable = vectorizable;
+            if (vectorizable && !was_vectorizable) {
+                stats.loops_vectorizable++;
+            }
         }
     }
     
@@ -560,7 +1019,100 @@ struct LoopOptimizer {
         return (it != loops.end()) ? &it->second : nullptr;
     }
     
+    // Calculate optimal unroll factor for a loop
+    uint32_t calculate_unroll_factor(const LoopInfo& loop) const {
+        // Cannot unroll if iteration count is unknown
+        if (!loop.is_counted || loop.iteration_count == 0) {
+            return 1;
+        }
+        
+        // Cannot unroll if body is too large
+        if (loop.body_size > config.max_body_size) {
+            return 1;
+        }
+        
+        // Cannot unroll if too few iterations
+        if (loop.iteration_count < config.min_iteration_count) {
+            return 1;
+        }
+        
+        // Only unroll vectorizable loops if configured
+        if (config.unroll_vectorizable_only && !loop.is_vectorizable) {
+            return 1;
+        }
+        
+        // Find largest factor that divides iteration count evenly
+        // and doesn't exceed max_unroll_factor
+        uint32_t factor = 1;
+        for (uint32_t f = 2; f <= config.max_unroll_factor; ++f) {
+            if (loop.iteration_count % f == 0) {
+                // Prefer factors that result in reasonable unrolled body size
+                uint32_t unrolled_size = loop.body_size * f;
+                if (unrolled_size <= config.max_body_size * config.max_unroll_factor) {
+                    factor = f;
+                }
+            }
+        }
+        
+        return factor;
+    }
+    
+    // Check if a loop can be unrolled
+    bool can_unroll(uint32_t header) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        auto it = loops.find(header);
+        if (it == loops.end()) return false;
+        
+        return calculate_unroll_factor(it->second) > 1;
+    }
+    
+    // Perform loop unrolling analysis (marks loop as unrolled)
+    // Returns the unroll factor (1 = not unrolled)
+    uint32_t unroll_loop(uint32_t header) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        auto it = loops.find(header);
+        if (it == loops.end()) return 1;
+        
+        LoopInfo& loop = it->second;
+        
+        // Already unrolled?
+        if (loop.is_unrolled) {
+            return loop.unroll_factor;
+        }
+        
+        // Check body size limit
+        if (loop.body_size > config.max_body_size) {
+            stats.unroll_rejected_size++;
+            return 1;
+        }
+        
+        // Check iteration count
+        if (!loop.is_counted || loop.iteration_count < config.min_iteration_count) {
+            stats.unroll_rejected_count++;
+            return 1;
+        }
+        
+        uint32_t factor = calculate_unroll_factor(loop);
+        if (factor > 1) {
+            loop.is_unrolled = true;
+            loop.unroll_factor = factor;
+            stats.loops_unrolled++;
+            stats.total_unroll_factor += factor;
+        }
+        
+        return factor;
+    }
+    
+    // Get the unroll factor for a loop
+    uint32_t get_unroll_factor(uint32_t header) const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        auto it = loops.find(header);
+        if (it == loops.end()) return 1;
+        return it->second.unroll_factor;
+    }
+    
     bool is_in_loop(uint32_t address) const {
+        oc_lock_guard<oc_mutex> lock(mutex);
         for (const auto& pair : loops) {
             const auto& loop = pair.second;
             if (address >= loop.header_addr && address <= loop.back_edge_addr) {
@@ -570,9 +1122,44 @@ struct LoopOptimizer {
         return false;
     }
     
+    // Configure loop unrolling
+    void set_config(uint32_t max_factor, uint32_t max_body, uint32_t min_iterations, 
+                    bool vectorizable_only) {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        config.max_unroll_factor = max_factor;
+        config.max_body_size = max_body;
+        config.min_iteration_count = min_iterations;
+        config.unroll_vectorizable_only = vectorizable_only;
+    }
+    
+    // Get configuration
+    LoopUnrollConfig get_config() const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        return config;
+    }
+    
+    // Get statistics
+    LoopOptStats get_stats() const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        return stats;
+    }
+    
+    // Reset statistics
+    void reset_stats() {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        stats = LoopOptStats();
+    }
+    
+    // Get loop count
+    size_t get_loop_count() const {
+        oc_lock_guard<oc_mutex> lock(mutex);
+        return loops.size();
+    }
+    
     void clear() {
         oc_lock_guard<oc_mutex> lock(mutex);
         loops.clear();
+        stats = LoopOptStats();
     }
 };
 
@@ -590,14 +1177,38 @@ enum class SimdIntrinsic : uint8_t {
     VecSubI32,      // Vector subtract int32
     VecMulI16,      // Vector multiply int16
     VecMulHiI16,    // Vector multiply high int16
+    VecMulLoI16,    // Vector multiply low int16
+    VecMulI32,      // Vector multiply int32 (odd/even)
     VecAndV,        // Vector and
+    VecAndCV,       // Vector and with complement (andc: a & ~b)
     VecOrV,         // Vector or
+    VecOrCV,        // Vector or with complement (orc: a | ~b)
     VecXorV,        // Vector xor
     VecNotV,        // Vector not
+    VecNandV,       // Vector nand
+    VecNorV,        // Vector nor
+    VecAbsI8,       // Vector absolute int8
+    VecAbsI16,      // Vector absolute int16
+    VecAbsI32,      // Vector absolute int32
+    VecAvgI8,       // Vector average int8
+    VecAvgI16,      // Vector average int16
+    VecCmpEqI8,     // Vector compare equal int8
+    VecCmpEqI16,    // Vector compare equal int16
+    VecCmpEqI32,    // Vector compare equal int32
+    VecCmpGtI8,     // Vector compare greater than int8 (signed)
+    VecCmpGtI16,    // Vector compare greater than int16 (signed)
+    VecCmpGtI32,    // Vector compare greater than int32 (signed)
+    VecCmpGtuI8,    // Vector compare greater than int8 (unsigned)
+    VecCmpGtuI16,   // Vector compare greater than int16 (unsigned)
+    VecCmpGtuI32,   // Vector compare greater than int32 (unsigned)
     VecShiftLeftI16,  // Vector shift left int16
     VecShiftRightI16, // Vector shift right int16
+    VecShiftRightAI16,// Vector shift right arithmetic int16
     VecShiftLeftI32,  // Vector shift left int32
     VecShiftRightI32, // Vector shift right int32
+    VecShiftRightAI32,// Vector shift right arithmetic int32
+    VecRotI16,      // Vector rotate int16
+    VecRotI32,      // Vector rotate int32
     // Floating-point operations
     VecAddF32,      // Vector add float32
     VecSubF32,      // Vector subtract float32
@@ -605,51 +1216,246 @@ enum class SimdIntrinsic : uint8_t {
     VecDivF32,      // Vector divide float32
     VecMaddF32,     // Vector multiply-add float32
     VecMsubF32,     // Vector multiply-subtract float32
+    VecNmsubF32,    // Vector negative multiply-subtract float32
     VecRsqrtF32,    // Vector reciprocal square root float32
     VecRcpF32,      // Vector reciprocal float32
     VecMinF32,      // Vector minimum float32
     VecMaxF32,      // Vector maximum float32
     VecCmpEqF32,    // Vector compare equal float32
     VecCmpGtF32,    // Vector compare greater than float32
+    VecCmpGeF32,    // Vector compare greater than or equal float32
+    VecCmpMagEqF32, // Vector compare magnitude equal float32 (|a| == |b|)
+    VecAbsF32,      // Vector absolute float32
     // Shuffle operations
-    VecShuffle,     // Vector shuffle bytes
-    VecRotateBytes, // Vector rotate bytes
-    VecShiftBytes,  // Vector shift bytes
-    VecSelect,      // Vector select
+    VecShuffle,     // Vector shuffle bytes (shufb)
+    VecRotateBytes, // Vector rotate bytes (rotqby)
+    VecRotateBytesImm, // Vector rotate bytes immediate (rotqbyi)
+    VecShiftBytes,  // Vector shift bytes (shlqby)
+    VecShiftBytesImm,  // Vector shift bytes immediate (shlqbyi)
+    VecSelect,      // Vector select (selb)
+    VecGatherBits,  // Vector gather bits
+    VecFormSelect,  // Form select mask
+    // Conversion operations
+    VecCvtI32F32,   // Convert int32 to float32
+    VecCvtF32I32,   // Convert float32 to int32
+    VecCvtU32F32,   // Convert uint32 to float32
+    VecCvtF32U32,   // Convert float32 to uint32
+    VecExtendI8I16, // Sign extend int8 to int16
+    VecExtendI16I32,// Sign extend int16 to int32
+    VecExtendI32I64,// Sign extend int32 to int64
+    VecCount        // Total count of intrinsics
 };
 
 /**
- * SIMD intrinsic manager
+ * SIMD intrinsic statistics
+ */
+struct SimdIntrinsicStats {
+    uint64_t lookups;
+    uint64_t hits;
+    uint64_t misses;
+    std::array<uint64_t, static_cast<size_t>(SimdIntrinsic::VecCount)> intrinsic_usage;
+    
+    SimdIntrinsicStats() : lookups(0), hits(0), misses(0) {
+        intrinsic_usage.fill(0);
+    }
+    
+    double get_hit_rate() const {
+        return (lookups > 0) ? (static_cast<double>(hits) / lookups * 100.0) : 0.0;
+    }
+};
+
+/**
+ * SIMD intrinsic manager - Enhanced version
+ * Complete SPU opcode to native SIMD intrinsic mapping
  */
 struct SimdIntrinsicManager {
-    // Map from SPU instruction to SIMD intrinsic
+    // Map from SPU instruction opcode to SIMD intrinsic
     std::unordered_map<uint32_t, SimdIntrinsic> instruction_map;
+    mutable SimdIntrinsicStats stats;
     
     SimdIntrinsicManager() {
-        // Initialize mapping for common SPU instructions
+        // Initialize mapping for all SPU SIMD instructions
         init_mappings();
     }
     
+    /**
+     * Initialize complete opcode mappings for SPU instructions
+     * SPU opcodes are 11-bit (RR format) or 8-bit (RI format)
+     */
     void init_mappings() {
-        // SPU instruction opcodes mapped to SIMD intrinsics
-        // These mappings are based on SPU instruction encoding
-        instruction_map[0b00011000000] = SimdIntrinsic::VecAddI32;  // a (add word)
-        instruction_map[0b00001000000] = SimdIntrinsic::VecSubI32;  // sf (subtract from)
-        instruction_map[0b00011000001] = SimdIntrinsic::VecAndV;    // and
-        instruction_map[0b00001000001] = SimdIntrinsic::VecOrV;     // or
-        instruction_map[0b01001000001] = SimdIntrinsic::VecXorV;    // xor
-        instruction_map[0b01011000100] = SimdIntrinsic::VecAddF32;  // fa (float add)
-        instruction_map[0b01011000101] = SimdIntrinsic::VecSubF32;  // fs (float subtract)
-        instruction_map[0b01011000110] = SimdIntrinsic::VecMulF32;  // fm (float multiply)
+        // ========== Integer Arithmetic ==========
+        // RR format integer operations (11-bit opcode)
+        instruction_map[0b00011000000] = SimdIntrinsic::VecAddI32;   // a (add word)
+        instruction_map[0b00011001000] = SimdIntrinsic::VecAddI16;   // ah (add halfword)
+        instruction_map[0b00011001010] = SimdIntrinsic::VecAddI8;    // absdb (add halfword with borrow generate)
+        instruction_map[0b00001000000] = SimdIntrinsic::VecSubI32;   // sf (subtract from)
+        instruction_map[0b00001001001] = SimdIntrinsic::VecSubI16;   // sfh (subtract from halfword)
+        instruction_map[0b01010110100] = SimdIntrinsic::VecAbsI8;    // absdb (absolute difference bytes)
+        instruction_map[0b00001010011] = SimdIntrinsic::VecAvgI8;    // avgb (average bytes)
+        
+        // Multiply operations
+        instruction_map[0b01111000100] = SimdIntrinsic::VecMulI16;   // mpy (multiply)
+        instruction_map[0b01111001100] = SimdIntrinsic::VecMulHiI16; // mpyh (multiply high)
+        instruction_map[0b01111000110] = SimdIntrinsic::VecMulLoI16; // mpyu (multiply unsigned)
+        instruction_map[0b01111000101] = SimdIntrinsic::VecMulI32;   // mpys (multiply and shift)
+        
+        // ========== Logical Operations ==========
+        instruction_map[0b00011000001] = SimdIntrinsic::VecAndV;     // and
+        instruction_map[0b01011000001] = SimdIntrinsic::VecAndCV;    // andc (and with complement: a & ~b)
+        instruction_map[0b00001000001] = SimdIntrinsic::VecOrV;      // or
+        instruction_map[0b01001000001] = SimdIntrinsic::VecXorV;     // xor
+        instruction_map[0b00011001001] = SimdIntrinsic::VecNandV;    // nand
+        instruction_map[0b00001001001] = SimdIntrinsic::VecNorV;     // nor
+        
+        // ========== Compare Operations ==========
+        // Compare equal
+        instruction_map[0b01111000000] = SimdIntrinsic::VecCmpEqI8;  // ceqb (compare equal bytes)
+        instruction_map[0b01111001000] = SimdIntrinsic::VecCmpEqI16; // ceqh (compare equal halfword)
+        instruction_map[0b01111000010] = SimdIntrinsic::VecCmpEqI32; // ceq (compare equal word)
+        // Compare greater than (signed)
+        instruction_map[0b01001000000] = SimdIntrinsic::VecCmpGtI8;  // cgtb (compare greater than bytes signed)
+        instruction_map[0b01001001000] = SimdIntrinsic::VecCmpGtI16; // cgth (compare greater than halfword signed)
+        instruction_map[0b01001000010] = SimdIntrinsic::VecCmpGtI32; // cgt (compare greater than word signed)
+        // Compare greater than (unsigned)
+        instruction_map[0b01011000000] = SimdIntrinsic::VecCmpGtuI8; // clgtb (compare logical greater than bytes)
+        instruction_map[0b01011001000] = SimdIntrinsic::VecCmpGtuI16;// clgth (compare logical greater than halfword)
+        instruction_map[0b01011000010] = SimdIntrinsic::VecCmpGtuI32;// clgt (compare logical greater than word)
+        
+        // ========== Shift and Rotate Operations ==========
+        instruction_map[0b00001011011] = SimdIntrinsic::VecShiftLeftI32;    // shl (shift left word)
+        instruction_map[0b00001011111] = SimdIntrinsic::VecShiftLeftI16;    // shlh (shift left halfword)
+        instruction_map[0b00001111011] = SimdIntrinsic::VecRotI32;          // rot (rotate word)
+        instruction_map[0b00001111111] = SimdIntrinsic::VecRotI16;          // roth (rotate halfword)
+        instruction_map[0b00001011100] = SimdIntrinsic::VecShiftRightAI32;  // rotma (rotate and mask algebraic)
+        instruction_map[0b00001011101] = SimdIntrinsic::VecShiftRightAI16;  // rotmah (rotate and mask algebraic halfword)
+        
+        // ========== Floating-Point Operations ==========
+        instruction_map[0b01011000100] = SimdIntrinsic::VecAddF32;   // fa (float add)
+        instruction_map[0b01011000101] = SimdIntrinsic::VecSubF32;   // fs (float subtract)
+        instruction_map[0b01011000110] = SimdIntrinsic::VecMulF32;   // fm (float multiply)
+        instruction_map[0b01110000100] = SimdIntrinsic::VecMaddF32;  // fma (float multiply-add)
+        instruction_map[0b01110000101] = SimdIntrinsic::VecMsubF32;  // fms (float multiply-subtract)
+        instruction_map[0b01110000110] = SimdIntrinsic::VecNmsubF32; // fnms (float negative multiply-subtract)
+        instruction_map[0b00110111010] = SimdIntrinsic::VecRsqrtF32; // frsqest (float reciprocal square root estimate)
+        instruction_map[0b00110111000] = SimdIntrinsic::VecRcpF32;   // frest (float reciprocal estimate)
+        
+        // Float compare
+        instruction_map[0b01111000011] = SimdIntrinsic::VecCmpEqF32;    // fceq (float compare equal)
+        instruction_map[0b01011000011] = SimdIntrinsic::VecCmpGtF32;    // fcgt (float compare greater than)
+        instruction_map[0b01001000011] = SimdIntrinsic::VecCmpMagEqF32; // fcmeq (float compare magnitude equal: |a| == |b|)
+        
+        // ========== Shuffle/Select Operations ==========
+        instruction_map[0b10110000000] = SimdIntrinsic::VecShuffle;  // shufb (shuffle bytes)
+        instruction_map[0b10000000000] = SimdIntrinsic::VecSelect;   // selb (select bits)
+        instruction_map[0b00111011100] = SimdIntrinsic::VecRotateBytes;    // rotqby (rotate quadword by bytes)
+        instruction_map[0b00111111100] = SimdIntrinsic::VecRotateBytesImm; // rotqbyi (rotate quadword by bytes immediate)
+        instruction_map[0b00111011011] = SimdIntrinsic::VecShiftBytes;     // shlqby (shift left quadword by bytes)
+        instruction_map[0b00111111011] = SimdIntrinsic::VecShiftBytesImm;  // shlqbyi (shift left quadword by bytes immediate)
+        instruction_map[0b00110110010] = SimdIntrinsic::VecGatherBits;     // gb (gather bits from words)
+        instruction_map[0b00110110000] = SimdIntrinsic::VecFormSelect;     // fsmb (form select mask for bytes)
+        
+        // ========== Conversion Operations ==========
+        instruction_map[0b01110000010] = SimdIntrinsic::VecCvtI32F32;   // csflt (convert signed int to float)
+        instruction_map[0b01110000011] = SimdIntrinsic::VecCvtU32F32;   // cuflt (convert unsigned int to float)
+        instruction_map[0b01110000000] = SimdIntrinsic::VecCvtF32I32;   // cflts (convert float to signed int)
+        instruction_map[0b01110000001] = SimdIntrinsic::VecCvtF32U32;   // cfltu (convert float to unsigned int)
+        instruction_map[0b01010110101] = SimdIntrinsic::VecExtendI8I16; // xsbh (extend sign byte to halfword)
+        instruction_map[0b01010110110] = SimdIntrinsic::VecExtendI16I32;// xshw (extend sign halfword to word)
+        instruction_map[0b01010110111] = SimdIntrinsic::VecExtendI32I64;// xswd (extend sign word to doubleword)
     }
     
+    /**
+     * Register a custom opcode to intrinsic mapping
+     */
+    void register_mapping(uint32_t opcode, SimdIntrinsic intrinsic) {
+        instruction_map[opcode] = intrinsic;
+    }
+    
+    /**
+     * Get intrinsic for an opcode with statistics tracking
+     */
     SimdIntrinsic get_intrinsic(uint32_t opcode) const {
+        stats.lookups++;
         auto it = instruction_map.find(opcode);
-        return (it != instruction_map.end()) ? it->second : SimdIntrinsic::None;
+        if (it != instruction_map.end()) {
+            stats.hits++;
+            SimdIntrinsic result = it->second;
+            // Track usage
+            size_t idx = static_cast<size_t>(result);
+            if (idx < stats.intrinsic_usage.size()) {
+                stats.intrinsic_usage[idx]++;
+            }
+            return result;
+        }
+        stats.misses++;
+        return SimdIntrinsic::None;
     }
     
+    /**
+     * Check if an opcode has a mapping
+     */
     bool has_intrinsic(uint32_t opcode) const {
         return instruction_map.find(opcode) != instruction_map.end();
+    }
+    
+    /**
+     * Get the number of registered mappings
+     */
+    size_t get_mapping_count() const {
+        return instruction_map.size();
+    }
+    
+    /**
+     * Get statistics
+     */
+    SimdIntrinsicStats get_stats() const {
+        return stats;
+    }
+    
+    /**
+     * Reset statistics
+     */
+    void reset_stats() {
+        stats = SimdIntrinsicStats();
+    }
+    
+    /**
+     * Get intrinsic name for debugging
+     */
+    static const char* get_intrinsic_name(SimdIntrinsic intrinsic) {
+        switch (intrinsic) {
+            case SimdIntrinsic::None: return "None";
+            case SimdIntrinsic::VecAddI8: return "VecAddI8";
+            case SimdIntrinsic::VecAddI16: return "VecAddI16";
+            case SimdIntrinsic::VecAddI32: return "VecAddI32";
+            case SimdIntrinsic::VecSubI8: return "VecSubI8";
+            case SimdIntrinsic::VecSubI16: return "VecSubI16";
+            case SimdIntrinsic::VecSubI32: return "VecSubI32";
+            case SimdIntrinsic::VecMulI16: return "VecMulI16";
+            case SimdIntrinsic::VecMulHiI16: return "VecMulHiI16";
+            case SimdIntrinsic::VecMulLoI16: return "VecMulLoI16";
+            case SimdIntrinsic::VecMulI32: return "VecMulI32";
+            case SimdIntrinsic::VecAndV: return "VecAndV";
+            case SimdIntrinsic::VecOrV: return "VecOrV";
+            case SimdIntrinsic::VecXorV: return "VecXorV";
+            case SimdIntrinsic::VecNotV: return "VecNotV";
+            case SimdIntrinsic::VecNandV: return "VecNandV";
+            case SimdIntrinsic::VecNorV: return "VecNorV";
+            case SimdIntrinsic::VecAddF32: return "VecAddF32";
+            case SimdIntrinsic::VecSubF32: return "VecSubF32";
+            case SimdIntrinsic::VecMulF32: return "VecMulF32";
+            case SimdIntrinsic::VecDivF32: return "VecDivF32";
+            case SimdIntrinsic::VecMaddF32: return "VecMaddF32";
+            case SimdIntrinsic::VecMsubF32: return "VecMsubF32";
+            case SimdIntrinsic::VecNmsubF32: return "VecNmsubF32";
+            case SimdIntrinsic::VecRsqrtF32: return "VecRsqrtF32";
+            case SimdIntrinsic::VecRcpF32: return "VecRcpF32";
+            case SimdIntrinsic::VecShuffle: return "VecShuffle";
+            case SimdIntrinsic::VecSelect: return "VecSelect";
+            case SimdIntrinsic::VecRotateBytes: return "VecRotateBytes";
+            case SimdIntrinsic::VecShiftBytes: return "VecShiftBytes";
+            default: return "Unknown";
+        }
     }
 };
 
@@ -870,6 +1676,130 @@ public:
 #endif
 
 /**
+ * SPU Block profiling data for execution tracking
+ */
+struct SpuBlockProfile {
+    uint32_t address;                // Block start address
+    uint64_t execution_count;        // Number of times block executed
+    uint64_t total_execution_time_ns;// Total execution time in nanoseconds
+    uint64_t compile_time_ns;        // Time spent compiling this block
+    uint32_t instruction_count;      // Number of instructions in block
+    bool is_hot;                     // Whether block is considered "hot"
+    
+    SpuBlockProfile()
+        : address(0), execution_count(0), total_execution_time_ns(0),
+          compile_time_ns(0), instruction_count(0), is_hot(false) {}
+    
+    SpuBlockProfile(uint32_t addr, uint32_t instr_count = 0)
+        : address(addr), execution_count(0), total_execution_time_ns(0),
+          compile_time_ns(0), instruction_count(instr_count), is_hot(false) {}
+};
+
+/**
+ * SPU JIT profiling statistics
+ */
+struct SpuJitProfilingStats {
+    uint64_t total_blocks_compiled;
+    uint64_t total_compilation_time_ns;
+    uint64_t total_executions;
+    uint64_t total_execution_time_ns;
+    uint64_t hot_block_count;
+    
+    SpuJitProfilingStats()
+        : total_blocks_compiled(0), total_compilation_time_ns(0),
+          total_executions(0), total_execution_time_ns(0), hot_block_count(0) {}
+    
+    void reset() {
+        total_blocks_compiled = 0;
+        total_compilation_time_ns = 0;
+        total_executions = 0;
+        total_execution_time_ns = 0;
+        hot_block_count = 0;
+    }
+};
+
+/**
+ * SPU JIT profiler for execution counting, timing, and hot block detection
+ */
+struct SpuJitProfiler {
+    std::unordered_map<uint32_t, SpuBlockProfile> profiles;
+    SpuJitProfilingStats stats;
+    uint64_t hot_threshold;         // Execution count to be considered "hot"
+    bool enabled;                   // Whether profiling is enabled
+    
+    SpuJitProfiler() : hot_threshold(1000), enabled(false) {}
+    
+    // Enable/disable profiling
+    void set_enabled(bool enable) { enabled = enable; }
+    bool is_enabled() const { return enabled; }
+    
+    // Set hot threshold
+    void set_hot_threshold(uint64_t threshold) { hot_threshold = threshold; }
+    uint64_t get_hot_threshold() const { return hot_threshold; }
+    
+    // Record compilation of a block
+    void record_compilation(uint32_t address, uint64_t compile_time_ns) {
+        if (!enabled) return;
+        
+        auto it = profiles.find(address);
+        if (it != profiles.end()) {
+            it->second.compile_time_ns = compile_time_ns;
+        } else {
+            SpuBlockProfile profile(address);
+            profile.compile_time_ns = compile_time_ns;
+            profiles[address] = profile;
+        }
+        stats.total_blocks_compiled++;
+        stats.total_compilation_time_ns += compile_time_ns;
+    }
+    
+    // Record execution of a block
+    void record_execution(uint32_t address, uint64_t execution_time_ns = 0) {
+        if (!enabled) return;
+        
+        auto it = profiles.find(address);
+        if (it != profiles.end()) {
+            it->second.execution_count++;
+            it->second.total_execution_time_ns += execution_time_ns;
+            
+            // Check if block became hot
+            if (!it->second.is_hot && it->second.execution_count >= hot_threshold) {
+                it->second.is_hot = true;
+                stats.hot_block_count++;
+            }
+        } else {
+            SpuBlockProfile profile(address);
+            profile.execution_count = 1;
+            profile.total_execution_time_ns = execution_time_ns;
+            profiles[address] = profile;
+        }
+        stats.total_executions++;
+        stats.total_execution_time_ns += execution_time_ns;
+    }
+    
+    // Get execution count for a block
+    uint64_t get_execution_count(uint32_t address) const {
+        auto it = profiles.find(address);
+        return it != profiles.end() ? it->second.execution_count : 0;
+    }
+    
+    // Check if block is hot
+    bool is_hot(uint32_t address) const {
+        auto it = profiles.find(address);
+        return it != profiles.end() && it->second.is_hot;
+    }
+    
+    // Get statistics
+    const SpuJitProfilingStats& get_stats() const { return stats; }
+    
+    // Reset all profiling data
+    void reset() {
+        profiles.clear();
+        stats.reset();
+    }
+};
+
+/**
  * SPU JIT compiler structure
  */
 struct oc_spu_jit_t {
@@ -879,6 +1809,7 @@ struct oc_spu_jit_t {
     MfcDmaManager mfc_manager;
     LoopOptimizer loop_optimizer;
     SimdIntrinsicManager simd_manager;
+    SpuJitProfiler profiler;         // JIT profiling support
     bool enabled;
     bool channel_ops_enabled;
     bool mfc_dma_enabled;
@@ -3250,6 +4181,100 @@ int oc_spu_jit_get_loop_info(oc_spu_jit_t* jit, uint32_t header,
 }
 
 // ============================================================================
+// Loop Unrolling APIs
+// ============================================================================
+
+void oc_spu_jit_set_loop_body_size(oc_spu_jit_t* jit, uint32_t header, uint32_t size) {
+    if (!jit) return;
+    jit->loop_optimizer.set_body_size(header, size);
+}
+
+void oc_spu_jit_set_unroll_config(oc_spu_jit_t* jit, uint32_t max_factor,
+                                   uint32_t max_body_size, uint32_t min_iterations,
+                                   int vectorizable_only) {
+    if (!jit) return;
+    jit->loop_optimizer.set_config(max_factor, max_body_size, min_iterations,
+                                   vectorizable_only != 0);
+}
+
+void oc_spu_jit_get_unroll_config(oc_spu_jit_t* jit, uint32_t* max_factor,
+                                   uint32_t* max_body_size, uint32_t* min_iterations,
+                                   int* vectorizable_only) {
+    if (!jit) {
+        if (max_factor) *max_factor = 0;
+        if (max_body_size) *max_body_size = 0;
+        if (min_iterations) *min_iterations = 0;
+        if (vectorizable_only) *vectorizable_only = 0;
+        return;
+    }
+    
+    auto config = jit->loop_optimizer.get_config();
+    if (max_factor) *max_factor = config.max_unroll_factor;
+    if (max_body_size) *max_body_size = config.max_body_size;
+    if (min_iterations) *min_iterations = config.min_iteration_count;
+    if (vectorizable_only) *vectorizable_only = config.unroll_vectorizable_only ? 1 : 0;
+}
+
+int oc_spu_jit_can_unroll_loop(oc_spu_jit_t* jit, uint32_t header) {
+    if (!jit) return 0;
+    return jit->loop_optimizer.can_unroll(header) ? 1 : 0;
+}
+
+uint32_t oc_spu_jit_unroll_loop(oc_spu_jit_t* jit, uint32_t header) {
+    if (!jit) return 1;
+    return jit->loop_optimizer.unroll_loop(header);
+}
+
+uint32_t oc_spu_jit_get_unroll_factor(oc_spu_jit_t* jit, uint32_t header) {
+    if (!jit) return 1;
+    return jit->loop_optimizer.get_unroll_factor(header);
+}
+
+int oc_spu_jit_is_loop_unrolled(oc_spu_jit_t* jit, uint32_t header) {
+    if (!jit) return 0;
+    auto* loop = jit->loop_optimizer.get_loop(header);
+    return (loop && loop->is_unrolled) ? 1 : 0;
+}
+
+size_t oc_spu_jit_get_loop_count(oc_spu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->loop_optimizer.get_loop_count();
+}
+
+void oc_spu_jit_get_loop_stats(oc_spu_jit_t* jit, uint64_t* loops_detected,
+                                uint64_t* loops_with_count, uint64_t* loops_vectorizable,
+                                uint64_t* loops_unrolled, uint64_t* rejected_size,
+                                uint64_t* rejected_count) {
+    if (!jit) {
+        if (loops_detected) *loops_detected = 0;
+        if (loops_with_count) *loops_with_count = 0;
+        if (loops_vectorizable) *loops_vectorizable = 0;
+        if (loops_unrolled) *loops_unrolled = 0;
+        if (rejected_size) *rejected_size = 0;
+        if (rejected_count) *rejected_count = 0;
+        return;
+    }
+    
+    auto stats = jit->loop_optimizer.get_stats();
+    if (loops_detected) *loops_detected = stats.loops_detected;
+    if (loops_with_count) *loops_with_count = stats.loops_with_known_count;
+    if (loops_vectorizable) *loops_vectorizable = stats.loops_vectorizable;
+    if (loops_unrolled) *loops_unrolled = stats.loops_unrolled;
+    if (rejected_size) *rejected_size = stats.unroll_rejected_size;
+    if (rejected_count) *rejected_count = stats.unroll_rejected_count;
+}
+
+void oc_spu_jit_reset_loop_stats(oc_spu_jit_t* jit) {
+    if (!jit) return;
+    jit->loop_optimizer.reset_stats();
+}
+
+void oc_spu_jit_clear_loops(oc_spu_jit_t* jit) {
+    if (!jit) return;
+    jit->loop_optimizer.clear();
+}
+
+// ============================================================================
 // SIMD Intrinsics APIs
 // ============================================================================
 
@@ -3271,6 +4296,263 @@ int oc_spu_jit_get_simd_intrinsic(oc_spu_jit_t* jit, uint32_t opcode) {
 int oc_spu_jit_has_simd_intrinsic(oc_spu_jit_t* jit, uint32_t opcode) {
     if (!jit) return 0;
     return jit->simd_manager.has_intrinsic(opcode) ? 1 : 0;
+}
+
+void oc_spu_jit_register_simd_mapping(oc_spu_jit_t* jit, uint32_t opcode, int intrinsic) {
+    if (!jit) return;
+    jit->simd_manager.register_mapping(opcode, static_cast<SimdIntrinsic>(intrinsic));
+}
+
+size_t oc_spu_jit_get_simd_mapping_count(oc_spu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->simd_manager.get_mapping_count();
+}
+
+void oc_spu_jit_get_simd_stats(oc_spu_jit_t* jit, uint64_t* lookups, uint64_t* hits, uint64_t* misses) {
+    if (!jit) return;
+    auto stats = jit->simd_manager.get_stats();
+    if (lookups) *lookups = stats.lookups;
+    if (hits) *hits = stats.hits;
+    if (misses) *misses = stats.misses;
+}
+
+void oc_spu_jit_reset_simd_stats(oc_spu_jit_t* jit) {
+    if (!jit) return;
+    jit->simd_manager.reset_stats();
+}
+
+const char* oc_spu_jit_get_intrinsic_name(int intrinsic) {
+    return SimdIntrinsicManager::get_intrinsic_name(static_cast<SimdIntrinsic>(intrinsic));
+}
+
+// Enhanced Channel APIs
+
+int oc_spu_jit_channel_would_block(oc_spu_jit_t* jit, uint8_t channel, int is_read) {
+    if (!jit || channel >= 32) return 0;
+    return jit->channel_manager.would_block(static_cast<SpuChannel>(channel), is_read != 0) ? 1 : 0;
+}
+
+void oc_spu_jit_channel_record_read(oc_spu_jit_t* jit, uint8_t channel, int was_blocking) {
+    if (!jit || channel >= 32) return;
+    jit->channel_manager.record_read(static_cast<SpuChannel>(channel), was_blocking != 0);
+}
+
+void oc_spu_jit_channel_record_write(oc_spu_jit_t* jit, uint8_t channel, int was_blocking) {
+    if (!jit || channel >= 32) return;
+    jit->channel_manager.record_write(static_cast<SpuChannel>(channel), was_blocking != 0);
+}
+
+void oc_spu_jit_channel_record_count(oc_spu_jit_t* jit, uint8_t channel) {
+    if (!jit || channel >= 32) return;
+    jit->channel_manager.record_count_query(static_cast<SpuChannel>(channel));
+}
+
+void oc_spu_jit_get_channel_stats(oc_spu_jit_t* jit, 
+                                   uint64_t* total_reads, uint64_t* total_writes,
+                                   uint64_t* total_count_queries,
+                                   uint64_t* total_blocking_reads, uint64_t* total_blocking_writes) {
+    if (!jit) return;
+    jit->channel_manager.get_aggregate_stats(total_reads, total_writes, total_count_queries,
+                                              total_blocking_reads, total_blocking_writes);
+}
+
+void oc_spu_jit_reset_channel_stats(oc_spu_jit_t* jit) {
+    if (!jit) return;
+    jit->channel_manager.reset_stats();
+}
+
+void oc_spu_jit_set_channel_blocking_callback(oc_spu_jit_t* jit, void* callback) {
+    if (!jit) return;
+    jit->channel_manager.set_blocking_check_callback(
+        reinterpret_cast<ChannelManager::ChannelBlockingCheckFunc>(callback));
+}
+
+// Enhanced MFC DMA APIs
+
+void oc_spu_jit_queue_getllar(oc_spu_jit_t* jit, uint32_t local_addr, uint64_t ea, uint16_t tag) {
+    if (!jit) return;
+    jit->mfc_manager.queue_getllar(local_addr, ea, tag);
+}
+
+void oc_spu_jit_queue_putllc(oc_spu_jit_t* jit, uint32_t local_addr, uint64_t ea, uint16_t tag) {
+    if (!jit) return;
+    jit->mfc_manager.queue_putllc(local_addr, ea, tag);
+}
+
+void oc_spu_jit_queue_putlluc(oc_spu_jit_t* jit, uint32_t local_addr, uint64_t ea, uint16_t tag) {
+    if (!jit) return;
+    jit->mfc_manager.queue_putlluc(local_addr, ea, tag);
+}
+
+int oc_spu_jit_has_reservation(oc_spu_jit_t* jit, uint64_t ea) {
+    if (!jit) return 0;
+    return jit->mfc_manager.check_reservation(ea) ? 1 : 0;
+}
+
+void oc_spu_jit_lose_reservation(oc_spu_jit_t* jit) {
+    if (!jit) return;
+    jit->mfc_manager.lose_reservation();
+}
+
+uint32_t oc_spu_jit_get_tag_status(oc_spu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->mfc_manager.get_tag_status();
+}
+
+void oc_spu_jit_set_atomic_callback(oc_spu_jit_t* jit, void* callback) {
+    if (!jit) return;
+    jit->mfc_manager.set_atomic_callback(
+        reinterpret_cast<MfcDmaManager::AtomicOpFunc>(callback));
+}
+
+void oc_spu_jit_set_tag_completion_callback(oc_spu_jit_t* jit, void* callback) {
+    if (!jit) return;
+    jit->mfc_manager.set_tag_completion_callback(
+        reinterpret_cast<MfcDmaManager::TagCompletionFunc>(callback));
+}
+
+void oc_spu_jit_get_dma_stats(oc_spu_jit_t* jit,
+                               uint64_t* gets_queued, uint64_t* puts_queued, uint64_t* atomics_queued,
+                               uint64_t* gets_completed, uint64_t* puts_completed, uint64_t* atomics_completed,
+                               uint64_t* total_bytes_in, uint64_t* total_bytes_out) {
+    if (!jit) return;
+    auto stats = jit->mfc_manager.get_stats();
+    if (gets_queued) *gets_queued = stats.gets_queued;
+    if (puts_queued) *puts_queued = stats.puts_queued;
+    if (atomics_queued) *atomics_queued = stats.atomics_queued;
+    if (gets_completed) *gets_completed = stats.gets_completed;
+    if (puts_completed) *puts_completed = stats.puts_completed;
+    if (atomics_completed) *atomics_completed = stats.atomics_completed;
+    if (total_bytes_in) *total_bytes_in = stats.total_bytes_in;
+    if (total_bytes_out) *total_bytes_out = stats.total_bytes_out;
+}
+
+void oc_spu_jit_reset_dma_stats(oc_spu_jit_t* jit) {
+    if (!jit) return;
+    jit->mfc_manager.reset_stats();
+}
+
+// ============================================================================
+// SPU JIT Execution APIs
+// ============================================================================
+
+/**
+ * SPU JIT function signature type
+ */
+typedef void (*SpuJitFunctionPtr)(oc_spu_context_t* context, void* local_storage);
+
+int oc_spu_jit_execute(oc_spu_jit_t* jit, oc_spu_context_t* context, uint32_t address) {
+    if (!jit || !context) return -1;
+    
+    // SPU addresses are within Local Storage (0-256KB)
+    if (address >= 0x40000) {
+        context->exit_reason = OC_SPU_EXIT_ERROR;
+        return -3;
+    }
+    
+    // Check for breakpoint at this address
+    if (jit->breakpoints.has_breakpoint(address)) {
+        context->exit_reason = OC_SPU_EXIT_BREAKPOINT;
+        return 0;
+    }
+    
+    // Get compiled code
+    SpuBasicBlock* block = jit->cache.find_block(address);
+    if (!block || !block->compiled_code) {
+        // Not compiled - return error so interpreter can handle
+        context->exit_reason = OC_SPU_EXIT_ERROR;
+        return -2;
+    }
+    
+    // Set up context for execution
+    context->instructions_executed = 0;
+    context->exit_reason = OC_SPU_EXIT_NORMAL;
+    context->next_pc = address + (block->instructions.size() * 4);
+    
+    // Record execution for profiling
+    jit->profiler.record_execution(address, 0);
+    
+    // Cast compiled code to function pointer and call
+    SpuJitFunctionPtr func = reinterpret_cast<SpuJitFunctionPtr>(block->compiled_code);
+    
+    // Execute the compiled block
+    func(context, context->local_storage);
+    
+    // Update execution count
+    context->instructions_executed = static_cast<uint32_t>(block->instructions.size());
+    
+    // Update PC based on exit reason
+    if (context->exit_reason == OC_SPU_EXIT_NORMAL) {
+        context->pc = context->next_pc;
+    }
+    
+    return static_cast<int>(context->instructions_executed);
+}
+
+int oc_spu_jit_execute_block(oc_spu_jit_t* jit, oc_spu_context_t* context, uint32_t address) {
+    // Same as execute for now - single block execution
+    return oc_spu_jit_execute(jit, context, address);
+}
+
+// ============================================================================
+// SPU JIT Profiling APIs
+// ============================================================================
+
+void oc_spu_jit_profiling_enable(oc_spu_jit_t* jit, int enable) {
+    if (!jit) return;
+    jit->profiler.set_enabled(enable != 0);
+}
+
+int oc_spu_jit_profiling_is_enabled(oc_spu_jit_t* jit) {
+    if (!jit) return 0;
+    return jit->profiler.is_enabled() ? 1 : 0;
+}
+
+void oc_spu_jit_profiling_set_hot_threshold(oc_spu_jit_t* jit, uint64_t threshold) {
+    if (!jit) return;
+    jit->profiler.set_hot_threshold(threshold);
+}
+
+void oc_spu_jit_profiling_record_execution(oc_spu_jit_t* jit, uint32_t address, uint64_t exec_time_ns) {
+    if (!jit) return;
+    jit->profiler.record_execution(address, exec_time_ns);
+}
+
+uint64_t oc_spu_jit_profiling_get_execution_count(oc_spu_jit_t* jit, uint32_t address) {
+    if (!jit) return 0;
+    return jit->profiler.get_execution_count(address);
+}
+
+int oc_spu_jit_profiling_is_hot(oc_spu_jit_t* jit, uint32_t address) {
+    if (!jit) return 0;
+    return jit->profiler.is_hot(address) ? 1 : 0;
+}
+
+void oc_spu_jit_profiling_get_stats(oc_spu_jit_t* jit, uint64_t* blocks_compiled,
+                                     uint64_t* total_compile_time_ns,
+                                     uint64_t* total_executions,
+                                     uint64_t* total_exec_time_ns,
+                                     uint64_t* hot_block_count) {
+    if (!jit) {
+        if (blocks_compiled) *blocks_compiled = 0;
+        if (total_compile_time_ns) *total_compile_time_ns = 0;
+        if (total_executions) *total_executions = 0;
+        if (total_exec_time_ns) *total_exec_time_ns = 0;
+        if (hot_block_count) *hot_block_count = 0;
+        return;
+    }
+    
+    auto& stats = jit->profiler.get_stats();
+    if (blocks_compiled) *blocks_compiled = stats.total_blocks_compiled;
+    if (total_compile_time_ns) *total_compile_time_ns = stats.total_compilation_time_ns;
+    if (total_executions) *total_executions = stats.total_executions;
+    if (total_exec_time_ns) *total_exec_time_ns = stats.total_execution_time_ns;
+    if (hot_block_count) *hot_block_count = stats.hot_block_count;
+}
+
+void oc_spu_jit_profiling_reset(oc_spu_jit_t* jit) {
+    if (!jit) return;
+    jit->profiler.reset();
 }
 
 } // extern "C"

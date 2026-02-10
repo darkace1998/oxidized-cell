@@ -55,8 +55,21 @@ const OP_COMPOSITE_EXTRACT: u16 = 81;
 const OP_IMAGE_SAMPLE_IMPLICIT_LOD: u16 = 87;
 const OP_IMAGE_SAMPLE_EXPLICIT_LOD: u16 = 88;
 const OP_SAMPLED_IMAGE: u16 = 86;
+const OP_SELECT: u16 = 169;
+const OP_FLESS_THAN: u16 = 184;
+const OP_FGREATER_THAN: u16 = 186;
+const OP_FLESS_THAN_EQUAL: u16 = 188;
+const OP_FGREATER_THAN_EQUAL: u16 = 190;
+const OP_FORD_EQUAL: u16 = 180;
+const OP_FORD_NOT_EQUAL: u16 = 182;
+const OP_CONSTANT_TRUE: u16 = 41;
+const OP_CONSTANT_FALSE: u16 = 42;
+const OP_KILL: u16 = 252;
+const OP_DPDX: u16 = 207;
+const OP_DPDY: u16 = 208;
 
 // Capability values
+const CAP_DERIVATIVE_CONTROL: u32 = 51;
 const CAP_SHADER: u32 = 1;
 
 // Execution model values
@@ -105,6 +118,8 @@ pub struct SpirVBuilder {
     glsl_ext_id: u32,
     /// Type IDs
     type_void: u32,
+    type_bool: u32,
+    type_bvec4: u32,
     type_float: u32,
     type_vec2: u32,
     type_vec3: u32,
@@ -128,6 +143,8 @@ impl SpirVBuilder {
             functions: Vec::new(),
             glsl_ext_id: 0,
             type_void: 0,
+            type_bool: 0,
+            type_bvec4: 0,
             type_float: 0,
             type_vec2: 0,
             type_vec3: 0,
@@ -185,6 +202,11 @@ impl SpirVBuilder {
         self.types_constants.push(Self::encode_word(OP_TYPE_VOID, 2));
         self.types_constants.push(self.type_void);
 
+        // bool
+        self.type_bool = self.alloc_id();
+        self.types_constants.push(Self::encode_word(OP_TYPE_BOOL, 2));
+        self.types_constants.push(self.type_bool);
+
         // float
         self.type_float = self.alloc_id();
         self.types_constants.push(Self::encode_word(OP_TYPE_FLOAT, 3));
@@ -210,6 +232,13 @@ impl SpirVBuilder {
         self.types_constants.push(Self::encode_word(OP_TYPE_VECTOR, 4));
         self.types_constants.push(self.type_vec4);
         self.types_constants.push(self.type_float);
+        self.types_constants.push(4);
+
+        // bvec4 (for comparison results)
+        self.type_bvec4 = self.alloc_id();
+        self.types_constants.push(Self::encode_word(OP_TYPE_VECTOR, 4));
+        self.types_constants.push(self.type_bvec4);
+        self.types_constants.push(self.type_bool);
         self.types_constants.push(4);
 
         // function void()
@@ -710,6 +739,351 @@ impl<'a> VpSpirVGen<'a> {
                 r
             }
             
+            VpVecOpcode::Slt => {
+                // Set Less Than: result = src0 < src1 ? 1.0 : 0.0
+                let cmp = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FLESS_THAN, 5));
+                self.builder.functions.push(self.builder.type_bvec4);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(src1);
+                
+                let c0 = self.builder.add_float_constant(0.0);
+                let c1 = self.builder.add_float_constant(1.0);
+                let zero = self.make_vec4_from_scalar(c0);
+                let one = self.make_vec4_from_scalar(c1);
+                
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_SELECT, 6));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(r);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(one);
+                self.builder.functions.push(zero);
+                r
+            }
+            
+            VpVecOpcode::Sge => {
+                // Set Greater or Equal: result = src0 >= src1 ? 1.0 : 0.0
+                let cmp = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FGREATER_THAN_EQUAL, 5));
+                self.builder.functions.push(self.builder.type_bvec4);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(src1);
+                
+                let c0 = self.builder.add_float_constant(0.0);
+                let c1 = self.builder.add_float_constant(1.0);
+                let zero = self.make_vec4_from_scalar(c0);
+                let one = self.make_vec4_from_scalar(c1);
+                
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_SELECT, 6));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(r);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(one);
+                self.builder.functions.push(zero);
+                r
+            }
+            
+            VpVecOpcode::Seq => {
+                // Set Equal: result = src0 == src1 ? 1.0 : 0.0
+                let cmp = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FORD_EQUAL, 5));
+                self.builder.functions.push(self.builder.type_bvec4);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(src1);
+                
+                let c0 = self.builder.add_float_constant(0.0);
+                let c1 = self.builder.add_float_constant(1.0);
+                let zero = self.make_vec4_from_scalar(c0);
+                let one = self.make_vec4_from_scalar(c1);
+                
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_SELECT, 6));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(r);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(one);
+                self.builder.functions.push(zero);
+                r
+            }
+            
+            VpVecOpcode::Sne => {
+                // Set Not Equal: result = src0 != src1 ? 1.0 : 0.0
+                let cmp = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FORD_NOT_EQUAL, 5));
+                self.builder.functions.push(self.builder.type_bvec4);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(src1);
+                
+                let c0 = self.builder.add_float_constant(0.0);
+                let c1 = self.builder.add_float_constant(1.0);
+                let zero = self.make_vec4_from_scalar(c0);
+                let one = self.make_vec4_from_scalar(c1);
+                
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_SELECT, 6));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(r);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(one);
+                self.builder.functions.push(zero);
+                r
+            }
+            
+            VpVecOpcode::Sgt => {
+                // Set Greater Than: result = src0 > src1 ? 1.0 : 0.0
+                let cmp = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FGREATER_THAN, 5));
+                self.builder.functions.push(self.builder.type_bvec4);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(src1);
+                
+                let c0 = self.builder.add_float_constant(0.0);
+                let c1 = self.builder.add_float_constant(1.0);
+                let zero = self.make_vec4_from_scalar(c0);
+                let one = self.make_vec4_from_scalar(c1);
+                
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_SELECT, 6));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(r);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(one);
+                self.builder.functions.push(zero);
+                r
+            }
+            
+            VpVecOpcode::Sle => {
+                // Set Less or Equal: result = src0 <= src1 ? 1.0 : 0.0
+                let cmp = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FLESS_THAN_EQUAL, 5));
+                self.builder.functions.push(self.builder.type_bvec4);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(src1);
+                
+                let c0 = self.builder.add_float_constant(0.0);
+                let c1 = self.builder.add_float_constant(1.0);
+                let zero = self.make_vec4_from_scalar(c0);
+                let one = self.make_vec4_from_scalar(c1);
+                
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_SELECT, 6));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(r);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(one);
+                self.builder.functions.push(zero);
+                r
+            }
+            
+            VpVecOpcode::Sfl => {
+                // Set False (all zeros)
+                let c0 = self.builder.add_float_constant(0.0);
+                self.make_vec4_from_scalar(c0)
+            }
+            
+            VpVecOpcode::Str => {
+                // Set True (all ones)
+                let c1 = self.builder.add_float_constant(1.0);
+                self.make_vec4_from_scalar(c1)
+            }
+            
+            VpVecOpcode::Ssg => {
+                // Sign of source: -1 if < 0, 0 if == 0, 1 if > 0
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_EXT_INST, 6));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(r);
+                self.builder.functions.push(self.builder.glsl_ext_id);
+                self.builder.functions.push(6); // FSign
+                self.builder.functions.push(src0);
+                r
+            }
+            
+            VpVecOpcode::Dph => {
+                // Dot product homogeneous: (src0.x*src1.x + src0.y*src1.y + src0.z*src1.z + src1.w)
+                // DPH = DP3(src0.xyz, src1.xyz) + src1.w
+                // Need to compute manually since OP_DOT on vec4 gives 4-component result
+                
+                // Extract xyz components
+                let src0_x = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(src0_x);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(0);
+                
+                let src0_y = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(src0_y);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(1);
+                
+                let src0_z = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(src0_z);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(2);
+                
+                let src1_x = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(src1_x);
+                self.builder.functions.push(src1);
+                self.builder.functions.push(0);
+                
+                let src1_y = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(src1_y);
+                self.builder.functions.push(src1);
+                self.builder.functions.push(1);
+                
+                let src1_z = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(src1_z);
+                self.builder.functions.push(src1);
+                self.builder.functions.push(2);
+                
+                let src1_w = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(src1_w);
+                self.builder.functions.push(src1);
+                self.builder.functions.push(3);
+                
+                // Compute x*x + y*y + z*z
+                let mul_x = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FMUL, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(mul_x);
+                self.builder.functions.push(src0_x);
+                self.builder.functions.push(src1_x);
+                
+                let mul_y = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FMUL, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(mul_y);
+                self.builder.functions.push(src0_y);
+                self.builder.functions.push(src1_y);
+                
+                let mul_z = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FMUL, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(mul_z);
+                self.builder.functions.push(src0_z);
+                self.builder.functions.push(src1_z);
+                
+                let sum_xy = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FADD, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(sum_xy);
+                self.builder.functions.push(mul_x);
+                self.builder.functions.push(mul_y);
+                
+                let dp3 = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FADD, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(dp3);
+                self.builder.functions.push(sum_xy);
+                self.builder.functions.push(mul_z);
+                
+                // Add src1.w
+                let sum = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FADD, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(sum);
+                self.builder.functions.push(dp3);
+                self.builder.functions.push(src1_w);
+                
+                // Splat to vec4
+                self.make_vec4_from_scalar(sum)
+            }
+            
+            VpVecOpcode::Dst => {
+                // Distance vector: result = (1, src0.y*src1.y, src0.z, src1.w)
+                let c1 = self.builder.add_float_constant(1.0);
+                
+                // Extract components
+                let src0_y = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(src0_y);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(1);
+                
+                let src1_y = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(src1_y);
+                self.builder.functions.push(src1);
+                self.builder.functions.push(1);
+                
+                let src0_z = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(src0_z);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(2);
+                
+                let src1_w = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(src1_w);
+                self.builder.functions.push(src1);
+                self.builder.functions.push(3);
+                
+                // y * y
+                let mul_y = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FMUL, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(mul_y);
+                self.builder.functions.push(src0_y);
+                self.builder.functions.push(src1_y);
+                
+                // Construct result vec4
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_CONSTRUCT, 7));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(r);
+                self.builder.functions.push(c1);
+                self.builder.functions.push(mul_y);
+                self.builder.functions.push(src0_z);
+                self.builder.functions.push(src1_w);
+                r
+            }
+            
+            VpVecOpcode::Arl => {
+                // Address register load - truncate to integer
+                // For now, just pass through (ARL result is used for indexing)
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_EXT_INST, 6));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(r);
+                self.builder.functions.push(self.builder.glsl_ext_id);
+                self.builder.functions.push(9); // Trunc
+                self.builder.functions.push(src0);
+                r
+            }
+            
+            VpVecOpcode::Txl => {
+                // Texture lookup with explicit LOD (in vertex shader)
+                // src0 is texture coordinate with LOD in w
+                // For now, just return a default (white) since VP textures are rare
+                let c1 = self.builder.add_float_constant(1.0);
+                self.make_vec4_from_scalar(c1)
+            }
+            
             _ => {
                 // Unhandled - return src0 as fallback
                 src0
@@ -824,6 +1198,61 @@ impl<'a> VpSpirVGen<'a> {
                 r
             }
             
+            VpScaOpcode::Rcc => {
+                // Reciprocal clamped: clamp(1/x, 5.42101e-36, 1.884467e+19)
+                // For simplicity, just do reciprocal with max/min clamp
+                let one = self.builder.add_float_constant(1.0);
+                let rcp = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FDIV, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(rcp);
+                self.builder.functions.push(one);
+                self.builder.functions.push(x);
+                
+                // Clamp result
+                let min_val = self.builder.add_float_constant(5.42101e-36);
+                let max_val = self.builder.add_float_constant(1.884467e+19);
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_EXT_INST, 8));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(r);
+                self.builder.functions.push(self.builder.glsl_ext_id);
+                self.builder.functions.push(43); // FClamp
+                self.builder.functions.push(rcp);
+                self.builder.functions.push(min_val);
+                self.builder.functions.push(max_val);
+                r
+            }
+            
+            VpScaOpcode::Lit => {
+                // Lit: result.x = 1.0, result.y = max(0, src.x), result.z = special, result.w = 1.0
+                // For scalar, we return the y component calculation
+                let c0 = self.builder.add_float_constant(0.0);
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_EXT_INST, 7));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(r);
+                self.builder.functions.push(self.builder.glsl_ext_id);
+                self.builder.functions.push(40); // FMax
+                self.builder.functions.push(x);
+                self.builder.functions.push(c0);
+                r
+            }
+            
+            VpScaOpcode::Bra | VpScaOpcode::Bri | VpScaOpcode::Cal | VpScaOpcode::Cli |
+            VpScaOpcode::Ret | VpScaOpcode::Brb | VpScaOpcode::Clb => {
+                // Flow control ops - these affect control flow, not register output
+                // In SPIR-V, these would need structured control flow
+                // For now, return x as no-op (flow control handled separately)
+                x
+            }
+            
+            VpScaOpcode::Psh | VpScaOpcode::Pop => {
+                // Address stack operations - not directly representable in SPIR-V
+                // These would need to be handled by the control flow analysis
+                x
+            }
+            
             _ => {
                 // Unhandled - return x as fallback
                 x
@@ -918,6 +1347,19 @@ impl<'a> VpSpirVGen<'a> {
         self.builder.functions.push(c0);
         self.builder.functions.push(c0);
         zero
+    }
+
+    /// Create a vec4 from a scalar value (splat)
+    fn make_vec4_from_scalar(&mut self, scalar: u32) -> u32 {
+        let vec = self.builder.alloc_id();
+        self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_CONSTRUCT, 7));
+        self.builder.functions.push(self.builder.type_vec4);
+        self.builder.functions.push(vec);
+        self.builder.functions.push(scalar);
+        self.builder.functions.push(scalar);
+        self.builder.functions.push(scalar);
+        self.builder.functions.push(scalar);
+        vec
     }
 }
 
@@ -1164,6 +1606,19 @@ impl<'a> FpSpirVGen<'a> {
         self.builder.functions.push(c0);
         self.builder.functions.push(c0);
         zero
+    }
+
+    /// Create a vec4 from a scalar value (splat)
+    fn make_vec4_from_scalar(&mut self, scalar: u32) -> u32 {
+        let vec = self.builder.alloc_id();
+        self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_CONSTRUCT, 7));
+        self.builder.functions.push(self.builder.type_vec4);
+        self.builder.functions.push(vec);
+        self.builder.functions.push(scalar);
+        self.builder.functions.push(scalar);
+        self.builder.functions.push(scalar);
+        self.builder.functions.push(scalar);
+        vec
     }
 
     fn emit_fp_op(&mut self, instr: &DecodedFpInstruction) -> Result<u32, String> {
@@ -1432,6 +1887,475 @@ impl<'a> FpSpirVGen<'a> {
                 // Sample texture with bias (bias in src0.w)
                 // For now, treat like TEX
                 self.sample_texture(instr.tex_unit, src0, false, false)
+            }
+            
+            FpOpcode::Txd => {
+                // Sample texture with derivatives - treat like TEX for now
+                // Full implementation would need OpImageSampleExplicitLod with Grad
+                self.sample_texture(instr.tex_unit, src0, false, false)
+            }
+            
+            FpOpcode::Slt => {
+                // Set Less Than: result = src0 < src1 ? 1.0 : 0.0
+                let cmp = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FLESS_THAN, 5));
+                self.builder.functions.push(self.builder.type_bvec4);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(src1);
+                
+                let c0 = self.builder.add_float_constant(0.0);
+                let c1 = self.builder.add_float_constant(1.0);
+                let zero = self.make_vec4_from_scalar(c0);
+                let one = self.make_vec4_from_scalar(c1);
+                
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_SELECT, 6));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(r);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(one);
+                self.builder.functions.push(zero);
+                r
+            }
+            
+            FpOpcode::Sge => {
+                // Set Greater or Equal
+                let cmp = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FGREATER_THAN_EQUAL, 5));
+                self.builder.functions.push(self.builder.type_bvec4);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(src1);
+                
+                let c0 = self.builder.add_float_constant(0.0);
+                let c1 = self.builder.add_float_constant(1.0);
+                let zero = self.make_vec4_from_scalar(c0);
+                let one = self.make_vec4_from_scalar(c1);
+                
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_SELECT, 6));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(r);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(one);
+                self.builder.functions.push(zero);
+                r
+            }
+            
+            FpOpcode::Sle => {
+                // Set Less or Equal
+                let cmp = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FLESS_THAN_EQUAL, 5));
+                self.builder.functions.push(self.builder.type_bvec4);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(src1);
+                
+                let c0 = self.builder.add_float_constant(0.0);
+                let c1 = self.builder.add_float_constant(1.0);
+                let zero = self.make_vec4_from_scalar(c0);
+                let one = self.make_vec4_from_scalar(c1);
+                
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_SELECT, 6));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(r);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(one);
+                self.builder.functions.push(zero);
+                r
+            }
+            
+            FpOpcode::Sgt => {
+                // Set Greater Than
+                let cmp = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FGREATER_THAN, 5));
+                self.builder.functions.push(self.builder.type_bvec4);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(src1);
+                
+                let c0 = self.builder.add_float_constant(0.0);
+                let c1 = self.builder.add_float_constant(1.0);
+                let zero = self.make_vec4_from_scalar(c0);
+                let one = self.make_vec4_from_scalar(c1);
+                
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_SELECT, 6));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(r);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(one);
+                self.builder.functions.push(zero);
+                r
+            }
+            
+            FpOpcode::Sne => {
+                // Set Not Equal
+                let cmp = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FORD_NOT_EQUAL, 5));
+                self.builder.functions.push(self.builder.type_bvec4);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(src1);
+                
+                let c0 = self.builder.add_float_constant(0.0);
+                let c1 = self.builder.add_float_constant(1.0);
+                let zero = self.make_vec4_from_scalar(c0);
+                let one = self.make_vec4_from_scalar(c1);
+                
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_SELECT, 6));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(r);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(one);
+                self.builder.functions.push(zero);
+                r
+            }
+            
+            FpOpcode::Seq => {
+                // Set Equal
+                let cmp = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FORD_EQUAL, 5));
+                self.builder.functions.push(self.builder.type_bvec4);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(src1);
+                
+                let c0 = self.builder.add_float_constant(0.0);
+                let c1 = self.builder.add_float_constant(1.0);
+                let zero = self.make_vec4_from_scalar(c0);
+                let one = self.make_vec4_from_scalar(c1);
+                
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_SELECT, 6));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(r);
+                self.builder.functions.push(cmp);
+                self.builder.functions.push(one);
+                self.builder.functions.push(zero);
+                r
+            }
+            
+            FpOpcode::Str => {
+                // Set True (all 1.0s)
+                let c1 = self.builder.add_float_constant(1.0);
+                self.make_vec4_from_scalar(c1)
+            }
+            
+            FpOpcode::Sfl => {
+                // Set False (all 0.0s)
+                let c0 = self.builder.add_float_constant(0.0);
+                self.make_vec4_from_scalar(c0)
+            }
+            
+            FpOpcode::Dst => {
+                // Distance vector: result = (1, src0.y*src1.y, src0.z, src1.w)
+                let c1 = self.builder.add_float_constant(1.0);
+                
+                // Extract components
+                let src0_y = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(src0_y);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(1);
+                
+                let src1_y = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(src1_y);
+                self.builder.functions.push(src1);
+                self.builder.functions.push(1);
+                
+                let src0_z = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(src0_z);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(2);
+                
+                let src1_w = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(src1_w);
+                self.builder.functions.push(src1);
+                self.builder.functions.push(3);
+                
+                // y * y
+                let mul_y = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FMUL, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(mul_y);
+                self.builder.functions.push(src0_y);
+                self.builder.functions.push(src1_y);
+                
+                // Construct result vec4
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_CONSTRUCT, 7));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(r);
+                self.builder.functions.push(c1);
+                self.builder.functions.push(mul_y);
+                self.builder.functions.push(src0_z);
+                self.builder.functions.push(src1_w);
+                r
+            }
+            
+            FpOpcode::Lit => {
+                // Lit: compute lighting coefficients
+                // result.x = 1.0, result.y = max(0, src0.x), 
+                // result.z = src0.x > 0 ? pow(max(0, src0.y), clamp(src0.w, -128, 128)) : 0
+                // result.w = 1.0
+                let c0 = self.builder.add_float_constant(0.0);
+                let c1 = self.builder.add_float_constant(1.0);
+                
+                // Extract src0.x
+                let src0_x = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(src0_x);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(0);
+                
+                // max(0, src0.x)
+                let y = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_EXT_INST, 7));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(y);
+                self.builder.functions.push(self.builder.glsl_ext_id);
+                self.builder.functions.push(40); // FMax
+                self.builder.functions.push(c0);
+                self.builder.functions.push(src0_x);
+                
+                // For z, just use 1.0 for simplicity (full LIT is complex)
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_CONSTRUCT, 7));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(r);
+                self.builder.functions.push(c1);
+                self.builder.functions.push(y);
+                self.builder.functions.push(c1);
+                self.builder.functions.push(c1);
+                r
+            }
+            
+            FpOpcode::Ddx => {
+                // Derivative with respect to x (screen space)
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_DPDX, 4));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(r);
+                self.builder.functions.push(src0);
+                r
+            }
+            
+            FpOpcode::Ddy => {
+                // Derivative with respect to y (screen space)
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_DPDY, 4));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(r);
+                self.builder.functions.push(src0);
+                r
+            }
+            
+            FpOpcode::Kil => {
+                // Kill/discard fragment - check if src0 < 0
+                // In SPIR-V, this requires checking condition then OpKill
+                // For now, we'll emit unconditional kill (conservative)
+                // Real implementation would need control flow for conditional kill
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_KILL, 1));
+                self.make_zero_vec4() // Return dummy value (execution terminates)
+            }
+            
+            FpOpcode::Div => {
+                // Component-wise division
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FDIV, 5));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(r);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(src1);
+                r
+            }
+            
+            FpOpcode::Divsq => {
+                // Division by sqrt: src0 / sqrt(src1)
+                let sqrt = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_EXT_INST, 6));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(sqrt);
+                self.builder.functions.push(self.builder.glsl_ext_id);
+                self.builder.functions.push(31); // Sqrt
+                self.builder.functions.push(src1);
+                
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FDIV, 5));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(r);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(sqrt);
+                r
+            }
+            
+            FpOpcode::Dp2 => {
+                // 2-component dot product
+                // Extract x and y from both sources, compute x0*x1 + y0*y1
+                let x0 = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(x0);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(0);
+                
+                let y0 = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(y0);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(1);
+                
+                let x1 = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(x1);
+                self.builder.functions.push(src1);
+                self.builder.functions.push(0);
+                
+                let y1 = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(y1);
+                self.builder.functions.push(src1);
+                self.builder.functions.push(1);
+                
+                let mul_x = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FMUL, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(mul_x);
+                self.builder.functions.push(x0);
+                self.builder.functions.push(x1);
+                
+                let mul_y = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FMUL, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(mul_y);
+                self.builder.functions.push(y0);
+                self.builder.functions.push(y1);
+                
+                let sum = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FADD, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(sum);
+                self.builder.functions.push(mul_x);
+                self.builder.functions.push(mul_y);
+                
+                // Splat to vec4
+                self.make_vec4_from_scalar(sum)
+            }
+            
+            FpOpcode::Dp2a => {
+                // DP2A: x0*x1 + y0*y1 + z2
+                let x0 = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(x0);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(0);
+                
+                let y0 = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(y0);
+                self.builder.functions.push(src0);
+                self.builder.functions.push(1);
+                
+                let x1 = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(x1);
+                self.builder.functions.push(src1);
+                self.builder.functions.push(0);
+                
+                let y1 = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(y1);
+                self.builder.functions.push(src1);
+                self.builder.functions.push(1);
+                
+                let z2 = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_COMPOSITE_EXTRACT, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(z2);
+                self.builder.functions.push(src2);
+                self.builder.functions.push(2);
+                
+                let mul_x = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FMUL, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(mul_x);
+                self.builder.functions.push(x0);
+                self.builder.functions.push(x1);
+                
+                let mul_y = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FMUL, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(mul_y);
+                self.builder.functions.push(y0);
+                self.builder.functions.push(y1);
+                
+                let sum1 = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FADD, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(sum1);
+                self.builder.functions.push(mul_x);
+                self.builder.functions.push(mul_y);
+                
+                let sum = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_FADD, 5));
+                self.builder.functions.push(self.builder.type_float);
+                self.builder.functions.push(sum);
+                self.builder.functions.push(sum1);
+                self.builder.functions.push(z2);
+                
+                self.make_vec4_from_scalar(sum)
+            }
+            
+            FpOpcode::Refl => {
+                // Reflect: src0 - 2 * dot(src0, src1) * src1
+                let r = self.builder.alloc_id();
+                self.builder.functions.push(SpirVBuilder::encode_word(OP_EXT_INST, 7));
+                self.builder.functions.push(self.builder.type_vec4);
+                self.builder.functions.push(r);
+                self.builder.functions.push(self.builder.glsl_ext_id);
+                self.builder.functions.push(71); // Reflect
+                self.builder.functions.push(src0);
+                self.builder.functions.push(src1);
+                r
+            }
+            
+            // Flow control ops - these would need structured control flow
+            FpOpcode::Brk | FpOpcode::Cal | FpOpcode::Ife | FpOpcode::Loop | 
+            FpOpcode::Rep | FpOpcode::Ret => {
+                // Flow control operations are handled at a higher level
+                // They affect program structure, not register values
+                self.make_zero_vec4()
+            }
+            
+            FpOpcode::Lif => {
+                // Load immediate float - typically embedded in instruction
+                // For now, return src0
+                src0
+            }
+            
+            FpOpcode::Fenct | FpOpcode::Fencb => {
+                // Fence operations for texture/buffer access ordering
+                // No register result needed
+                src0
             }
             
             _ => {

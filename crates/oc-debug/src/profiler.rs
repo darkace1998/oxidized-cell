@@ -135,6 +135,47 @@ pub struct FrameTiming {
     pub other_time: Duration,
 }
 
+/// Memory access type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MemoryAccessType {
+    /// Read access
+    Read,
+    /// Write access
+    Write,
+}
+
+/// Memory access pattern entry
+#[derive(Debug, Clone)]
+pub struct MemoryAccessPattern {
+    /// Memory region start
+    pub region_start: u64,
+    /// Memory region end
+    pub region_end: u64,
+    /// Read count
+    pub read_count: u64,
+    /// Write count
+    pub write_count: u64,
+    /// Bytes read
+    pub bytes_read: u64,
+    /// Bytes written
+    pub bytes_written: u64,
+}
+
+/// Memory region hotspot
+#[derive(Debug, Clone)]
+pub struct MemoryRegionHotspot {
+    /// Region base address (4KB page aligned)
+    pub page_address: u64,
+    /// Total accesses
+    pub total_accesses: u64,
+    /// Read accesses
+    pub read_accesses: u64,
+    /// Write accesses
+    pub write_accesses: u64,
+    /// Access percentage of total memory accesses
+    pub percentage: f64,
+}
+
 /// Performance profiler
 pub struct Profiler {
     /// Is profiling enabled
@@ -159,6 +200,14 @@ pub struct Profiler {
     spu_hotspots: HashMap<u64, u64>,
     /// Total instructions executed (for percentage calculation)
     total_instructions: u64,
+    /// Memory access patterns (by 4KB page)
+    memory_access_patterns: HashMap<u64, MemoryAccessPattern>,
+    /// Total memory reads
+    total_memory_reads: u64,
+    /// Total memory writes
+    total_memory_writes: u64,
+    /// Memory access tracking enabled (can be expensive)
+    memory_tracking_enabled: bool,
 }
 
 impl Default for Profiler {
@@ -182,6 +231,10 @@ impl Profiler {
             ppu_hotspots: HashMap::new(),
             spu_hotspots: HashMap::new(),
             total_instructions: 0,
+            memory_access_patterns: HashMap::new(),
+            total_memory_reads: 0,
+            total_memory_writes: 0,
+            memory_tracking_enabled: false,
         }
     }
 
@@ -380,8 +433,122 @@ impl Profiler {
         self.spu_hotspots.clear();
         self.total_instructions = 0;
         self.current_frame = 0;
+        self.memory_access_patterns.clear();
+        self.total_memory_reads = 0;
+        self.total_memory_writes = 0;
         self.session_start = Instant::now();
         tracing::info!("Profiler reset");
+    }
+
+    // === Memory Access Pattern Tracking ===
+
+    /// Enable memory access tracking (can be expensive)
+    pub fn enable_memory_tracking(&mut self) {
+        self.memory_tracking_enabled = true;
+        tracing::info!("Memory access tracking enabled");
+    }
+
+    /// Disable memory access tracking
+    pub fn disable_memory_tracking(&mut self) {
+        self.memory_tracking_enabled = false;
+        tracing::info!("Memory access tracking disabled");
+    }
+
+    /// Record a memory access
+    pub fn record_memory_access(&mut self, address: u64, size: u32, access_type: MemoryAccessType) {
+        if !self.enabled || !self.memory_tracking_enabled {
+            return;
+        }
+        
+        // Track by 4KB page
+        let page_address = address & !0xFFF;
+        
+        let pattern = self.memory_access_patterns.entry(page_address).or_insert_with(|| {
+            MemoryAccessPattern {
+                region_start: page_address,
+                region_end: page_address + 0x1000,
+                read_count: 0,
+                write_count: 0,
+                bytes_read: 0,
+                bytes_written: 0,
+            }
+        });
+        
+        match access_type {
+            MemoryAccessType::Read => {
+                pattern.read_count += 1;
+                pattern.bytes_read += size as u64;
+                self.total_memory_reads += 1;
+            }
+            MemoryAccessType::Write => {
+                pattern.write_count += 1;
+                pattern.bytes_written += size as u64;
+                self.total_memory_writes += 1;
+            }
+        }
+    }
+
+    /// Get memory hotspots (top N pages by access count)
+    pub fn get_memory_hotspots(&self, count: usize) -> Vec<MemoryRegionHotspot> {
+        let total_accesses = self.total_memory_reads + self.total_memory_writes;
+        
+        let mut hotspots: Vec<_> = self.memory_access_patterns.iter()
+            .map(|(&page, pattern)| {
+                let accesses = pattern.read_count + pattern.write_count;
+                MemoryRegionHotspot {
+                    page_address: page,
+                    total_accesses: accesses,
+                    read_accesses: pattern.read_count,
+                    write_accesses: pattern.write_count,
+                    percentage: if total_accesses > 0 {
+                        (accesses as f64 / total_accesses as f64) * 100.0
+                    } else {
+                        0.0
+                    },
+                }
+            })
+            .collect();
+        
+        hotspots.sort_by(|a, b| b.total_accesses.cmp(&a.total_accesses));
+        hotspots.truncate(count);
+        hotspots
+    }
+
+    /// Get memory access statistics for a specific region
+    pub fn get_region_stats(&self, start: u64, end: u64) -> MemoryAccessPattern {
+        let mut aggregate = MemoryAccessPattern {
+            region_start: start,
+            region_end: end,
+            read_count: 0,
+            write_count: 0,
+            bytes_read: 0,
+            bytes_written: 0,
+        };
+        
+        // Round to page boundaries
+        let start_page = start & !0xFFF;
+        let end_page = (end + 0xFFF) & !0xFFF;
+        
+        for (&page, pattern) in &self.memory_access_patterns {
+            if page >= start_page && page < end_page {
+                aggregate.read_count += pattern.read_count;
+                aggregate.write_count += pattern.write_count;
+                aggregate.bytes_read += pattern.bytes_read;
+                aggregate.bytes_written += pattern.bytes_written;
+            }
+        }
+        
+        aggregate
+    }
+
+    /// Get total memory access counts
+    pub fn get_memory_access_totals(&self) -> (u64, u64) {
+        (self.total_memory_reads, self.total_memory_writes)
+    }
+
+    /// Check if memory tracking is enabled
+    pub fn is_memory_tracking_enabled(&self) -> bool {
+        self.memory_tracking_enabled
     }
 
     /// Generate profiling report as text
@@ -427,6 +594,33 @@ impl Profiler {
                 hotspot.hit_count,
                 hotspot.percentage
             ));
+        }
+        
+        // Add memory access patterns if tracking was enabled or if we have collected data
+        // Note: We show data even if tracking is now disabled, since reports should show
+        // all collected data. Use reset() to clear stale data if needed.
+        if self.memory_tracking_enabled || self.total_memory_reads > 0 || self.total_memory_writes > 0 {
+            report.push_str("\n--- Memory Access Patterns ---\n");
+            if !self.memory_tracking_enabled && (self.total_memory_reads > 0 || self.total_memory_writes > 0) {
+                report.push_str("(Note: memory tracking is currently disabled, showing previously collected data)\n");
+            }
+            report.push_str(&format!(
+                "Total reads: {}, Total writes: {}\n",
+                self.total_memory_reads,
+                self.total_memory_writes
+            ));
+            
+            report.push_str("\nTop Memory Hotspots (by page):\n");
+            for hotspot in self.get_memory_hotspots(10) {
+                report.push_str(&format!(
+                    "0x{:016X}: {} accesses (R:{} W:{}) ({:.2}%)\n",
+                    hotspot.page_address,
+                    hotspot.total_accesses,
+                    hotspot.read_accesses,
+                    hotspot.write_accesses,
+                    hotspot.percentage
+                ));
+            }
         }
         
         report
