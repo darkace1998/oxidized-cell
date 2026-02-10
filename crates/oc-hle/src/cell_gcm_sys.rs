@@ -1584,10 +1584,11 @@ impl GcmManager {
     /// Parse inline RSX FIFO commands from a raw command buffer
     pub fn parse_fifo_commands(&mut self, buffer: &[u32]) -> Vec<FifoCommand> {
         // NV40-style FIFO header format:
-        // [31:29] = subchannel
-        // [28:16] = method count
-        // [15:2]  = method offset
-        // [1]     = non-incrementing flag
+        // [30]    = non-incrementing flag
+        // [28:18] = method count (11 bits)
+        // [15:13] = subchannel
+        // [12:2]  = method offset
+        // [1]     = call flag
         // [0]     = jump flag (if set, rest is jump target)
 
         let mut commands = Vec::new();
