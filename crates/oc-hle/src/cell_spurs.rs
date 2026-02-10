@@ -3,7 +3,7 @@
 //! This module provides HLE implementations for the PS3's SPURS (SPU Runtime System).
 //! SPURS is a task scheduler for managing SPU workloads.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use tracing::{debug, trace, info};
 use oc_core::{SpuBridgeSender, SpuWorkload, SpuGroupRequest};
 
@@ -33,6 +33,167 @@ pub enum WorkloadState {
     Ready = 2,
     /// Workload is waiting
     Waiting = 3,
+}
+
+// ========================================================================
+// Workload Contention Handling
+// ========================================================================
+
+/// Workload contention status for an SPU
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ContentionStatus {
+    /// No contention
+    #[default]
+    None,
+    /// Mild contention - some workloads waiting
+    Mild,
+    /// Heavy contention - many workloads waiting
+    Heavy,
+}
+
+// ========================================================================
+// Trace/Profiling Support
+// ========================================================================
+
+/// Trace event type
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpursTraceEvent {
+    /// Task submitted
+    TaskSubmit = 0,
+    /// Task started
+    TaskStart = 1,
+    /// Task completed
+    TaskComplete = 2,
+    /// Workload scheduled
+    WorkloadSchedule = 3,
+    /// Workload completed
+    WorkloadComplete = 4,
+    /// Contention detected
+    ContentionDetected = 5,
+}
+
+/// Trace entry
+#[derive(Debug, Clone)]
+pub struct SpursTraceEntry {
+    /// Event type
+    pub event: SpursTraceEvent,
+    /// Timestamp (nanoseconds since SPURS init)
+    pub timestamp_ns: u64,
+    /// Associated task/workload ID
+    pub id: u32,
+    /// Additional data
+    pub data: u64,
+}
+
+/// Trace buffer for profiling SPURS task scheduling
+#[derive(Debug)]
+struct SpursTraceBuffer {
+    /// Trace entries
+    entries: VecDeque<SpursTraceEntry>,
+    /// Maximum entries
+    max_entries: usize,
+    /// Tracing enabled
+    enabled: bool,
+    /// Start time for relative timestamps
+    start_time: std::time::Instant,
+}
+
+impl SpursTraceBuffer {
+    fn new(max_entries: usize) -> Self {
+        Self {
+            entries: VecDeque::with_capacity(max_entries.min(10000)),
+            max_entries,
+            enabled: false,
+            start_time: std::time::Instant::now(),
+        }
+    }
+
+    fn enable(&mut self) {
+        self.enabled = true;
+        self.start_time = std::time::Instant::now();
+    }
+
+    fn disable(&mut self) {
+        self.enabled = false;
+    }
+
+    fn record(&mut self, event: SpursTraceEvent, id: u32, data: u64) {
+        if !self.enabled {
+            return;
+        }
+
+        if self.entries.len() >= self.max_entries {
+            // Drop oldest entry when full (O(1) with VecDeque)
+            self.entries.pop_front();
+        }
+
+        self.entries.push_back(SpursTraceEntry {
+            event,
+            timestamp_ns: self.start_time.elapsed().as_nanos() as u64,
+            id,
+            data,
+        });
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+// ========================================================================
+// Kernel-Mode Tasklet Execution
+// ========================================================================
+
+/// Tasklet execution mode
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TaskletMode {
+    /// User-mode task
+    #[default]
+    User = 0,
+    /// Kernel-mode tasklet (runs at higher privilege)
+    Kernel = 1,
+}
+
+/// Kernel-mode tasklet
+#[derive(Debug, Clone)]
+pub struct KernelTasklet {
+    /// Tasklet ID
+    pub id: u32,
+    /// Entry point address
+    pub entry: u32,
+    /// Argument
+    pub argument: u64,
+    /// Priority (lower = higher priority)
+    pub priority: u8,
+    /// Execution mode
+    pub mode: TaskletMode,
+    /// Completion flag
+    pub completed: bool,
+}
+
+// ========================================================================
+// Policy Module Loading
+// ========================================================================
+
+/// SPURS policy module
+#[derive(Debug, Clone)]
+pub struct PolicyModule {
+    /// Module ID
+    pub id: u32,
+    /// Module address (SPU image)
+    pub image_addr: u32,
+    /// Image size
+    pub image_size: u32,
+    /// Module name
+    pub name: String,
+    /// Is loaded
+    pub loaded: bool,
 }
 
 /// SPURS task queue entry
@@ -337,6 +498,16 @@ pub struct SpursManager {
     next_workload_id: u32,
     /// SPU thread group ID
     spu_group_id: Option<u32>,
+    /// Trace buffer for profiling
+    trace_buffer: SpursTraceBuffer,
+    /// Kernel-mode tasklets
+    kernel_tasklets: Vec<KernelTasklet>,
+    /// Next tasklet ID
+    next_tasklet_id: u32,
+    /// Policy modules
+    policy_modules: Vec<PolicyModule>,
+    /// Next policy module ID
+    next_policy_id: u32,
 }
 
 impl SpursManager {
@@ -364,6 +535,11 @@ impl SpursManager {
             spu_bridge: None,
             next_workload_id: 1,
             spu_group_id: None,
+            trace_buffer: SpursTraceBuffer::new(4096),
+            kernel_tasklets: Vec::new(),
+            next_tasklet_id: 1,
+            policy_modules: Vec::new(),
+            next_policy_id: 1,
         }
     }
 
@@ -474,6 +650,10 @@ impl SpursManager {
         self.event_flags.clear();
         self.barriers.clear();
         self.spu_group_id = None;
+        self.trace_buffer.clear();
+        self.trace_buffer.disable();
+        self.kernel_tasklets.clear();
+        self.policy_modules.clear();
 
         0 // CELL_OK
     }
@@ -650,6 +830,8 @@ impl SpursManager {
 
         trace!("SpursManager::push_task: queue={}, task={}", queue_id, task_id);
 
+        self.record_trace(SpursTraceEvent::TaskSubmit, task_id, entry as u64);
+
         // Submit task to SPU through the bridge for execution
         if let Some(ref bridge) = self.spu_bridge {
             let workload_id = self.next_workload_id;
@@ -715,6 +897,8 @@ impl SpursManager {
         if let Some(workload) = self.workloads.get_mut(&wid) {
             workload.state = WorkloadState::Running;
         }
+
+        self.record_trace(SpursTraceEvent::WorkloadSchedule, wid, spu_id as u64);
 
         // Submit workload to SPU through the bridge
         if let Some(ref bridge) = self.spu_bridge {
@@ -1247,9 +1431,419 @@ impl SpursManager {
             return 0x80410803u32 as i32; // CELL_SPURS_ERROR_NOT_INITIALIZED
         }
 
+        self.trace_buffer.clear();
         trace!("SpursManager::clear_trace");
 
         0 // CELL_OK
+    }
+
+    // ========================================================================
+    // SPU Task Execution
+    // ========================================================================
+
+    /// Execute a task on an SPU through the bridge
+    /// This wires up actual SPU instruction execution by submitting the task's
+    /// entry point and argument to the SPU runtime via the bridge.
+    pub fn execute_task(&mut self, queue_id: u32, task_id: u32) -> i32 {
+        if !self.initialized {
+            return 0x80410803u32 as i32;
+        }
+
+        // Find the task in the queue
+        let queue = match self.task_queues.get(&queue_id) {
+            Some(q) => q,
+            None => return 0x80410802u32 as i32,
+        };
+
+        let task = match queue.tasks.iter().find(|t| t.id == task_id) {
+            Some(t) => t.clone(),
+            None => return 0x80410802u32 as i32,
+        };
+
+        debug!(
+            "SpursManager::execute_task: queue={}, task={}, entry=0x{:08X}",
+            queue_id, task_id, task.entry
+        );
+
+        // Submit to SPU bridge for actual execution
+        if let Some(ref bridge) = self.spu_bridge {
+            let workload_id = self.next_workload_id;
+            self.next_workload_id += 1;
+
+            let affinity = if self.num_spus >= 8 {
+                0xFF
+            } else if self.num_spus > 0 {
+                (1u8 << self.num_spus) - 1
+            } else {
+                0xFF
+            };
+
+            let spu_workload = SpuWorkload {
+                id: workload_id,
+                entry_point: task.entry,
+                program_size: 0,
+                argument: task.argument,
+                priority: task.priority,
+                affinity,
+            };
+
+            if !bridge.submit_workload(spu_workload) {
+                debug!("SpursManager: Failed to submit task {} to SPU bridge", task_id);
+                return 0x80410805u32 as i32;
+            }
+
+            info!("SpursManager: Task {} (entry=0x{:08X}) submitted to SPU bridge as workload {}",
+                task_id, task.entry, workload_id);
+        } else {
+            // HLE fallback - mark task as completed without actual execution
+            debug!("SpursManager: No SPU bridge, task {} marked as completed (HLE mode)", task_id);
+        }
+
+        // Update task state
+        if let Some(queue) = self.task_queues.get_mut(&queue_id) {
+            if let Some(task) = queue.tasks.iter_mut().find(|t| t.id == task_id) {
+                task.state = WorkloadState::Running;
+            }
+        }
+
+        0 // CELL_OK
+    }
+
+    /// Complete a task (called when SPU execution finishes)
+    pub fn complete_task(&mut self, queue_id: u32, task_id: u32) -> i32 {
+        if !self.initialized {
+            return 0x80410803u32 as i32;
+        }
+
+        // Mark task as complete in its queue
+        if let Some(queue) = self.task_queues.get_mut(&queue_id) {
+            if let Some(task) = queue.tasks.iter_mut().find(|t| t.id == task_id) {
+                task.state = WorkloadState::Idle;
+                debug!("SpursManager::complete_task: queue={}, task={}", queue_id, task_id);
+            }
+        }
+
+        // Also update any associated taskset
+        for taskset in self.tasksets.values_mut() {
+            taskset.mark_complete(task_id);
+        }
+
+        0 // CELL_OK
+    }
+
+    // ========================================================================
+    // Workload Contention Handling
+    // ========================================================================
+
+    /// Check workload contention level
+    pub fn check_contention(&self) -> ContentionStatus {
+        if !self.initialized {
+            return ContentionStatus::None;
+        }
+
+        let active_workloads = self.workloads.values()
+            .filter(|w| w.state == WorkloadState::Running || w.state == WorkloadState::Ready)
+            .count();
+
+        if active_workloads <= self.num_spus as usize {
+            ContentionStatus::None
+        } else if active_workloads <= self.num_spus as usize * 2 {
+            ContentionStatus::Mild
+        } else {
+            ContentionStatus::Heavy
+        }
+    }
+
+    /// Get number of runnable workloads (Ready + Running states)
+    pub fn get_runnable_workload_count(&self) -> usize {
+        self.workloads.values()
+            .filter(|w| w.state == WorkloadState::Running || w.state == WorkloadState::Ready)
+            .count()
+    }
+
+    /// Get number of waiting workloads
+    pub fn get_waiting_workload_count(&self) -> usize {
+        self.workloads.values()
+            .filter(|w| w.state == WorkloadState::Waiting)
+            .count()
+    }
+
+    /// Try to schedule waiting workloads when SPUs become available
+    pub fn schedule_pending_workloads(&mut self) -> u32 {
+        if !self.initialized {
+            return 0;
+        }
+
+        let active_count = self.workloads.values()
+            .filter(|w| w.state == WorkloadState::Running)
+            .count();
+
+        let available_spus = (self.num_spus as usize).saturating_sub(active_count);
+
+        if available_spus == 0 {
+            return 0;
+        }
+
+        // Find ready workloads sorted by priority and schedule them
+        let mut ready_wids: Vec<u32> = self.workloads.iter()
+            .filter(|(_, w)| w.state == WorkloadState::Ready)
+            .map(|(id, _)| *id)
+            .collect();
+        ready_wids.sort(); // Lowest ID = highest priority
+
+        let mut scheduled = 0u32;
+        for wid in ready_wids.iter().take(available_spus) {
+            if let Some(workload) = self.workloads.get_mut(wid) {
+                workload.state = WorkloadState::Running;
+                scheduled += 1;
+
+                // Submit to SPU bridge
+                if let Some(ref bridge) = self.spu_bridge {
+                    let bridge_wid = self.next_workload_id;
+                    self.next_workload_id += 1;
+
+                    let spu_workload = SpuWorkload {
+                        id: bridge_wid,
+                        entry_point: 0,
+                        program_size: 0,
+                        argument: *wid as u64,
+                        priority: self.spu_priority as u8,
+                        affinity: 0xFF,
+                    };
+
+                    let _ = bridge.submit_workload(spu_workload);
+                }
+
+                trace!("SpursManager: Scheduled pending workload {} (contention relief)", wid);
+            }
+        }
+
+        if scheduled > 0 {
+            debug!("SpursManager::schedule_pending_workloads: scheduled {} workloads", scheduled);
+        }
+
+        scheduled
+    }
+
+    // ========================================================================
+    // Trace/Profiling Methods
+    // ========================================================================
+
+    /// Enable SPURS tracing
+    pub fn enable_tracing(&mut self) {
+        self.trace_buffer.enable();
+        debug!("SpursManager: Tracing enabled");
+    }
+
+    /// Disable SPURS tracing
+    pub fn disable_tracing(&mut self) {
+        self.trace_buffer.disable();
+        debug!("SpursManager: Tracing disabled");
+    }
+
+    /// Get trace entries
+    pub fn get_trace_entries(&self) -> Vec<SpursTraceEntry> {
+        self.trace_buffer.entries.iter().cloned().collect()
+    }
+
+    /// Clear trace entries
+    pub fn clear_trace_entries(&mut self) {
+        self.trace_buffer.clear();
+    }
+
+    /// Get trace entry count
+    pub fn get_trace_entry_count(&self) -> usize {
+        self.trace_buffer.entry_count()
+    }
+
+    /// Record a trace event
+    fn record_trace(&mut self, event: SpursTraceEvent, id: u32, data: u64) {
+        self.trace_buffer.record(event, id, data);
+    }
+
+    // ========================================================================
+    // Kernel-Mode Tasklet Execution
+    // ========================================================================
+
+    /// Create a kernel-mode tasklet
+    pub fn create_kernel_tasklet(
+        &mut self,
+        entry: u32,
+        argument: u64,
+        priority: u8,
+    ) -> Result<u32, i32> {
+        if !self.initialized {
+            return Err(0x80410803u32 as i32);
+        }
+
+        let tasklet_id = self.next_tasklet_id;
+        self.next_tasklet_id += 1;
+
+        debug!("SpursManager::create_kernel_tasklet: id={}, entry=0x{:08X}", tasklet_id, entry);
+
+        let tasklet = KernelTasklet {
+            id: tasklet_id,
+            entry,
+            argument,
+            priority,
+            mode: TaskletMode::Kernel,
+            completed: false,
+        };
+
+        self.kernel_tasklets.push(tasklet);
+        self.record_trace(SpursTraceEvent::TaskSubmit, tasklet_id, entry as u64);
+
+        Ok(tasklet_id)
+    }
+
+    /// Execute a kernel-mode tasklet
+    pub fn execute_kernel_tasklet(&mut self, tasklet_id: u32) -> i32 {
+        if !self.initialized {
+            return 0x80410803u32 as i32;
+        }
+
+        let tasklet = match self.kernel_tasklets.iter_mut().find(|t| t.id == tasklet_id) {
+            Some(t) => t,
+            None => return 0x80410802u32 as i32,
+        };
+
+        if tasklet.completed {
+            return 0x80410802u32 as i32;
+        }
+
+        debug!("SpursManager::execute_kernel_tasklet: id={}, entry=0x{:08X}", tasklet_id, tasklet.entry);
+
+        let entry = tasklet.entry;
+        let argument = tasklet.argument;
+        let priority = tasklet.priority;
+
+        // Submit to SPU bridge with kernel-mode privileges
+        if let Some(ref bridge) = self.spu_bridge {
+            let workload_id = self.next_workload_id;
+            self.next_workload_id += 1;
+
+            let spu_workload = SpuWorkload {
+                id: workload_id,
+                entry_point: entry,
+                program_size: 0,
+                argument,
+                priority,
+                affinity: 0xFF, // Kernel tasklets can use any SPU
+            };
+
+            if !bridge.submit_workload(spu_workload) {
+                return 0x80410805u32 as i32;
+            }
+
+            self.record_trace(SpursTraceEvent::TaskStart, tasklet_id, workload_id as u64);
+        }
+
+        // Mark as completed in HLE mode
+        if let Some(tasklet) = self.kernel_tasklets.iter_mut().find(|t| t.id == tasklet_id) {
+            tasklet.completed = true;
+        }
+        self.record_trace(SpursTraceEvent::TaskComplete, tasklet_id, 0);
+
+        0 // CELL_OK
+    }
+
+    /// Get kernel tasklet count
+    pub fn get_kernel_tasklet_count(&self) -> usize {
+        self.kernel_tasklets.len()
+    }
+
+    /// Check if a kernel tasklet is complete
+    pub fn is_kernel_tasklet_complete(&self, tasklet_id: u32) -> bool {
+        self.kernel_tasklets.iter()
+            .find(|t| t.id == tasklet_id)
+            .map(|t| t.completed)
+            .unwrap_or(false)
+    }
+
+    // ========================================================================
+    // Policy Module Loading
+    // ========================================================================
+
+    /// Add a policy module to SPURS
+    pub fn add_policy_module(
+        &mut self,
+        image_addr: u32,
+        image_size: u32,
+        name: &str,
+    ) -> Result<u32, i32> {
+        if !self.initialized {
+            return Err(0x80410803u32 as i32);
+        }
+
+        if image_size == 0 {
+            return Err(0x80410802u32 as i32);
+        }
+
+        let module_id = self.next_policy_id;
+        self.next_policy_id += 1;
+
+        debug!("SpursManager::add_policy_module: id={}, name={}, addr=0x{:08X}, size={}",
+            module_id, name, image_addr, image_size);
+
+        let module = PolicyModule {
+            id: module_id,
+            image_addr,
+            image_size,
+            name: name.to_string(),
+            loaded: false,
+        };
+
+        self.policy_modules.push(module);
+
+        Ok(module_id)
+    }
+
+    /// Load a policy module (activate it on SPURS)
+    pub fn load_policy_module(&mut self, module_id: u32) -> i32 {
+        if !self.initialized {
+            return 0x80410803u32 as i32;
+        }
+
+        let module = match self.policy_modules.iter_mut().find(|m| m.id == module_id) {
+            Some(m) => m,
+            None => return 0x80410802u32 as i32,
+        };
+
+        if module.loaded {
+            return 0x80410804u32 as i32; // CELL_SPURS_ERROR_BUSY
+        }
+
+        debug!("SpursManager::load_policy_module: id={}, name={}", module_id, module.name);
+        module.loaded = true;
+
+        0 // CELL_OK
+    }
+
+    /// Unload a policy module
+    pub fn unload_policy_module(&mut self, module_id: u32) -> i32 {
+        if !self.initialized {
+            return 0x80410803u32 as i32;
+        }
+
+        let module = match self.policy_modules.iter_mut().find(|m| m.id == module_id) {
+            Some(m) => m,
+            None => return 0x80410802u32 as i32,
+        };
+
+        module.loaded = false;
+        debug!("SpursManager::unload_policy_module: id={}", module_id);
+
+        0 // CELL_OK
+    }
+
+    /// Get policy module count
+    pub fn get_policy_module_count(&self) -> usize {
+        self.policy_modules.len()
+    }
+
+    /// Get loaded policy module count
+    pub fn get_loaded_policy_module_count(&self) -> usize {
+        self.policy_modules.iter().filter(|m| m.loaded).count()
     }
 }
 
@@ -1486,6 +2080,18 @@ pub fn cell_spurs_get_spu_thread_id(
             }
             0 // CELL_OK
         }
+        Err(e) => e,
+    }
+}
+
+/// cellSpursAddPolicyModule - Add a policy module to SPURS
+pub fn cell_spurs_add_policy_module(image_addr: u32, image_size: u32) -> i32 {
+    debug!("cellSpursAddPolicyModule(addr=0x{:08X}, size={})", image_addr, image_size);
+
+    match crate::context::get_hle_context_mut().spurs.add_policy_module(
+        image_addr, image_size, "policy_module",
+    ) {
+        Ok(_id) => 0,
         Err(e) => e,
     }
 }
@@ -1778,5 +2384,113 @@ mod tests {
         assert_eq!(WorkloadState::Running as u32, 1);
         assert_eq!(WorkloadState::Ready as u32, 2);
         assert_eq!(WorkloadState::Waiting as u32, 3);
+    }
+
+    // ========================================================================
+    // New Feature Tests
+    // ========================================================================
+
+    #[test]
+    fn test_spurs_execute_task() {
+        let mut manager = SpursManager::new();
+        manager.initialize(4, 100, 100, false);
+
+        let queue_id = manager.create_task_queue().unwrap();
+        let task_id = manager.push_task(queue_id, 0x1000, 42, 5).unwrap();
+
+        assert_eq!(manager.execute_task(queue_id, task_id), 0);
+        assert_eq!(manager.complete_task(queue_id, task_id), 0);
+    }
+
+    #[test]
+    fn test_spurs_contention() {
+        let mut manager = SpursManager::new();
+        manager.initialize(2, 100, 100, false);
+
+        assert_eq!(manager.check_contention(), ContentionStatus::None);
+
+        // Add workloads
+        manager.set_priorities(0, &[1, 1, 0, 0, 0, 0, 0, 0]);
+        manager.workloads.get_mut(&0).unwrap().state = WorkloadState::Running;
+        manager.set_priorities(1, &[1, 1, 0, 0, 0, 0, 0, 0]);
+        manager.workloads.get_mut(&1).unwrap().state = WorkloadState::Running;
+
+        assert_eq!(manager.check_contention(), ContentionStatus::None);
+
+        // Add more than available SPUs
+        manager.set_priorities(2, &[1, 1, 0, 0, 0, 0, 0, 0]);
+        manager.workloads.get_mut(&2).unwrap().state = WorkloadState::Running;
+
+        assert_eq!(manager.check_contention(), ContentionStatus::Mild);
+    }
+
+    #[test]
+    fn test_spurs_tracing() {
+        let mut manager = SpursManager::new();
+        manager.initialize(4, 100, 100, false);
+
+        assert_eq!(manager.get_trace_entry_count(), 0);
+
+        manager.enable_tracing();
+
+        let queue_id = manager.create_task_queue().unwrap();
+        let _task_id = manager.push_task(queue_id, 0x1000, 0, 5).unwrap();
+
+        assert!(manager.get_trace_entry_count() > 0);
+
+        manager.clear_trace_entries();
+        assert_eq!(manager.get_trace_entry_count(), 0);
+
+        manager.disable_tracing();
+    }
+
+    #[test]
+    fn test_spurs_kernel_tasklet() {
+        let mut manager = SpursManager::new();
+        manager.initialize(4, 100, 100, false);
+
+        let tasklet_id = manager.create_kernel_tasklet(0x2000, 99, 1).unwrap();
+        assert_eq!(manager.get_kernel_tasklet_count(), 1);
+        assert!(!manager.is_kernel_tasklet_complete(tasklet_id));
+
+        assert_eq!(manager.execute_kernel_tasklet(tasklet_id), 0);
+        assert!(manager.is_kernel_tasklet_complete(tasklet_id));
+    }
+
+    #[test]
+    fn test_spurs_policy_module() {
+        let mut manager = SpursManager::new();
+        manager.initialize(4, 100, 100, false);
+
+        let module_id = manager.add_policy_module(0x3000, 1024, "test_policy").unwrap();
+        assert_eq!(manager.get_policy_module_count(), 1);
+        assert_eq!(manager.get_loaded_policy_module_count(), 0);
+
+        assert_eq!(manager.load_policy_module(module_id), 0);
+        assert_eq!(manager.get_loaded_policy_module_count(), 1);
+
+        // Double-load should fail
+        assert_ne!(manager.load_policy_module(module_id), 0);
+
+        assert_eq!(manager.unload_policy_module(module_id), 0);
+        assert_eq!(manager.get_loaded_policy_module_count(), 0);
+    }
+
+    #[test]
+    fn test_spurs_schedule_pending() {
+        let mut manager = SpursManager::new();
+        manager.initialize(2, 100, 100, false);
+
+        // Create ready workloads
+        manager.set_priorities(0, &[1, 1, 0, 0, 0, 0, 0, 0]);
+        manager.workloads.get_mut(&0).unwrap().state = WorkloadState::Ready;
+        manager.set_priorities(1, &[1, 1, 0, 0, 0, 0, 0, 0]);
+        manager.workloads.get_mut(&1).unwrap().state = WorkloadState::Ready;
+
+        let scheduled = manager.schedule_pending_workloads();
+        assert_eq!(scheduled, 2);
+
+        // All should now be running
+        assert_eq!(manager.get_runnable_workload_count(), 2);
     }
 }
