@@ -80,25 +80,25 @@ Game data detection and PARAM.SFO parsing work. Minor gaps:
 The PPU JIT has a sophisticated LLVM-based framework with 170+ instruction stubs, a 64 MB LRU code cache, O2 optimization passes, branch prediction, inline caching, register coalescing, lazy/tiered compilation, and a background compilation thread pool. However, **actual LLVM IR emission requires the `HAVE_LLVM` backend to be enabled** — without it, all code falls through to the Rust interpreter. Specific work needed:
 
 #### Enable and Verify LLVM Backend
-- [ ] Ensure `HAVE_LLVM` is defined and LLVM 14+ links correctly on all platforms
-- [ ] Add fallback-to-interpreter error path when JIT compilation fails (currently no error handling)
-- [ ] Test JIT code emission produces valid machine code for the host ISA
+- [x] Ensure `HAVE_LLVM` is defined and LLVM 14+ links correctly on all platforms
+- [x] Add fallback-to-interpreter error path when JIT compilation fails (currently no error handling)
+- [x] Test JIT code emission produces valid machine code for the host ISA
 
 #### Missing PPU Instruction Categories in JIT
 The JIT covers integer, load/store, float, branch, rotate, and some AltiVec. Still missing:
-- [ ] **Remaining AltiVec/VMX** — Only ~10 vector ops (VADDFP, VSUBFP, VAND, VOR, VXOR, VNOR, VPERM, VSEL, VMADDFP, VNMSUBFP) are JIT-compiled; the interpreter handles 100+ VMX instructions. Add JIT paths for high-frequency vector ops: `VADDSWS`, `VADDUWS`, `VMAXSW`, `VMINSW`, `VAVGSW`, `VCMPEQUW`, `VCMPGTSW`, `VMULESH`, `VMULESW`, `VMRGHW`, `VMRGLW`, `VSPLTW`, `VSPLTH`, `VSPLTB`, `VSPLTISW`
-- [ ] **Vector load/store** — Add `LVX`, `STVX`, `LVLX`, `LVRX`, `STVLX`, `STVRX` to JIT
-- [ ] **Vector permute/shuffle** — Add `VPKUHUM`, `VPKUWUM`, `VUPKHSH`, `VUPKLSH` to JIT
-- [ ] **Atomic load/store** — JIT `LWARX`/`STWCX.` and `LDARX`/`STDCX.` pairs for lock-free code hot paths
-- [ ] **Performance monitor SPRs** — JIT `MFSPR`/`MTSPR` for PMR access (currently interpreted)
-- [ ] **Supervisor-mode** — Add `RFI`, `RFID`, `MTMSR`, `MFMSR` if needed for kernel-mode emulation
+- [x] **Remaining AltiVec/VMX** — Only ~10 vector ops (VADDFP, VSUBFP, VAND, VOR, VXOR, VNOR, VPERM, VSEL, VMADDFP, VNMSUBFP) are JIT-compiled; the interpreter handles 100+ VMX instructions. Add JIT paths for high-frequency vector ops: `VADDSWS`, `VADDUWS`, `VMAXSW`, `VMINSW`, `VAVGSW`, `VCMPEQUW`, `VCMPGTSW`, `VMULESH`, `VMULESW`, `VMRGHW`, `VMRGLW`, `VSPLTW`, `VSPLTH`, `VSPLTB`, `VSPLTISW`
+- [x] **Vector load/store** — Add `LVX`, `STVX`, `LVLX`, `LVRX`, `STVLX`, `STVRX` to JIT
+- [x] **Vector permute/shuffle** — Add `VPKUHUM`, `VPKUWUM`, `VUPKHSH`, `VUPKLSH` to JIT
+- [x] **Atomic load/store** — JIT `LWARX`/`STWCX.` and `LDARX`/`STDCX.` pairs for lock-free code hot paths
+- [x] **Performance monitor SPRs** — JIT `MFSPR`/`MTSPR` for PMR access (currently interpreted)
+- [x] **Supervisor-mode** — Add `RFI`, `RFID`, `MTMSR`, `MFMSR` if needed for kernel-mode emulation
 
 #### PPU JIT Optimization
-- [ ] Implement block linking — compiled blocks currently return to dispatcher; link direct jumps to avoid dispatch overhead
-- [ ] Add constant propagation for `LI`/`LIS` → immediate-folding in subsequent arithmetic
-- [ ] Tune branch predictor thresholds (currently uses default taken/not-taken counters)
-- [ ] Profile-guided recompilation — use Tier0 execution counts to identify hot blocks for Tier1 O2 recompilation
-- [ ] Implement trace compilation for hot loops (merge basic blocks along loop back-edges)
+- [x] Implement block linking — compiled blocks currently return to dispatcher; link direct jumps to avoid dispatch overhead
+- [x] Add constant propagation for `LI`/`LIS` → immediate-folding in subsequent arithmetic
+- [x] Tune branch predictor thresholds (currently uses default taken/not-taken counters)
+- [x] Profile-guided recompilation — use Tier0 execution counts to identify hot blocks for Tier1 O2 recompilation
+- [x] Implement trace compilation for hot loops (merge basic blocks along loop back-edges)
 
 ### JIT Compiler — SPU (`cpp/src/spu_jit.cpp`)
 

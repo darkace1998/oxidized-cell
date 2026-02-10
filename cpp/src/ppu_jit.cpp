@@ -551,6 +551,10 @@ struct TraceCompiler {
     
     /**
      * Detect a potential trace starting at the given header
+     * @param header The entry point address of the trace
+     * @param path Ordered list of block addresses forming the trace
+     * @param back_edge If non-zero, the target of a loop back-edge (makes this a loop trace);
+     *                  if zero, this is a linear (non-looping) trace
      */
     void detect_trace(uint32_t header, const std::vector<uint32_t>& path,
                       uint32_t back_edge = 0) {
@@ -7704,6 +7708,8 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                     break;
                 }
                 case 908: { // vspltisw vrt, simm - Vector Splat Immediate Signed Word
+                    // The 5-bit SIMM field (bits 16-20, in the vra position) is sign-extended:
+                    // bit 4 is the sign bit; if set, extend to produce a negative i8 value
                     int8_t simm5 = static_cast<int8_t>((vra & 0x1F) | ((vra & 0x10) ? 0xE0 : 0));
                     llvm::Value* elem = llvm::ConstantInt::get(i32_ty, static_cast<int32_t>(simm5));
                     llvm::Value* result = builder.CreateVectorSplat(4, elem);
@@ -7712,32 +7718,48 @@ static void emit_ppu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                 }
                 // --- Vector pack/unpack instructions ---
                 case 14: { // vpkuhum vrt, vra, vrb - Vector Pack Unsigned Halfword Unsigned Modulo
+                    // Pack low byte of each halfword from vra and vrb into 16 bytes
                     auto v8i16_ty = llvm::VectorType::get(i16_ty, 8, false);
                     auto v16i8_ty = llvm::VectorType::get(i8_ty, 16, false);
                     llvm::Value* a = builder.CreateBitCast(
                         builder.CreateLoad(v4i32_ty, vrs[vra]), v8i16_ty);
                     llvm::Value* b = builder.CreateBitCast(
                         builder.CreateLoad(v4i32_ty, vrs[vrb]), v8i16_ty);
-                    llvm::Value* a_trunc = builder.CreateTrunc(a, v16i8_ty);
-                    llvm::Value* b_trunc = builder.CreateTrunc(b, v16i8_ty);
-                    // Interleave low bytes: pack a[0..7] and b[0..7] into 16 bytes
-                    llvm::Value* result_bytes = builder.CreateShuffleVector(a_trunc, b_trunc,
-                        llvm::ArrayRef<int>{0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23});
-                    llvm::Value* result = builder.CreateBitCast(result_bytes, v4i32_ty);
-                    builder.CreateStore(result, vrs[vrt]);
+                    // Extract low byte of each halfword element individually
+                    llvm::Value* result = llvm::UndefValue::get(v16i8_ty);
+                    for (int i = 0; i < 8; i++) {
+                        llvm::Value* elem_a = builder.CreateExtractElement(a, builder.getInt32(i));
+                        llvm::Value* byte_a = builder.CreateTrunc(elem_a, i8_ty);
+                        result = builder.CreateInsertElement(result, byte_a, builder.getInt32(i));
+                    }
+                    for (int i = 0; i < 8; i++) {
+                        llvm::Value* elem_b = builder.CreateExtractElement(b, builder.getInt32(i));
+                        llvm::Value* byte_b = builder.CreateTrunc(elem_b, i8_ty);
+                        result = builder.CreateInsertElement(result, byte_b, builder.getInt32(i + 8));
+                    }
+                    llvm::Value* result_i32 = builder.CreateBitCast(result, v4i32_ty);
+                    builder.CreateStore(result_i32, vrs[vrt]);
                     break;
                 }
                 case 78: { // vpkuwum vrt, vra, vrb - Vector Pack Unsigned Word Unsigned Modulo
+                    // Pack low halfword of each word from vra and vrb into 8 halfwords
                     auto v8i16_ty = llvm::VectorType::get(i16_ty, 8, false);
                     llvm::Value* a = builder.CreateLoad(v4i32_ty, vrs[vra]);
                     llvm::Value* b = builder.CreateLoad(v4i32_ty, vrs[vrb]);
-                    llvm::Value* a_trunc = builder.CreateTrunc(a, v8i16_ty);
-                    llvm::Value* b_trunc = builder.CreateTrunc(b, v8i16_ty);
-                    // Pack low halfwords from a and b
-                    llvm::Value* result_hw = builder.CreateShuffleVector(a_trunc, b_trunc,
-                        llvm::ArrayRef<int>{0, 1, 2, 3, 8, 9, 10, 11});
-                    llvm::Value* result = builder.CreateBitCast(result_hw, v4i32_ty);
-                    builder.CreateStore(result, vrs[vrt]);
+                    // Extract low halfword of each word element individually
+                    llvm::Value* result = llvm::UndefValue::get(v8i16_ty);
+                    for (int i = 0; i < 4; i++) {
+                        llvm::Value* elem_a = builder.CreateExtractElement(a, builder.getInt32(i));
+                        llvm::Value* hw_a = builder.CreateTrunc(elem_a, i16_ty);
+                        result = builder.CreateInsertElement(result, hw_a, builder.getInt32(i));
+                    }
+                    for (int i = 0; i < 4; i++) {
+                        llvm::Value* elem_b = builder.CreateExtractElement(b, builder.getInt32(i));
+                        llvm::Value* hw_b = builder.CreateTrunc(elem_b, i16_ty);
+                        result = builder.CreateInsertElement(result, hw_b, builder.getInt32(i + 4));
+                    }
+                    llvm::Value* result_i32 = builder.CreateBitCast(result, v4i32_ty);
+                    builder.CreateStore(result_i32, vrs[vrt]);
                     break;
                 }
                 case 846: { // vupkhsh vrt, vrb - Vector Unpack High Signed Halfword
@@ -9348,7 +9370,8 @@ int oc_ppu_jit_verify_codegen(oc_ppu_jit_t* jit) {
     test_code[2] = (test_instr >> 8) & 0xFF;
     test_code[3] = test_instr & 0xFF;
     
-    // Try to compile at a test address
+    // Try to compile at a reserved test address in the upper address space
+    // This range (0xFFFF0000+) is safe because PS3 user-mode code doesn't use it
     constexpr uint32_t TEST_ADDRESS = 0xFFFF0000;
     int result = oc_ppu_jit_compile(jit, TEST_ADDRESS, test_code, sizeof(test_code));
     
