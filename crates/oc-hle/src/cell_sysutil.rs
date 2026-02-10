@@ -447,6 +447,10 @@ pub struct SysutilManager {
     bgm_enabled: bool,
     /// Background music volume (0-100)
     bgm_volume: u32,
+    /// On-screen keyboard state
+    osk_state: Option<OskState>,
+    /// Trophy status callback
+    trophy_callback: Option<TrophyCallback>,
 }
 
 impl SysutilManager {
@@ -471,6 +475,8 @@ impl SysutilManager {
             audio_settings: AudioSettings::default(),
             bgm_enabled: true,
             bgm_volume: 100,
+            osk_state: None,
+            trophy_callback: None,
         };
         
         // Initialize default system parameters
@@ -502,6 +508,12 @@ impl SysutilManager {
         self.string_params.insert(
             CellSysutilParamId::CurrentUsername as u32,
             "User".to_string(),
+        );
+
+        // Default timezone
+        self.string_params.insert(
+            CellSysutilParamId::TimeZone as u32,
+            "UTC".to_string(),
         );
     }
 
@@ -1119,6 +1131,309 @@ impl SysutilManager {
         debug!("SysutilManager::set_bgm_volume: {}", self.bgm_volume);
         0 // CELL_OK
     }
+
+    // ========================================================================
+    // Date/Time Formatting
+    // ========================================================================
+
+    /// Format a UNIX timestamp according to system date/time settings
+    ///
+    /// Uses the DateFormat and TimeFormat system parameters to produce
+    /// a locale-aware string representation.
+    pub fn format_date_time(&self, timestamp: u64) -> String {
+        // Derive components from UNIX timestamp
+        let secs = timestamp;
+        let days = secs / 86400;
+        let time_of_day = secs % 86400;
+        let hours = (time_of_day / 3600) as u32;
+        let minutes = ((time_of_day % 3600) / 60) as u32;
+        let seconds = (time_of_day % 60) as u32;
+
+        // Simplified date calculation from epoch day count
+        // (good enough for emulation; covers 1970-2099)
+        let (year, month, day) = Self::days_to_ymd(days);
+
+        let date_format = self.int_params
+            .get(&(CellSysutilParamId::DateFormat as u32))
+            .copied()
+            .unwrap_or(0);
+
+        let date_str = match date_format {
+            1 => format!("{:02}/{:02}/{:04}", month, day, year),   // MM/DD/YYYY
+            2 => format!("{:02}/{:02}/{:04}", day, month, year),   // DD/MM/YYYY
+            _ => format!("{:04}/{:02}/{:02}", year, month, day),   // YYYY/MM/DD (default)
+        };
+
+        let time_format = self.int_params
+            .get(&(CellSysutilParamId::TimeFormat as u32))
+            .copied()
+            .unwrap_or(0);
+
+        let time_str = if time_format == 1 {
+            // 12-hour format
+            let (h12, ampm) = if hours == 0 {
+                (12, "AM")
+            } else if hours < 12 {
+                (hours, "AM")
+            } else if hours == 12 {
+                (12, "PM")
+            } else {
+                (hours - 12, "PM")
+            };
+            format!("{:02}:{:02}:{:02} {}", h12, minutes, seconds, ampm)
+        } else {
+            // 24-hour format (default)
+            format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+        };
+
+        format!("{} {}", date_str, time_str)
+    }
+
+    /// Convert day count since epoch to (year, month, day)
+    fn days_to_ymd(total_days: u64) -> (u32, u32, u32) {
+        let mut y = 1970u32;
+        let mut remaining = total_days;
+        loop {
+            let days_in_year = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 366u64 } else { 365u64 };
+            if remaining < days_in_year { break; }
+            remaining -= days_in_year;
+            y += 1;
+        }
+        let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+        let month_days: [u64; 12] = [
+            31,
+            if leap { 29 } else { 28 },
+            31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+        ];
+        let mut m = 0u32;
+        for &md in &month_days {
+            if remaining < md { break; }
+            remaining -= md;
+            m += 1;
+        }
+        (y, m + 1, remaining as u32 + 1)
+    }
+
+    // ========================================================================
+    // On-Screen Keyboard (OSK) Overlay
+    // ========================================================================
+
+    /// Open the on-screen keyboard overlay
+    pub fn open_osk(&mut self, title: &str, initial_text: &str, max_length: u32) -> i32 {
+        if self.dialog.dialog_type.is_some() {
+            return CELL_SYSUTIL_ERROR_DIALOG_ALREADY_OPEN;
+        }
+
+        debug!(
+            "SysutilManager::open_osk: title={}, initial={}, max_len={}",
+            title, initial_text, max_length
+        );
+
+        self.dialog.dialog_type = Some(DialogType::Message); // re-use Message slot
+        self.dialog.status = DialogStatus::Open;
+        self.dialog.message = initial_text.to_string();
+        self.osk_state = Some(OskState {
+            title: title.to_string(),
+            input_text: initial_text.to_string(),
+            max_length,
+            result: OskResult::Running,
+        });
+
+        0 // CELL_OK
+    }
+
+    /// Submit text from OSK and close the overlay
+    pub fn osk_submit(&mut self, text: &str) -> i32 {
+        if let Some(ref mut osk) = self.osk_state {
+            let truncated: String = text.chars().take(osk.max_length as usize).collect();
+            osk.input_text = truncated;
+            osk.result = OskResult::Ok;
+            debug!("SysutilManager::osk_submit: text={}", osk.input_text);
+        } else {
+            return CELL_SYSUTIL_ERROR_VALUE;
+        }
+
+        self.dialog.dialog_type = None;
+        self.dialog.status = DialogStatus::Ok;
+
+        0 // CELL_OK
+    }
+
+    /// Cancel the OSK
+    pub fn osk_cancel(&mut self) -> i32 {
+        if let Some(ref mut osk) = self.osk_state {
+            osk.result = OskResult::Cancel;
+        } else {
+            return CELL_SYSUTIL_ERROR_VALUE;
+        }
+
+        self.dialog.dialog_type = None;
+        self.dialog.status = DialogStatus::Cancel;
+
+        0 // CELL_OK
+    }
+
+    /// Get OSK result text
+    pub fn osk_get_input(&self) -> Option<&str> {
+        self.osk_state.as_ref().map(|o| o.input_text.as_str())
+    }
+
+    /// Check if OSK is open
+    pub fn is_osk_open(&self) -> bool {
+        self.osk_state.as_ref().map(|o| o.result == OskResult::Running).unwrap_or(false)
+    }
+
+    // ========================================================================
+    // BGM Playback Status
+    // ========================================================================
+
+    /// Get BGM playback status structure
+    ///
+    /// Returns a `BgmPlaybackStatus` describing whether background music is
+    /// currently playing, the playback state, and volume information.
+    pub fn get_bgm_playback_status(&self) -> BgmPlaybackStatus {
+        BgmPlaybackStatus {
+            playing: self.bgm_enabled,
+            player_state: if self.bgm_enabled {
+                BgmPlayerState::Playing
+            } else {
+                BgmPlayerState::Stopped
+            },
+            fade_state: BgmFadeState::None,
+            volume: self.bgm_volume,
+        }
+    }
+
+    // ========================================================================
+    // Game Update Checking
+    // ========================================================================
+
+    /// Check for game update status
+    ///
+    /// In HLE mode this always reports "no update available".
+    pub fn check_update_status(&self) -> UpdateStatus {
+        UpdateStatus {
+            available: false,
+            version: String::new(),
+            size_kb: 0,
+            mandatory: false,
+        }
+    }
+
+    // ========================================================================
+    // Trophy Registration Callback
+    // ========================================================================
+
+    /// Register a trophy status callback
+    ///
+    /// The callback is invoked whenever a trophy is unlocked so the game
+    /// can display a notification.
+    pub fn register_trophy_callback(&mut self, func: u32, userdata: u32) -> i32 {
+        debug!(
+            "SysutilManager::register_trophy_callback: func=0x{:08X}, userdata=0x{:08X}",
+            func, userdata
+        );
+        self.trophy_callback = Some(TrophyCallback { func, userdata });
+        0 // CELL_OK
+    }
+
+    /// Unregister trophy callback
+    pub fn unregister_trophy_callback(&mut self) -> i32 {
+        self.trophy_callback = None;
+        0 // CELL_OK
+    }
+
+    /// Get trophy callback (if registered)
+    pub fn get_trophy_callback(&self) -> Option<&TrophyCallback> {
+        self.trophy_callback.as_ref()
+    }
+}
+
+// ============================================================================
+// Supporting types for new features
+// ============================================================================
+
+/// On-screen keyboard result
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OskResult {
+    /// Still running
+    Running,
+    /// User pressed OK
+    Ok,
+    /// User pressed Cancel
+    Cancel,
+}
+
+/// On-screen keyboard state
+#[derive(Debug, Clone)]
+pub struct OskState {
+    /// Dialog title
+    pub title: String,
+    /// Current input text
+    pub input_text: String,
+    /// Maximum input length
+    pub max_length: u32,
+    /// Result
+    pub result: OskResult,
+}
+
+/// BGM player state
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BgmPlayerState {
+    /// Stopped / not playing
+    #[default]
+    Stopped = 0,
+    /// Currently playing
+    Playing = 1,
+    /// Paused
+    Paused = 2,
+}
+
+/// BGM fade state
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BgmFadeState {
+    /// No fade in progress
+    #[default]
+    None = 0,
+    /// Fading in
+    FadeIn = 1,
+    /// Fading out
+    FadeOut = 2,
+}
+
+/// Background music playback status
+#[derive(Debug, Clone, Default)]
+pub struct BgmPlaybackStatus {
+    /// Whether BGM is playing
+    pub playing: bool,
+    /// Player state
+    pub player_state: BgmPlayerState,
+    /// Fade state
+    pub fade_state: BgmFadeState,
+    /// Current volume (0-100)
+    pub volume: u32,
+}
+
+/// Game update status
+#[derive(Debug, Clone, Default)]
+pub struct UpdateStatus {
+    /// Whether an update is available
+    pub available: bool,
+    /// Update version string
+    pub version: String,
+    /// Update size in KB
+    pub size_kb: u64,
+    /// Whether the update is mandatory
+    pub mandatory: bool,
+}
+
+/// Trophy callback entry
+#[derive(Debug, Clone, Copy)]
+pub struct TrophyCallback {
+    /// Callback function address
+    pub func: u32,
+    /// User data pointer
+    pub userdata: u32,
 }
 
 impl Default for SysutilManager {
@@ -1324,6 +1639,48 @@ pub fn cell_msg_dialog_progress_bar_inc(_bar_index: u32, delta: u32) -> i32 {
 }
 
 // ============================================================================
+// Game Update Checking
+// ============================================================================
+
+/// cellSysutilCheckUpdateStatus - Check for game update availability
+///
+/// # Arguments
+/// * `status_addr` - Address to write update status
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_sysutil_check_update_status(status_addr: u32) -> i32 {
+    debug!("cellSysutilCheckUpdateStatus(status_addr=0x{:08X})", status_addr);
+
+    // In HLE mode, no updates are ever available
+    if status_addr != 0 {
+        // Write available=0 (no update)
+        if let Err(e) = write_be32(status_addr, 0) {
+            return e;
+        }
+    }
+
+    0 // CELL_OK
+}
+
+// ============================================================================
+// Trophy Registration Callback
+// ============================================================================
+
+/// cellSysutilRegisterTrophyCallback - Register trophy notification callback
+///
+/// # Arguments
+/// * `func` - Callback function address
+/// * `userdata` - User data pointer
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_sysutil_register_trophy_callback(func: u32, userdata: u32) -> i32 {
+    debug!("cellSysutilRegisterTrophyCallback(func=0x{:08X}, userdata=0x{:08X})", func, userdata);
+    crate::context::get_hle_context_mut().sysutil.register_trophy_callback(func, userdata)
+}
+
+// ============================================================================
 // PSID/Account Functions
 // ============================================================================
 
@@ -1475,9 +1832,21 @@ pub fn cell_disc_game_register_disc_change_callback(_callback: u32, _userdata: u
 pub fn cell_sysutil_get_bgm_playback_status(status_addr: u32) -> i32 {
     trace!("cellSysutilGetBgmPlaybackStatus(status_addr=0x{:08X})", status_addr);
     
-    // Write status = 0 (not playing)
+    let ctx = crate::context::get_hle_context();
+    let status = ctx.sysutil.get_bgm_playback_status();
+    
     if status_addr != 0 {
-        if let Err(e) = write_be32(status_addr, 0) {
+        // CellSysutilBgmPlaybackStatus:
+        //   uint8_t  playbackState; // offset 0: 0=stopped, 1=playing, 2=paused
+        //   uint8_t  fadeState;     // offset 1: 0=none, 1=fadeIn, 2=fadeOut
+        //   uint8_t  reserved[2];   // offset 2-3
+        //   uint32_t volume;        // offset 4: 0-100 (not used by all games)
+        let state_word = ((status.player_state as u32) << 24)
+            | ((status.fade_state as u32) << 16);
+        if let Err(e) = write_be32(status_addr, state_word) {
+            return e;
+        }
+        if let Err(e) = write_be32(status_addr + 4, status.volume) {
             return e;
         }
     }
@@ -2736,5 +3105,130 @@ mod tests {
         assert_eq!(cell_np_trophy_get_game_progress(0, 0, 0), 0);
         
         crate::context::get_hle_context_mut().sysutil.trophy_term();
+    }
+
+    // ========================================================================
+    // Date/Time Formatting Tests
+    // ========================================================================
+
+    #[test]
+    fn test_sysutil_format_date_time_default() {
+        let manager = SysutilManager::new();
+        // Default format: YYYY/MM/DD, 24-hour
+        // Timestamp 0 = 1970/01/01 00:00:00
+        let formatted = manager.format_date_time(0);
+        assert_eq!(formatted, "1970/01/01 00:00:00");
+    }
+
+    #[test]
+    fn test_sysutil_format_date_time_known() {
+        let manager = SysutilManager::new();
+        // 86400 seconds = 1970/01/02 00:00:00
+        let formatted = manager.format_date_time(86400);
+        assert_eq!(formatted, "1970/01/02 00:00:00");
+    }
+
+    #[test]
+    fn test_sysutil_format_date_time_12h() {
+        let mut manager = SysutilManager::new();
+        // Set 12-hour time format
+        manager.set_system_param_int(CellSysutilParamId::TimeFormat as u32, 1);
+        let formatted = manager.format_date_time(0);
+        assert!(formatted.contains("AM") || formatted.contains("PM"));
+    }
+
+    #[test]
+    fn test_sysutil_format_date_mmddyyyy() {
+        let mut manager = SysutilManager::new();
+        manager.set_system_param_int(CellSysutilParamId::DateFormat as u32, 1);
+        let formatted = manager.format_date_time(0);
+        assert!(formatted.starts_with("01/01/1970"));
+    }
+
+    // ========================================================================
+    // OSK Tests
+    // ========================================================================
+
+    #[test]
+    fn test_sysutil_osk_lifecycle() {
+        let mut manager = SysutilManager::new();
+        assert!(!manager.is_osk_open());
+
+        assert_eq!(manager.open_osk("Enter name", "Player1", 32), 0);
+        assert!(manager.is_osk_open());
+        assert_eq!(manager.osk_get_input(), Some("Player1"));
+
+        assert_eq!(manager.osk_submit("NewPlayer"), 0);
+        assert!(!manager.is_osk_open());
+        assert_eq!(manager.osk_get_input(), Some("NewPlayer"));
+    }
+
+    #[test]
+    fn test_sysutil_osk_cancel() {
+        let mut manager = SysutilManager::new();
+        assert_eq!(manager.open_osk("Title", "", 16), 0);
+        assert_eq!(manager.osk_cancel(), 0);
+        assert!(!manager.is_osk_open());
+    }
+
+    #[test]
+    fn test_sysutil_osk_max_length() {
+        let mut manager = SysutilManager::new();
+        assert_eq!(manager.open_osk("Title", "", 5), 0);
+        assert_eq!(manager.osk_submit("Hello World"), 0);
+        // Should be truncated to 5 chars
+        assert_eq!(manager.osk_get_input(), Some("Hello"));
+    }
+
+    // ========================================================================
+    // BGM Playback Status Tests
+    // ========================================================================
+
+    #[test]
+    fn test_sysutil_bgm_playback_status() {
+        let manager = SysutilManager::new();
+        let status = manager.get_bgm_playback_status();
+        assert!(status.playing);
+        assert_eq!(status.player_state, BgmPlayerState::Playing);
+        assert_eq!(status.volume, 100);
+    }
+
+    #[test]
+    fn test_sysutil_bgm_playback_status_disabled() {
+        let mut manager = SysutilManager::new();
+        manager.set_bgm_playback_enabled(false);
+        let status = manager.get_bgm_playback_status();
+        assert!(!status.playing);
+        assert_eq!(status.player_state, BgmPlayerState::Stopped);
+    }
+
+    // ========================================================================
+    // Update Status Tests
+    // ========================================================================
+
+    #[test]
+    fn test_sysutil_check_update_status() {
+        let manager = SysutilManager::new();
+        let status = manager.check_update_status();
+        assert!(!status.available);
+        assert!(status.version.is_empty());
+    }
+
+    // ========================================================================
+    // Trophy Callback Tests
+    // ========================================================================
+
+    #[test]
+    fn test_sysutil_trophy_callback() {
+        let mut manager = SysutilManager::new();
+        assert!(manager.get_trophy_callback().is_none());
+
+        assert_eq!(manager.register_trophy_callback(0x10000, 0xABCD), 0);
+        let cb = manager.get_trophy_callback().unwrap();
+        assert_eq!(cb.func, 0x10000);
+        assert_eq!(cb.userdata, 0xABCD);
+
+        assert_eq!(manager.unregister_trophy_callback(), 0);
+        assert!(manager.get_trophy_callback().is_none());
     }
 }
