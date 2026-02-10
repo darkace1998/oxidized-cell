@@ -64,6 +64,28 @@ pub mod mode {
     pub const CELL_FS_S_IXUSR: u32 = 0o000100;
 }
 
+/// Device path prefixes for PS3 virtual filesystem
+pub mod device {
+    /// Blu-ray disc device
+    pub const DEV_BDVD: &str = "/dev_bdvd";
+    /// USB storage devices (followed by 3-digit index, e.g. /dev_usb000)
+    pub const DEV_USB: &str = "/dev_usb";
+    /// HDD0 (primary internal storage)
+    pub const DEV_HDD0: &str = "/dev_hdd0";
+    /// HDD1 (secondary internal partition)
+    pub const DEV_HDD1: &str = "/dev_hdd1";
+    /// Flash storage
+    pub const DEV_FLASH: &str = "/dev_flash";
+}
+
+/// XOR key used for MSELF content decryption (HLE placeholder).
+/// Real PS3 uses AES-128, but for HLE we use a repeating XOR mask
+/// that is sufficient to distinguish encrypted from plaintext paths.
+const MSELF_XOR_KEY: [u8; 16] = [
+    0x4D, 0x53, 0x45, 0x4C, 0x46, 0x5F, 0x4B, 0x45,
+    0x59, 0x5F, 0x48, 0x4C, 0x45, 0x5F, 0x30, 0x31,
+];
+
 /// File stat structure
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -182,6 +204,8 @@ struct FileHandle {
     open_file: Option<OpenFile>,
     /// Real directory handle (if VFS is connected)
     open_dir: Option<OpenDir>,
+    /// Whether the file was opened with the MSELF flag (encrypted content)
+    is_mself: bool,
 }
 
 /// Async I/O request ID type
@@ -282,7 +306,69 @@ impl FsManager {
 
     /// Resolve a PS3 virtual path to a host path using VFS
     fn resolve_path(&self, ps3_path: &str) -> Option<std::path::PathBuf> {
-        self.vfs.as_ref().and_then(|vfs| vfs.resolve(ps3_path))
+        // First try direct VFS resolution
+        if let Some(ref vfs) = self.vfs {
+            if let Some(p) = vfs.resolve(ps3_path) {
+                return Some(p);
+            }
+        }
+
+        // Handle special device path prefixes when VFS doesn't have a mapping
+        if ps3_path.starts_with(device::DEV_BDVD) {
+            return self.resolve_device_path(ps3_path, "bdvd");
+        }
+        if ps3_path.starts_with(device::DEV_USB) {
+            // /dev_usb000/foo → usb/000/foo
+            let suffix = &ps3_path[device::DEV_USB.len()..];
+            // Extract 3-digit device index (e.g. "000") and remaining path
+            if suffix.len() >= 3 {
+                let idx = &suffix[..3];
+                let rest = &suffix[3..];
+                return self.resolve_device_path(
+                    &format!("{}{}", rest, ""),
+                    &format!("usb/{}", idx),
+                );
+            }
+            return self.resolve_device_path(suffix, "usb/000");
+        }
+
+        None
+    }
+
+    /// Resolve a device-relative path to a host path
+    ///
+    /// Looks for a base directory via `OXIDIZED_CELL_DEVICES` env var,
+    /// falling back to `~/.local/share/oxidized-cell/devices/<device>/`.
+    fn resolve_device_path(&self, ps3_suffix: &str, device_name: &str) -> Option<std::path::PathBuf> {
+        // Strip leading / from suffix
+        let suffix = ps3_suffix.trim_start_matches('/');
+
+        if let Ok(base) = std::env::var("OXIDIZED_CELL_DEVICES") {
+            let p = std::path::PathBuf::from(format!("{}/{}/{}", base, device_name, suffix));
+            if p.exists() {
+                return Some(p);
+            }
+        }
+
+        #[cfg(target_family = "unix")]
+        if let Ok(home) = std::env::var("HOME") {
+            let p = std::path::PathBuf::from(format!(
+                "{}/.local/share/oxidized-cell/devices/{}/{}",
+                home, device_name, suffix
+            ));
+            if p.exists() {
+                return Some(p);
+            }
+        }
+
+        None
+    }
+
+    /// Decrypt MSELF-encrypted data using XOR key
+    fn decrypt_mself_data(data: &mut [u8]) {
+        for (i, byte) in data.iter_mut().enumerate() {
+            *byte ^= MSELF_XOR_KEY[i % MSELF_XOR_KEY.len()];
+        }
     }
 
     /// Open a file
@@ -363,6 +449,7 @@ impl FsManager {
             size: file_size,
             open_file,
             open_dir: None,
+            is_mself: flags & flags::CELL_FS_O_MSELF != 0,
         };
 
         self.handles.insert(fd, handle);
@@ -397,10 +484,17 @@ impl FsManager {
 
         trace!("FsManager::read: fd={}, position={}, len={}", fd, handle.position, buf.len());
 
+        let is_mself = handle.is_mself;
+
         // Read from actual file if available
         if let Some(ref mut open_file) = handle.open_file {
             match open_file.file.read(buf) {
                 Ok(n) => {
+                    // Decrypt MSELF content if the file was opened with the MSELF flag
+                    if is_mself && n > 0 {
+                        trace!("FsManager::read: decrypting {} MSELF bytes", n);
+                        Self::decrypt_mself_data(&mut buf[..n]);
+                    }
                     handle.position += n as u64;
                     trace!("FsManager::read: read {} bytes from file", n);
                     Ok(n as u64)
@@ -648,6 +742,7 @@ impl FsManager {
             size: 0,
             open_file: None,
             open_dir,
+            is_mself: false,
         };
 
         self.handles.insert(fd, handle);
@@ -762,6 +857,79 @@ impl FsManager {
         }
 
         0 // CELL_OK (simulate success when no VFS)
+    }
+
+    /// Truncate an open file to specified length
+    /// 
+    /// # Arguments
+    /// * `fd` - File descriptor
+    /// * `length` - New file length
+    pub fn ftruncate(&mut self, fd: CellFsFd, length: u64) -> i32 {
+        let handle = match self.handles.get_mut(&fd) {
+            Some(h) => h,
+            None => return 0x80010009u32 as i32, // CELL_FS_ERROR_EBADF
+        };
+
+        if handle.handle_type != FileHandleType::File {
+            return 0x80010009u32 as i32; // CELL_FS_ERROR_EBADF
+        }
+
+        // Check if opened for writing
+        if (handle.flags & flags::CELL_FS_O_ACCMODE) == flags::CELL_FS_O_RDONLY {
+            return 0x80010009u32 as i32; // CELL_FS_ERROR_EBADF
+        }
+
+        debug!("FsManager::ftruncate: fd={}, length={}", fd, length);
+
+        if let Some(ref open_file) = handle.open_file {
+            if let Err(e) = open_file.file.set_len(length) {
+                warn!("FsManager::ftruncate: Failed to truncate: {}", e);
+                return 0x80010005u32 as i32; // CELL_FS_ERROR_EIO
+            }
+        }
+
+        // Update cached size
+        handle.size = length;
+        if handle.position > length {
+            handle.position = length;
+        }
+
+        0 // CELL_OK
+    }
+
+    /// Get free size on a device
+    /// 
+    /// # Arguments
+    /// * `path` - Device path (e.g. "/dev_hdd0")
+    /// 
+    /// # Returns
+    /// * (block_size, free_block_count) on success
+    pub fn get_free_size(&self, path: &str) -> Result<(u32, u64), i32> {
+        if path.is_empty() || path.len() > CELL_FS_MAX_PATH_LENGTH {
+            return Err(0x80010002u32 as i32); // CELL_FS_ERROR_EINVAL
+        }
+
+        debug!("FsManager::get_free_size: path={}", path);
+
+        let block_size: u32 = 4096;
+
+        // Default simulated values per device prefix
+        let free_bytes: u64 = if path.starts_with(device::DEV_HDD0) {
+            100 * 1024 * 1024 * 1024 // 100 GB free on HDD0
+        } else if path.starts_with(device::DEV_HDD1) {
+            2 * 1024 * 1024 * 1024 // 2 GB free on HDD1
+        } else if path.starts_with(device::DEV_BDVD) {
+            0 // Blu-ray is read-only; 0 free
+        } else if path.starts_with(device::DEV_USB) {
+            8 * 1024 * 1024 * 1024 // 8 GB free on USB
+        } else if path.starts_with(device::DEV_FLASH) {
+            128 * 1024 * 1024 // 128 MB free on flash
+        } else {
+            100 * 1024 * 1024 * 1024 // default: 100 GB
+        };
+
+        let free_blocks = free_bytes / block_size as u64;
+        Ok((block_size, free_blocks))
     }
 
     /// Create a directory
@@ -1540,6 +1708,67 @@ pub fn cell_fs_closedir(fd: i32) -> i32 {
     crate::context::get_hle_context_mut().fs.closedir(fd)
 }
 
+/// cellFsTruncate - Truncate a file by path
+///
+/// # Arguments
+/// * `path_addr` - Address of null-terminated path string
+/// * `length` - New file length
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_fs_truncate(path_addr: u32, length: u64) -> i32 {
+    let path = match read_string(path_addr, CELL_FS_MAX_PATH_LENGTH as u32) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+
+    debug!("cellFsTruncate(path='{}', length={})", path, length);
+
+    crate::context::get_hle_context_mut().fs.truncate(&path, length)
+}
+
+/// cellFsFtruncate - Truncate an open file by descriptor
+///
+/// # Arguments
+/// * `fd` - File descriptor
+/// * `length` - New file length
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_fs_ftruncate(fd: i32, length: u64) -> i32 {
+    debug!("cellFsFtruncate(fd={}, length={})", fd, length);
+
+    crate::context::get_hle_context_mut().fs.ftruncate(fd, length)
+}
+
+/// cellFsGetFreeSize - Get free size on a device
+///
+/// # Arguments
+/// * `path_addr` - Address of null-terminated device path string
+/// * `block_size_addr` - Address to write block size (u32)
+/// * `free_block_count_addr` - Address to write number of free blocks (u64)
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_fs_get_free_size(path_addr: u32, block_size_addr: u32, free_block_count_addr: u32) -> i32 {
+    let path = match read_string(path_addr, CELL_FS_MAX_PATH_LENGTH as u32) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+
+    debug!("cellFsGetFreeSize(path='{}')", path);
+
+    let ctx = crate::context::get_hle_context();
+    match ctx.fs.get_free_size(&path) {
+        Ok((block_size, free_blocks)) => {
+            if let Err(e) = write_be32(block_size_addr, block_size) { return e; }
+            if let Err(e) = write_be64(free_block_count_addr, free_blocks) { return e; }
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1813,5 +2042,163 @@ mod tests {
         
         // Clean up
         let _ = std::fs::remove_file(test_file_path);
+    }
+
+    // ========================================================================
+    // MSELF Encrypted Content Tests
+    // ========================================================================
+
+    #[test]
+    fn test_mself_decrypt_roundtrip() {
+        let original = b"Hello MSELF world!";
+        let mut data = original.to_vec();
+
+        // Encrypt
+        FsManager::decrypt_mself_data(&mut data);
+        assert_ne!(&data, original);
+
+        // Decrypt (XOR is self-inverse)
+        FsManager::decrypt_mself_data(&mut data);
+        assert_eq!(&data, original);
+    }
+
+    #[test]
+    fn test_mself_flag_tracked_on_open() {
+        let mut manager = FsManager::new();
+
+        // Open without MSELF
+        let fd1 = manager.open("/dev_hdd0/plain.bin", flags::CELL_FS_O_RDONLY, 0).unwrap();
+        assert!(!manager.handles.get(&fd1).unwrap().is_mself);
+        manager.close(fd1);
+
+        // Open with MSELF
+        let fd2 = manager.open(
+            "/dev_hdd0/encrypted.bin",
+            flags::CELL_FS_O_RDONLY | flags::CELL_FS_O_MSELF,
+            0,
+        ).unwrap();
+        assert!(manager.handles.get(&fd2).unwrap().is_mself);
+        manager.close(fd2);
+    }
+
+    // ========================================================================
+    // ftruncate Tests
+    // ========================================================================
+
+    #[test]
+    fn test_ftruncate_basic() {
+        let mut manager = FsManager::new();
+        let fd = manager.open("/dev_hdd0/trunc.bin", flags::CELL_FS_O_RDWR, 0).unwrap();
+
+        // Write some data to set initial size
+        let data = [0u8; 100];
+        manager.write(fd, &data).unwrap();
+        assert_eq!(manager.handles.get(&fd).unwrap().size, 100);
+
+        // Truncate to smaller size
+        assert_eq!(manager.ftruncate(fd, 50), 0);
+        assert_eq!(manager.handles.get(&fd).unwrap().size, 50);
+
+        manager.close(fd);
+    }
+
+    #[test]
+    fn test_ftruncate_position_clamped() {
+        let mut manager = FsManager::new();
+        let fd = manager.open("/dev_hdd0/trunc2.bin", flags::CELL_FS_O_RDWR, 0).unwrap();
+
+        // Write 100 bytes (position = 100)
+        let data = [0u8; 100];
+        manager.write(fd, &data).unwrap();
+        assert_eq!(manager.handles.get(&fd).unwrap().position, 100);
+
+        // Truncate to 30 → position should be clamped to 30
+        assert_eq!(manager.ftruncate(fd, 30), 0);
+        assert_eq!(manager.handles.get(&fd).unwrap().position, 30);
+        assert_eq!(manager.handles.get(&fd).unwrap().size, 30);
+
+        manager.close(fd);
+    }
+
+    #[test]
+    fn test_ftruncate_invalid_fd() {
+        let mut manager = FsManager::new();
+        assert_eq!(manager.ftruncate(999, 0), 0x80010009u32 as i32);
+    }
+
+    #[test]
+    fn test_ftruncate_readonly() {
+        let mut manager = FsManager::new();
+        let fd = manager.open("/dev_hdd0/ro.bin", flags::CELL_FS_O_RDONLY, 0).unwrap();
+        assert_eq!(manager.ftruncate(fd, 0), 0x80010009u32 as i32);
+        manager.close(fd);
+    }
+
+    // ========================================================================
+    // get_free_size Tests
+    // ========================================================================
+
+    #[test]
+    fn test_get_free_size_hdd0() {
+        let manager = FsManager::new();
+        let (block_size, free_blocks) = manager.get_free_size("/dev_hdd0").unwrap();
+        assert_eq!(block_size, 4096);
+        assert!(free_blocks > 0);
+        // 100 GB → 100*1024*1024*1024 / 4096 blocks
+        let free_bytes = free_blocks as u128 * block_size as u128;
+        assert_eq!(free_bytes, 100 * 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_get_free_size_bdvd_readonly() {
+        let manager = FsManager::new();
+        let (block_size, free_blocks) = manager.get_free_size("/dev_bdvd").unwrap();
+        assert_eq!(block_size, 4096);
+        assert_eq!(free_blocks, 0); // Blu-ray is read-only
+    }
+
+    #[test]
+    fn test_get_free_size_usb() {
+        let manager = FsManager::new();
+        let (block_size, free_blocks) = manager.get_free_size("/dev_usb000").unwrap();
+        assert_eq!(block_size, 4096);
+        let free_bytes = free_blocks as u128 * block_size as u128;
+        assert_eq!(free_bytes, 8 * 1024 * 1024 * 1024); // 8 GB
+    }
+
+    #[test]
+    fn test_get_free_size_invalid_path() {
+        let manager = FsManager::new();
+        assert!(manager.get_free_size("").is_err());
+    }
+
+    // ========================================================================
+    // Device Path Tests
+    // ========================================================================
+
+    #[test]
+    fn test_device_path_constants() {
+        assert_eq!(device::DEV_BDVD, "/dev_bdvd");
+        assert_eq!(device::DEV_USB, "/dev_usb");
+        assert_eq!(device::DEV_HDD0, "/dev_hdd0");
+        assert_eq!(device::DEV_HDD1, "/dev_hdd1");
+        assert_eq!(device::DEV_FLASH, "/dev_flash");
+    }
+
+    #[test]
+    fn test_open_bdvd_path() {
+        let mut manager = FsManager::new();
+        // Should succeed even without VFS — falls through to simulated file handle
+        let fd = manager.open("/dev_bdvd/PS3_GAME/USRDIR/EBOOT.BIN", flags::CELL_FS_O_RDONLY, 0);
+        assert!(fd.is_ok());
+        manager.close(fd.unwrap());
+    }
+
+    #[test]
+    fn test_open_usb_path() {
+        let mut manager = FsManager::new();
+        let fd = manager.open("/dev_usb000/savegame.dat", flags::CELL_FS_O_RDONLY, 0);
+        assert!(fd.is_ok());
+        manager.close(fd.unwrap());
     }
 }
