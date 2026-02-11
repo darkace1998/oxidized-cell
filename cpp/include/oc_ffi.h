@@ -1532,6 +1532,51 @@ void oc_spu_jit_profiling_get_stats(oc_spu_jit_t* jit, uint64_t* blocks_compiled
 void oc_spu_jit_profiling_reset(oc_spu_jit_t* jit);
 
 // ============================================================================
+// SPU-to-SPU Mailbox Fast Path
+// ============================================================================
+
+/**
+ * Send a value through the SPU-to-SPU mailbox fast path
+ * Returns 1 on success, 0 if mailbox is full
+ */
+int oc_spu_jit_mailbox_send(oc_spu_jit_t* jit, uint8_t src_spu, uint8_t dst_spu, uint32_t value);
+
+/**
+ * Receive a value from the SPU-to-SPU mailbox fast path
+ * Returns 1 on success with value written to *value, 0 if mailbox is empty
+ */
+int oc_spu_jit_mailbox_receive(oc_spu_jit_t* jit, uint8_t src_spu, uint8_t dst_spu, uint32_t* value);
+
+/**
+ * Get the number of pending messages in a mailbox slot
+ */
+uint32_t oc_spu_jit_mailbox_pending(oc_spu_jit_t* jit, uint8_t src_spu, uint8_t dst_spu);
+
+/**
+ * Reset all mailbox slots
+ */
+void oc_spu_jit_mailbox_reset(oc_spu_jit_t* jit);
+
+/**
+ * Get mailbox statistics
+ */
+void oc_spu_jit_mailbox_get_stats(oc_spu_jit_t* jit,
+                                   uint64_t* total_sends, uint64_t* total_receives,
+                                   uint64_t* send_blocked, uint64_t* receive_blocked);
+
+// ============================================================================
+// Loop-Aware Block Merging
+// ============================================================================
+
+/**
+ * Merge basic blocks within a loop body for cross-iteration optimization.
+ * Returns the number of merged blocks created.
+ */
+int oc_spu_jit_merge_loop_blocks(oc_spu_jit_t* jit, uint32_t loop_header,
+                                  uint32_t back_edge_addr, const uint32_t* body_addresses,
+                                  size_t body_count);
+
+// ============================================================================
 // RSX Shader Compiler
 // ============================================================================
 

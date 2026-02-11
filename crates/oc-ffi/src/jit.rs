@@ -350,6 +350,16 @@ extern "C" {
     fn oc_spu_jit_is_simd_intrinsics_enabled(jit: *mut SpuJit) -> i32;
     fn oc_spu_jit_get_simd_intrinsic(jit: *mut SpuJit, opcode: u32) -> i32;
     fn oc_spu_jit_has_simd_intrinsic(jit: *mut SpuJit, opcode: u32) -> i32;
+    
+    // SPU-to-SPU Mailbox Fast Path APIs
+    fn oc_spu_jit_mailbox_send(jit: *mut SpuJit, src_spu: u8, dst_spu: u8, value: u32) -> i32;
+    fn oc_spu_jit_mailbox_receive(jit: *mut SpuJit, src_spu: u8, dst_spu: u8, value: *mut u32) -> i32;
+    fn oc_spu_jit_mailbox_pending(jit: *mut SpuJit, src_spu: u8, dst_spu: u8) -> u32;
+    fn oc_spu_jit_mailbox_reset(jit: *mut SpuJit);
+    fn oc_spu_jit_mailbox_get_stats(jit: *mut SpuJit, total_sends: *mut u64, total_receives: *mut u64, send_blocked: *mut u64, receive_blocked: *mut u64);
+    
+    // Loop-Aware Block Merging API
+    fn oc_spu_jit_merge_loop_blocks(jit: *mut SpuJit, loop_header: u32, back_edge_addr: u32, body_addresses: *const u32, body_count: usize) -> i32;
 }
 
 // FFI declarations for RSX Shader Compiler
@@ -1017,6 +1027,63 @@ impl SpuJitCompiler {
     pub fn has_simd_intrinsic(&self, opcode: u32) -> bool {
         unsafe { oc_spu_jit_has_simd_intrinsic(self.handle, opcode) != 0 }
     }
+    
+    // ========================================================================
+    // SPU-to-SPU Mailbox Fast Path
+    // ========================================================================
+    
+    /// Send a value through the SPU-to-SPU mailbox fast path.
+    /// Returns true on success, false if the mailbox is full.
+    pub fn mailbox_send(&mut self, src_spu: u8, dst_spu: u8, value: u32) -> bool {
+        unsafe { oc_spu_jit_mailbox_send(self.handle, src_spu, dst_spu, value) != 0 }
+    }
+    
+    /// Receive a value from the SPU-to-SPU mailbox fast path.
+    /// Returns Some(value) on success, None if the mailbox is empty.
+    pub fn mailbox_receive(&mut self, src_spu: u8, dst_spu: u8) -> Option<u32> {
+        let mut value: u32 = 0;
+        let result = unsafe { oc_spu_jit_mailbox_receive(self.handle, src_spu, dst_spu, &mut value) };
+        if result != 0 { Some(value) } else { None }
+    }
+    
+    /// Get the number of pending messages in a mailbox slot.
+    pub fn mailbox_pending(&self, src_spu: u8, dst_spu: u8) -> u32 {
+        unsafe { oc_spu_jit_mailbox_pending(self.handle, src_spu, dst_spu) }
+    }
+    
+    /// Reset all mailbox slots.
+    pub fn mailbox_reset(&mut self) {
+        unsafe { oc_spu_jit_mailbox_reset(self.handle) }
+    }
+    
+    /// Get mailbox statistics: (total_sends, total_receives, send_blocked, receive_blocked)
+    pub fn mailbox_get_stats(&self) -> (u64, u64, u64, u64) {
+        let mut sends: u64 = 0;
+        let mut receives: u64 = 0;
+        let mut blocked_send: u64 = 0;
+        let mut blocked_recv: u64 = 0;
+        unsafe {
+            oc_spu_jit_mailbox_get_stats(
+                self.handle, &mut sends, &mut receives, &mut blocked_send, &mut blocked_recv,
+            );
+        }
+        (sends, receives, blocked_send, blocked_recv)
+    }
+    
+    // ========================================================================
+    // Loop-Aware Block Merging
+    // ========================================================================
+    
+    /// Merge basic blocks within a loop body for cross-iteration optimization.
+    /// Returns the number of merged blocks created.
+    pub fn merge_loop_blocks(&mut self, loop_header: u32, back_edge: u32, body_addresses: &[u32]) -> i32 {
+        unsafe {
+            oc_spu_jit_merge_loop_blocks(
+                self.handle, loop_header, back_edge,
+                body_addresses.as_ptr(), body_addresses.len(),
+            )
+        }
+    }
 }
 
 /// Loop information
@@ -1437,5 +1504,93 @@ mod tests {
         let blocks = [0x1000u32, 0x1020, 0x1040, 0x1060];
         jit.trace_detect(0x1000, &blocks, 0); // back_edge=0 means linear
         assert!(jit.trace_is_header(0x1000));
+    }
+
+    #[test]
+    fn test_spu_mailbox_send_receive() {
+        let mut jit = SpuJitCompiler::new().expect("JIT creation failed");
+        
+        // Initially empty
+        assert_eq!(jit.mailbox_pending(0, 1), 0);
+        assert!(jit.mailbox_receive(0, 1).is_none());
+        
+        // Send a message from SPU 0 to SPU 1
+        assert!(jit.mailbox_send(0, 1, 0x42));
+        assert_eq!(jit.mailbox_pending(0, 1), 1);
+        
+        // Receive it
+        let val = jit.mailbox_receive(0, 1);
+        assert_eq!(val, Some(0x42));
+        assert_eq!(jit.mailbox_pending(0, 1), 0);
+    }
+
+    #[test]
+    fn test_spu_mailbox_fifo_order() {
+        let mut jit = SpuJitCompiler::new().expect("JIT creation failed");
+        
+        // Send 4 messages (FIFO depth)
+        for i in 0..4u32 {
+            assert!(jit.mailbox_send(2, 3, i + 100));
+        }
+        assert_eq!(jit.mailbox_pending(2, 3), 4);
+        
+        // 5th should fail (full)
+        assert!(!jit.mailbox_send(2, 3, 999));
+        
+        // Receive in FIFO order
+        for i in 0..4u32 {
+            assert_eq!(jit.mailbox_receive(2, 3), Some(i + 100));
+        }
+        
+        // Empty now
+        assert!(jit.mailbox_receive(2, 3).is_none());
+    }
+
+    #[test]
+    fn test_spu_mailbox_stats() {
+        let mut jit = SpuJitCompiler::new().expect("JIT creation failed");
+        
+        jit.mailbox_send(0, 1, 1);
+        jit.mailbox_send(0, 1, 2);
+        jit.mailbox_receive(0, 1);
+        
+        let (sends, receives, _, _) = jit.mailbox_get_stats();
+        assert_eq!(sends, 2);
+        assert_eq!(receives, 1);
+        
+        // Reset
+        jit.mailbox_reset();
+        let (sends, receives, _, _) = jit.mailbox_get_stats();
+        assert_eq!(sends, 0);
+        assert_eq!(receives, 0);
+    }
+
+    #[test]
+    fn test_spu_mailbox_invalid_spu() {
+        let mut jit = SpuJitCompiler::new().expect("JIT creation failed");
+        
+        // SPU IDs >= 8 should fail
+        assert!(!jit.mailbox_send(8, 0, 42));
+        assert!(jit.mailbox_receive(0, 8).is_none());
+        assert_eq!(jit.mailbox_pending(8, 8), 0);
+    }
+
+    #[test]
+    fn test_spu_merge_loop_blocks_empty() {
+        let mut jit = SpuJitCompiler::new().expect("JIT creation failed");
+        
+        // Empty body list should return 0
+        let result = jit.merge_loop_blocks(0x100, 0x200, &[]);
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_spu_merge_loop_blocks_no_cache() {
+        let mut jit = SpuJitCompiler::new().expect("JIT creation failed");
+        
+        // Body addresses not in cache should return 0
+        let body = [0x100u32, 0x110, 0x120];
+        let result = jit.merge_loop_blocks(0x100, 0x120, &body);
+        assert_eq!(result, 0);
     }
 }
