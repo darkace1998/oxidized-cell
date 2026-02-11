@@ -508,7 +508,12 @@ impl PngDecoder {
             return Ok(false);
         }
         
-        match self.parse_header(&self.stream_buffer.clone()) {
+        // Parse from the stream buffer directly using a temporary slice
+        let data = std::mem::take(&mut self.stream_buffer);
+        let result = self.parse_header(&data);
+        self.stream_buffer = data;
+        
+        match result {
             Ok(()) => {
                 self.header_parsed = true;
                 Ok(true)

@@ -638,7 +638,13 @@ impl GifDecoder {
         }
         
         // Use local palette if available, otherwise fall back to global palette
-        let palette = frame.local_palette.as_deref().unwrap_or(&self.global_palette);
+        let palette = if let Some(ref local) = frame.local_palette {
+            trace!("GIF: using local palette for frame {}", frame_index);
+            local.as_slice()
+        } else {
+            trace!("GIF: using global palette for frame {}", frame_index);
+            &self.global_palette
+        };
         
         // Convert indexed color to RGBA
         for i in 0..pixel_count.min(frame.data.len()) {

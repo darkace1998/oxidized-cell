@@ -171,23 +171,23 @@ Full video post-processing with color conversion, scaling, deinterlacing, and co
 
 ### HLE Modules — Image Decoders
 
-#### cellPngDec (`cell_png_dec.rs`) — Partial
-Parses PNG headers and extracts dimensions but returns dummy pixel data.
-- [ ] Implement DEFLATE decompression for IDAT chunks
-- [ ] Handle PNG interlacing (Adam7) and color type conversions (palette, grayscale, RGBA)
-- [ ] Support streaming decode for large images
+#### cellPngDec (`cell_png_dec.rs`) — ✅ Complete
+Full PNG decoding with zlib DEFLATE decompression, filter reconstruction, Adam7 interlacing, and streaming decode.
+- [x] Implement DEFLATE decompression for IDAT chunks
+- [x] Handle PNG interlacing (Adam7) and color type conversions (palette, grayscale, RGBA)
+- [x] Support streaming decode for large images
 
-#### cellJpgDec (`cell_jpg_dec.rs`) — Partial
-Returns placeholder dimensions; no actual JPEG decompression.
-- [ ] Implement JPEG baseline DCT decoding (Huffman + IDCT)
-- [ ] Handle EXIF orientation and color profile metadata
-- [ ] Support progressive JPEG decode
+#### cellJpgDec (`cell_jpg_dec.rs`) — ✅ Complete
+Full JPEG baseline decoding with Huffman decode, IDCT, YCbCr→RGB, EXIF orientation, and progressive support.
+- [x] Implement JPEG baseline DCT decoding (Huffman + IDCT)
+- [x] Handle EXIF orientation and color profile metadata
+- [x] Support progressive JPEG decode
 
-#### cellGifDec (`cell_gif_dec.rs`) — Partial
-GIF header parsing present but no frame decompression.
-- [ ] Implement LZW decompression for GIF image data
-- [ ] Support animated GIF frame extraction with delay timing
-- [ ] Handle transparent color index
+#### cellGifDec (`cell_gif_dec.rs`) — ✅ Complete
+Full GIF decoding with LZW decompression, animated frame extraction, transparency, interlaced rendering.
+- [x] Implement LZW decompression for GIF image data
+- [x] Support animated GIF frame extraction with delay timing
+- [x] Handle transparent color index
 
 ### HLE Modules — Networking
 
