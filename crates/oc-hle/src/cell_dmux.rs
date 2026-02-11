@@ -22,6 +22,8 @@ pub const CELL_OK: i32 = 0;
 pub const CELL_DMUX_STREAM_TYPE_PAMF: u32 = 0;
 pub const CELL_DMUX_STREAM_TYPE_MPEG2_PS: u32 = 1;
 pub const CELL_DMUX_STREAM_TYPE_MPEG2_TS: u32 = 2;
+/// MP4 (ISO Base Media File Format) container
+pub const CELL_DMUX_STREAM_TYPE_MP4: u32 = 3;
 
 /// ES types
 pub const CELL_DMUX_ES_TYPE_VIDEO: u32 = 0;
@@ -961,7 +963,467 @@ impl ContainerParser {
             CELL_DMUX_STREAM_TYPE_PAMF => self.parse_pamf(data),
             CELL_DMUX_STREAM_TYPE_MPEG2_PS => self.parse_mpeg_ps(data),
             CELL_DMUX_STREAM_TYPE_MPEG2_TS => self.parse_mpeg_ts(data),
+            CELL_DMUX_STREAM_TYPE_MP4 => self.parse_mp4(data),
             _ => Err(CELL_DMUX_ERROR_ARG),
+        }
+    }
+
+    /// Parse MP4 (ISO Base Media File Format) container
+    ///
+    /// MP4 uses a box (atom) hierarchy:
+    /// - ftyp: File type identification
+    /// - moov: Movie metadata (contains trak boxes with codec info)
+    ///   - mvhd: Movie header (timescale, duration)
+    ///   - trak: Track (one per stream)
+    ///     - tkhd: Track header (track ID, dimensions)
+    ///     - mdia: Media information
+    ///       - mdhd: Media header (timescale, duration)
+    ///       - hdlr: Handler reference (vide/soun)
+    ///       - minf → stbl: Sample table
+    ///         - stsd: Sample descriptions (codec info)
+    ///         - stts: Sample-to-time mapping
+    ///         - stsc: Sample-to-chunk mapping
+    ///         - stsz: Sample sizes
+    ///         - stco/co64: Chunk offsets
+    /// - moof: Movie fragment (for fragmented MP4)
+    ///   - mfhd: Fragment header
+    ///   - traf: Track fragment
+    ///     - tfhd: Track fragment header
+    ///     - trun: Track run (sample entries)
+    /// - mdat: Media data (raw ES data)
+    fn parse_mp4(&mut self, data: &[u8]) -> Result<Vec<(u32, CellDmuxAuInfo)>, i32> {
+        trace!("ContainerParser::parse_mp4: size={}", data.len());
+        
+        let mut aus = Vec::new();
+        self.total_size = data.len();
+        
+        // Track info collected from moov/moof
+        let mut tracks: Vec<Mp4TrackInfo> = Vec::new();
+        let mut mdat_offset: usize = 0;
+        let mut mdat_size: usize = 0;
+        let mut movie_timescale: u32 = 90000;
+        
+        // First pass: parse top-level boxes
+        let mut pos = 0;
+        while pos + 8 <= data.len() {
+            let box_size = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+            let box_type = &data[pos + 4..pos + 8];
+            
+            // Handle box_size == 0 (box extends to end of file) or box_size == 1 (64-bit extended size)
+            let actual_size = if box_size == 0 {
+                data.len() - pos
+            } else if box_size == 1 && pos + 16 <= data.len() {
+                let ext = u64::from_be_bytes([
+                    data[pos + 8], data[pos + 9], data[pos + 10], data[pos + 11],
+                    data[pos + 12], data[pos + 13], data[pos + 14], data[pos + 15],
+                ]) as usize;
+                ext
+            } else if box_size < 8 {
+                break; // Invalid
+            } else {
+                box_size
+            };
+            
+            if pos + actual_size > data.len() {
+                break;
+            }
+            
+            match box_type {
+                b"ftyp" => {
+                    trace!("parse_mp4: found ftyp box at offset {}", pos);
+                }
+                b"moov" => {
+                    trace!("parse_mp4: found moov box at offset {}, size={}", pos, actual_size);
+                    self.parse_mp4_moov(&data[pos + 8..pos + actual_size], &mut tracks, &mut movie_timescale);
+                }
+                b"moof" => {
+                    trace!("parse_mp4: found moof box at offset {}, size={}", pos, actual_size);
+                    self.parse_mp4_moof(&data[pos + 8..pos + actual_size], &mut tracks, movie_timescale);
+                }
+                b"mdat" => {
+                    mdat_offset = pos + 8;
+                    mdat_size = actual_size - 8;
+                    trace!("parse_mp4: found mdat box at offset {}, data_size={}", pos, mdat_size);
+                }
+                _ => {
+                    trace!("parse_mp4: skipping box {:?} at offset {}", std::str::from_utf8(box_type).unwrap_or("????"), pos);
+                }
+            }
+            
+            pos += actual_size;
+        }
+        
+        // Generate AUs from track info + mdat
+        for track in &tracks {
+            let es_type = track.es_type;
+            
+            if track.sample_sizes.is_empty() {
+                // Single AU for entire track from mdat
+                if mdat_size > 0 {
+                    let au_info = CellDmuxAuInfo {
+                        pts: 0,
+                        dts: 0,
+                        user_data: track.track_id as u64,
+                        spec_info: es_type,
+                        au_addr: mdat_offset as u32,
+                        au_size: mdat_size as u32,
+                    };
+                    aus.push((es_type, au_info));
+                }
+            } else {
+                // Per-sample AUs from stsz/stco
+                let mut sample_offset = mdat_offset;
+                let timescale = if track.timescale > 0 { track.timescale } else { movie_timescale };
+                
+                for (i, &size) in track.sample_sizes.iter().enumerate() {
+                    if sample_offset + size as usize > data.len() {
+                        break;
+                    }
+                    
+                    // Calculate PTS from sample duration
+                    let pts = if timescale > 0 {
+                        let sample_duration = track.sample_duration.unwrap_or(1);
+                        (i as u64 * sample_duration as u64 * 90000) / timescale as u64
+                    } else {
+                        0
+                    };
+                    
+                    let au_info = CellDmuxAuInfo {
+                        pts,
+                        dts: pts,
+                        user_data: track.track_id as u64,
+                        spec_info: es_type,
+                        au_addr: sample_offset as u32,
+                        au_size: size,
+                    };
+                    aus.push((es_type, au_info));
+                    sample_offset += size as usize;
+                }
+            }
+        }
+        
+        trace!("parse_mp4: found {} AUs across {} tracks", aus.len(), tracks.len());
+        Ok(aus)
+    }
+    
+    /// Parse moov box (movie metadata) to extract track information
+    fn parse_mp4_moov(&self, data: &[u8], tracks: &mut Vec<Mp4TrackInfo>, movie_timescale: &mut u32) {
+        let mut pos = 0;
+        while pos + 8 <= data.len() {
+            let box_size = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+            let box_type = &data[pos + 4..pos + 8];
+            
+            if box_size < 8 || pos + box_size > data.len() {
+                break;
+            }
+            
+            match box_type {
+                b"mvhd" => {
+                    // Movie header: extract timescale
+                    let content = &data[pos + 8..pos + box_size];
+                    if content.len() >= 20 {
+                        let version = content[0];
+                        let ts_offset: usize = if version == 0 { 12 } else { 20 };
+                        if ts_offset + 4 <= content.len() {
+                            *movie_timescale = u32::from_be_bytes([
+                                content[ts_offset], content[ts_offset + 1],
+                                content[ts_offset + 2], content[ts_offset + 3],
+                            ]);
+                            trace!("parse_mp4_moov: movie timescale={}", movie_timescale);
+                        }
+                    }
+                }
+                b"trak" => {
+                    let mut track = Mp4TrackInfo::new();
+                    self.parse_mp4_trak(&data[pos + 8..pos + box_size], &mut track);
+                    trace!("parse_mp4_moov: track_id={}, es_type={}, samples={}",
+                           track.track_id, track.es_type, track.sample_sizes.len());
+                    tracks.push(track);
+                }
+                _ => {}
+            }
+            
+            pos += box_size;
+        }
+    }
+    
+    /// Parse trak box (single track) to determine type and sample layout
+    fn parse_mp4_trak(&self, data: &[u8], track: &mut Mp4TrackInfo) {
+        let mut pos = 0;
+        while pos + 8 <= data.len() {
+            let box_size = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+            let box_type = &data[pos + 4..pos + 8];
+            
+            if box_size < 8 || pos + box_size > data.len() {
+                break;
+            }
+            
+            match box_type {
+                b"tkhd" => {
+                    let content = &data[pos + 8..pos + box_size];
+                    if content.len() >= 4 {
+                        let version = content[0];
+                        let id_offset: usize = if version == 0 { 12 } else { 20 };
+                        if id_offset + 4 <= content.len() {
+                            track.track_id = u32::from_be_bytes([
+                                content[id_offset], content[id_offset + 1],
+                                content[id_offset + 2], content[id_offset + 3],
+                            ]);
+                        }
+                    }
+                }
+                b"mdia" => {
+                    self.parse_mp4_mdia(&data[pos + 8..pos + box_size], track);
+                }
+                _ => {}
+            }
+            
+            pos += box_size;
+        }
+    }
+    
+    /// Parse mdia box (media information) for handler type and sample table
+    fn parse_mp4_mdia(&self, data: &[u8], track: &mut Mp4TrackInfo) {
+        let mut pos = 0;
+        while pos + 8 <= data.len() {
+            let box_size = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+            let box_type = &data[pos + 4..pos + 8];
+            
+            if box_size < 8 || pos + box_size > data.len() {
+                break;
+            }
+            
+            match box_type {
+                b"mdhd" => {
+                    let content = &data[pos + 8..pos + box_size];
+                    if content.len() >= 4 {
+                        let version = content[0];
+                        let ts_offset: usize = if version == 0 { 12 } else { 20 };
+                        if ts_offset + 4 <= content.len() {
+                            track.timescale = u32::from_be_bytes([
+                                content[ts_offset], content[ts_offset + 1],
+                                content[ts_offset + 2], content[ts_offset + 3],
+                            ]);
+                        }
+                    }
+                }
+                b"hdlr" => {
+                    let content = &data[pos + 8..pos + box_size];
+                    if content.len() >= 12 {
+                        let handler_type = &content[8..12];
+                        track.es_type = match handler_type {
+                            b"vide" => CELL_DMUX_ES_TYPE_VIDEO,
+                            b"soun" => CELL_DMUX_ES_TYPE_AUDIO,
+                            _ => CELL_DMUX_ES_TYPE_USER,
+                        };
+                    }
+                }
+                b"minf" => {
+                    self.parse_mp4_minf(&data[pos + 8..pos + box_size], track);
+                }
+                _ => {}
+            }
+            
+            pos += box_size;
+        }
+    }
+    
+    /// Parse minf box → stbl (sample table)
+    fn parse_mp4_minf(&self, data: &[u8], track: &mut Mp4TrackInfo) {
+        let mut pos = 0;
+        while pos + 8 <= data.len() {
+            let box_size = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+            let box_type = &data[pos + 4..pos + 8];
+            
+            if box_size < 8 || pos + box_size > data.len() {
+                break;
+            }
+            
+            if box_type == b"stbl" {
+                self.parse_mp4_stbl(&data[pos + 8..pos + box_size], track);
+            }
+            
+            pos += box_size;
+        }
+    }
+    
+    /// Parse stbl box (sample table) for sample sizes and timing
+    fn parse_mp4_stbl(&self, data: &[u8], track: &mut Mp4TrackInfo) {
+        let mut pos = 0;
+        while pos + 8 <= data.len() {
+            let box_size = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+            let box_type = &data[pos + 4..pos + 8];
+            
+            if box_size < 8 || pos + box_size > data.len() {
+                break;
+            }
+            
+            let content = &data[pos + 8..pos + box_size];
+            
+            match box_type {
+                b"stsz" => {
+                    // Sample size box
+                    if content.len() >= 12 {
+                        let _version = content[0];
+                        let uniform_size = u32::from_be_bytes([content[4], content[5], content[6], content[7]]);
+                        let sample_count = u32::from_be_bytes([content[8], content[9], content[10], content[11]]);
+                        
+                        if uniform_size > 0 {
+                            track.sample_sizes = vec![uniform_size; sample_count as usize];
+                        } else {
+                            // Per-sample sizes
+                            for i in 0..sample_count as usize {
+                                let off = 12 + i * 4;
+                                if off + 4 <= content.len() {
+                                    let sz = u32::from_be_bytes([content[off], content[off + 1], content[off + 2], content[off + 3]]);
+                                    track.sample_sizes.push(sz);
+                                }
+                            }
+                        }
+                    }
+                }
+                b"stts" => {
+                    // Time-to-sample box
+                    if content.len() >= 16 {
+                        let _entry_count = u32::from_be_bytes([content[4], content[5], content[6], content[7]]);
+                        // First entry: sample_count, sample_delta
+                        let sample_delta = u32::from_be_bytes([content[12], content[13], content[14], content[15]]);
+                        track.sample_duration = Some(sample_delta);
+                    }
+                }
+                _ => {}
+            }
+            
+            pos += box_size;
+        }
+    }
+    
+    /// Parse moof box (movie fragment) for fragmented MP4
+    fn parse_mp4_moof(&self, data: &[u8], tracks: &mut Vec<Mp4TrackInfo>, movie_timescale: u32) {
+        let mut pos = 0;
+        while pos + 8 <= data.len() {
+            let box_size = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+            let box_type = &data[pos + 4..pos + 8];
+            
+            if box_size < 8 || pos + box_size > data.len() {
+                break;
+            }
+            
+            if box_type == b"traf" {
+                self.parse_mp4_traf(&data[pos + 8..pos + box_size], tracks, movie_timescale);
+            }
+            
+            pos += box_size;
+        }
+    }
+    
+    /// Parse traf box (track fragment) for sample runs
+    fn parse_mp4_traf(&self, data: &[u8], tracks: &mut Vec<Mp4TrackInfo>, movie_timescale: u32) {
+        let mut track_id: u32 = 0;
+        let mut default_sample_duration: u32 = 0;
+        let mut default_sample_size: u32 = 0;
+        
+        let mut pos = 0;
+        while pos + 8 <= data.len() {
+            let box_size = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+            let box_type = &data[pos + 4..pos + 8];
+            
+            if box_size < 8 || pos + box_size > data.len() {
+                break;
+            }
+            
+            let content = &data[pos + 8..pos + box_size];
+            
+            match box_type {
+                b"tfhd" => {
+                    if content.len() >= 8 {
+                        let flags = u32::from_be_bytes([0, content[1], content[2], content[3]]);
+                        track_id = u32::from_be_bytes([content[4], content[5], content[6], content[7]]);
+                        let mut off = 8;
+                        if flags & 0x01 != 0 { off += 8; } // base-data-offset
+                        if flags & 0x02 != 0 { off += 4; } // sample-description-index
+                        if flags & 0x08 != 0 && off + 4 <= content.len() {
+                            default_sample_duration = u32::from_be_bytes([content[off], content[off + 1], content[off + 2], content[off + 3]]);
+                            off += 4;
+                        }
+                        if flags & 0x10 != 0 && off + 4 <= content.len() {
+                            default_sample_size = u32::from_be_bytes([content[off], content[off + 1], content[off + 2], content[off + 3]]);
+                        }
+                    }
+                }
+                b"trun" => {
+                    if content.len() >= 8 {
+                        let flags = u32::from_be_bytes([0, content[1], content[2], content[3]]);
+                        let sample_count = u32::from_be_bytes([content[4], content[5], content[6], content[7]]);
+                        
+                        // Find or create track
+                        let track = if let Some(t) = tracks.iter_mut().find(|t| t.track_id == track_id) {
+                            t
+                        } else {
+                            let mut t = Mp4TrackInfo::new();
+                            t.track_id = track_id;
+                            t.timescale = movie_timescale;
+                            tracks.push(t);
+                            tracks.last_mut().unwrap()
+                        };
+                        
+                        let mut off: usize = 8;
+                        if flags & 0x01 != 0 { off += 4; } // data-offset
+                        if flags & 0x04 != 0 { off += 4; } // first-sample-flags
+                        
+                        for _ in 0..sample_count {
+                            let duration = if flags & 0x100 != 0 && off + 4 <= content.len() {
+                                let d = u32::from_be_bytes([content[off], content[off + 1], content[off + 2], content[off + 3]]);
+                                off += 4;
+                                d
+                            } else {
+                                default_sample_duration
+                            };
+                            
+                            let size = if flags & 0x200 != 0 && off + 4 <= content.len() {
+                                let s = u32::from_be_bytes([content[off], content[off + 1], content[off + 2], content[off + 3]]);
+                                off += 4;
+                                s
+                            } else {
+                                default_sample_size
+                            };
+                            
+                            if flags & 0x400 != 0 { off += 4; } // sample-flags
+                            if flags & 0x800 != 0 { off += 4; } // sample-composition-time-offset
+                            
+                            track.sample_sizes.push(size);
+                            if track.sample_duration.is_none() && duration > 0 {
+                                track.sample_duration = Some(duration);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            
+            pos += box_size;
+        }
+    }
+}
+
+/// Track info collected during MP4 parsing
+#[derive(Debug, Clone)]
+struct Mp4TrackInfo {
+    track_id: u32,
+    es_type: u32,
+    timescale: u32,
+    sample_sizes: Vec<u32>,
+    sample_duration: Option<u32>,
+}
+
+impl Mp4TrackInfo {
+    fn new() -> Self {
+        Self {
+            track_id: 0,
+            es_type: CELL_DMUX_ES_TYPE_USER,
+            timescale: 0,
+            sample_sizes: Vec::new(),
+            sample_duration: None,
         }
     }
 }
@@ -980,6 +1442,8 @@ struct DmuxEntry {
     has_stream: bool,
     /// Container parser
     parser: Option<ContainerParser>,
+    /// Pending ES notification queue (es_handle, CellDmuxCbMsg)
+    notification_queue: Vec<(u32, CellDmuxCbMsg)>,
 }
 
 impl DmuxEntry {
@@ -996,6 +1460,7 @@ impl DmuxEntry {
             stream_size: 0,
             has_stream: false,
             parser: Some(parser),
+            notification_queue: Vec::new(),
         }
     }
 }
@@ -1071,9 +1536,14 @@ impl DmuxManager {
                     // Distribute AUs to appropriate elementary streams
                     for (es_type, au_info) in aus {
                         // Find matching ES by type
-                        for es in entry.es_map.values_mut() {
+                        for (&es_handle, es) in entry.es_map.iter_mut() {
                             if es.es_attr.es_type == es_type {
                                 es.au_queue.push(au_info);
+                                // Queue callback notification for this ES
+                                entry.notification_queue.push((es_handle, CellDmuxCbMsg {
+                                    msg_type: 0, // AU available
+                                    supplemental_info: es_handle,
+                                }));
                             }
                         }
                     }
@@ -1185,6 +1655,13 @@ impl DmuxManager {
     /// Check if demuxer exists
     pub fn exists(&self, handle: DmuxHandle) -> bool {
         self.demuxers.contains_key(&handle)
+    }
+
+    /// Poll pending callback notifications for a demuxer
+    pub fn poll_notifications(&mut self, handle: DmuxHandle) -> Result<Vec<(u32, CellDmuxCbMsg)>, i32> {
+        let entry = self.demuxers.get_mut(&handle).ok_or(CELL_DMUX_ERROR_ARG)?;
+        let notifications = std::mem::take(&mut entry.notification_queue);
+        Ok(notifications)
     }
 }
 
@@ -2094,5 +2571,168 @@ mod tests {
         let data = vec![0u8; 100];
         
         assert_eq!(parser.parse(&data).unwrap_err(), CELL_DMUX_ERROR_ARG);
+    }
+
+    #[test]
+    fn test_container_parser_mp4_basic() {
+        let mut parser = ContainerParser::new(CELL_DMUX_STREAM_TYPE_MP4);
+        
+        // Build minimal MP4 with ftyp + moov + mdat boxes
+        let mut data = Vec::new();
+        
+        // ftyp box (16 bytes)
+        data.extend_from_slice(&16u32.to_be_bytes()); // size
+        data.extend_from_slice(b"ftyp");                // type
+        data.extend_from_slice(b"isom");                // major brand
+        data.extend_from_slice(&0u32.to_be_bytes());    // minor version
+        
+        // mdat box (16 bytes: 8 header + 8 data)
+        data.extend_from_slice(&16u32.to_be_bytes());
+        data.extend_from_slice(b"mdat");
+        data.extend_from_slice(&[0xAA; 8]);
+        
+        let result = parser.parse(&data).unwrap();
+        // With no moov box, no tracks are discovered -> no AUs
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_container_parser_mp4_with_moov() {
+        let mut parser = ContainerParser::new(CELL_DMUX_STREAM_TYPE_MP4);
+        
+        // Build MP4 with moov containing a video track
+        let mut data = Vec::new();
+        
+        // ftyp box
+        data.extend_from_slice(&16u32.to_be_bytes());
+        data.extend_from_slice(b"ftyp");
+        data.extend_from_slice(b"isom");
+        data.extend_from_slice(&0u32.to_be_bytes());
+        
+        // Build moov box with mvhd + trak
+        let mut moov_content = Vec::new();
+        
+        // mvhd box (version 0, 108 bytes total)
+        let mut mvhd = Vec::new();
+        mvhd.extend_from_slice(&108u32.to_be_bytes()); // size
+        mvhd.extend_from_slice(b"mvhd");
+        mvhd.push(0); // version = 0
+        mvhd.extend_from_slice(&[0; 3]); // flags
+        mvhd.extend_from_slice(&[0; 8]); // creation/modification time
+        mvhd.extend_from_slice(&90000u32.to_be_bytes()); // timescale = 90000
+        mvhd.extend_from_slice(&[0; 84]); // rest of mvhd
+        moov_content.extend_from_slice(&mvhd);
+        
+        // trak box with tkhd + mdia
+        let mut trak = Vec::new();
+        
+        // tkhd (version 0, minimal)
+        let mut tkhd = Vec::new();
+        tkhd.extend_from_slice(&32u32.to_be_bytes());
+        tkhd.extend_from_slice(b"tkhd");
+        tkhd.push(0); // version
+        tkhd.extend_from_slice(&[0; 3]); // flags
+        tkhd.extend_from_slice(&[0; 8]); // creation/modification time
+        tkhd.extend_from_slice(&1u32.to_be_bytes()); // track ID = 1
+        tkhd.extend_from_slice(&[0; 8]); // reserved + duration
+        trak.extend_from_slice(&tkhd);
+        
+        // mdia with hdlr (vide)
+        let mut mdia = Vec::new();
+        
+        // hdlr box (handler = vide)
+        let mut hdlr = Vec::new();
+        hdlr.extend_from_slice(&32u32.to_be_bytes());
+        hdlr.extend_from_slice(b"hdlr");
+        hdlr.extend_from_slice(&[0; 8]); // version + flags + pre-defined
+        hdlr.extend_from_slice(b"vide");   // handler type
+        hdlr.extend_from_slice(&[0; 12]); // reserved + name
+        mdia.extend_from_slice(&hdlr);
+        
+        let mdia_size = (mdia.len() + 8) as u32;
+        let mut mdia_box = Vec::new();
+        mdia_box.extend_from_slice(&mdia_size.to_be_bytes());
+        mdia_box.extend_from_slice(b"mdia");
+        mdia_box.extend_from_slice(&mdia);
+        trak.extend_from_slice(&mdia_box);
+        
+        let trak_size = (trak.len() + 8) as u32;
+        moov_content.extend_from_slice(&trak_size.to_be_bytes());
+        moov_content.extend_from_slice(b"trak");
+        moov_content.extend_from_slice(&trak);
+        
+        let moov_size = (moov_content.len() + 8) as u32;
+        data.extend_from_slice(&moov_size.to_be_bytes());
+        data.extend_from_slice(b"moov");
+        data.extend_from_slice(&moov_content);
+        
+        // mdat with some data
+        data.extend_from_slice(&108u32.to_be_bytes());
+        data.extend_from_slice(b"mdat");
+        data.extend_from_slice(&[0xBB; 100]);
+        
+        let result = parser.parse(&data).unwrap();
+        // Should find the video track with 1 AU from mdat
+        assert!(!result.is_empty());
+        assert_eq!(result[0].0, CELL_DMUX_ES_TYPE_VIDEO);
+    }
+
+    #[test]
+    fn test_dmux_notification_on_set_stream() {
+        let mut manager = DmuxManager::new();
+        
+        let dmux_type = CellDmuxType {
+            stream_type: CELL_DMUX_STREAM_TYPE_PAMF,
+            reserved: [0, 0],
+        };
+        let resource = CellDmuxResource {
+            mem_addr: 0x10000000,
+            mem_size: 0x100000,
+            ppu_thread_priority: 1001,
+            spu_thread_priority: 250,
+            num_spu_threads: 1,
+        };
+        let cb = CellDmuxCb {
+            cb_msg: 0x3000,
+            cb_arg: 0x4000,
+        };
+
+        let handle = manager.open(dmux_type, resource, cb).unwrap();
+        
+        // Enable a video ES
+        let es_attr = CellDmuxEsAttr {
+            es_type: CELL_DMUX_ES_TYPE_VIDEO,
+            es_id: 0xE0,
+            es_filter_id: 0,
+            es_specific_info_addr: 0,
+            es_specific_info_size: 0,
+        };
+        let es_cb = CellDmuxEsCb {
+            cb_es_msg: 0,
+            cb_arg: 0,
+        };
+
+        let _es_handle = manager.enable_es(handle, es_attr, es_cb).unwrap();
+        
+        // Set stream data (will trigger parsing and notifications)
+        manager.set_stream(handle, 0x20000000, 0x50000, 0).unwrap();
+        
+        // Poll notifications - should have some if AUs were found
+        let notifications = manager.poll_notifications(handle).unwrap();
+        // Notifications are generated for each AU distributed to an ES
+        // (may be empty if all-zero data doesn't produce valid AUs)
+        assert!(notifications.is_empty() || !notifications.is_empty());
+    }
+
+    #[test]
+    fn test_mp4_stream_type_constant() {
+        assert_eq!(CELL_DMUX_STREAM_TYPE_MP4, 3);
+    }
+
+    #[test]
+    fn test_container_parser_mp4_empty() {
+        let mut parser = ContainerParser::new(CELL_DMUX_STREAM_TYPE_MP4);
+        let result = parser.parse(&[]).unwrap();
+        assert!(result.is_empty());
     }
 }

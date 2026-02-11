@@ -110,6 +110,257 @@ struct VpostEntry {
     converter: Option<ColorConverter>,
     /// Image scaler
     scaler: Option<Scaler>,
+    /// Deinterlacer
+    deinterlacer: Option<Deinterlacer>,
+    /// Compositor for picture-in-picture
+    compositor: Option<Compositor>,
+}
+
+/// Deinterlacing algorithm
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeinterlaceAlgorithm {
+    /// Bob (line doubling from single field)
+    Bob = 0,
+    /// Weave (interleave both fields)
+    Weave = 1,
+    /// Motion-adaptive (detect motion to choose bob vs weave per region)
+    MotionAdaptive = 2,
+}
+
+/// Deinterlacer for interlaced video
+#[derive(Debug, Clone)]
+pub struct Deinterlacer {
+    algorithm: DeinterlaceAlgorithm,
+    /// Previous field for motion-adaptive detection
+    prev_field: Option<Vec<u8>>,
+}
+
+impl Deinterlacer {
+    pub fn new(algorithm: DeinterlaceAlgorithm) -> Self {
+        Self {
+            algorithm,
+            prev_field: None,
+        }
+    }
+
+    /// Deinterlace an RGBA frame
+    ///
+    /// Input: interlaced frame (both fields interleaved in alternate scanlines)
+    /// Output: progressive frame with same dimensions
+    /// `top_field_first`: if true, even lines are the top field
+    pub fn deinterlace(
+        &mut self,
+        src: &[u8],
+        width: u32,
+        height: u32,
+        dst: &mut [u8],
+        top_field_first: bool,
+    ) -> Result<(), i32> {
+        let stride = (width * 4) as usize;
+        let h = height as usize;
+        
+        if src.len() < stride * h || dst.len() < stride * h {
+            return Err(CELL_VPOST_ERROR_ARG);
+        }
+        
+        match self.algorithm {
+            DeinterlaceAlgorithm::Bob => {
+                self.deinterlace_bob(src, width, height, dst, top_field_first)
+            }
+            DeinterlaceAlgorithm::Weave => {
+                self.deinterlace_weave(src, width, height, dst, top_field_first)
+            }
+            DeinterlaceAlgorithm::MotionAdaptive => {
+                self.deinterlace_motion_adaptive(src, width, height, dst, top_field_first)
+            }
+        }
+    }
+
+    /// Bob deinterlacing: duplicate lines from one field to fill missing lines
+    fn deinterlace_bob(
+        &self,
+        src: &[u8],
+        width: u32,
+        height: u32,
+        dst: &mut [u8],
+        top_field_first: bool,
+    ) -> Result<(), i32> {
+        let stride = (width * 4) as usize;
+        let h = height as usize;
+        
+        // Select field: if top_field_first, use even lines (0, 2, 4...)
+        let field_offset = if top_field_first { 0 } else { 1 };
+        
+        for y in 0..h {
+            let dst_start = y * stride;
+            
+            // Find nearest field line
+            let field_y = if (y % 2) == field_offset {
+                y // This line is from our field
+            } else {
+                // Interpolate from adjacent field lines
+                if y > 0 { y - 1 } else { y + 1 }
+            };
+            
+            let src_start = field_y.min(h - 1) * stride;
+            dst[dst_start..dst_start + stride].copy_from_slice(&src[src_start..src_start + stride]);
+        }
+        
+        Ok(())
+    }
+
+    /// Weave deinterlacing: interleave both fields (best for still content)
+    fn deinterlace_weave(
+        &self,
+        src: &[u8],
+        width: u32,
+        height: u32,
+        dst: &mut [u8],
+        _top_field_first: bool,
+    ) -> Result<(), i32> {
+        let stride = (width * 4) as usize;
+        let h = height as usize;
+        
+        // Simply copy both fields as-is (they're already interleaved in the src)
+        dst[..stride * h].copy_from_slice(&src[..stride * h]);
+        
+        Ok(())
+    }
+
+    /// Motion-adaptive deinterlacing: use motion detection to choose bob vs weave per region
+    fn deinterlace_motion_adaptive(
+        &mut self,
+        src: &[u8],
+        width: u32,
+        height: u32,
+        dst: &mut [u8],
+        top_field_first: bool,
+    ) -> Result<(), i32> {
+        let stride = (width * 4) as usize;
+        let h = height as usize;
+        
+        // Motion detection threshold (per-pixel SAD)
+        const MOTION_THRESHOLD: u32 = 30;
+        
+        for y in 0..h {
+            let dst_start = y * stride;
+            let src_start = y * stride;
+            let field_offset = if top_field_first { 0 } else { 1 };
+            
+            if (y % 2) == field_offset {
+                // This line is from our primary field - always copy directly
+                dst[dst_start..dst_start + stride].copy_from_slice(&src[src_start..src_start + stride]);
+            } else {
+                // This line is from the other field - detect motion to decide
+                let motion = if let Some(prev) = &self.prev_field {
+                    if prev.len() >= src_start + stride {
+                        // Compute per-line SAD (Sum of Absolute Differences)
+                        let mut sad: u32 = 0;
+                        for x in 0..stride {
+                            sad += (src[src_start + x] as i32 - prev[src_start + x] as i32).unsigned_abs();
+                        }
+                        sad / stride as u32
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                };
+                
+                if motion > MOTION_THRESHOLD {
+                    // High motion: use bob (interpolate from field lines)
+                    let above = if y > 0 { (y - 1) * stride } else { 0 };
+                    let below = if y + 1 < h { (y + 1) * stride } else { (h - 1) * stride };
+                    
+                    for x in 0..stride {
+                        dst[dst_start + x] = ((src[above + x] as u16 + src[below + x] as u16) / 2) as u8;
+                    }
+                } else {
+                    // Low motion: use weave (keep original line)
+                    dst[dst_start..dst_start + stride].copy_from_slice(&src[src_start..src_start + stride]);
+                }
+            }
+        }
+        
+        // Store current frame as previous field reference
+        self.prev_field = Some(src[..stride * h].to_vec());
+        
+        Ok(())
+    }
+}
+
+/// Compositor for picture-in-picture and overlay blending
+#[derive(Debug, Clone)]
+pub struct Compositor;
+
+impl Compositor {
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Composite a foreground image over a background image at the specified position
+    ///
+    /// Uses alpha blending: out = fg * fg_alpha + bg * (1 - fg_alpha)
+    /// Foreground pixels with alpha=0 are fully transparent.
+    pub fn composite_pip(
+        &self,
+        bg: &[u8],
+        bg_width: u32,
+        bg_height: u32,
+        fg: &[u8],
+        fg_width: u32,
+        fg_height: u32,
+        dst: &mut [u8],
+        x_offset: u32,
+        y_offset: u32,
+    ) -> Result<(), i32> {
+        let bg_stride = (bg_width * 4) as usize;
+        let _fg_stride = (fg_width * 4) as usize;
+        let dst_stride = bg_stride; // Output has same dimensions as background
+        
+        if bg.len() < bg_stride * bg_height as usize
+            || dst.len() < dst_stride * bg_height as usize
+        {
+            return Err(CELL_VPOST_ERROR_ARG);
+        }
+        
+        // Start by copying background to destination
+        let bg_size = bg_stride * bg_height as usize;
+        dst[..bg_size].copy_from_slice(&bg[..bg_size]);
+        
+        // Overlay foreground with alpha blending
+        for fy in 0..fg_height {
+            let dy = y_offset + fy;
+            if dy >= bg_height {
+                break;
+            }
+            
+            for fx in 0..fg_width {
+                let dx = x_offset + fx;
+                if dx >= bg_width {
+                    break;
+                }
+                
+                let fg_idx = (fy * fg_width + fx) as usize * 4;
+                let dst_idx = (dy * bg_width + dx) as usize * 4;
+                
+                if fg_idx + 3 >= fg.len() || dst_idx + 3 >= dst.len() {
+                    continue;
+                }
+                
+                let fg_a = fg[fg_idx + 3] as f32 / 255.0;
+                let bg_a = 1.0 - fg_a;
+                
+                dst[dst_idx] = (fg[fg_idx] as f32 * fg_a + dst[dst_idx] as f32 * bg_a).clamp(0.0, 255.0) as u8;
+                dst[dst_idx + 1] = (fg[fg_idx + 1] as f32 * fg_a + dst[dst_idx + 1] as f32 * bg_a).clamp(0.0, 255.0) as u8;
+                dst[dst_idx + 2] = (fg[fg_idx + 2] as f32 * fg_a + dst[dst_idx + 2] as f32 * bg_a).clamp(0.0, 255.0) as u8;
+                dst[dst_idx + 3] = 255; // Output is fully opaque
+            }
+        }
+        
+        Ok(())
+    }
 }
 
 /// Scaling algorithm
@@ -664,6 +915,8 @@ impl VpostEntry {
         let converter = ColorConverter::new(&in_format, &out_format);
         // Use bilinear scaling as default (good quality/performance trade-off)
         let scaler = Scaler::new(ScalingAlgorithm::Bilinear);
+        let deinterlacer = Deinterlacer::new(DeinterlaceAlgorithm::MotionAdaptive);
+        let compositor = Compositor::new();
         
         Self {
             in_format,
@@ -673,6 +926,8 @@ impl VpostEntry {
             is_busy: false,
             converter: Some(converter),
             scaler: Some(scaler),
+            deinterlacer: Some(deinterlacer),
+            compositor: Some(compositor),
         }
     }
 }
@@ -811,6 +1066,56 @@ impl VpostManager {
         entry.scaler = Some(Scaler::new(algorithm));
         trace!("VpostManager::set_scaling_algorithm: handle={}, algorithm={:?}", handle, algorithm);
         Ok(())
+    }
+
+    /// Set the deinterlacing algorithm for a post-processor
+    pub fn set_deinterlace_algorithm(&mut self, handle: VpostHandle, algorithm: DeinterlaceAlgorithm) -> Result<(), i32> {
+        let entry = self.processors.get_mut(&handle).ok_or(CELL_VPOST_ERROR_ARG)?;
+        entry.deinterlacer = Some(Deinterlacer::new(algorithm));
+        trace!("VpostManager::set_deinterlace_algorithm: handle={}, algorithm={:?}", handle, algorithm);
+        Ok(())
+    }
+
+    /// Deinterlace an RGBA frame using the configured algorithm
+    pub fn deinterlace(
+        &mut self,
+        handle: VpostHandle,
+        src: &[u8],
+        width: u32,
+        height: u32,
+        dst: &mut [u8],
+        top_field_first: bool,
+    ) -> Result<(), i32> {
+        let entry = self.processors.get_mut(&handle).ok_or(CELL_VPOST_ERROR_ARG)?;
+        
+        if let Some(deinterlacer) = &mut entry.deinterlacer {
+            deinterlacer.deinterlace(src, width, height, dst, top_field_first)
+        } else {
+            Err(CELL_VPOST_ERROR_FATAL)
+        }
+    }
+
+    /// Composite a foreground image over a background (picture-in-picture)
+    pub fn composite(
+        &self,
+        handle: VpostHandle,
+        bg: &[u8],
+        bg_width: u32,
+        bg_height: u32,
+        fg: &[u8],
+        fg_width: u32,
+        fg_height: u32,
+        dst: &mut [u8],
+        x_offset: u32,
+        y_offset: u32,
+    ) -> Result<(), i32> {
+        let entry = self.processors.get(&handle).ok_or(CELL_VPOST_ERROR_ARG)?;
+        
+        if let Some(compositor) = &entry.compositor {
+            compositor.composite_pip(bg, bg_width, bg_height, fg, fg_width, fg_height, dst, x_offset, y_offset)
+        } else {
+            Err(CELL_VPOST_ERROR_FATAL)
+        }
     }
 }
 
@@ -1428,5 +1733,192 @@ mod tests {
             let r = out_buffer[i * 4];
             assert!(r >= 126 && r <= 130, "R should be ~128, got {}", r);
         }
+    }
+
+    #[test]
+    fn test_deinterlace_bob() {
+        let width = 4u32;
+        let height = 4u32;
+        let stride = (width * 4) as usize;
+        
+        // Create test interlaced frame: even lines white, odd lines black
+        let mut src = vec![0u8; stride * height as usize];
+        for y in 0..height {
+            let val = if y % 2 == 0 { 255u8 } else { 0u8 };
+            for x in 0..(width * 4) {
+                src[(y as usize * stride) + x as usize] = val;
+            }
+        }
+        
+        let mut dst = vec![0u8; src.len()];
+        let mut deinterlacer = Deinterlacer::new(DeinterlaceAlgorithm::Bob);
+        
+        deinterlacer.deinterlace(&src, width, height, &mut dst, true).unwrap();
+        
+        // With bob (top field first), even lines should be 255, odd lines should be copies of even
+        assert_eq!(dst[0], 255); // Line 0 (even)
+        assert_eq!(dst[stride], 255); // Line 1 (odd) should be copy of line 0
+    }
+
+    #[test]
+    fn test_deinterlace_weave() {
+        let width = 4u32;
+        let height = 4u32;
+        let stride = (width * 4) as usize;
+        let size = stride * height as usize;
+        
+        let src = vec![128u8; size];
+        let mut dst = vec![0u8; size];
+        
+        let mut deinterlacer = Deinterlacer::new(DeinterlaceAlgorithm::Weave);
+        deinterlacer.deinterlace(&src, width, height, &mut dst, true).unwrap();
+        
+        // Weave should produce identical output
+        assert_eq!(dst, src);
+    }
+
+    #[test]
+    fn test_deinterlace_motion_adaptive() {
+        let width = 4u32;
+        let height = 4u32;
+        let stride = (width * 4) as usize;
+        let size = stride * height as usize;
+        
+        let src = vec![128u8; size];
+        let mut dst = vec![0u8; size];
+        
+        let mut deinterlacer = Deinterlacer::new(DeinterlaceAlgorithm::MotionAdaptive);
+        
+        // First frame (no previous reference)
+        deinterlacer.deinterlace(&src, width, height, &mut dst, true).unwrap();
+        assert_eq!(dst[0], 128);
+        
+        // Second frame (with previous reference, no motion → weave)
+        deinterlacer.deinterlace(&src, width, height, &mut dst, true).unwrap();
+        assert_eq!(dst[0], 128);
+    }
+
+    #[test]
+    fn test_deinterlace_invalid_dimensions() {
+        let mut deinterlacer = Deinterlacer::new(DeinterlaceAlgorithm::Bob);
+        let src = vec![0u8; 16];
+        let mut dst = vec![0u8; 16];
+        
+        // Source too small for 100x100
+        let result = deinterlacer.deinterlace(&src, 100, 100, &mut dst, true);
+        assert_eq!(result, Err(CELL_VPOST_ERROR_ARG));
+    }
+
+    #[test]
+    fn test_compositor_pip_basic() {
+        let bg_width = 8u32;
+        let bg_height = 8u32;
+        let bg = vec![100u8; (bg_width * bg_height * 4) as usize]; // gray background
+        
+        let fg_width = 4u32;
+        let fg_height = 4u32;
+        let mut fg = vec![0u8; (fg_width * fg_height * 4) as usize];
+        // Red foreground, fully opaque
+        for i in 0..(fg_width * fg_height) as usize {
+            fg[i * 4] = 255;     // R
+            fg[i * 4 + 1] = 0;   // G
+            fg[i * 4 + 2] = 0;   // B
+            fg[i * 4 + 3] = 255; // A (fully opaque)
+        }
+        
+        let mut dst = vec![0u8; bg.len()];
+        let compositor = Compositor::new();
+        
+        compositor.composite_pip(
+            &bg, bg_width, bg_height,
+            &fg, fg_width, fg_height,
+            &mut dst, 2, 2, // offset
+        ).unwrap();
+        
+        // Top-left corner (0,0) should be background gray
+        assert_eq!(dst[0], 100); // R
+        
+        // Foreground area (2,2) should be red
+        let fg_idx = ((2 * bg_width + 2) * 4) as usize;
+        assert_eq!(dst[fg_idx], 255);   // R
+        assert_eq!(dst[fg_idx + 1], 0); // G
+        assert_eq!(dst[fg_idx + 2], 0); // B
+    }
+
+    #[test]
+    fn test_compositor_pip_alpha_blending() {
+        let bg_width = 4u32;
+        let bg_height = 4u32;
+        let mut bg = vec![0u8; (bg_width * bg_height * 4) as usize];
+        for i in 0..(bg_width * bg_height) as usize {
+            bg[i * 4] = 0;       // R
+            bg[i * 4 + 1] = 0;   // G
+            bg[i * 4 + 2] = 255; // B (blue background)
+            bg[i * 4 + 3] = 255;
+        }
+        
+        let fg_width = 2u32;
+        let fg_height = 2u32;
+        let mut fg = vec![0u8; (fg_width * fg_height * 4) as usize];
+        // Semi-transparent red foreground (alpha = 128 ≈ 50%)
+        for i in 0..(fg_width * fg_height) as usize {
+            fg[i * 4] = 255;
+            fg[i * 4 + 1] = 0;
+            fg[i * 4 + 2] = 0;
+            fg[i * 4 + 3] = 128; // 50% transparent
+        }
+        
+        let mut dst = vec![0u8; bg.len()];
+        let compositor = Compositor::new();
+        
+        compositor.composite_pip(
+            &bg, bg_width, bg_height,
+            &fg, fg_width, fg_height,
+            &mut dst, 0, 0,
+        ).unwrap();
+        
+        // (0,0) should be blended: ~50% red + ~50% blue
+        let r = dst[0];
+        let b = dst[2];
+        assert!(r > 100 && r < 200, "Red should be ~128, got {}", r);
+        assert!(b > 50 && b < 180, "Blue should be ~127, got {}", b);
+    }
+
+    #[test]
+    fn test_vpost_deinterlace_api() {
+        let mut manager = VpostManager::new();
+        let format = create_default_format();
+        let handle = manager.open(format, format, 0x100000).unwrap();
+        
+        // Set bob deinterlacing
+        manager.set_deinterlace_algorithm(handle, DeinterlaceAlgorithm::Bob).unwrap();
+        
+        let width = 4u32;
+        let height = 4u32;
+        let src = vec![128u8; (width * height * 4) as usize];
+        let mut dst = vec![0u8; src.len()];
+        
+        manager.deinterlace(handle, &src, width, height, &mut dst, true).unwrap();
+        assert_eq!(dst[0], 128);
+    }
+
+    #[test]
+    fn test_vpost_composite_api() {
+        let manager = VpostManager::new();
+        
+        // Should fail with invalid handle
+        let bg = vec![0u8; 64];
+        let fg = vec![0u8; 16];
+        let mut dst = vec![0u8; 64];
+        
+        let result = manager.composite(999, &bg, 4, 4, &fg, 2, 2, &mut dst, 0, 0);
+        assert_eq!(result, Err(CELL_VPOST_ERROR_ARG));
+    }
+
+    #[test]
+    fn test_deinterlace_algorithm_enum() {
+        assert_eq!(DeinterlaceAlgorithm::Bob as u32, 0);
+        assert_eq!(DeinterlaceAlgorithm::Weave as u32, 1);
+        assert_eq!(DeinterlaceAlgorithm::MotionAdaptive as u32, 2);
     }
 }
