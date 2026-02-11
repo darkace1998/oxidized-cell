@@ -424,8 +424,10 @@ impl HttpBackend {
         loop {
             let mut size_line = String::new();
             reader.read_line(&mut size_line).map_err(|_| CELL_HTTP_ERROR_NOT_CONNECTED)?;
-            let size_str = size_line.trim();
-            let chunk_size = usize::from_str_radix(size_str, 16).unwrap_or(0);
+            // Strip chunk extensions (everything after ';') per RFC 7230 §4.1
+            let size_str = size_line.trim().split(';').next().unwrap_or("0").trim();
+            let chunk_size = usize::from_str_radix(size_str, 16)
+                .map_err(|_| CELL_HTTP_ERROR_NOT_CONNECTED)?;
             
             if chunk_size == 0 {
                 // Read trailing \r\n

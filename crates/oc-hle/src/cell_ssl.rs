@@ -430,8 +430,10 @@ impl DerCertParser {
         let min = if rest.len() >= 8 { rest[6..8].parse::<u64>().unwrap_or(0) } else { 0 };
         let sec = if rest.len() >= 10 { rest[8..10].parse::<u64>().unwrap_or(0) } else { 0 };
 
-        // Approximate Unix timestamp (not accounting for leap seconds)
-        let days_since_epoch = (year - 1970) * 365 + (year - 1969) / 4
+        // Approximate Unix timestamp
+        // Leap year count: years divisible by 4, minus centuries, plus quadricentennials
+        let leap_years = (year - 1969) / 4 - (year - 1901) / 100 + (year - 1601) / 400;
+        let days_since_epoch = (year - 1970) * 365 + leap_years
             + Self::days_before_month(month, year) + day - 1;
         days_since_epoch * 86400 + hour * 3600 + min * 60 + sec
     }
@@ -736,8 +738,6 @@ impl SslManager {
 
     /// Simple base64 decoder
     fn base64_decode(input: &str) -> Result<Vec<u8>, ()> {
-        const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        
         fn decode_char(c: u8) -> Result<u8, ()> {
             match c {
                 b'A'..=b'Z' => Ok(c - b'A'),
@@ -748,7 +748,6 @@ impl SslManager {
                 _ => Err(()),
             }
         }
-        let _ = TABLE; // Suppress unused warning; we use decode_char instead
 
         let bytes: Vec<u8> = input.bytes().filter(|b| *b != b'\n' && *b != b'\r' && *b != b' ').collect();
         let mut output = Vec::with_capacity(bytes.len() * 3 / 4);

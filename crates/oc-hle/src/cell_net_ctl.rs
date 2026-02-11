@@ -268,7 +268,8 @@ impl NetworkBackend {
         Ok(())
     }
 
-    /// Read network info from Linux /proc/net interfaces
+    /// Read network info from Linux /proc/net interfaces.
+    /// On non-Linux platforms, returns fallback simulated values.
     fn read_linux_network_info() -> (std::net::Ipv4Addr, [u8; 6], std::net::Ipv4Addr) {
         use std::net::Ipv4Addr;
         
@@ -308,7 +309,9 @@ impl NetworkBackend {
             }
         }
         
-        // Try reading IP from hostname resolution (most portable method)
+        // Try reading IP from hostname resolution (works cross-platform)
+        // Note: /etc/hostname is Linux-specific; on other platforms the env var
+        // fallback or simulated defaults are used
         if let Ok(hostname) = std::env::var("HOSTNAME").or_else(|_| {
             std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string())
         }) {
