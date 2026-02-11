@@ -106,6 +106,8 @@ struct GifFrame {
     transparent_index: Option<u8>,
     /// Local color palette (if different from global)
     local_palette: Option<Vec<u8>>,
+    /// Whether the frame uses interlaced rendering
+    interlaced: bool,
     /// Frame data (indices into palette)
     data: Vec<u8>,
 }
@@ -283,6 +285,7 @@ impl GifDecoder {
             },
             transparent_index,
             local_palette: None,
+            interlaced: false,
             data: Vec::new(),
         });
         
@@ -355,7 +358,7 @@ impl GifDecoder {
         let packed = data[offset + 8];
         
         let has_local_color_table = (packed & 0x80) != 0;
-        let _interlaced = (packed & 0x40) != 0;
+        let interlaced = (packed & 0x40) != 0;
         let local_color_table_size = if has_local_color_table { 1 << ((packed & 0x07) + 1) } else { 0 };
         
         offset += 9;
@@ -401,8 +404,13 @@ impl GifDecoder {
             offset += 1;
         }
         
-        // Decompress the image data
+        // Decompress and de-interlace the image data
         let decompressed = self.decompress_lzw(&compressed_data, min_code_size);
+        let pixel_data = if interlaced {
+            self.deinterlace_gif(width, height, &decompressed)
+        } else {
+            decompressed
+        };
         
         // Update or add frame
         if let Some(frame) = self.frames.last_mut() {
@@ -411,7 +419,8 @@ impl GifDecoder {
             frame.width = width;
             frame.height = height;
             frame.local_palette = local_palette;
-            frame.data = decompressed;
+            frame.interlaced = interlaced;
+            frame.data = pixel_data;
         } else {
             // No GCE was parsed, create a simple frame
             self.frames.push(GifFrame {
@@ -423,7 +432,8 @@ impl GifDecoder {
                 disposal: GifDisposalMethod::None,
                 transparent_index: None,
                 local_palette,
-                data: decompressed,
+                interlaced,
+                data: pixel_data,
             });
         }
         
@@ -551,6 +561,44 @@ impl GifDecoder {
         output
     }
 
+    /// De-interlace GIF image data (4-pass interlace)
+    ///
+    /// GIF interlacing uses 4 passes:
+    /// - Pass 1: rows 0, 8, 16, ... (every 8th row starting at 0)
+    /// - Pass 2: rows 4, 12, 20, ... (every 8th row starting at 4)
+    /// - Pass 3: rows 2, 6, 10, ... (every 4th row starting at 2)
+    /// - Pass 4: rows 1, 3, 5, ...  (every 2nd row starting at 1)
+    fn deinterlace_gif(&self, width: u32, height: u32, interlaced_data: &[u8]) -> Vec<u8> {
+        let w = width as usize;
+        let h = height as usize;
+        let total_pixels = w * h;
+        
+        if interlaced_data.len() < total_pixels {
+            return interlaced_data.to_vec();
+        }
+        
+        let mut output = vec![0u8; total_pixels];
+        
+        // GIF interlace pass parameters: (start_row, row_increment)
+        const PASSES: [(usize, usize); 4] = [(0, 8), (4, 8), (2, 4), (1, 2)];
+        
+        let mut src_row = 0;
+        for &(start, increment) in &PASSES {
+            let mut y = start;
+            while y < h {
+                let src_offset = src_row * w;
+                let dst_offset = y * w;
+                if src_offset + w <= interlaced_data.len() && dst_offset + w <= output.len() {
+                    output[dst_offset..dst_offset + w].copy_from_slice(&interlaced_data[src_offset..src_offset + w]);
+                }
+                src_row += 1;
+                y += increment;
+            }
+        }
+        
+        output
+    }
+
     /// Parse and add a frame
     fn add_frame(&mut self, frame_data: &[u8], delay: u16, disposal: GifDisposalMethod) -> Result<(), i32> {
         trace!("GifDecoder::add_frame: frame {}, delay={}cs", self.frames.len(), delay);
@@ -567,6 +615,7 @@ impl GifDecoder {
             disposal,
             transparent_index: None,
             local_palette: None,
+            interlaced: false,
             data: decompressed,
         };
         
@@ -588,16 +637,25 @@ impl GifDecoder {
             return Err(CELL_GIFDEC_ERROR_ARG);
         }
         
-        // Convert indexed color to RGBA using global palette
+        // Use local palette if available, otherwise fall back to global palette
+        let palette = frame.local_palette.as_deref().unwrap_or(&self.global_palette);
+        
+        // Convert indexed color to RGBA
         for i in 0..pixel_count.min(frame.data.len()) {
-            let palette_index = frame.data[i] as usize;
-            let palette_offset = palette_index * 3;
+            let palette_index = frame.data[i];
+            let palette_offset = (palette_index as usize) * 3;
             
-            if palette_offset + 2 < self.global_palette.len() {
-                dst_buffer[i * 4] = self.global_palette[palette_offset];         // R
-                dst_buffer[i * 4 + 1] = self.global_palette[palette_offset + 1]; // G
-                dst_buffer[i * 4 + 2] = self.global_palette[palette_offset + 2]; // B
-                dst_buffer[i * 4 + 3] = 255;                                     // A (opaque)
+            // Check if this pixel is transparent
+            if frame.transparent_index == Some(palette_index) {
+                dst_buffer[i * 4] = 0;
+                dst_buffer[i * 4 + 1] = 0;
+                dst_buffer[i * 4 + 2] = 0;
+                dst_buffer[i * 4 + 3] = 0; // Fully transparent
+            } else if palette_offset + 2 < palette.len() {
+                dst_buffer[i * 4] = palette[palette_offset];         // R
+                dst_buffer[i * 4 + 1] = palette[palette_offset + 1]; // G
+                dst_buffer[i * 4 + 2] = palette[palette_offset + 2]; // B
+                dst_buffer[i * 4 + 3] = 255;                         // A (opaque)
             } else {
                 dst_buffer[i * 4] = 0;
                 dst_buffer[i * 4 + 1] = 0;
@@ -1359,5 +1417,108 @@ mod tests {
         // Decode frame - should use fallback pattern since no data was provided
         let result = manager.decode_frame(main_handle, sub_handle, &mut dst_buffer);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_gif_transparency() {
+        let mut decoder = GifDecoder::new();
+        decoder.width = 2;
+        decoder.height = 2;
+        // Global palette: index 0 = red, index 1 = green, index 2 = blue
+        decoder.global_palette = vec![255, 0, 0, 0, 255, 0, 0, 0, 255];
+        
+        // Frame with transparency on index 1
+        decoder.frames.push(GifFrame {
+            x: 0, y: 0, width: 2, height: 2,
+            delay: 10,
+            disposal: GifDisposalMethod::None,
+            transparent_index: Some(1),
+            local_palette: None,
+            interlaced: false,
+            data: vec![0, 1, 2, 0], // red, transparent, blue, red
+        });
+        
+        let mut dst = vec![0u8; 2 * 2 * 4];
+        decoder.decode_frame(0, &mut dst).unwrap();
+        
+        // Pixel 0 = red, opaque
+        assert_eq!(dst[0], 255);
+        assert_eq!(dst[3], 255);
+        
+        // Pixel 1 = transparent (index 1)
+        assert_eq!(dst[4], 0);
+        assert_eq!(dst[7], 0); // Alpha = 0
+        
+        // Pixel 2 = blue, opaque
+        assert_eq!(dst[8], 0);
+        assert_eq!(dst[10], 255);
+        assert_eq!(dst[11], 255);
+    }
+
+    #[test]
+    fn test_gif_local_palette() {
+        let mut decoder = GifDecoder::new();
+        decoder.width = 2;
+        decoder.height = 1;
+        // Global palette: index 0 = red
+        decoder.global_palette = vec![255, 0, 0];
+        
+        // Frame with local palette: index 0 = blue
+        decoder.frames.push(GifFrame {
+            x: 0, y: 0, width: 2, height: 1,
+            delay: 10,
+            disposal: GifDisposalMethod::None,
+            transparent_index: None,
+            local_palette: Some(vec![0, 0, 255, 0, 255, 0]),
+            interlaced: false,
+            data: vec![0, 1],
+        });
+        
+        let mut dst = vec![0u8; 2 * 1 * 4];
+        decoder.decode_frame(0, &mut dst).unwrap();
+        
+        // Pixel 0 = blue (from local palette)
+        assert_eq!(dst[0], 0);
+        assert_eq!(dst[1], 0);
+        assert_eq!(dst[2], 255);
+        assert_eq!(dst[3], 255);
+        
+        // Pixel 1 = green (from local palette)
+        assert_eq!(dst[4], 0);
+        assert_eq!(dst[5], 255);
+        assert_eq!(dst[6], 0);
+    }
+
+    #[test]
+    fn test_gif_deinterlace() {
+        let decoder = GifDecoder::new();
+        
+        // 4x8 image with rows numbered 0-7
+        // Interlaced order: rows 0,8(none),4,2,6,1,3,5,7
+        // For 8 rows: Pass1: 0; Pass2: 4; Pass3: 2,6; Pass4: 1,3,5,7
+        let width = 2u32;
+        let height = 8u32;
+        
+        // Create interlaced data: each row filled with its interlaced order index
+        let mut interlaced = vec![0u8; (width * height) as usize];
+        // Pass 1 (row 0): src_row 0
+        interlaced[0] = 0; interlaced[1] = 0;
+        // Pass 2 (row 4): src_row 1
+        interlaced[2] = 4; interlaced[3] = 4;
+        // Pass 3 (rows 2, 6): src_rows 2, 3
+        interlaced[4] = 2; interlaced[5] = 2;
+        interlaced[6] = 6; interlaced[7] = 6;
+        // Pass 4 (rows 1, 3, 5, 7): src_rows 4, 5, 6, 7
+        interlaced[8] = 1; interlaced[9] = 1;
+        interlaced[10] = 3; interlaced[11] = 3;
+        interlaced[12] = 5; interlaced[13] = 5;
+        interlaced[14] = 7; interlaced[15] = 7;
+        
+        let result = decoder.deinterlace_gif(width, height, &interlaced);
+        
+        // After de-interlacing, each row should contain its row number
+        for row in 0..height as usize {
+            assert_eq!(result[row * width as usize], row as u8, "Row {} has wrong value", row);
+        }
     }
 }
