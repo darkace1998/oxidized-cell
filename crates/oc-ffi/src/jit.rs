@@ -435,11 +435,10 @@ impl PpuJitCompiler {
             oc_ppu_jit_compile(self.handle, address, code.as_ptr(), code.len())
         };
         
-        match result {
-            0 => Ok(()),
-            -1 => Err(JitError::InvalidInput),
-            -2 => Err(JitError::Disabled),
-            _ => Err(JitError::CompilationFailed),
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(JitError::from_error_code(result))
         }
     }
 
@@ -828,11 +827,10 @@ impl SpuJitCompiler {
             oc_spu_jit_compile(self.handle, address, code.as_ptr(), code.len())
         };
         
-        match result {
-            0 => Ok(()),
-            -1 => Err(JitError::InvalidInput),
-            -2 => Err(JitError::Disabled),
-            _ => Err(JitError::CompilationFailed),
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(JitError::from_error_code(result))
         }
     }
 
@@ -1264,7 +1262,7 @@ impl Drop for RsxShaderCompiler {
 unsafe impl Send for RsxShaderCompiler {}
 
 /// JIT compilation errors
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JitError {
     /// Invalid input parameters
     InvalidInput,
@@ -1272,6 +1270,23 @@ pub enum JitError {
     Disabled,
     /// Compilation failed
     CompilationFailed,
+    /// LLVM compilation failed with specific error message
+    LlvmError(String),
+    /// Block is empty (no instructions)
+    EmptyBlock,
+}
+
+impl JitError {
+    /// Create a JitError from a C++ error code, with optional LLVM error detail.
+    pub fn from_error_code(code: i32) -> Self {
+        match code {
+            -1 => JitError::InvalidInput,
+            -2 => JitError::Disabled,
+            -3 => JitError::EmptyBlock,
+            -4 => JitError::LlvmError("LLVM IR generation or compilation failed".into()),
+            _ => JitError::CompilationFailed,
+        }
+    }
 }
 
 impl std::fmt::Display for JitError {
@@ -1280,11 +1295,109 @@ impl std::fmt::Display for JitError {
             JitError::InvalidInput => write!(f, "Invalid input parameters"),
             JitError::Disabled => write!(f, "JIT compiler is disabled"),
             JitError::CompilationFailed => write!(f, "JIT compilation failed"),
+            JitError::LlvmError(msg) => write!(f, "LLVM compilation error: {}", msg),
+            JitError::EmptyBlock => write!(f, "Empty code block"),
         }
     }
 }
 
 impl std::error::Error for JitError {}
+
+/// Callback type for interpreter fallback when JIT compilation fails.
+///
+/// When a JIT block fails to compile, this callback is invoked with:
+/// - `address`: the PPU/SPU address that failed to compile
+/// - `error`: the JitError describing the failure
+///
+/// The callback should interpret the block directly and return the number
+/// of instructions executed, or a negative value on interpreter failure.
+pub type InterpreterFallbackFn = Box<dyn Fn(u32, &JitError) -> i32 + Send + Sync>;
+
+/// Manages JIT-to-interpreter fallback for failed compilations.
+///
+/// When the LLVM backend fails to compile a block (e.g. unsupported instruction,
+/// out of memory, LLVM internal error), blocks are routed to the Rust interpreter
+/// instead of silently failing.
+pub struct JitFallbackManager {
+    ppu_fallback: Option<InterpreterFallbackFn>,
+    spu_fallback: Option<InterpreterFallbackFn>,
+    /// Addresses that failed compilation and should always use interpreter
+    failed_addresses: std::collections::HashSet<u32>,
+    /// Statistics
+    total_fallbacks: u64,
+    total_ppu_fallbacks: u64,
+    total_spu_fallbacks: u64,
+}
+
+impl JitFallbackManager {
+    /// Create a new fallback manager with no callbacks registered.
+    pub fn new() -> Self {
+        Self {
+            ppu_fallback: None,
+            spu_fallback: None,
+            failed_addresses: std::collections::HashSet::new(),
+            total_fallbacks: 0,
+            total_ppu_fallbacks: 0,
+            total_spu_fallbacks: 0,
+        }
+    }
+
+    /// Register a PPU interpreter fallback callback.
+    pub fn set_ppu_fallback(&mut self, callback: InterpreterFallbackFn) {
+        self.ppu_fallback = Some(callback);
+    }
+
+    /// Register an SPU interpreter fallback callback.
+    pub fn set_spu_fallback(&mut self, callback: InterpreterFallbackFn) {
+        self.spu_fallback = Some(callback);
+    }
+
+    /// Try to execute a failed PPU block via the interpreter fallback.
+    /// Returns `Some(instructions_executed)` if the fallback was invoked,
+    /// or `None` if no fallback is registered.
+    pub fn fallback_ppu(&mut self, address: u32, error: &JitError) -> Option<i32> {
+        self.failed_addresses.insert(address);
+        self.total_fallbacks += 1;
+        self.total_ppu_fallbacks += 1;
+        self.ppu_fallback.as_ref().map(|cb| cb(address, error))
+    }
+
+    /// Try to execute a failed SPU block via the interpreter fallback.
+    pub fn fallback_spu(&mut self, address: u32, error: &JitError) -> Option<i32> {
+        self.failed_addresses.insert(address);
+        self.total_fallbacks += 1;
+        self.total_spu_fallbacks += 1;
+        self.spu_fallback.as_ref().map(|cb| cb(address, error))
+    }
+
+    /// Check if an address has previously failed JIT compilation.
+    pub fn is_failed(&self, address: u32) -> bool {
+        self.failed_addresses.contains(&address)
+    }
+
+    /// Clear the failed address set (e.g. after re-enabling LLVM or code invalidation).
+    pub fn clear_failed(&mut self) {
+        self.failed_addresses.clear();
+    }
+
+    /// Get fallback statistics: (total, ppu, spu).
+    pub fn get_stats(&self) -> (u64, u64, u64) {
+        (self.total_fallbacks, self.total_ppu_fallbacks, self.total_spu_fallbacks)
+    }
+
+    /// Reset statistics.
+    pub fn reset_stats(&mut self) {
+        self.total_fallbacks = 0;
+        self.total_ppu_fallbacks = 0;
+        self.total_spu_fallbacks = 0;
+    }
+}
+
+impl Default for JitFallbackManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// JIT compiler handle (legacy, for backwards compatibility)
 #[derive(Default)]
@@ -1592,5 +1705,107 @@ mod tests {
         let body = [0x100u32, 0x110, 0x120];
         let result = jit.merge_loop_blocks(0x100, 0x120, &body);
         assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_jit_error_from_error_code() {
+        assert_eq!(JitError::from_error_code(-1), JitError::InvalidInput);
+        assert_eq!(JitError::from_error_code(-2), JitError::Disabled);
+        assert_eq!(JitError::from_error_code(-3), JitError::EmptyBlock);
+        assert!(matches!(JitError::from_error_code(-4), JitError::LlvmError(_)));
+        assert_eq!(JitError::from_error_code(-99), JitError::CompilationFailed);
+    }
+
+    #[test]
+    fn test_jit_error_display() {
+        let err = JitError::LlvmError("test error".into());
+        let msg = format!("{}", err);
+        assert!(msg.contains("LLVM"), "Display should mention LLVM: {}", msg);
+        assert!(msg.contains("test error"));
+    }
+
+    #[test]
+    fn test_fallback_manager_ppu() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+        
+        let mut mgr = JitFallbackManager::new();
+        
+        // No fallback registered — should return None
+        assert!(mgr.fallback_ppu(0x1000, &JitError::CompilationFailed).is_none());
+        
+        // Register a PPU fallback
+        let call_count = Arc::new(AtomicU32::new(0));
+        let cc = call_count.clone();
+        mgr.set_ppu_fallback(Box::new(move |addr, _err| {
+            cc.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(addr, 0x2000);
+            42  // "interpreted 42 instructions"
+        }));
+        
+        let result = mgr.fallback_ppu(0x2000, &JitError::EmptyBlock);
+        assert_eq!(result, Some(42));
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        assert!(mgr.is_failed(0x2000));
+        
+        let (total, ppu, spu) = mgr.get_stats();
+        assert_eq!(total, 2);  // 1 from the None case + 1 from the Some case
+        assert_eq!(ppu, 2);
+        assert_eq!(spu, 0);
+    }
+
+    #[test]
+    fn test_fallback_manager_spu() {
+        let mut mgr = JitFallbackManager::new();
+        
+        mgr.set_spu_fallback(Box::new(|_addr, _err| 10));
+        
+        let result = mgr.fallback_spu(0x100, &JitError::LlvmError("oops".into()));
+        assert_eq!(result, Some(10));
+        assert!(mgr.is_failed(0x100));
+        
+        // Clear failed set
+        mgr.clear_failed();
+        assert!(!mgr.is_failed(0x100));
+    }
+
+    #[test]
+    fn test_fallback_manager_stats_reset() {
+        let mut mgr = JitFallbackManager::new();
+        mgr.set_ppu_fallback(Box::new(|_, _| 0));
+        mgr.fallback_ppu(0x1000, &JitError::CompilationFailed);
+        mgr.fallback_ppu(0x2000, &JitError::CompilationFailed);
+        
+        let (total, _, _) = mgr.get_stats();
+        assert_eq!(total, 2);
+        
+        mgr.reset_stats();
+        let (total, _, _) = mgr.get_stats();
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn test_ppu_compile_empty_returns_error() {
+        let mut jit = PpuJitCompiler::new().expect("JIT creation failed");
+        let result = jit.compile(0x1000, &[]);
+        assert!(result.is_err(), "Empty block should return an error");
+        // May return EmptyBlock (-3) or InvalidInput (-1) depending on C++ validation order
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, JitError::EmptyBlock | JitError::InvalidInput),
+            "Expected EmptyBlock or InvalidInput, got: {:?}", err
+        );
+    }
+
+    #[test]
+    fn test_spu_compile_empty_returns_error() {
+        let mut jit = SpuJitCompiler::new().expect("JIT creation failed");
+        let result = jit.compile(0x1000, &[]);
+        assert!(result.is_err(), "Empty block should return an error");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, JitError::EmptyBlock | JitError::InvalidInput),
+            "Expected EmptyBlock or InvalidInput, got: {:?}", err
+        );
     }
 }

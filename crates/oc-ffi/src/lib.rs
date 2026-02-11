@@ -1,6 +1,7 @@
 //! FFI bridge to C++ components for oxidized-cell
 
 pub mod atomics;
+pub mod dma;
 pub mod jit;
 pub mod simd;
 pub mod types;
