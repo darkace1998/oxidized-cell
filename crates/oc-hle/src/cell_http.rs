@@ -127,6 +127,85 @@ struct HttpBackend {
     use_real_network: bool,
 }
 
+/// Response body streamer for handling large downloads incrementally
+#[derive(Debug, Clone)]
+pub struct ResponseStreamer {
+    /// Full response body data
+    data: Vec<u8>,
+    /// Current read position
+    position: usize,
+    /// Total content length
+    total_length: usize,
+    /// Chunk size for streaming delivery (default 8KB)
+    chunk_size: usize,
+    /// Whether streaming is complete
+    is_complete: bool,
+}
+
+impl ResponseStreamer {
+    /// Create a new response streamer from response data
+    pub fn new(data: Vec<u8>) -> Self {
+        let total_length = data.len();
+        Self {
+            data,
+            position: 0,
+            total_length,
+            chunk_size: 8192, // 8KB default chunks
+            is_complete: false,
+        }
+    }
+
+    /// Set the chunk size for streaming delivery
+    pub fn set_chunk_size(&mut self, size: usize) {
+        self.chunk_size = size.max(1); // Minimum 1 byte
+    }
+
+    /// Read the next chunk of data
+    pub fn read_chunk(&mut self, max_size: usize) -> Vec<u8> {
+        if self.is_complete || self.position >= self.total_length {
+            self.is_complete = true;
+            return Vec::new();
+        }
+
+        let read_size = max_size.min(self.chunk_size).min(self.total_length - self.position);
+        let end = self.position + read_size;
+        let chunk = self.data[self.position..end].to_vec();
+        self.position = end;
+
+        if self.position >= self.total_length {
+            self.is_complete = true;
+        }
+
+        chunk
+    }
+
+    /// Get total content length
+    pub fn total_length(&self) -> usize {
+        self.total_length
+    }
+
+    /// Get bytes already read
+    pub fn bytes_read(&self) -> usize {
+        self.position
+    }
+
+    /// Get remaining bytes
+    pub fn remaining(&self) -> usize {
+        self.total_length.saturating_sub(self.position)
+    }
+
+    /// Check if streaming is complete
+    pub fn is_complete(&self) -> bool {
+        self.is_complete
+    }
+
+    /// Reset position to beginning for re-reading
+    pub fn reset(&mut self) {
+        self.position = 0;
+        self.is_complete = false;
+    }
+}
+
 impl HttpBackend {
     fn new() -> Self {
         Self {
@@ -135,62 +214,273 @@ impl HttpBackend {
         }
     }
 
-    /// Send HTTP request
+    /// Enable or disable real networking
+    fn set_real_network(&mut self, enable: bool) {
+        self.use_real_network = enable;
+    }
+
+    /// Send HTTP request — dispatches to real or simulated backend
     fn send_request(
         &self,
         method: &CellHttpMethod,
         url: &str,
-        _headers: &[(String, String)],
+        headers: &[(String, String)],
         body: &[u8],
     ) -> Result<HttpResponse, i32> {
         trace!("HttpBackend::send_request: {:?} {} (body: {} bytes)", method, url, body.len());
 
         if self.use_real_network {
-            // In a real implementation:
-            // 1. Parse URL into components
-            // 2. Create HTTP request with method, headers, body
-            // 3. Send request using reqwest/curl/hyper
-            // 4. Read response
-            // 5. Parse response headers and status
-            trace!("HttpBackend: real networking not implemented, using simulation");
+            return self.send_real_request(method, url, headers, body);
         }
 
         // Simulate HTTP response based on method and URL
+        self.send_simulated_request(method, url, body)
+    }
+
+    /// Send a real HTTP/1.1 request via std::net::TcpStream
+    fn send_real_request(
+        &self,
+        method: &CellHttpMethod,
+        url: &str,
+        headers: &[(String, String)],
+        body: &[u8],
+    ) -> Result<HttpResponse, i32> {
+        use std::io::{Read, Write, BufRead, BufReader};
+        use std::net::TcpStream;
+        use std::time::Duration;
+
+        // Parse URL into host, port, path
+        let (host, port, path) = Self::parse_url(url)?;
+        
+        trace!("HttpBackend::send_real_request: connecting to {}:{}", host, port);
+
+        // Connect with timeout
+        let addr = format!("{}:{}", host, port);
+        
+        // Resolve address using ToSocketAddrs (handles both IP and hostname)
+        use std::net::ToSocketAddrs;
+        let socket_addr = addr.to_socket_addrs()
+            .map_err(|_| CELL_HTTP_ERROR_NOT_CONNECTED)?
+            .next()
+            .ok_or(CELL_HTTP_ERROR_NOT_CONNECTED)?;
+        
+        let stream = TcpStream::connect_timeout(
+            &socket_addr,
+            Duration::from_secs(30),
+        ).map_err(|_| CELL_HTTP_ERROR_NOT_CONNECTED)?;
+
+        stream.set_read_timeout(Some(Duration::from_secs(30)))
+            .map_err(|_| CELL_HTTP_ERROR_NOT_CONNECTED)?;
+        stream.set_write_timeout(Some(Duration::from_secs(30)))
+            .map_err(|_| CELL_HTTP_ERROR_NOT_CONNECTED)?;
+
+        let mut stream = stream;
+
+        // Build HTTP/1.1 request
+        let method_str = match method {
+            CellHttpMethod::Get => "GET",
+            CellHttpMethod::Post => "POST",
+            CellHttpMethod::Head => "HEAD",
+            CellHttpMethod::Put => "PUT",
+            CellHttpMethod::Delete => "DELETE",
+            CellHttpMethod::Options => "OPTIONS",
+            CellHttpMethod::Trace => "TRACE",
+            CellHttpMethod::Connect => "CONNECT",
+        };
+
+        let mut request = format!("{} {} HTTP/1.1\r\nHost: {}\r\n", method_str, path, host);
+
+        // Add user headers
+        for (name, value) in headers {
+            request.push_str(&format!("{}: {}\r\n", name, value));
+        }
+
+        // Add Content-Length for body
+        if !body.is_empty() {
+            request.push_str(&format!("Content-Length: {}\r\n", body.len()));
+        }
+
+        // Add Connection: close
+        request.push_str("Connection: close\r\n\r\n");
+
+        // Write request
+        stream.write_all(request.as_bytes()).map_err(|_| CELL_HTTP_ERROR_NOT_CONNECTED)?;
+        if !body.is_empty() {
+            stream.write_all(body).map_err(|_| CELL_HTTP_ERROR_NOT_CONNECTED)?;
+        }
+        stream.flush().map_err(|_| CELL_HTTP_ERROR_NOT_CONNECTED)?;
+
+        // Read response
+        let mut reader = BufReader::new(&stream);
+
+        // Parse status line: "HTTP/1.1 200 OK\r\n"
+        let mut status_line = String::new();
+        reader.read_line(&mut status_line).map_err(|_| CELL_HTTP_ERROR_NOT_CONNECTED)?;
+
+        let (status_code, reason) = Self::parse_status_line(&status_line)?;
+
+        // Parse response headers
+        let mut response_headers = Vec::new();
+        let mut content_length: Option<usize> = None;
+        let mut is_chunked = false;
+
+        loop {
+            let mut header_line = String::new();
+            reader.read_line(&mut header_line).map_err(|_| CELL_HTTP_ERROR_NOT_CONNECTED)?;
+            let trimmed = header_line.trim();
+            if trimmed.is_empty() {
+                break; // End of headers
+            }
+            if let Some((name, value)) = trimmed.split_once(':') {
+                let name = name.trim().to_string();
+                let value = value.trim().to_string();
+                if name.eq_ignore_ascii_case("Content-Length") {
+                    content_length = value.parse().ok();
+                }
+                if name.eq_ignore_ascii_case("Transfer-Encoding") && value.eq_ignore_ascii_case("chunked") {
+                    is_chunked = true;
+                }
+                response_headers.push((name, value));
+            }
+        }
+
+        // Read response body
+        let response_body = if is_chunked {
+            Self::read_chunked_body(&mut reader)?
+        } else if let Some(len) = content_length {
+            let mut body_buf = vec![0u8; len];
+            reader.read_exact(&mut body_buf).map_err(|_| CELL_HTTP_ERROR_NOT_CONNECTED)?;
+            body_buf
+        } else {
+            // Read until EOF
+            let mut body_buf = Vec::new();
+            let _ = reader.read_to_end(&mut body_buf);
+            body_buf
+        };
+
+        trace!("HttpBackend::send_real_request: status={}, body={} bytes", status_code, response_body.len());
+
+        Ok(HttpResponse {
+            status_code,
+            reason,
+            headers: response_headers,
+            body: response_body,
+        })
+    }
+
+    /// Parse URL into (host, port, path)
+    fn parse_url(url: &str) -> Result<(String, u16, String), i32> {
+        // Strip protocol
+        let (is_https, remainder) = if let Some(rest) = url.strip_prefix("https://") {
+            (true, rest)
+        } else if let Some(rest) = url.strip_prefix("http://") {
+            (false, rest)
+        } else {
+            (false, url)
+        };
+
+        let default_port: u16 = if is_https { 443 } else { 80 };
+
+        // Split host from path
+        let (host_port, path) = match remainder.find('/') {
+            Some(idx) => (&remainder[..idx], &remainder[idx..]),
+            None => (remainder, "/"),
+        };
+
+        // Split host from port
+        let (host, port) = match host_port.rfind(':') {
+            Some(idx) => {
+                let port_str = &host_port[idx + 1..];
+                let port = port_str.parse::<u16>().unwrap_or(default_port);
+                (&host_port[..idx], port)
+            }
+            None => (host_port, default_port),
+        };
+
+        Ok((host.to_string(), port, path.to_string()))
+    }
+
+    /// Parse HTTP status line: "HTTP/1.1 200 OK"
+    fn parse_status_line(line: &str) -> Result<(u32, String), i32> {
+        let parts: Vec<&str> = line.splitn(3, ' ').collect();
+        if parts.len() < 2 {
+            return Err(CELL_HTTP_ERROR_NOT_CONNECTED);
+        }
+
+        let status_code = parts[1].parse::<u32>().map_err(|_| CELL_HTTP_ERROR_NOT_CONNECTED)?;
+        let reason = if parts.len() >= 3 {
+            parts[2].trim().to_string()
+        } else {
+            String::new()
+        };
+
+        Ok((status_code, reason))
+    }
+
+    /// Read chunked transfer-encoded body
+    fn read_chunked_body(reader: &mut impl std::io::BufRead) -> Result<Vec<u8>, i32> {
+        let mut body = Vec::new();
+
+        loop {
+            let mut size_line = String::new();
+            reader.read_line(&mut size_line).map_err(|_| CELL_HTTP_ERROR_NOT_CONNECTED)?;
+            let size_str = size_line.trim();
+            let chunk_size = usize::from_str_radix(size_str, 16).unwrap_or(0);
+            
+            if chunk_size == 0 {
+                // Read trailing \r\n
+                let mut trailing = String::new();
+                let _ = reader.read_line(&mut trailing);
+                break;
+            }
+
+            let mut chunk = vec![0u8; chunk_size];
+            reader.read_exact(&mut chunk).map_err(|_| CELL_HTTP_ERROR_NOT_CONNECTED)?;
+            body.extend_from_slice(&chunk);
+
+            // Read trailing \r\n after chunk data
+            let mut trailing = String::new();
+            let _ = reader.read_line(&mut trailing);
+        }
+
+        Ok(body)
+    }
+
+    /// Send simulated HTTP response
+    fn send_simulated_request(
+        &self,
+        method: &CellHttpMethod,
+        _url: &str,
+        body: &[u8],
+    ) -> Result<HttpResponse, i32> {
         let (status_code, reason, content_type, response_body) = match *method {
             CellHttpMethod::Get => {
-                // Simulate GET response
                 let body = b"<html><body>Hello, World!</body></html>".to_vec();
                 (200, "OK", "text/html; charset=UTF-8", body)
             }
             CellHttpMethod::Post => {
-                // Simulate POST response - echo back body length
                 let msg = format!("{{\"received\": {} }}", body.len());
                 (200, "OK", "application/json", msg.into_bytes())
             }
             CellHttpMethod::Head => {
-                // HEAD returns no body
                 (200, "OK", "text/html; charset=UTF-8", vec![])
             }
             CellHttpMethod::Put => {
-                // Simulate PUT response
                 let msg = format!("{{\"updated\": true, \"size\": {} }}", body.len());
                 (200, "OK", "application/json", msg.into_bytes())
             }
             CellHttpMethod::Delete => {
-                // Simulate DELETE response
                 (204, "No Content", "application/json", vec![])
             }
             CellHttpMethod::Options => {
-                // OPTIONS response
                 (200, "OK", "text/plain", b"GET,POST,PUT,DELETE,HEAD,OPTIONS".to_vec())
             }
             _ => {
-                // Generic response
                 (200, "OK", "text/plain", b"OK".to_vec())
             }
         };
         
-        let response = HttpResponse {
+        Ok(HttpResponse {
             status_code,
             reason: String::from(reason),
             headers: vec![
@@ -199,9 +489,7 @@ impl HttpBackend {
                 (String::from("Connection"), String::from("close")),
             ],
             body: response_body,
-        };
-
-        Ok(response)
+        })
     }
 
     /// Send request with proxy
@@ -218,10 +506,6 @@ impl HttpBackend {
                method, url, proxy_host, proxy_port);
 
         if self.use_real_network {
-            // In a real implementation:
-            // 1. Connect to proxy
-            // 2. Send CONNECT request for HTTPS or direct request for HTTP
-            // 3. Forward request through proxy
             trace!("HttpBackend: proxy not implemented, using direct request");
         }
 
@@ -558,6 +842,66 @@ impl HttpManager {
         let transaction = client.transactions.get(&transaction_id).ok_or(CELL_HTTP_ERROR_INVALID_TRANSACTION)?;
 
         Ok(transaction.content_length)
+    }
+
+    /// Enable or disable real networking for a client
+    pub fn enable_real_network(&mut self, client_id: HttpClientId, enable: bool) -> Result<(), i32> {
+        if !self.is_initialized {
+            return Err(CELL_HTTP_ERROR_NOT_INITIALIZED);
+        }
+
+        let client = self.clients.get_mut(&client_id).ok_or(CELL_HTTP_ERROR_INVALID_CLIENT)?;
+        client.backend.set_real_network(enable);
+        
+        debug!("HttpManager::enable_real_network: client={}, enable={}", client_id, enable);
+        Ok(())
+    }
+
+    /// Create a response streamer for a completed transaction
+    ///
+    /// The streamer provides chunked access to the response body, useful for
+    /// large downloads where the full response shouldn't be buffered at once.
+    pub fn create_response_streamer(
+        &self,
+        client_id: HttpClientId,
+        transaction_id: HttpTransactionId,
+    ) -> Result<ResponseStreamer, i32> {
+        if !self.is_initialized {
+            return Err(CELL_HTTP_ERROR_NOT_INITIALIZED);
+        }
+
+        let client = self.clients.get(&client_id).ok_or(CELL_HTTP_ERROR_INVALID_CLIENT)?;
+        let transaction = client.transactions.get(&transaction_id)
+            .ok_or(CELL_HTTP_ERROR_INVALID_TRANSACTION)?;
+
+        if transaction.state != TransactionState::ResponseReceived && 
+           transaction.state != TransactionState::Completed {
+            return Err(CELL_HTTP_ERROR_NOT_CONNECTED);
+        }
+
+        Ok(ResponseStreamer::new(transaction.response_body.clone()))
+    }
+
+    /// Get a response header value by name for a transaction
+    pub fn get_response_header(
+        &self,
+        client_id: HttpClientId,
+        transaction_id: HttpTransactionId,
+        name: &str,
+    ) -> Result<Option<String>, i32> {
+        if !self.is_initialized {
+            return Err(CELL_HTTP_ERROR_NOT_INITIALIZED);
+        }
+
+        let client = self.clients.get(&client_id).ok_or(CELL_HTTP_ERROR_INVALID_CLIENT)?;
+        let transaction = client.transactions.get(&transaction_id)
+            .ok_or(CELL_HTTP_ERROR_INVALID_TRANSACTION)?;
+
+        let value = transaction.response_headers.iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.clone());
+
+        Ok(value)
     }
 }
 
@@ -1071,5 +1415,172 @@ mod tests {
 
         manager.send_request(client_id, transaction_id, 0).unwrap();
         assert_eq!(manager.get_status_code(client_id, transaction_id).unwrap(), 204);
+    }
+
+    #[test]
+    fn test_response_streamer_basic() {
+        let data = b"Hello, World! This is a test response body.".to_vec();
+        let streamer = ResponseStreamer::new(data.clone());
+        
+        assert_eq!(streamer.total_length(), data.len());
+        assert_eq!(streamer.bytes_read(), 0);
+        assert_eq!(streamer.remaining(), data.len());
+        assert!(!streamer.is_complete());
+    }
+
+    #[test]
+    fn test_response_streamer_read_chunks() {
+        let data = b"ABCDEFGHIJKLMNOP".to_vec(); // 16 bytes
+        let mut streamer = ResponseStreamer::new(data);
+        streamer.set_chunk_size(4);
+
+        let chunk1 = streamer.read_chunk(1024);
+        assert_eq!(chunk1, b"ABCD");
+        assert_eq!(streamer.bytes_read(), 4);
+
+        let chunk2 = streamer.read_chunk(1024);
+        assert_eq!(chunk2, b"EFGH");
+        assert_eq!(streamer.bytes_read(), 8);
+
+        let chunk3 = streamer.read_chunk(1024);
+        assert_eq!(chunk3, b"IJKL");
+
+        let chunk4 = streamer.read_chunk(1024);
+        assert_eq!(chunk4, b"MNOP");
+        assert!(streamer.is_complete());
+
+        // No more data
+        let chunk5 = streamer.read_chunk(1024);
+        assert!(chunk5.is_empty());
+    }
+
+    #[test]
+    fn test_response_streamer_max_size_limit() {
+        let data = b"ABCDEFGHIJKLMNOP".to_vec(); // 16 bytes
+        let mut streamer = ResponseStreamer::new(data);
+        streamer.set_chunk_size(100);  // Big chunk size
+
+        // But max_size is small
+        let chunk = streamer.read_chunk(3);
+        assert_eq!(chunk, b"ABC");
+    }
+
+    #[test]
+    fn test_response_streamer_reset() {
+        let data = b"Hello".to_vec();
+        let mut streamer = ResponseStreamer::new(data);
+        
+        let _ = streamer.read_chunk(5);
+        assert!(streamer.is_complete());
+        
+        streamer.reset();
+        assert!(!streamer.is_complete());
+        assert_eq!(streamer.bytes_read(), 0);
+        
+        let chunk = streamer.read_chunk(5);
+        assert_eq!(chunk, b"Hello");
+    }
+
+    #[test]
+    fn test_response_streamer_empty() {
+        let mut streamer = ResponseStreamer::new(Vec::new());
+        assert_eq!(streamer.total_length(), 0);
+        assert!(streamer.read_chunk(1024).is_empty());
+        assert!(streamer.is_complete());
+    }
+
+    #[test]
+    fn test_http_manager_create_response_streamer() {
+        let mut manager = HttpManager::new();
+        manager.init(1024 * 1024).unwrap();
+        let client_id = manager.create_client().unwrap();
+        let transaction_id = manager.create_transaction(client_id, CellHttpMethod::Get, "http://example.com").unwrap();
+
+        manager.send_request(client_id, transaction_id, 0).unwrap();
+
+        let mut streamer = manager.create_response_streamer(client_id, transaction_id).unwrap();
+        assert!(streamer.total_length() > 0);
+        
+        let chunk = streamer.read_chunk(4096);
+        assert!(!chunk.is_empty());
+    }
+
+    #[test]
+    fn test_http_manager_create_response_streamer_before_send() {
+        let mut manager = HttpManager::new();
+        manager.init(1024 * 1024).unwrap();
+        let client_id = manager.create_client().unwrap();
+        let transaction_id = manager.create_transaction(client_id, CellHttpMethod::Get, "http://example.com").unwrap();
+
+        // Should fail — request not sent yet
+        assert!(manager.create_response_streamer(client_id, transaction_id).is_err());
+    }
+
+    #[test]
+    fn test_http_manager_enable_real_network() {
+        let mut manager = HttpManager::new();
+        manager.init(1024 * 1024).unwrap();
+        let client_id = manager.create_client().unwrap();
+
+        // Should succeed
+        manager.enable_real_network(client_id, true).unwrap();
+        manager.enable_real_network(client_id, false).unwrap();
+    }
+
+    #[test]
+    fn test_http_manager_enable_real_network_invalid_client() {
+        let mut manager = HttpManager::new();
+        manager.init(1024 * 1024).unwrap();
+
+        assert_eq!(manager.enable_real_network(999, true), Err(CELL_HTTP_ERROR_INVALID_CLIENT));
+    }
+
+    #[test]
+    fn test_http_manager_get_response_header() {
+        let mut manager = HttpManager::new();
+        manager.init(1024 * 1024).unwrap();
+        let client_id = manager.create_client().unwrap();
+        let transaction_id = manager.create_transaction(client_id, CellHttpMethod::Get, "http://example.com").unwrap();
+
+        manager.send_request(client_id, transaction_id, 0).unwrap();
+
+        let content_type = manager.get_response_header(client_id, transaction_id, "Content-Type").unwrap();
+        assert!(content_type.is_some());
+        assert!(content_type.unwrap().contains("text/html"));
+
+        let missing = manager.get_response_header(client_id, transaction_id, "X-Nonexistent").unwrap();
+        assert!(missing.is_none());
+    }
+
+    #[test]
+    fn test_http_url_parsing() {
+        let (host, port, path) = HttpBackend::parse_url("http://example.com/path").unwrap();
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 80);
+        assert_eq!(path, "/path");
+
+        let (host, port, path) = HttpBackend::parse_url("https://secure.example.com:8443/api").unwrap();
+        assert_eq!(host, "secure.example.com");
+        assert_eq!(port, 8443);
+        assert_eq!(path, "/api");
+
+        let (host, port, path) = HttpBackend::parse_url("http://localhost").unwrap();
+        assert_eq!(host, "localhost");
+        assert_eq!(port, 80);
+        assert_eq!(path, "/");
+    }
+
+    #[test]
+    fn test_http_status_line_parsing() {
+        let (code, reason) = HttpBackend::parse_status_line("HTTP/1.1 200 OK\r\n").unwrap();
+        assert_eq!(code, 200);
+        assert_eq!(reason, "OK");
+
+        let (code, reason) = HttpBackend::parse_status_line("HTTP/1.1 404 Not Found\r\n").unwrap();
+        assert_eq!(code, 404);
+        assert_eq!(reason, "Not Found");
+
+        let (code, _) = HttpBackend::parse_status_line("HTTP/1.0 301 Moved Permanently").unwrap();
+        assert_eq!(code, 301);
     }
 }

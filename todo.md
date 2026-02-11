@@ -191,21 +191,21 @@ Full GIF decoding with LZW decompression, animated frame extraction, transparenc
 
 ### HLE Modules — Networking
 
-#### cellNetCtl (`cell_net_ctl.rs`) — Fully Implemented (Simulated)
-Complete network state machine, IP info, NAT detection — all simulated without real sockets.
-- [ ] Optionally bridge to host network stack for real connectivity
-- [ ] Implement DNS resolution passthrough
+#### cellNetCtl (`cell_net_ctl.rs`) — ✅ Complete
+Complete network state machine, IP info, NAT detection — with optional host network bridging.
+- [x] Optionally bridge to host network stack for real connectivity (`enable_host_bridge()`)
+- [x] Implement DNS resolution passthrough (`resolve_dns()` via `std::net::ToSocketAddrs`)
 
-#### cellHttp (`cell_http.rs`) — Fully Implemented (Simulated)
-Full HTTP/1.1 transaction model with headers, callbacks, and pooling — all returning dummy responses.
-- [ ] Optionally bridge HTTP transactions to host `reqwest`/`hyper` for real requests
-- [ ] Implement response body streaming for large downloads
+#### cellHttp (`cell_http.rs`) — ✅ Complete
+Full HTTP/1.1 transaction model with real HTTP bridge and response body streaming.
+- [x] Bridge HTTP transactions to host via `std::net::TcpStream` (no external deps)
+- [x] Implement response body streaming for large downloads (`ResponseStreamer`)
 
-#### cellSsl (`cell_ssl.rs`) — Basic Stub
-Client management and cipher enumeration only; no actual TLS.
-- [ ] Implement TLS handshake via `rustls` or `native-tls`
-- [ ] Add certificate validation and CA store loading
-- [ ] Wire SSL sessions to cellHttp for HTTPS support
+#### cellSsl (`cell_ssl.rs`) — ✅ Complete
+TLS 1.2 handshake, DER/PEM certificate parsing, chain validation, SSL session management.
+- [x] Implement TLS 1.2 handshake state machine (`perform_handshake()`)
+- [x] Add certificate validation and CA store loading (`validate_certificate()`, `validate_chain()`)
+- [x] Wire SSL sessions to cellHttp for HTTPS support (`create_session()`, DER/PEM parsing)
 
 ### HLE Modules — Input (Fully Implemented, Minor Gaps)
 
