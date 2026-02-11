@@ -107,6 +107,7 @@ int oc_dma_transfer(void* local_storage, uint32_t local_addr,
     // Check for barrier - must wait for all prior transfers on ALL tags
     if (ts.barrier_active.load()) return -5;
     
+    // EA is a 32-bit offset into main memory (PS3 SPU effective addresses are 32-bit)
     uint8_t* ls = static_cast<uint8_t*>(local_storage) + local_addr;
     uint8_t* mm = static_cast<uint8_t*>(main_memory) + static_cast<uint32_t>(ea);
     

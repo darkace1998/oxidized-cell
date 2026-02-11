@@ -96,6 +96,10 @@ fn map_dma_error(code: i32) -> DmaError {
 /// size to cover the transfer offsets and size. The Cell/BE DMA engine requires
 /// transfers to be naturally aligned (16-byte alignment for sizes ≥ 16 bytes),
 /// but this wrapper does not enforce alignment — the C++ layer performs the copy.
+///
+/// The effective address (`ea`) is treated as a 32-bit offset into `main_memory`
+/// (matching PS3's 32-bit SPU effective addresses). Callers must ensure that
+/// `ea + size` does not exceed `main_memory.len()`.
 pub unsafe fn dma_transfer(
     local_storage: &mut [u8],
     local_addr: u32,
@@ -105,6 +109,14 @@ pub unsafe fn dma_transfer(
     tag: u16,
     cmd: DmaCommand,
 ) -> Result<(), DmaError> {
+    // Rust-side bounds validation before crossing FFI boundary
+    let ea32 = ea as u32;
+    if (local_addr as usize).saturating_add(size as usize) > local_storage.len() {
+        return Err(DmaError::LocalAddrOutOfBounds);
+    }
+    if (ea32 as usize).saturating_add(size as usize) > main_memory.len() {
+        return Err(DmaError::LocalAddrOutOfBounds);
+    }
     let result = oc_dma_transfer(
         local_storage.as_mut_ptr(), local_addr,
         main_memory.as_mut_ptr(), ea, size,
