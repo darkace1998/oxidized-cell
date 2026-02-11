@@ -105,16 +105,16 @@ The JIT covers integer, load/store, float, branch, rotate, and some AltiVec. Sti
 The SPU JIT has 130+ instruction stubs covering arithmetic, logic, memory, float, branch, channel I/O, quadword shifts, extended arithmetic, and sign-extension ops. It also handles 16 DMA command types and 9 MFC channels. Like the PPU JIT, **emission requires the LLVM backend**.
 
 #### Missing SPU Instruction Categories in JIT
-- [ ] **Double-precision float** — Add `DFA` (double float add), `DFS` (double float subtract), `DFM` (double float multiply), `DFMA`/`DFMS`/`DFNMA`/`DFNMS` (double FMA variants)
-- [ ] **Missing channel ops** — Expand beyond the 9 implemented MFC channels; add SPU event channels (`SPU_RdEventStat`, `SPU_WrEventMask`, `SPU_WrEventAck`), signal notification channels (`SPU_RdSigNotify1`, `SPU_RdSigNotify2`), and decrementer channel (`SPU_RdDec`)
-- [ ] **SPU interrupt handling** — Add `IRET` (interrupt return) instruction JIT path and interrupt enable/disable channel ops
-- [ ] **Missing compare ops** — Verify `CLGTHI`, `CLGTBI` (logical compare halfword/byte immediate) are fully emitting IR
+- [x] **Double-precision float** — Add `DFA` (double float add), `DFS` (double float subtract), `DFM` (double float multiply), `DFMA`/`DFMS`/`DFNMA`/`DFNMS` (double FMA variants)
+- [x] **Missing channel ops** — Expand beyond the 9 implemented MFC channels; add SPU event channels (`SPU_RdEventStat`, `SPU_WrEventMask`, `SPU_WrEventAck`), signal notification channels (`SPU_RdSigNotify1`, `SPU_RdSigNotify2`), and decrementer channel (`SPU_RdDec`)
+- [x] **SPU interrupt handling** — Add `IRET` (interrupt return) instruction JIT path and interrupt enable/disable channel ops
+- [x] **Missing compare ops** — Verify `CLGTHI`, `CLGTBI` (logical compare halfword/byte immediate) are fully emitting IR
 
 #### SPU JIT Optimization
-- [ ] Implement loop-aware block merging — `SpuBlockMerger` detects branch types but doesn't merge across loop iterations
-- [ ] Add SIMD intrinsic mapping — map SPU 128-bit vector ops to host AVX2/NEON intrinsics instead of generic LLVM IR vectors
-- [ ] Optimize channel read/write — inline common channel operations (tag status polling) instead of calling through FFI
-- [ ] Implement SPU-to-SPU mailbox fast path for inter-SPU communication without kernel traps
+- [x] Implement loop-aware block merging — `SpuBlockMerger` detects branch types but doesn't merge across loop iterations
+- [x] Add SIMD intrinsic mapping — map SPU 128-bit vector ops to host AVX2/NEON intrinsics instead of generic LLVM IR vectors
+- [x] Optimize channel read/write — inline common channel operations (tag status polling) instead of calling through FFI
+- [x] Implement SPU-to-SPU mailbox fast path for inter-SPU communication without kernel traps
 
 ### JIT Compiler — Shared Infrastructure
 

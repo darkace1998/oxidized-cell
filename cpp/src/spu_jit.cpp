@@ -1394,9 +1394,9 @@ struct SimdIntrinsicManager {
         instruction_map[0b01001000011] = SimdIntrinsic::VecCmpMagEqF32; // fcmeq (float compare magnitude equal: |a| == |b|)
         
         // ========== Double-Precision Float Operations ==========
-        instruction_map[0b1011001100] = SimdIntrinsic::VecAddF32;   // dfa (double float add) - mapped to general float add
-        instruction_map[0b1011001101] = SimdIntrinsic::VecSubF32;   // dfs (double float subtract)
-        instruction_map[0b1011001110] = SimdIntrinsic::VecMulF32;   // dfm (double float multiply)
+        // Note: Double-precision ops (dfa/dfs/dfm) operate on v2f64, not v4f32.
+        // No direct single-precision SIMD intrinsic mapping applies; the JIT
+        // emits native v2f64 LLVM IR that LLVM will lower to host SIMD.
         
         // ========== Shuffle/Select Operations ==========
         instruction_map[0b10110000000] = SimdIntrinsic::VecShuffle;  // shufb (shuffle bytes)
@@ -3123,8 +3123,11 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             // Inline fast paths for common channel reads
             if (channel == 24) {
                 // MFC_RdTagStat: Inline tag status read from SPU state
-                // Read the tag_status field from spu_state
-                // Offset: 128 regs * 16 bytes + PC(4) + status(4) = 2056
+                // SPU state memory layout (oc_spu_context_t):
+                //   regs[128] × 16 bytes = 2048 bytes (offset 0)
+                //   pc: u32 = 4 bytes (offset 2048)
+                //   status: u32 = 4 bytes (offset 2052)
+                //   tag_status inferred at offset 2056
                 constexpr uint32_t SPU_TAG_STATUS_OFFSET = 128 * 16 + 4 + 4;
                 llvm::Value* tag_offset = llvm::ConstantInt::get(i32_ty, SPU_TAG_STATUS_OFFSET);
                 llvm::Value* tag_ptr = builder.CreateGEP(i8_ty, spu_state, tag_offset);

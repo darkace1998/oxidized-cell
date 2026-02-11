@@ -1060,14 +1060,14 @@ impl SpuJitCompiler {
     pub fn mailbox_get_stats(&self) -> (u64, u64, u64, u64) {
         let mut sends: u64 = 0;
         let mut receives: u64 = 0;
-        let mut blocked_send: u64 = 0;
-        let mut blocked_recv: u64 = 0;
+        let mut send_blocked: u64 = 0;
+        let mut receive_blocked: u64 = 0;
         unsafe {
             oc_spu_jit_mailbox_get_stats(
-                self.handle, &mut sends, &mut receives, &mut blocked_send, &mut blocked_recv,
+                self.handle, &mut sends, &mut receives, &mut send_blocked, &mut receive_blocked,
             );
         }
-        (sends, receives, blocked_send, blocked_recv)
+        (sends, receives, send_blocked, receive_blocked)
     }
     
     // ========================================================================
