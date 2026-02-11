@@ -1270,7 +1270,7 @@ pub enum JitError {
     Disabled,
     /// Compilation failed
     CompilationFailed,
-    /// LLVM compilation failed with specific error message
+    /// LLVM compilation failed (message may be generic or detail-specific)
     LlvmError(String),
     /// Block is empty (no instructions)
     EmptyBlock,

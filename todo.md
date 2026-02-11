@@ -119,20 +119,20 @@ The SPU JIT has 130+ instruction stubs covering arithmetic, logic, memory, float
 ### JIT Compiler — Shared Infrastructure
 
 #### FFI Bridge (`cpp/include/oc_ffi.h`, `crates/oc-ffi/`)
-- [ ] **Fix unsafe 128-bit atomic fallback** — `oc_atomic_cas128` falls back to non-atomic `memcpy` on non-x86_64; replace with a mutex-guarded CAS or `__atomic_compare_exchange` intrinsic
-- [ ] Add error propagation from LLVM compilation failures back to Rust (currently silent)
-- [ ] Add JIT-to-interpreter fallback callback so failed blocks gracefully degrade
-- [ ] Wrap opaque C handles (`PpuJit*`, `SpuJit*`, `RsxShader*`) in Rust RAII types for automatic cleanup
+- [x] **Fix unsafe 128-bit atomic fallback** — `oc_atomic_cas128` falls back to non-atomic `memcpy` on non-x86_64; replace with a mutex-guarded CAS or `__atomic_compare_exchange` intrinsic
+- [x] Add error propagation from LLVM compilation failures back to Rust (currently silent)
+- [x] Add JIT-to-interpreter fallback callback so failed blocks gracefully degrade
+- [x] Wrap opaque C handles (`PpuJit*`, `SpuJit*`, `RsxShader*`) in Rust RAII types for automatic cleanup
 
 #### DMA Acceleration (`cpp/src/dma.cpp`)
-- [ ] Implement actual DMA transfer acceleration (currently a placeholder with no logic)
-- [ ] Add DMA list command support for scatter-gather transfers
-- [ ] Implement DMA fence/barrier synchronization between SPU and PPU
+- [x] Implement actual DMA transfer acceleration (currently a placeholder with no logic)
+- [x] Add DMA list command support for scatter-gather transfers
+- [x] Implement DMA fence/barrier synchronization between SPU and PPU
 
 #### SIMD Helpers (`cpp/src/simd_avx.cpp`)
-- [ ] Implement AVX2 fast paths for SPU 128-bit vector operations (currently placeholder)
-- [ ] Add runtime CPU feature detection to select AVX2 vs SSE4.2 vs scalar fallback
-- [ ] Map SPU `SHUFB` (shuffle bytes) to `_mm_shuffle_epi8` / `vpshufb`
+- [x] Implement AVX2 fast paths for SPU 128-bit vector operations (currently placeholder)
+- [x] Add runtime CPU feature detection to select AVX2 vs SSE4.2 vs scalar fallback
+- [x] Map SPU `SHUFB` (shuffle bytes) to `_mm_shuffle_epi8` / `vpshufb`
 
 ---
 

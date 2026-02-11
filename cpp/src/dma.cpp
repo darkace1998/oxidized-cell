@@ -164,8 +164,13 @@ int oc_dma_list_transfer(void* local_storage, uint32_t list_addr,
     }
     
     // Parse the list from local storage
+    // MFC list elements are 8 bytes each: {size_and_flags, ea_low}
+    // The list elements are stored at list_addr in local storage.
+    // For GET: data from EA is written to sequential local store offsets after the list.
+    // For PUT: data from sequential local store offsets after the list is written to EA.
     uint8_t* ls = static_cast<uint8_t*>(local_storage);
-    uint32_t local_offset = list_addr;
+    uint32_t list_offset = list_addr;          // Where list elements live
+    uint32_t data_offset = list_addr + list_size; // Data area follows the list
     uint32_t entries_processed = 0;
     uint32_t bytes_remaining = list_size;
     
@@ -173,27 +178,32 @@ int oc_dma_list_transfer(void* local_storage, uint32_t list_addr,
         // Each list element: 4 bytes (size + stall), 4 bytes (ea_low)
         uint32_t size_and_stall;
         uint32_t ea_low;
-        std::memcpy(&size_and_stall, ls + local_offset, 4);
-        std::memcpy(&ea_low, ls + local_offset + 4, 4);
+        std::memcpy(&size_and_stall, ls + list_offset, 4);
+        std::memcpy(&ea_low, ls + list_offset + 4, 4);
         
         // Big-endian to host conversion (PS3 is big-endian)
+        // Size field is 16 bits (max 16KB per element, matching MFC spec)
         uint32_t transfer_size = __builtin_bswap32(size_and_stall) & 0x7FFF;
         bool stall_and_notify = (__builtin_bswap32(size_and_stall) >> 31) != 0;
         uint64_t ea = __builtin_bswap32(ea_low);
         
-        if (transfer_size > 0 && transfer_size <= MAX_DMA_SIZE) {
+        if (transfer_size > 0 && transfer_size <= MAX_DMA_SIZE &&
+            data_offset + transfer_size <= 0x40000) {
             uint8_t* mm = static_cast<uint8_t*>(main_memory) + static_cast<uint32_t>(ea);
             
             if (is_get) {
-                std::memcpy(ls + local_offset, mm, transfer_size);
+                // EA → LS: read from main memory into local store data area
+                std::memcpy(ls + data_offset, mm, transfer_size);
                 engine.total_bytes_in.fetch_add(transfer_size);
             } else {
-                std::memcpy(mm, ls + local_offset, transfer_size);
+                // LS → EA: write from local store data area to main memory
+                std::memcpy(mm, ls + data_offset, transfer_size);
                 engine.total_bytes_out.fetch_add(transfer_size);
             }
+            data_offset += transfer_size;
         }
         
-        local_offset += 8;
+        list_offset += 8;
         bytes_remaining -= 8;
         entries_processed++;
         

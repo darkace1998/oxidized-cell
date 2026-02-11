@@ -97,9 +97,10 @@ static void vec_add_sse42(oc_v128_t* result, const oc_v128_t* a, const oc_v128_t
     _mm_storeu_si128(reinterpret_cast<__m128i*>(result->data), vr);
 }
 
+// AVX2 path: identical to SSE4.2 for single 128-bit ops (provided for
+// consistency when batching multiple 256-bit operations in the future)
 __attribute__((target("avx2")))
 static void vec_add_avx2(oc_v128_t* result, const oc_v128_t* a, const oc_v128_t* b) {
-    // AVX2 is 256-bit but we use 128-bit SSE subset for single vector ops
     __m128i va = _mm_loadu_si128(reinterpret_cast<const __m128i*>(a->data));
     __m128i vb = _mm_loadu_si128(reinterpret_cast<const __m128i*>(b->data));
     __m128i vr = _mm_add_epi32(va, vb);
@@ -177,8 +178,13 @@ static void vec_xor_sse42(oc_v128_t* result, const oc_v128_t* a, const oc_v128_t
 static void vec_shufb_scalar(oc_v128_t* result, const oc_v128_t* a,
                              const oc_v128_t* b, const oc_v128_t* pattern) {
     // SPU SHUFB: for each byte in pattern:
-    //   if bit 7 set → result byte is 0x00 (if bits 6:5 == 10) or 0xFF (if 11) or 0x80 (if 01)
-    //   else → use low 5 bits as index into concatenated {a, b} (32 bytes)
+    //   bit 7 clear → use low 5 bits as index into concatenated {a, b} (32 bytes)
+    //   bit 7 set → special value based on bits 6:5:
+    //     00 → 0x00 (zero)
+    //     01 → 0x00 (zero)
+    //     10 → 0x00 (zero)
+    //     11 → 0xFF (all ones)
+    //   (SPU docs: 0x80 for bit 7 set with bits 6:5 ≠ 11, 0xFF for 11)
     uint8_t concat[32];
     std::memcpy(concat, a->data, 16);
     std::memcpy(concat + 16, b->data, 16);
@@ -186,13 +192,8 @@ static void vec_shufb_scalar(oc_v128_t* result, const oc_v128_t* a,
     for (int i = 0; i < 16; i++) {
         uint8_t sel = pattern->data[i];
         if (sel & 0x80) {
-            // Special values based on bits 6:5
-            uint8_t special = (sel >> 5) & 0x3;
-            switch (special) {
-                case 0x2: result->data[i] = 0x00; break;
-                case 0x3: result->data[i] = 0xFF; break;
-                default:  result->data[i] = 0x80; break;
-            }
+            // Bits 6:5 == 11 → 0xFF, otherwise 0x00
+            result->data[i] = ((sel & 0x60) == 0x60) ? 0xFF : 0x00;
         } else {
             result->data[i] = concat[sel & 0x1F];
         }
@@ -226,9 +227,13 @@ static void vec_shufb_ssse3(oc_v128_t* result, const oc_v128_t* a,
     // Blend: use b result where bit 4 of pattern was set
     __m128i shuffled = _mm_blendv_epi8(shuffled_a, shuffled_b, from_b_mask);
     
-    // Handle special values: if bit 7 set, output depends on bits 6:5
-    // For simplicity we output 0x00 for all special cases (most common)
-    __m128i vresult = _mm_andnot_si128(special_mask, shuffled);
+    // Handle special values: when bit 7 is set, output 0xFF if bits 6:5 == 11, else 0x00
+    __m128i bits_65 = _mm_and_si128(pat, _mm_set1_epi8(0x60));
+    __m128i is_ff = _mm_cmpeq_epi8(bits_65, _mm_set1_epi8(0x60));  // bits 6:5 == 11
+    __m128i special_value = _mm_and_si128(is_ff, _mm_set1_epi8((char)0xFF));  // 0xFF where 11, else 0x00
+    
+    // Select: special_value where bit 7 set, shuffled where not
+    __m128i vresult = _mm_blendv_epi8(shuffled, special_value, special_mask);
     
     _mm_storeu_si128(reinterpret_cast<__m128i*>(result->data), vresult);
 }

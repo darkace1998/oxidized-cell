@@ -93,7 +93,9 @@ fn map_dma_error(code: i32) -> DmaError {
 ///
 /// # Safety
 /// Both `local_storage` and `main_memory` must be valid mutable slices of sufficient
-/// size to cover the transfer offsets and size.
+/// size to cover the transfer offsets and size. The Cell/BE DMA engine requires
+/// transfers to be naturally aligned (16-byte alignment for sizes ≥ 16 bytes),
+/// but this wrapper does not enforce alignment — the C++ layer performs the copy.
 pub unsafe fn dma_transfer(
     local_storage: &mut [u8],
     local_addr: u32,
