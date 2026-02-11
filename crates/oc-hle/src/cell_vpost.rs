@@ -240,7 +240,9 @@ impl Deinterlacer {
         let stride = (width * 4) as usize;
         let h = height as usize;
         
-        // Motion detection threshold (per-pixel SAD)
+        // Motion detection threshold (per-pixel average SAD)
+        // Chosen empirically: values below ~30 indicate static/slow content (use weave for quality),
+        // values above indicate fast motion (use bob to avoid combing artifacts).
         const MOTION_THRESHOLD: u32 = 30;
         
         for y in 0..h {

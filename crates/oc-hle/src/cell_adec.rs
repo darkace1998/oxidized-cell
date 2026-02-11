@@ -254,7 +254,9 @@ impl AudioDecoderBackend {
             trace!("AAC ADTS: profile={}, sr_index={} ({}Hz), channels={}, frame_len={}",
                    profile, sr_index, sr, channel_config, frame_length);
             
-            (header_size, sr, channel_config.max(1) as u32)
+            // channel_config=0 means the channel configuration is specified in
+            // AOT-specific config (SBR/PS). Default to decoder's current channel count.
+            (header_size, sr, if channel_config > 0 { channel_config as u32 } else { self.channels })
         } else {
             // Raw AAC frame (no ADTS wrapper)
             (0, self.sample_rate, self.channels)

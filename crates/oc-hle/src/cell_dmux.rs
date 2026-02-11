@@ -1046,7 +1046,8 @@ impl ContainerParser {
                     trace!("parse_mp4: found mdat box at offset {}, data_size={}", pos, mdat_size);
                 }
                 _ => {
-                    trace!("parse_mp4: skipping box {:?} at offset {}", std::str::from_utf8(box_type).unwrap_or("????"), pos);
+                    let type_str = std::str::from_utf8(box_type).unwrap_or("[non-utf8]");
+                    trace!("parse_mp4: skipping box '{}' at offset {}", type_str, pos);
                 }
             }
             
@@ -2717,11 +2718,11 @@ mod tests {
         // Set stream data (will trigger parsing and notifications)
         manager.set_stream(handle, 0x20000000, 0x50000, 0).unwrap();
         
-        // Poll notifications - should have some if AUs were found
+        // Poll notifications - may be empty since all-zero data doesn't produce valid AUs
         let notifications = manager.poll_notifications(handle).unwrap();
-        // Notifications are generated for each AU distributed to an ES
-        // (may be empty if all-zero data doesn't produce valid AUs)
-        assert!(notifications.is_empty() || !notifications.is_empty());
+        // Second poll should always return empty (notifications were drained)
+        let second = manager.poll_notifications(handle).unwrap();
+        assert!(second.is_empty(), "Second poll should be empty after draining");
     }
 
     #[test]

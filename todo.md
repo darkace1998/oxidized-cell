@@ -140,34 +140,34 @@ The SPU JIT has 130+ instruction stubs covering arithmetic, logic, memory, float
 
 ### HLE Modules — Multimedia Codecs
 
-#### cellVdec (`cell_vdec.rs`) — Partial Stub
-Defines H.264, MPEG-2, and DivX codec types with decoder instance management (up to 16). All decode operations return dummy frames.
-- [ ] Implement NAL unit parsing for H.264 bitstreams
-- [ ] Implement IDCT transform and motion compensation for frame reconstruction
-- [ ] Wire callback notification queue to signal decoded frames to the game
-- [ ] Support Baseline, Main, and High H.264 profiles
-- [ ] Implement MPEG-2 Simple/Main/High profile decoding
+#### cellVdec (`cell_vdec.rs`) — Implemented
+Full H.264, MPEG-2, and DivX decoder with NAL parsing, IDCT, motion compensation, and callback queue.
+- [x] Implement NAL unit parsing for H.264 bitstreams
+- [x] Implement IDCT transform and motion compensation for frame reconstruction
+- [x] Wire callback notification queue to signal decoded frames to the game
+- [x] Support Baseline, Main, and High H.264 profiles
+- [x] Implement MPEG-2 Simple/Main/High profile decoding
 
-#### cellAdec (`cell_adec.rs`) — Partial Stub
-Defines LPCM, AC-3, ATRAC3/3+, MP3, AAC, and WMA codec types. All return silence buffers.
-- [ ] Implement AAC-LC frame decoding (most common audio codec in PS3 games)
-- [ ] Implement ATRAC3+ decoding (Sony proprietary, used in many first-party titles)
-- [ ] Implement MP3 frame decoding via Symphonia integration
-- [ ] Wire PCM output format conversion (float ↔ int16 ↔ int32)
+#### cellAdec (`cell_adec.rs`) — Implemented
+Full audio decoding with AAC-LC, ATRAC3+, MP3, and PCM format conversion.
+- [x] Implement AAC-LC frame decoding (most common audio codec in PS3 games)
+- [x] Implement ATRAC3+ decoding (Sony proprietary, used in many first-party titles)
+- [x] Implement MP3 frame decoding via Symphonia integration
+- [x] Wire PCM output format conversion (float ↔ int16 ↔ int32)
 
-#### cellDmux (`cell_dmux.rs`) — Partial Stub
-Defines MP4/TS/AVI container support with elementary stream extraction.
-- [ ] Implement MP4 container demuxing (moov/moof atom parsing)
-- [ ] Implement MPEG-TS packet parsing and PID filtering
-- [ ] Support stream-type detection for audio/video elementary streams
-- [ ] Wire demuxed elementary streams to cellVdec/cellAdec decoders
+#### cellDmux (`cell_dmux.rs`) — Implemented
+Full container demuxing with PAMF, MPEG-PS, MPEG-TS, and MP4 support.
+- [x] Implement MP4 container demuxing (moov/moof atom parsing)
+- [x] Implement MPEG-TS packet parsing and PID filtering
+- [x] Support stream-type detection for audio/video elementary streams
+- [x] Wire demuxed elementary streams to cellVdec/cellAdec decoders
 
-#### cellVpost (`cell_vpost.rs`) — Minimal
-Defines video post-processing with CSC matrix setup.
-- [ ] Implement YCbCr → RGB color space conversion math
-- [ ] Add deinterlacing algorithms (bob, weave, motion-adaptive)
-- [ ] Implement resolution scaling (bilinear, bicubic)
-- [ ] Support picture-in-picture compositing
+#### cellVpost (`cell_vpost.rs`) — Implemented
+Full video post-processing with color conversion, scaling, deinterlacing, and compositing.
+- [x] Implement YCbCr → RGB color space conversion math
+- [x] Add deinterlacing algorithms (bob, weave, motion-adaptive)
+- [x] Implement resolution scaling (bilinear, bicubic)
+- [x] Support picture-in-picture compositing
 
 ### HLE Modules — Image Decoders
 
