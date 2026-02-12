@@ -241,12 +241,12 @@ SPU module tracking with full ELF parsing, PT_LOAD segment loading, relocation h
 8 audio ports, multi-channel (mono/stereo/5.1/7.1), event notification, HleAudioMixer.
 
 ### RSX Graphics
-- [ ] Complete SPIR-V vertex/fragment shader translation from RSX programs
-- [ ] Implement remaining NV4097 command methods
-- [ ] Add texture format conversions (swizzled, tiled, compressed)
-- [ ] Implement render-to-texture and framebuffer copies
-- [ ] Add multi-sample anti-aliasing (MSAA) support
-- [ ] Optimize shader caching and pipeline state management
+- [x] Complete SPIR-V vertex/fragment shader translation from RSX programs
+- [x] Implement remaining NV4097 command methods
+- [x] Add texture format conversions (swizzled, tiled, compressed)
+- [x] Implement render-to-texture and framebuffer copies
+- [x] Add multi-sample anti-aliasing (MSAA) support
+- [x] Optimize shader caching and pipeline state management
 
 ### Audio System
 - [ ] Implement full AC3 decoding with IMDCT and bit allocation (`crates/oc-audio/src/codec.rs` — see `TODO` in code)
