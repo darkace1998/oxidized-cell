@@ -37,32 +37,32 @@ These issues prevent *any* game from reaching a menu screen.
 The smallest set of HLE functions games call between `main()` and their first rendered frame.
 
 ### cellGcmSys (graphics init)
-- [ ] `cellGcmSetDisplayBuffer` — store framebuffer address/pitch/dimensions (partially done; verify RSX bridge message delivery)
-- [ ] `cellGcmGetConfiguration` — return local memory size and address (currently stubbed, returns 0)
-- [ ] `cellGcmGetTiledPitchSize` — return valid pitch (currently stubbed)
-- [ ] `cellGcmSetFlipMode` — set V-sync / immediate mode (registered, verify implementation)
-- [ ] `cellGcmAddressToOffset` / `cellGcmMapMainMemory` — memory mapping for RSX access
+- [x] `cellGcmSetDisplayBuffer` — store framebuffer address/pitch/dimensions; dispatcher now forwards to GcmManager which sends BridgeDisplayBuffer to RSX
+- [x] `cellGcmGetConfiguration` — returns local memory size (256 MB), address, I/O size, frequencies
+- [x] `cellGcmGetTiledPitchSize` — returns 256-byte aligned pitch
+- [x] `cellGcmSetFlipMode` — sets V-sync / immediate mode via GcmManager
+- [x] `cellGcmAddressToOffset` / `cellGcmMapMainMemory` — fully implemented memory mapping for RSX access
 
 ### cellSysutil (system callbacks & events)
-- [ ] Verify `cellSysutilRegisterCallback` stores handler correctly
-- [ ] Verify `cellSysutilCheckCallback` triggers `CELL_SYSUTIL_REQUEST_EXITGAME` on window close
-- [ ] `cellSysutilGetSystemParamInt` — return correct language, region, resolution, game-parental-level
-- [ ] `cellVideoOutGetState` / `cellVideoOutConfigure` — video output configuration
+- [x] Verify `cellSysutilRegisterCallback` stores handler correctly — stores func/userdata in up to 4 callback slots
+- [x] Verify `cellSysutilCheckCallback` triggers callbacks — Phase 0 pump_hle_callbacks() executes pending callbacks on PPU
+- [x] `cellSysutilGetSystemParamInt` — returns language (English), enter button (Cross), date/time format, timezone, game rating
+- [x] `cellVideoOutGetState` / `cellVideoOutConfigure` — registered in dispatcher, implementation returns 720p state and applies resolution configuration
 
 ### cellGame (boot check)
-- [ ] `cellGameBootCheck` — validate and return correct content-type / directory path so games proceed past boot
-- [ ] `cellGameContentPermit` — permit game-data access
-- [ ] `cellGameGetParamSfo` — supply PARAM.SFO values to the game
+- [x] `cellGameBootCheck` — initializes GameManager, writes game type (disc), attributes, content size, directory name ("GAME00000")
+- [x] `cellGameContentPermit` — registered in dispatcher, writes contentInfoPath and usrdirPath to guest memory
+- [x] `cellGameGetParamSfo` — `cellGameGetParamInt`/`cellGameGetParamString` now write values to guest memory from GameManager
 
 ### cellPad (controller input)
-- [ ] `cellPadInit` / `cellPadGetData` — return button + analog stick data from `oc-input`
-- [ ] `cellPadGetInfo2` — report connected pad count and capabilities
-- [ ] Ensure input polling runs at frame start in `run_frame()`
+- [x] `cellPadInit` / `cellPadGetData` — PadManager returns button + analog stick data from oc-input backend
+- [x] `cellPadGetInfo2` — now writes full CellPadInfo2 structure (max_connect, now_connect, port_status, device_capability, device_type)
+- [x] Ensure input polling runs at frame start in `run_frame()` — poll_input() called at frame start
 
 ### cellFs (file I/O)
-- [ ] Verify `cellFsOpen` / `cellFsRead` / `cellFsClose` work for `/dev_bdvd` and `/dev_hdd0` paths
-- [ ] `cellFsStat` / `cellFsFstat` — return correct file size and type (already implemented; integration-test)
-- [ ] `cellFsOpendir` / `cellFsReaddir` — directory listing for game-data enumeration
+- [x] `cellFsOpen` / `cellFsRead` / `cellFsClose` — dispatcher functions now use FsManager with VFS backend for real file I/O
+- [x] `cellFsStat` / `cellFsFstat` — dispatcher functions now use FsManager to return real file metadata
+- [x] `cellFsOpendir` / `cellFsReaddir` — registered in dispatcher, use FsManager to enumerate directories via VFS
 
 ---
 

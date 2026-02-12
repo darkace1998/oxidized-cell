@@ -317,6 +317,45 @@ fn hle_pad_get_info(ctx: &HleCallContext) -> i64 {
 fn hle_pad_get_info2(ctx: &HleCallContext) -> i64 {
     let info_ptr = ctx.args[0] as u32;
     trace!("cellPadGetInfo2(info_ptr=0x{:08x})", info_ptr);
+
+    if info_ptr == 0 {
+        return error::CELL_OK;
+    }
+
+    // CellPadInfo2: max_connect(u32), now_connect(u32), system_info(u32),
+    //   port_status[CELL_PAD_MAX_PORT_NUM], port_setting[CELL_PAD_MAX_PORT_NUM],
+    //   device_capability[CELL_PAD_MAX_PORT_NUM], device_type[CELL_PAD_MAX_PORT_NUM]
+    // max_connect: 7
+    if let Err(_) = write_be32(info_ptr, 7) { return error::CELL_EFAULT; }
+    // now_connect: 1 (one pad connected)
+    if let Err(_) = write_be32(info_ptr + 4, 1) { return error::CELL_EFAULT; }
+    // system_info: 0
+    if let Err(_) = write_be32(info_ptr + 8, 0) { return error::CELL_EFAULT; }
+    // port_status[0]: CELL_PAD_STATUS_CONNECTED | CELL_PAD_STATUS_ASSIGN_CHANGES = 0x11
+    if let Err(_) = write_be32(info_ptr + 12, 0x11) { return error::CELL_EFAULT; }
+    // Zero remaining port_status[1..7]
+    for i in 1u32..7 {
+        if let Err(_) = write_be32(info_ptr + 12 + i * 4, 0) { return error::CELL_EFAULT; }
+    }
+    // port_setting[0]: 0 (no press/sensor mode)
+    if let Err(_) = write_be32(info_ptr + 40, 0) { return error::CELL_EFAULT; }
+    // Zero remaining port_setting[1..7]
+    for i in 1u32..7 {
+        if let Err(_) = write_be32(info_ptr + 40 + i * 4, 0) { return error::CELL_EFAULT; }
+    }
+    // device_capability[0]: 0x3 (digital + analog)
+    if let Err(_) = write_be32(info_ptr + 68, 0x3) { return error::CELL_EFAULT; }
+    // Zero remaining device_capability[1..7]
+    for i in 1u32..7 {
+        if let Err(_) = write_be32(info_ptr + 68 + i * 4, 0) { return error::CELL_EFAULT; }
+    }
+    // device_type[0]: 0 (standard controller)
+    if let Err(_) = write_be32(info_ptr + 96, 0) { return error::CELL_EFAULT; }
+    // Zero remaining device_type[1..7]
+    for i in 1u32..7 {
+        if let Err(_) = write_be32(info_ptr + 96 + i * 4, 0) { return error::CELL_EFAULT; }
+    }
+
     error::CELL_OK
 }
 
@@ -440,7 +479,9 @@ fn hle_gcm_set_display_buffer(ctx: &HleCallContext) -> i64 {
         "cellGcmSetDisplayBuffer(id={}, offset=0x{:x}, pitch={}, {}x{})",
         buffer_id, offset, pitch, width, height
     );
-    error::CELL_OK
+    
+    let mut hle_ctx = get_hle_context_mut();
+    hle_ctx.gcm.set_display_buffer(buffer_id, offset, pitch, width, height) as i64
 }
 
 fn hle_gcm_get_ctrl(_ctx: &HleCallContext) -> i64 {
@@ -483,20 +524,41 @@ fn hle_fs_open(ctx: &HleCallContext) -> i64 {
     let path_ptr = ctx.args[0] as u32;
     let flags = ctx.args[1] as u32;
     let fd_ptr = ctx.args[2] as u32;
-    let _mode = ctx.args[3] as u32;
+    let mode = ctx.args[3] as u32;
     let _arg = ctx.args[4] as u32;
     
-    debug!("cellFsOpen(path=0x{:08x}, flags=0x{:x}, fd_ptr=0x{:08x})", path_ptr, flags, fd_ptr);
+    // Read path string from guest memory
+    let path = match crate::memory::read_string(path_ptr, 1024) {
+        Ok(p) => p,
+        Err(_) => {
+            debug!("cellFsOpen: failed to read path from 0x{:08x}", path_ptr);
+            return error::CELL_EFAULT;
+        }
+    };
     
-    // For now, just return ENOENT (file not found)
-    // A real implementation would read the path from memory and open the file
-    error::CELL_ENOENT
+    debug!("cellFsOpen(path='{}', flags=0x{:x}, fd_ptr=0x{:08x}, mode=0x{:x})", path, flags, fd_ptr, mode);
+    
+    let mut hle_ctx = get_hle_context_mut();
+    match hle_ctx.fs.open(&path, flags, mode) {
+        Ok(fd) => {
+            // Write fd to the output pointer
+            if fd_ptr != 0 {
+                if let Err(_) = write_be32(fd_ptr, fd as u32) {
+                    return error::CELL_EFAULT;
+                }
+            }
+            error::CELL_OK
+        }
+        Err(e) => e as i64,
+    }
 }
 
 fn hle_fs_close(ctx: &HleCallContext) -> i64 {
     let fd = ctx.args[0] as i32;
     debug!("cellFsClose(fd={})", fd);
-    error::CELL_OK
+    
+    let mut hle_ctx = get_hle_context_mut();
+    hle_ctx.fs.close(fd) as i64
 }
 
 fn hle_fs_read(ctx: &HleCallContext) -> i64 {
@@ -506,7 +568,30 @@ fn hle_fs_read(ctx: &HleCallContext) -> i64 {
     let nread_ptr = ctx.args[3] as u32;
     
     debug!("cellFsRead(fd={}, buf=0x{:08x}, size={}, nread_ptr=0x{:08x})", fd, buf, size, nread_ptr);
-    error::CELL_EINVAL
+    
+    // Allocate a temporary buffer to read into
+    let read_size = size.min(64 * 1024) as usize; // Cap at 64KB per read
+    let mut temp_buf = vec![0u8; read_size];
+    
+    let mut hle_ctx = get_hle_context_mut();
+    match hle_ctx.fs.read(fd, &mut temp_buf) {
+        Ok(bytes_read) => {
+            // Write data to guest memory
+            if bytes_read > 0 {
+                if let Err(_) = crate::memory::write_bytes(buf, &temp_buf[..bytes_read as usize]) {
+                    return error::CELL_EFAULT;
+                }
+            }
+            // Write bytes read count
+            if nread_ptr != 0 {
+                if let Err(_) = crate::memory::write_be64(nread_ptr, bytes_read) {
+                    return error::CELL_EFAULT;
+                }
+            }
+            error::CELL_OK
+        }
+        Err(e) => e as i64,
+    }
 }
 
 fn hle_fs_write(ctx: &HleCallContext) -> i64 {
@@ -516,15 +601,62 @@ fn hle_fs_write(ctx: &HleCallContext) -> i64 {
     let nwrite_ptr = ctx.args[3] as u32;
     
     debug!("cellFsWrite(fd={}, buf=0x{:08x}, size={}, nwrite_ptr=0x{:08x})", fd, buf, size, nwrite_ptr);
-    error::CELL_EINVAL
+    
+    // Read data from guest memory
+    let write_size = size.min(64 * 1024) as u32; // Cap at 64KB per write
+    let data = match crate::memory::read_bytes(buf, write_size) {
+        Ok(d) => d,
+        Err(_) => return error::CELL_EFAULT,
+    };
+    
+    let mut hle_ctx = get_hle_context_mut();
+    match hle_ctx.fs.write(fd, &data) {
+        Ok(bytes_written) => {
+            if nwrite_ptr != 0 {
+                if let Err(_) = crate::memory::write_be64(nwrite_ptr, bytes_written) {
+                    return error::CELL_EFAULT;
+                }
+            }
+            error::CELL_OK
+        }
+        Err(e) => e as i64,
+    }
 }
 
 fn hle_fs_stat(ctx: &HleCallContext) -> i64 {
     let path_ptr = ctx.args[0] as u32;
     let stat_ptr = ctx.args[1] as u32;
     
-    debug!("cellFsStat(path=0x{:08x}, stat_ptr=0x{:08x})", path_ptr, stat_ptr);
-    error::CELL_ENOENT
+    // Read path string from guest memory
+    let path = match crate::memory::read_string(path_ptr, 1024) {
+        Ok(p) => p,
+        Err(_) => {
+            debug!("cellFsStat: failed to read path from 0x{:08x}", path_ptr);
+            return error::CELL_EFAULT;
+        }
+    };
+    
+    debug!("cellFsStat(path='{}', stat_ptr=0x{:08x})", path, stat_ptr);
+    
+    let hle_ctx = crate::context::get_hle_context_mut();
+    match hle_ctx.fs.stat(&path) {
+        Ok(stat) => {
+            if stat_ptr != 0 {
+                // Write CellFsStat structure to guest memory
+                // mode(u32), uid(u32), gid(u32), atime(u64), mtime(u64), ctime(u64), size(u64), blksize(u64)
+                if let Err(_) = write_be32(stat_ptr, stat.mode) { return error::CELL_EFAULT; }
+                if let Err(_) = write_be32(stat_ptr + 4, stat.uid) { return error::CELL_EFAULT; }
+                if let Err(_) = write_be32(stat_ptr + 8, stat.gid) { return error::CELL_EFAULT; }
+                if let Err(_) = crate::memory::write_be64(stat_ptr + 16, stat.atime) { return error::CELL_EFAULT; }
+                if let Err(_) = crate::memory::write_be64(stat_ptr + 24, stat.mtime) { return error::CELL_EFAULT; }
+                if let Err(_) = crate::memory::write_be64(stat_ptr + 32, stat.ctime) { return error::CELL_EFAULT; }
+                if let Err(_) = crate::memory::write_be64(stat_ptr + 40, stat.size) { return error::CELL_EFAULT; }
+                if let Err(_) = crate::memory::write_be64(stat_ptr + 48, stat.blksize) { return error::CELL_EFAULT; }
+            }
+            error::CELL_OK
+        }
+        Err(e) => e as i64,
+    }
 }
 
 fn hle_fs_fstat(ctx: &HleCallContext) -> i64 {
@@ -532,7 +664,114 @@ fn hle_fs_fstat(ctx: &HleCallContext) -> i64 {
     let stat_ptr = ctx.args[1] as u32;
     
     debug!("cellFsFstat(fd={}, stat_ptr=0x{:08x})", fd, stat_ptr);
-    error::CELL_EINVAL
+    
+    let hle_ctx = crate::context::get_hle_context_mut();
+    match hle_ctx.fs.fstat(fd) {
+        Ok(stat) => {
+            if stat_ptr != 0 {
+                // Write CellFsStat structure to guest memory
+                if let Err(_) = write_be32(stat_ptr, stat.mode) { return error::CELL_EFAULT; }
+                if let Err(_) = write_be32(stat_ptr + 4, stat.uid) { return error::CELL_EFAULT; }
+                if let Err(_) = write_be32(stat_ptr + 8, stat.gid) { return error::CELL_EFAULT; }
+                if let Err(_) = crate::memory::write_be64(stat_ptr + 16, stat.atime) { return error::CELL_EFAULT; }
+                if let Err(_) = crate::memory::write_be64(stat_ptr + 24, stat.mtime) { return error::CELL_EFAULT; }
+                if let Err(_) = crate::memory::write_be64(stat_ptr + 32, stat.ctime) { return error::CELL_EFAULT; }
+                if let Err(_) = crate::memory::write_be64(stat_ptr + 40, stat.size) { return error::CELL_EFAULT; }
+                if let Err(_) = crate::memory::write_be64(stat_ptr + 48, stat.blksize) { return error::CELL_EFAULT; }
+            }
+            error::CELL_OK
+        }
+        Err(e) => e as i64,
+    }
+}
+
+fn hle_fs_opendir(ctx: &HleCallContext) -> i64 {
+    let path_ptr = ctx.args[0] as u32;
+    let fd_ptr = ctx.args[1] as u32;
+    
+    let path = match crate::memory::read_string(path_ptr, 1024) {
+        Ok(p) => p,
+        Err(_) => {
+            debug!("cellFsOpendir: failed to read path from 0x{:08x}", path_ptr);
+            return error::CELL_EFAULT;
+        }
+    };
+    
+    debug!("cellFsOpendir(path='{}', fd_ptr=0x{:08x})", path, fd_ptr);
+    
+    let mut hle_ctx = get_hle_context_mut();
+    match hle_ctx.fs.opendir(&path) {
+        Ok(fd) => {
+            if fd_ptr != 0 {
+                if let Err(_) = write_be32(fd_ptr, fd as u32) {
+                    return error::CELL_EFAULT;
+                }
+            }
+            error::CELL_OK
+        }
+        Err(e) => e as i64,
+    }
+}
+
+fn hle_fs_readdir(ctx: &HleCallContext) -> i64 {
+    let fd = ctx.args[0] as i32;
+    let dirent_ptr = ctx.args[1] as u32;
+    
+    debug!("cellFsReaddir(fd={}, dirent_ptr=0x{:08x})", fd, dirent_ptr);
+    
+    let mut hle_ctx = get_hle_context_mut();
+    match hle_ctx.fs.readdir(fd) {
+        Ok(Some(dirent)) => {
+            if dirent_ptr != 0 {
+                // Write CellFsDirent: d_type(u8), d_namlen(u8), d_name[256]
+                if let Err(_) = crate::memory::write_u8(dirent_ptr, dirent.d_type) { return error::CELL_EFAULT; }
+                if let Err(_) = crate::memory::write_u8(dirent_ptr + 1, dirent.d_namlen) { return error::CELL_EFAULT; }
+                // Write name bytes
+                let name_len = dirent.d_namlen as usize;
+                if name_len > 0 {
+                    if let Err(_) = crate::memory::write_bytes(dirent_ptr + 2, &dirent.d_name[..name_len]) {
+                        return error::CELL_EFAULT;
+                    }
+                }
+                // Null-terminate the name
+                if let Err(_) = crate::memory::write_u8(dirent_ptr + 2 + name_len as u32, 0) {
+                    return error::CELL_EFAULT;
+                }
+            }
+            error::CELL_OK
+        }
+        Ok(None) => {
+            // End of directory — write zero-length entry
+            if dirent_ptr != 0 {
+                if let Err(_) = crate::memory::write_u8(dirent_ptr, 0) { return error::CELL_EFAULT; }
+                if let Err(_) = crate::memory::write_u8(dirent_ptr + 1, 0) { return error::CELL_EFAULT; }
+            }
+            error::CELL_OK
+        }
+        Err(e) => e as i64,
+    }
+}
+
+fn hle_fs_lseek(ctx: &HleCallContext) -> i64 {
+    let fd = ctx.args[0] as i32;
+    let offset = ctx.args[1] as i64;
+    let whence = ctx.args[2] as u32;
+    let pos_ptr = ctx.args[3] as u32;
+    
+    debug!("cellFsLseek(fd={}, offset={}, whence={}, pos_ptr=0x{:08x})", fd, offset, whence, pos_ptr);
+    
+    let mut hle_ctx = get_hle_context_mut();
+    match hle_ctx.fs.lseek(fd, offset, whence) {
+        Ok(new_pos) => {
+            if pos_ptr != 0 {
+                if let Err(_) = crate::memory::write_be64(pos_ptr, new_pos) {
+                    return error::CELL_EFAULT;
+                }
+            }
+            error::CELL_OK
+        }
+        Err(e) => e as i64,
+    }
 }
 
 // --- cellAudio ---
@@ -618,6 +857,11 @@ fn hle_game_boot_check(ctx: &HleCallContext) -> i64 {
         type_ptr, attr_ptr, size_ptr, dir_name_ptr
     );
     
+    // Initialize the game manager
+    let mut hle_ctx = get_hle_context_mut();
+    hle_ctx.game.boot_check();
+    drop(hle_ctx);
+    
     // Write game type (disc game = 1)
     if type_ptr != 0 {
         if let Err(_) = write_be32(type_ptr, 1) { return error::CELL_EFAULT; }
@@ -638,8 +882,12 @@ fn hle_game_boot_check(ctx: &HleCallContext) -> i64 {
         if let Err(_) = write_be32(size_ptr + 8, 0) { return error::CELL_EFAULT; }
     }
     
-    // Write directory name if needed (empty string)
-    // dir_name_ptr is a char[CELL_GAME_DIRNAME_SIZE] buffer
+    // Write directory name — CELL_GAME_DIRNAME_SIZE is 32 bytes
+    if dir_name_ptr != 0 {
+        if let Err(_) = crate::memory::write_string(dir_name_ptr, "GAME00000", 32) {
+            return error::CELL_EFAULT;
+        }
+    }
     
     error::CELL_OK
 }
@@ -666,6 +914,17 @@ fn hle_game_get_param_int(ctx: &HleCallContext) -> i64 {
     let value_ptr = ctx.args[1] as u32;
     
     debug!("cellGameGetParamInt(id={}, value_ptr=0x{:08x})", id, value_ptr);
+    
+    let hle_ctx = crate::context::get_hle_context_mut();
+    let value = hle_ctx.game.get_param_int(id).unwrap_or(0);
+    drop(hle_ctx);
+    
+    if value_ptr != 0 {
+        if let Err(_) = write_be32(value_ptr, value as u32) {
+            return error::CELL_EFAULT;
+        }
+    }
+    
     error::CELL_OK
 }
 
@@ -675,7 +934,118 @@ fn hle_game_get_param_string(ctx: &HleCallContext) -> i64 {
     let buf_size = ctx.args[2] as u32;
     
     debug!("cellGameGetParamString(id={}, buf=0x{:08x}, size={})", id, buf_ptr, buf_size);
+    
+    let hle_ctx = crate::context::get_hle_context_mut();
+    let value = hle_ctx.game.get_param_string(id)
+        .unwrap_or("")
+        .to_string();
+    drop(hle_ctx);
+    
+    if buf_ptr != 0 && buf_size > 0 {
+        if let Err(_) = crate::memory::write_string(buf_ptr, &value, buf_size) {
+            return error::CELL_EFAULT;
+        }
+    }
+    
     error::CELL_OK
+}
+
+fn hle_game_content_permit(ctx: &HleCallContext) -> i64 {
+    let content_info_path_ptr = ctx.args[0] as u32;
+    let usrdir_path_ptr = ctx.args[1] as u32;
+    
+    debug!(
+        "cellGameContentPermit(contentInfoPath=0x{:08x}, usrdirPath=0x{:08x})",
+        content_info_path_ptr, usrdir_path_ptr
+    );
+    
+    // Ensure game manager is initialized
+    let mut hle_ctx = get_hle_context_mut();
+    if !hle_ctx.game.is_initialized() {
+        hle_ctx.game.boot_check();
+    }
+    
+    let content_info_path = hle_ctx.game.get_content_info_path().to_string();
+    let usrdir_path = hle_ctx.game.get_usrdir_path().to_string();
+    drop(hle_ctx);
+    
+    // Write content info path (e.g., "/dev_hdd0/game/GAME00000")
+    if content_info_path_ptr != 0 {
+        if let Err(_) = crate::memory::write_string(content_info_path_ptr, &content_info_path, 256) {
+            return error::CELL_EFAULT;
+        }
+    }
+    
+    // Write USRDIR path (e.g., "/dev_hdd0/game/GAME00000/USRDIR")
+    if usrdir_path_ptr != 0 {
+        if let Err(_) = crate::memory::write_string(usrdir_path_ptr, &usrdir_path, 256) {
+            return error::CELL_EFAULT;
+        }
+    }
+    
+    error::CELL_OK
+}
+
+// --- cellVideoOut ---
+
+fn hle_video_out_get_state(ctx: &HleCallContext) -> i64 {
+    let video_out = ctx.args[0] as u32;
+    let device_index = ctx.args[1] as u32;
+    let state_ptr = ctx.args[2] as u32;
+    
+    debug!(
+        "cellVideoOutGetState(videoOut={}, deviceIndex={}, state_ptr=0x{:08x})",
+        video_out, device_index, state_ptr
+    );
+    
+    crate::cell_sysutil::cell_video_out_get_state(video_out, device_index, state_ptr) as i64
+}
+
+fn hle_video_out_configure(ctx: &HleCallContext) -> i64 {
+    let video_out = ctx.args[0] as u32;
+    let config_ptr = ctx.args[1] as u32;
+    let option_ptr = ctx.args[2] as u32;
+    let wait = ctx.args[3] as u32;
+    
+    debug!(
+        "cellVideoOutConfigure(videoOut={}, config=0x{:08x}, option=0x{:08x}, wait={})",
+        video_out, config_ptr, option_ptr, wait
+    );
+    
+    crate::cell_sysutil::cell_video_out_configure(video_out, config_ptr, option_ptr, wait) as i64
+}
+
+fn hle_video_out_get_configuration(ctx: &HleCallContext) -> i64 {
+    let video_out = ctx.args[0] as u32;
+    let config_ptr = ctx.args[1] as u32;
+    let option_ptr = ctx.args[2] as u32;
+    
+    debug!(
+        "cellVideoOutGetConfiguration(videoOut={}, config=0x{:08x}, option=0x{:08x})",
+        video_out, config_ptr, option_ptr
+    );
+    
+    crate::cell_sysutil::cell_video_out_get_configuration(video_out, config_ptr, option_ptr) as i64
+}
+
+fn hle_video_out_get_resolution_availability(ctx: &HleCallContext) -> i64 {
+    let video_out = ctx.args[0] as u32;
+    let resolution_id = ctx.args[1] as u32;
+    let aspect = ctx.args[2] as u32;
+    let _option = ctx.args[3] as u32;
+    
+    trace!(
+        "cellVideoOutGetResolutionAvailability(videoOut={}, resId={}, aspect={})",
+        video_out, resolution_id, aspect
+    );
+    
+    // All resolutions are available in our emulator
+    // Returns 1 (available) for any valid resolution
+    if video_out == 0 && resolution_id >= 1 && resolution_id <= 7 {
+        1 // Available
+    } else {
+        0 // Not available
+    }
 }
 
 // --- cellResc ---
@@ -755,6 +1125,12 @@ pub fn register_all_hle_functions(dispatcher: &mut HleDispatcher) {
     dispatcher.register_function("cellSysutil", "cellSysutilUnregisterCallback", hle_sysutil_unregister_callback);
     dispatcher.register_function("cellSysutil", "cellSysutilGetSystemParamInt", hle_sysutil_get_system_param_int);
     
+    // cellVideoOut (part of cellSysutil module)
+    dispatcher.register_function("cellSysutil", "cellVideoOutGetState", hle_video_out_get_state);
+    dispatcher.register_function("cellSysutil", "cellVideoOutConfigure", hle_video_out_configure);
+    dispatcher.register_function("cellSysutil", "cellVideoOutGetConfiguration", hle_video_out_get_configuration);
+    dispatcher.register_function("cellSysutil", "cellVideoOutGetResolutionAvailability", hle_video_out_get_resolution_availability);
+    
     // cellPad
     dispatcher.register_function("cellPad", "cellPadInit", hle_pad_init);
     dispatcher.register_function("cellPad", "cellPadEnd", hle_pad_end);
@@ -783,6 +1159,9 @@ pub fn register_all_hle_functions(dispatcher: &mut HleDispatcher) {
     dispatcher.register_function("cellFs", "cellFsWrite", hle_fs_write);
     dispatcher.register_function("cellFs", "cellFsStat", hle_fs_stat);
     dispatcher.register_function("cellFs", "cellFsFstat", hle_fs_fstat);
+    dispatcher.register_function("cellFs", "cellFsOpendir", hle_fs_opendir);
+    dispatcher.register_function("cellFs", "cellFsReaddir", hle_fs_readdir);
+    dispatcher.register_function("cellFs", "cellFsLseek64", hle_fs_lseek);
     
     // cellAudio
     dispatcher.register_function("cellAudio", "cellAudioInit", hle_audio_init);
@@ -796,6 +1175,7 @@ pub fn register_all_hle_functions(dispatcher: &mut HleDispatcher) {
     // cellGame
     dispatcher.register_function("cellGame", "cellGameBootCheck", hle_game_boot_check);
     dispatcher.register_function("cellGame", "cellGameDataCheck", hle_game_data_check);
+    dispatcher.register_function("cellGame", "cellGameContentPermit", hle_game_content_permit);
     dispatcher.register_function("cellGame", "cellGameContentErrorDialog", hle_game_content_error_dialog);
     dispatcher.register_function("cellGame", "cellGameGetParamInt", hle_game_get_param_int);
     dispatcher.register_function("cellGame", "cellGameGetParamString", hle_game_get_param_string);
