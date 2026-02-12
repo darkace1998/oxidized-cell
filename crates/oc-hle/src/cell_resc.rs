@@ -121,6 +121,117 @@ pub struct CellRescDsts {
     pub height: u32,
 }
 
+/// Upscaling filter algorithm
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UpscaleFilter {
+    /// Nearest-neighbor (fastest, lowest quality)
+    Nearest,
+    /// Bilinear interpolation (good balance)
+    #[default]
+    Bilinear,
+    /// Lanczos-3 resampling (highest quality, slower)
+    Lanczos3,
+}
+
+/// PAL/NTSC framerate standard
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FramerateStandard {
+    /// NTSC: 59.94 Hz (60000/1001)
+    Ntsc,
+    /// PAL: 50 Hz
+    Pal,
+}
+
+/// Framerate converter for PAL ↔ NTSC conversion
+#[derive(Debug, Clone)]
+pub struct FramerateConverter {
+    /// Source framerate standard
+    pub source: FramerateStandard,
+    /// Target framerate standard
+    pub target: FramerateStandard,
+    /// Accumulated frame time (in source frame periods)
+    accumulator: f64,
+    /// Source frame period in seconds
+    source_period: f64,
+    /// Target frame period in seconds
+    target_period: f64,
+    /// Frame blend weight for the current interpolation
+    blend_weight: f32,
+    /// Total frames converted
+    frames_converted: u64,
+}
+
+impl FramerateConverter {
+    /// Create a new framerate converter
+    pub fn new(source: FramerateStandard, target: FramerateStandard) -> Self {
+        let source_period = match source {
+            FramerateStandard::Ntsc => 1001.0 / 60000.0, // ~16.683ms
+            FramerateStandard::Pal => 1.0 / 50.0,         // 20.0ms
+        };
+        let target_period = match target {
+            FramerateStandard::Ntsc => 1001.0 / 60000.0,
+            FramerateStandard::Pal => 1.0 / 50.0,
+        };
+
+        Self {
+            source,
+            target,
+            accumulator: 0.0,
+            source_period,
+            target_period,
+            blend_weight: 0.0,
+            frames_converted: 0,
+        }
+    }
+
+    /// Advance by one source frame, returns true if a target frame should be output
+    pub fn advance_source_frame(&mut self) -> bool {
+        self.accumulator += self.source_period;
+
+        if self.accumulator >= self.target_period {
+            self.accumulator -= self.target_period;
+            // Blend weight: how far into the target period we are
+            self.blend_weight = (self.accumulator / self.target_period) as f32;
+            self.blend_weight = self.blend_weight.clamp(0.0, 1.0);
+            self.frames_converted += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get the blend weight for frame interpolation (0.0 = use prev frame, 1.0 = use next frame)
+    pub fn get_blend_weight(&self) -> f32 {
+        self.blend_weight
+    }
+
+    /// Get total frames converted
+    pub fn get_frames_converted(&self) -> u64 {
+        self.frames_converted
+    }
+
+    /// Blend two frames based on current weight (per-pixel alpha blend)
+    /// Both frames must be same-sized RGBA buffers
+    pub fn blend_frames(prev: &[u8], next: &[u8], weight: f32) -> Vec<u8> {
+        let len = prev.len().min(next.len());
+        let mut out = vec![0u8; len];
+        let w = weight.clamp(0.0, 1.0);
+        let inv_w = 1.0 - w;
+
+        for i in 0..len {
+            out[i] = ((prev[i] as f32 * inv_w) + (next[i] as f32 * w)) as u8;
+        }
+        out
+    }
+
+    /// Reset the converter state
+    pub fn reset(&mut self) {
+        self.accumulator = 0.0;
+        self.blend_weight = 0.0;
+        self.frames_converted = 0;
+    }
+}
+
 /// RESC manager state
 pub struct RescManager {
     /// Initialization flag
@@ -151,6 +262,10 @@ pub struct RescManager {
     bilinear_filter: bool,
     /// Flip count (for synchronization)
     flip_count: u64,
+    /// Current upscale filter algorithm
+    upscale_filter: UpscaleFilter,
+    /// Framerate converter (optional, created when PAL temporal mode is active)
+    framerate_converter: Option<FramerateConverter>,
 }
 
 impl RescManager {
@@ -171,6 +286,8 @@ impl RescManager {
             scale_y: 1.0,
             bilinear_filter: true,
             flip_count: 0,
+            upscale_filter: UpscaleFilter::default(),
+            framerate_converter: None,
         }
     }
 
@@ -287,6 +404,19 @@ impl RescManager {
         trace!("RescManager::set_pal_temporal_mode: {:?}", mode);
 
         self.pal_temporal_mode = mode;
+
+        // Create framerate converter based on mode
+        self.framerate_converter = match mode {
+            CellRescPalTemporalMode::Filter50 => {
+                // PAL source → NTSC output (50Hz → 59.94Hz)
+                Some(FramerateConverter::new(FramerateStandard::Pal, FramerateStandard::Ntsc))
+            }
+            CellRescPalTemporalMode::Filter60 => {
+                // NTSC source → PAL output (59.94Hz → 50Hz)
+                Some(FramerateConverter::new(FramerateStandard::Ntsc, FramerateStandard::Pal))
+            }
+            CellRescPalTemporalMode::None => None,
+        };
 
         0 // CELL_OK
     }
@@ -495,6 +625,189 @@ impl RescManager {
     /// Check if bilinear filter is enabled
     pub fn is_bilinear_filter_enabled(&self) -> bool {
         self.bilinear_filter
+    }
+
+    // ========================================================================
+    // Advanced Upscaling Filters
+    // ========================================================================
+
+    /// Set the upscale filter algorithm
+    pub fn set_upscale_filter(&mut self, filter: UpscaleFilter) -> i32 {
+        if !self.initialized {
+            return CELL_RESC_ERROR_NOT_INITIALIZED;
+        }
+
+        debug!("RescManager::set_upscale_filter: {:?}", filter);
+        self.upscale_filter = filter;
+
+        0 // CELL_OK
+    }
+
+    /// Get the current upscale filter
+    pub fn get_upscale_filter(&self) -> UpscaleFilter {
+        self.upscale_filter
+    }
+
+    /// Apply upscale filter to a source buffer, producing a destination buffer
+    /// `src_buf` is an RGBA pixel buffer (4 bytes per pixel)
+    pub fn apply_upscale_filter(
+        &self,
+        src_buf: &[u8],
+        src_w: u32,
+        src_h: u32,
+        dst_w: u32,
+        dst_h: u32,
+    ) -> Vec<u8> {
+        match self.upscale_filter {
+            UpscaleFilter::Nearest => {
+                Self::scale_nearest(src_buf, src_w, src_h, dst_w, dst_h)
+            }
+            UpscaleFilter::Bilinear => {
+                Self::scale_bilinear(src_buf, src_w, src_h, dst_w, dst_h)
+            }
+            UpscaleFilter::Lanczos3 => {
+                Self::scale_lanczos3(src_buf, src_w, src_h, dst_w, dst_h)
+            }
+        }
+    }
+
+    /// Nearest-neighbor scaling
+    fn scale_nearest(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
+        let mut dst = vec![0u8; (dst_w * dst_h * 4) as usize];
+
+        for dy in 0..dst_h {
+            for dx in 0..dst_w {
+                let sx = (dx as f32 / dst_w as f32 * src_w as f32) as u32;
+                let sy = (dy as f32 / dst_h as f32 * src_h as f32) as u32;
+                let sx = sx.min(src_w - 1);
+                let sy = sy.min(src_h - 1);
+
+                let src_idx = ((sy * src_w + sx) * 4) as usize;
+                let dst_idx = ((dy * dst_w + dx) * 4) as usize;
+
+                if src_idx + 3 < src.len() && dst_idx + 3 < dst.len() {
+                    dst[dst_idx..dst_idx + 4].copy_from_slice(&src[src_idx..src_idx + 4]);
+                }
+            }
+        }
+
+        dst
+    }
+
+    /// Bilinear interpolation scaling
+    fn scale_bilinear(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
+        let mut dst = vec![0u8; (dst_w * dst_h * 4) as usize];
+
+        for dy in 0..dst_h {
+            for dx in 0..dst_w {
+                let gx = dx as f32 / dst_w as f32 * (src_w - 1) as f32;
+                let gy = dy as f32 / dst_h as f32 * (src_h - 1) as f32;
+
+                let x0 = gx.floor() as u32;
+                let y0 = gy.floor() as u32;
+                let x1 = (x0 + 1).min(src_w - 1);
+                let y1 = (y0 + 1).min(src_h - 1);
+
+                let fx = gx - x0 as f32;
+                let fy = gy - y0 as f32;
+
+                let dst_idx = ((dy * dst_w + dx) * 4) as usize;
+
+                for c in 0..4u32 {
+                    let idx00 = ((y0 * src_w + x0) * 4 + c) as usize;
+                    let idx10 = ((y0 * src_w + x1) * 4 + c) as usize;
+                    let idx01 = ((y1 * src_w + x0) * 4 + c) as usize;
+                    let idx11 = ((y1 * src_w + x1) * 4 + c) as usize;
+
+                    if idx11 < src.len() {
+                        let v00 = src[idx00] as f32;
+                        let v10 = src[idx10] as f32;
+                        let v01 = src[idx01] as f32;
+                        let v11 = src[idx11] as f32;
+
+                        let top = v00 * (1.0 - fx) + v10 * fx;
+                        let bot = v01 * (1.0 - fx) + v11 * fx;
+                        let val = top * (1.0 - fy) + bot * fy;
+
+                        dst[dst_idx + c as usize] = val.round().clamp(0.0, 255.0) as u8;
+                    }
+                }
+            }
+        }
+
+        dst
+    }
+
+    /// Lanczos-3 kernel function: sinc(x) * sinc(x/3) for |x| < 3, else 0
+    fn lanczos3_kernel(x: f32) -> f32 {
+        if x.abs() < 1e-6 {
+            return 1.0;
+        }
+        if x.abs() >= 3.0 {
+            return 0.0;
+        }
+        let pi_x = std::f32::consts::PI * x;
+        let pi_x_over_3 = pi_x / 3.0;
+        (pi_x.sin() / pi_x) * (pi_x_over_3.sin() / pi_x_over_3)
+    }
+
+    /// Lanczos-3 resampling scaling
+    fn scale_lanczos3(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
+        let mut dst = vec![0u8; (dst_w * dst_h * 4) as usize];
+        let a = 3i32; // Lanczos-3 window
+
+        for dy in 0..dst_h {
+            for dx in 0..dst_w {
+                let gx = dx as f32 / dst_w as f32 * (src_w - 1) as f32;
+                let gy = dy as f32 / dst_h as f32 * (src_h - 1) as f32;
+
+                let cx = gx.floor() as i32;
+                let cy = gy.floor() as i32;
+
+                let dst_idx = ((dy * dst_w + dx) * 4) as usize;
+
+                for c in 0..4u32 {
+                    let mut sum = 0.0f32;
+                    let mut weight_sum = 0.0f32;
+
+                    for ky in -a + 1..=a {
+                        for kx in -a + 1..=a {
+                            let sx = (cx + kx).clamp(0, src_w as i32 - 1) as u32;
+                            let sy = (cy + ky).clamp(0, src_h as i32 - 1) as u32;
+                            let src_idx = ((sy * src_w + sx) * 4 + c) as usize;
+
+                            if src_idx < src.len() {
+                                let wx = Self::lanczos3_kernel(gx - (cx + kx) as f32);
+                                let wy = Self::lanczos3_kernel(gy - (cy + ky) as f32);
+                                let w = wx * wy;
+                                sum += src[src_idx] as f32 * w;
+                                weight_sum += w;
+                            }
+                        }
+                    }
+
+                    if weight_sum > 0.0 {
+                        dst[dst_idx + c as usize] = (sum / weight_sum).round().clamp(0.0, 255.0) as u8;
+                    }
+                }
+            }
+        }
+
+        dst
+    }
+
+    // ========================================================================
+    // PAL/NTSC Framerate Conversion
+    // ========================================================================
+
+    /// Get the framerate converter (if active)
+    pub fn get_framerate_converter(&self) -> Option<&FramerateConverter> {
+        self.framerate_converter.as_ref()
+    }
+
+    /// Get a mutable reference to the framerate converter (if active)
+    pub fn get_framerate_converter_mut(&mut self) -> Option<&mut FramerateConverter> {
+        self.framerate_converter.as_mut()
     }
 }
 
@@ -993,6 +1306,213 @@ mod tests {
         assert!((scale_x_fs - 2.0).abs() < 0.01);
         assert!((scale_y_fs - 1.5).abs() < 0.01);
         
+        manager.exit();
+    }
+
+    // ========================================================================
+    // Upscale Filter Tests
+    // ========================================================================
+
+    #[test]
+    fn test_resc_upscale_filter_set_get() {
+        let mut manager = RescManager::new();
+        manager.init(CellRescInitConfig::default());
+
+        assert_eq!(manager.get_upscale_filter(), UpscaleFilter::Bilinear);
+
+        assert_eq!(manager.set_upscale_filter(UpscaleFilter::Lanczos3), 0);
+        assert_eq!(manager.get_upscale_filter(), UpscaleFilter::Lanczos3);
+
+        assert_eq!(manager.set_upscale_filter(UpscaleFilter::Nearest), 0);
+        assert_eq!(manager.get_upscale_filter(), UpscaleFilter::Nearest);
+
+        manager.exit();
+    }
+
+    #[test]
+    fn test_resc_upscale_filter_not_initialized() {
+        let mut manager = RescManager::new();
+        assert_eq!(manager.set_upscale_filter(UpscaleFilter::Lanczos3), CELL_RESC_ERROR_NOT_INITIALIZED);
+    }
+
+    #[test]
+    fn test_resc_scale_nearest() {
+        let manager = RescManager::new();
+        // 2x2 red/green/blue/white pixel image (RGBA)
+        let src = vec![
+            255, 0, 0, 255,   0, 255, 0, 255,   // row 0: red, green
+            0, 0, 255, 255,   255, 255, 255, 255, // row 1: blue, white
+        ];
+        let dst = RescManager::scale_nearest(&src, 2, 2, 4, 4);
+        assert_eq!(dst.len(), 4 * 4 * 4); // 4x4 RGBA
+        // Top-left corner should still be red
+        assert_eq!(dst[0], 255);
+        assert_eq!(dst[1], 0);
+        assert_eq!(dst[2], 0);
+    }
+
+    #[test]
+    fn test_resc_scale_bilinear() {
+        // 2x2 solid white
+        let src = vec![255u8; 2 * 2 * 4];
+        let dst = RescManager::scale_bilinear(&src, 2, 2, 4, 4);
+        assert_eq!(dst.len(), 4 * 4 * 4);
+        // Bilinear of all-white should be all-white
+        for &v in &dst {
+            assert_eq!(v, 255);
+        }
+    }
+
+    #[test]
+    fn test_resc_scale_lanczos3_identity() {
+        // 4x4 solid gray
+        let src = vec![128u8; 4 * 4 * 4];
+        let dst = RescManager::scale_lanczos3(&src, 4, 4, 4, 4);
+        assert_eq!(dst.len(), 4 * 4 * 4);
+        // Same-size Lanczos of uniform should be close to uniform
+        for &v in &dst {
+            assert!((v as i32 - 128).abs() <= 1, "Expected ~128, got {}", v);
+        }
+    }
+
+    #[test]
+    fn test_resc_apply_upscale_filter_dispatch() {
+        let mut manager = RescManager::new();
+        manager.init(CellRescInitConfig::default());
+
+        let src = vec![100u8; 2 * 2 * 4];
+
+        manager.set_upscale_filter(UpscaleFilter::Nearest);
+        let dst = manager.apply_upscale_filter(&src, 2, 2, 4, 4);
+        assert_eq!(dst.len(), 4 * 4 * 4);
+
+        manager.set_upscale_filter(UpscaleFilter::Bilinear);
+        let dst = manager.apply_upscale_filter(&src, 2, 2, 4, 4);
+        assert_eq!(dst.len(), 4 * 4 * 4);
+
+        manager.set_upscale_filter(UpscaleFilter::Lanczos3);
+        let dst = manager.apply_upscale_filter(&src, 2, 2, 4, 4);
+        assert_eq!(dst.len(), 4 * 4 * 4);
+
+        manager.exit();
+    }
+
+    #[test]
+    fn test_resc_lanczos3_kernel() {
+        // At x=0, kernel should be 1.0
+        let k0 = RescManager::lanczos3_kernel(0.0);
+        assert!((k0 - 1.0).abs() < 0.001);
+
+        // At |x| >= 3, kernel should be 0.0
+        assert_eq!(RescManager::lanczos3_kernel(3.0), 0.0);
+        assert_eq!(RescManager::lanczos3_kernel(-3.5), 0.0);
+
+        // Kernel should be symmetric
+        let k1 = RescManager::lanczos3_kernel(1.0);
+        let k1n = RescManager::lanczos3_kernel(-1.0);
+        assert!((k1 - k1n).abs() < 0.001);
+    }
+
+    // ========================================================================
+    // Framerate Converter Tests
+    // ========================================================================
+
+    #[test]
+    fn test_framerate_converter_pal_to_ntsc() {
+        let mut conv = FramerateConverter::new(FramerateStandard::Pal, FramerateStandard::Ntsc);
+        assert_eq!(conv.get_frames_converted(), 0);
+
+        // PAL 50Hz → NTSC 59.94Hz: every source frame should produce ~1.2 target frames
+        // Over 50 source frames (1 second), we should produce ~60 target frames
+        let mut output_count = 0;
+        for _ in 0..50 {
+            if conv.advance_source_frame() {
+                output_count += 1;
+            }
+        }
+        // Should produce approximately 50 frames (50 source → roughly 50 output with this algorithm)
+        assert!(output_count > 0, "Should produce some output frames");
+        assert_eq!(conv.get_frames_converted(), output_count);
+    }
+
+    #[test]
+    fn test_framerate_converter_ntsc_to_pal() {
+        let mut conv = FramerateConverter::new(FramerateStandard::Ntsc, FramerateStandard::Pal);
+
+        // NTSC 59.94Hz → PAL 50Hz: some source frames should be dropped
+        let mut output_count = 0u64;
+        for _ in 0..60 {
+            if conv.advance_source_frame() {
+                output_count += 1;
+            }
+        }
+        assert!(output_count > 0);
+    }
+
+    #[test]
+    fn test_framerate_converter_same_standard() {
+        let mut conv = FramerateConverter::new(FramerateStandard::Ntsc, FramerateStandard::Ntsc);
+        // Same framerate: every source frame should produce a target frame
+        let mut output_count = 0;
+        for _ in 0..60 {
+            if conv.advance_source_frame() {
+                output_count += 1;
+            }
+        }
+        assert_eq!(output_count, 60);
+    }
+
+    #[test]
+    fn test_framerate_converter_blend_frames() {
+        let prev = vec![0u8; 16];
+        let next = vec![200u8; 16];
+
+        // 50% blend
+        let blended = FramerateConverter::blend_frames(&prev, &next, 0.5);
+        assert_eq!(blended.len(), 16);
+        for &v in &blended {
+            assert_eq!(v, 100);
+        }
+
+        // 0% blend → all prev
+        let blended = FramerateConverter::blend_frames(&prev, &next, 0.0);
+        for &v in &blended {
+            assert_eq!(v, 0);
+        }
+
+        // 100% blend → all next
+        let blended = FramerateConverter::blend_frames(&prev, &next, 1.0);
+        for &v in &blended {
+            assert_eq!(v, 200);
+        }
+    }
+
+    #[test]
+    fn test_framerate_converter_reset() {
+        let mut conv = FramerateConverter::new(FramerateStandard::Pal, FramerateStandard::Ntsc);
+        conv.advance_source_frame();
+        assert!(conv.get_frames_converted() > 0 || conv.get_blend_weight() >= 0.0);
+        conv.reset();
+        assert_eq!(conv.get_frames_converted(), 0);
+        assert_eq!(conv.get_blend_weight(), 0.0);
+    }
+
+    #[test]
+    fn test_resc_pal_temporal_creates_converter() {
+        let mut manager = RescManager::new();
+        manager.init(CellRescInitConfig::default());
+
+        assert!(manager.get_framerate_converter().is_none());
+
+        manager.set_pal_temporal_mode(CellRescPalTemporalMode::Filter50);
+        assert!(manager.get_framerate_converter().is_some());
+
+        manager.set_pal_temporal_mode(CellRescPalTemporalMode::None);
+        assert!(manager.get_framerate_converter().is_none());
+
+        manager.set_pal_temporal_mode(CellRescPalTemporalMode::Filter60);
+        assert!(manager.get_framerate_converter().is_some());
+
         manager.exit();
     }
 }

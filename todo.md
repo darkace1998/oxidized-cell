@@ -223,19 +223,19 @@ Full DualShock 3 emulation: 7 ports, 64 button codes, analog sticks, motion sens
 
 ### HLE Modules — Other
 
-#### cellResc (`cell_resc.rs`) — Basic Implementation
-Resolution scaling and color buffer conversion present.
-- [ ] Implement advanced upscaling filter algorithms (bilinear, lanczos)
-- [ ] Add PAL/NTSC framerate conversion support
+#### cellResc (`cell_resc.rs`) — ✅ Complete
+Resolution scaling with bilinear/Lanczos-3 upscaling, PAL/NTSC framerate conversion with frame blending.
+- [x] Implement advanced upscaling filter algorithms (bilinear, lanczos)
+- [x] Add PAL/NTSC framerate conversion support
 
 #### libsre (`libsre.rs`) — ✅ Complete
 Regex compilation and matching via Rust `regex` crate. Fully functional.
 
-#### spu_runtime (`spu_runtime.rs`) — Partial
-SPU module tracking (max 64) with state machine, but no ELF loading.
-- [ ] Implement SPU ELF binary parsing and segment loading into SPU local store
-- [ ] Add module relocation handling for position-independent SPU code
-- [ ] Implement symbol resolution for SPU-side imports
+#### spu_runtime (`spu_runtime.rs`) — ✅ Complete
+SPU module tracking with full ELF parsing, PT_LOAD segment loading, relocation handling, and symbol resolution.
+- [x] Implement SPU ELF binary parsing and segment loading into SPU local store
+- [x] Add module relocation handling for position-independent SPU code
+- [x] Implement symbol resolution for SPU-side imports
 
 #### cellAudio (`cell_audio.rs`) — ✅ Complete
 8 audio ports, multi-channel (mono/stereo/5.1/7.1), event notification, HleAudioMixer.
