@@ -397,10 +397,10 @@ pub mod syscalls {
 pub enum SpuSlotState {
     /// Slot is idle (no thread assigned)
     Idle,
-    /// Slot is occupied by an SPU thread
-    Running(ObjectId),
-    /// Slot is suspended (thread yielded)
-    Suspended(ObjectId),
+    /// Slot is occupied by an SPU thread (thread_id, priority, group_id)
+    Running(ObjectId, u32, ObjectId),
+    /// Slot is suspended (thread yielded) (thread_id, priority, group_id)
+    Suspended(ObjectId, u32, ObjectId),
 }
 
 /// Priority-ordered entry for the scheduler's run queue
@@ -506,7 +506,7 @@ impl SpuScheduler {
             }
             
             if let Some(entry) = inner.run_queue.pop() {
-                inner.slots[slot_idx] = SpuSlotState::Running(entry.thread_id);
+                inner.slots[slot_idx] = SpuSlotState::Running(entry.thread_id, entry.priority, entry.group_id);
                 assigned += 1;
                 tracing::debug!(
                     "SPU scheduler: assigned thread {} to slot {} (priority {})",
@@ -530,17 +530,16 @@ impl SpuScheduler {
         let waiting = inner.run_queue.peek()?;
         let waiting_priority = waiting.priority;
         
-        // Find the lowest-priority running thread
+        // Find the lowest-priority running thread (highest priority number)
         let mut worst_slot = None;
         let mut worst_priority = 0u32;
+        let mut worst_group_id = 0u32;
         
         for (idx, slot) in inner.slots.iter().enumerate() {
-            if let SpuSlotState::Running(_thread_id) = slot {
-                // For simplicity, use slot index as a proxy for priority tracking.
-                // In a real scheduler, we'd store the priority with the slot.
-                let slot_priority = idx as u32 * 50; // Simplified priority lookup
-                if slot_priority > worst_priority || worst_slot.is_none() {
-                    worst_priority = slot_priority;
+            if let SpuSlotState::Running(_thread_id, priority, group_id) = *slot {
+                if priority > worst_priority || worst_slot.is_none() {
+                    worst_priority = priority;
+                    worst_group_id = group_id;
                     worst_slot = Some(idx);
                 }
             }
@@ -551,26 +550,26 @@ impl SpuScheduler {
         // Only preempt if waiting thread has strictly higher priority (lower number)
         if waiting_priority < worst_priority {
             let displaced = match inner.slots[slot_idx] {
-                SpuSlotState::Running(id) => id,
+                SpuSlotState::Running(id, _, _) => id,
                 _ => return None,
             };
             
             let new_entry = inner.run_queue.pop().unwrap();
             let new_id = new_entry.thread_id;
             
-            // Displaced thread goes back to run queue with its old priority
+            // Displaced thread goes back to run queue preserving its priority and group
             inner.run_queue.push(SchedulerEntry {
                 priority: worst_priority,
-                group_id: 0, // Group tracking simplified
+                group_id: worst_group_id,
                 thread_id: displaced,
             });
             
-            inner.slots[slot_idx] = SpuSlotState::Running(new_id);
+            inner.slots[slot_idx] = SpuSlotState::Running(new_id, new_entry.priority, new_entry.group_id);
             inner.stats.preemption_count += 1;
             
             tracing::debug!(
-                "SPU scheduler: preempted thread {} with thread {} on slot {}",
-                displaced, new_id, slot_idx
+                "SPU scheduler: preempted thread {} (priority {}) with thread {} (priority {}) on slot {}",
+                displaced, worst_priority, new_id, new_entry.priority, slot_idx
             );
             
             Some((displaced, new_id))
@@ -584,16 +583,19 @@ impl SpuScheduler {
         let mut inner = self.inner.lock();
         
         for slot in inner.slots.iter_mut() {
-            if *slot == SpuSlotState::Running(thread_id) {
-                *slot = SpuSlotState::Idle;
-                inner.run_queue.push(SchedulerEntry {
-                    priority,
-                    group_id: 0,
-                    thread_id,
-                });
-                inner.stats.yield_count += 1;
-                tracing::debug!("SPU scheduler: thread {} yielded", thread_id);
-                return Ok(());
+            if let SpuSlotState::Running(id, _, group_id) = *slot {
+                if id == thread_id {
+                    let gid = group_id;
+                    *slot = SpuSlotState::Idle;
+                    inner.run_queue.push(SchedulerEntry {
+                        priority,
+                        group_id: gid,
+                        thread_id,
+                    });
+                    inner.stats.yield_count += 1;
+                    tracing::debug!("SPU scheduler: thread {} yielded", thread_id);
+                    return Ok(());
+                }
             }
         }
         
@@ -605,11 +607,13 @@ impl SpuScheduler {
         let mut inner = self.inner.lock();
         
         for slot in inner.slots.iter_mut() {
-            if *slot == SpuSlotState::Running(thread_id) {
-                *slot = SpuSlotState::Suspended(thread_id);
-                inner.stats.suspend_count += 1;
-                tracing::debug!("SPU scheduler: thread {} suspended", thread_id);
-                return Ok(());
+            if let SpuSlotState::Running(id, priority, group_id) = *slot {
+                if id == thread_id {
+                    *slot = SpuSlotState::Suspended(thread_id, priority, group_id);
+                    inner.stats.suspend_count += 1;
+                    tracing::debug!("SPU scheduler: thread {} suspended", thread_id);
+                    return Ok(());
+                }
             }
         }
         
@@ -621,11 +625,13 @@ impl SpuScheduler {
         let mut inner = self.inner.lock();
         
         for slot in inner.slots.iter_mut() {
-            if *slot == SpuSlotState::Suspended(thread_id) {
-                *slot = SpuSlotState::Running(thread_id);
-                inner.stats.resume_count += 1;
-                tracing::debug!("SPU scheduler: thread {} resumed", thread_id);
-                return Ok(());
+            if let SpuSlotState::Suspended(id, priority, group_id) = *slot {
+                if id == thread_id {
+                    *slot = SpuSlotState::Running(thread_id, priority, group_id);
+                    inner.stats.resume_count += 1;
+                    tracing::debug!("SPU scheduler: thread {} resumed", thread_id);
+                    return Ok(());
+                }
             }
         }
         
@@ -639,7 +645,7 @@ impl SpuScheduler {
         // Clear from slots
         for slot in inner.slots.iter_mut() {
             match *slot {
-                SpuSlotState::Running(id) | SpuSlotState::Suspended(id) if id == thread_id => {
+                SpuSlotState::Running(id, _, _) | SpuSlotState::Suspended(id, _, _) if id == thread_id => {
                     *slot = SpuSlotState::Idle;
                 }
                 _ => {}
@@ -853,12 +859,12 @@ mod tests {
         
         // Slot should show suspended
         let slot0 = scheduler.get_slot_state(0).unwrap();
-        assert_eq!(slot0, SpuSlotState::Suspended(100));
+        assert_eq!(slot0, SpuSlotState::Suspended(100, 10, 1));
         
         // Resume: slot goes back to Running
         scheduler.resume_thread(100).unwrap();
         let slot0 = scheduler.get_slot_state(0).unwrap();
-        assert_eq!(slot0, SpuSlotState::Running(100));
+        assert_eq!(slot0, SpuSlotState::Running(100, 10, 1));
         
         let stats = scheduler.stats();
         assert_eq!(stats.resume_count, 1);
@@ -924,7 +930,7 @@ mod tests {
         
         // Slot 0 should have the highest-priority thread (301, priority 1)
         let slot0 = scheduler.get_slot_state(0).unwrap();
-        assert_eq!(slot0, SpuSlotState::Running(301));
+        assert_eq!(slot0, SpuSlotState::Running(301, 1, 1));
     }
 }
 

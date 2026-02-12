@@ -1344,9 +1344,16 @@ impl Ac3Decoder {
         
         let mut decoded = vec![vec![0.0f32; samples_per_frame]; num_channels];
         
+        // Minimum AC3 frame is 64 words (128 bytes) at lowest bitrate (32 kbps)
+        // Validate data is large enough for meaningful block processing
+        let payload_size = data.len().saturating_sub(8);
+        if payload_size < AC3_BLOCKS_PER_FRAME {
+            return Err("AC3 frame too small for block decoding".to_string());
+        }
+        
         // Process each of the 6 audio blocks per frame
         for block in 0..AC3_BLOCKS_PER_FRAME {
-            let block_offset = 8 + block * (data.len().saturating_sub(8)) / AC3_BLOCKS_PER_FRAME;
+            let block_offset = 8 + block * payload_size / AC3_BLOCKS_PER_FRAME;
             
             for ch in 0..num_channels {
                 // Step 1: Decode exponents (differential coding per ATSC A/52 §7.1)
@@ -1406,35 +1413,48 @@ impl Ac3Decoder {
     
     /// Decode exponents using differential coding (ATSC A/52 §7.1)
     ///
-    /// AC3 exponents are encoded differentially with strategies D15/D25/D45:
-    /// - D15: one exponent per frequency bin (finest resolution)
-    /// - D25: one exponent per 2 bins
-    /// - D45: one exponent per 4 bins
+    /// AC3 exponents are encoded differentially per ATSC A/52 §7.1.3.
+    /// Each packed exponent byte contains three 7-level differential values
+    /// (range -2 to +4), encoded as: packed = 25*d1 + 5*d2 + d3 + 52.
+    /// The differential values are in the set {-2, -1, 0, +1, +2, +3, +4}.
     fn decode_exponents(data: &[u8], offset: usize, ch: usize, exponents: &mut [u8]) {
         // Extract absolute exponent for this channel from frame data
         let ch_offset = offset + ch * 3;
         let abs_exp = if ch_offset < data.len() { data[ch_offset] } else { 7 };
         
-        // Differential exponent decoding:
-        // Each differential value is a 7-level code (0..6) mapped to (-2..+4)
+        // 7-level differential mapping: code value → exponent delta
+        // Per ATSC A/52 §7.1.3, packed byte = 25*d1 + 5*d2 + d3 + 52
+        // where d1,d2,d3 ∈ {-2,-1,0,+1,+2,+3,+4} → codes 0..6
+        const DIFF_MAP: [i16; 7] = [-2, -1, 0, 1, 2, 3, 4];
+        
         let mut current_exp = abs_exp;
-        for (i, exp) in exponents.iter_mut().enumerate() {
-            let diff_idx = ch_offset + 1 + i / 3;
-            if diff_idx < data.len() {
-                // Extract 2-bit differential from packed byte (3 diffs per byte)
-                let shift = (2 - (i % 3)) * 2;
-                let diff_code = (data[diff_idx] >> shift) & 0x03;
-                // Map diff_code: 0→0, 1→+1, 2→-1, 3→+2
-                let diff: i16 = match diff_code {
-                    0 => 0,
-                    1 => 1,
-                    2 => -1,
-                    3 => 2,
-                    _ => 0,
-                };
-                current_exp = (current_exp as i16 + diff).clamp(0, 24) as u8;
+        let mut bin = 0;
+        let mut byte_idx = ch_offset + 1;
+        
+        while bin < exponents.len() {
+            if byte_idx >= data.len() {
+                // Fill remaining with current exponent
+                for exp in &mut exponents[bin..] {
+                    *exp = current_exp;
+                }
+                break;
             }
-            *exp = current_exp;
+            
+            // Unpack 3 differential values from one byte
+            let packed = data[byte_idx] as u16;
+            let d1 = ((packed / 25) % 7) as usize;
+            let d2 = ((packed / 5) % 5) as usize;
+            let d3 = (packed % 5) as usize;
+            byte_idx += 1;
+            
+            // Apply the 3 differentials
+            for &code in &[d1.min(6), d2.min(6), d3.min(6)] {
+                if bin >= exponents.len() { break; }
+                let diff = DIFF_MAP[code];
+                current_exp = (current_exp as i16 + diff).clamp(0, 24) as u8;
+                exponents[bin] = current_exp;
+                bin += 1;
+            }
         }
     }
     
@@ -1442,7 +1462,7 @@ impl Ac3Decoder {
     ///
     /// BAP determines the number of bits used to quantize each mantissa.
     /// Uses a simplified masking model based on exponent values and
-    /// the floor SNR offset table.
+    /// the floor SNR offset table per ATSC A/52 §7.4.2.
     fn compute_bap(exponents: &[u8], bap: &mut [u8]) {
         // BAP table: maps signal-to-mask ratio to quantization level (0-15)
         // Per ATSC A/52 Table 7.17 (simplified)
@@ -1453,13 +1473,19 @@ impl Ac3Decoder {
             14, 14, 14, 14, 14, 14, 14, 14, 15, 15, 15, 15, 15, 15, 15, 15,
         ];
         
-        // Floor SNR offset (typical default: 7dB, index 30)
+        // Floor SNR offset (ATSC A/52 §7.4.2, typical default: index 30 ≈ 7dB)
         const FLOOR_OFFSET: u8 = 30;
+        
+        // Base SNR offset applied to ensure the SMR index remains in a valid
+        // range for the BAP table lookup. Per ATSC A/52 §7.4.3, the masking
+        // curve computation adds a fixed offset to center the exponent-derived
+        // SMR into the BAP table's 64-entry range.
+        const SMR_BASE_OFFSET: u16 = 20;
         
         for (i, bap_val) in bap.iter_mut().enumerate() {
             let exp = exponents[i] as u16;
             // Signal-to-mask ratio: higher exponent = louder signal = more bits needed
-            let smr = (FLOOR_OFFSET as u16).saturating_sub(exp) + 20;
+            let smr = (FLOOR_OFFSET as u16).saturating_sub(exp) + SMR_BASE_OFFSET;
             let idx = (smr as usize).min(63);
             *bap_val = BAP_TABLE[idx];
         }
@@ -1469,6 +1495,7 @@ impl Ac3Decoder {
     ///
     /// Each mantissa is reconstructed as: value = mantissa * 2^(-exponent)
     /// The number of bits per mantissa is determined by the BAP value.
+    /// Uses a bitstream reader for proper bit-packed mantissa extraction.
     fn dequantize_mantissas(
         data: &[u8],
         offset: usize,
@@ -1484,6 +1511,11 @@ impl Ac3Decoder {
             0, 3, 5, 7, 11, 15, 31, 63, 127, 255, 511, 1023, 2047, 4095, 8191, 16383,
         ];
         
+        // Number of mantissa bits per BAP value (ATSC A/52 Table 7.5)
+        const MANTISSA_BITS: [u8; 16] = [
+            0, 5, 7, 3, 7, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+        ];
+        
         let data_start = offset + ch * AC3_BLOCK_SIZE / 4;
         let mut bit_pos: usize = 0;
         
@@ -1495,25 +1527,49 @@ impl Ac3Decoder {
             }
             
             let levels = QUANTIZATION_LEVELS[bap_val.min(15)] as f32;
-            if levels < 1.0 {
+            let bits = MANTISSA_BITS[bap_val.min(15)] as usize;
+            if levels < 1.0 || bits == 0 {
                 *sample = 0.0;
                 continue;
             }
             
-            // Read mantissa bits from data stream
-            let byte_idx = data_start + bit_pos / 8;
-            let raw = if byte_idx < data.len() {
-                data[byte_idx] as i8
-            } else {
-                0
-            };
-            bit_pos += bap_val;
+            // Read mantissa bits from packed bitstream
+            let raw = Self::read_bits(data, data_start, bit_pos, bits);
+            bit_pos += bits;
             
-            // Dequantize: normalize to [-1, 1] range then scale by exponent
-            let normalized = (raw as f32) / levels;
+            // Dequantize: convert unsigned mantissa to signed, normalize to [-1, 1]
+            let half_levels = levels / 2.0;
+            let signed = (raw as f32) - half_levels;
+            let normalized = signed / half_levels;
+            
+            // Scale by exponent: 2^(-exponent) attenuates the signal
             let exp_scale = 2.0f32.powi(-(exponents[i] as i32));
             *sample = normalized * exp_scale;
         }
+    }
+    
+    /// Read `num_bits` from a packed bitstream starting at `data[byte_start]` + `bit_offset`
+    fn read_bits(data: &[u8], byte_start: usize, bit_offset: usize, num_bits: usize) -> u32 {
+        if num_bits == 0 || num_bits > 16 {
+            return 0;
+        }
+        
+        let abs_bit = bit_offset;
+        let byte_idx = byte_start + abs_bit / 8;
+        let bit_in_byte = abs_bit % 8;
+        
+        // Read up to 3 bytes to cover the bit range
+        let mut accum: u32 = 0;
+        for i in 0..3 {
+            let idx = byte_idx + i;
+            if idx < data.len() {
+                accum |= (data[idx] as u32) << (16 - i * 8);
+            }
+        }
+        
+        // Shift and mask to extract the desired bits (MSB-first)
+        let shift = 24 - bit_in_byte - num_bits;
+        (accum >> shift) & ((1 << num_bits) - 1)
     }
     
     /// 256-point IMDCT (Inverse Modified Discrete Cosine Transform)
@@ -2266,11 +2322,21 @@ mod tests {
         // Craft data where the absolute exponent is 10
         let mut data = vec![0u8; 256];
         data[8] = 10; // absolute exponent at channel 0's offset
+        // data[9] = 0 → packed byte 0 unpacks to d1=0,d2=0,d3=0 → all map to DIFF_MAP[0] = -2
+        // First exponent: 10 + (-2) = 8
+        // Second: 8 + (-2) = 6
+        // Third: 6 + (-2) = 4
+        
+        // Use packed value 52 for all-zero differentials (25*0 + 5*0 + 0 + 52 = 52)
+        // Actually per ATSC A/52 §7.1.3, code 2 maps to diff=0, so packed for all-zero = 25*2 + 5*2 + 2 = 62
+        data[9] = 62; // d1=2,d2=2,d3=2 → all DIFF_MAP[2]=0 → no change from abs_exp
         
         Ac3Decoder::decode_exponents(&data, 8, 0, &mut exponents);
         
-        // First exponent should be 10 (the absolute exponent)
+        // With all-zero diffs, exponents should all be the absolute exponent (10)
         assert_eq!(exponents[0], 10);
+        assert_eq!(exponents[1], 10);
+        assert_eq!(exponents[2], 10);
     }
 
     #[test]
@@ -2308,16 +2374,14 @@ mod tests {
 
     #[test]
     fn test_ac3_kbd_window() {
-        // KBD window should be symmetric and taper to near-zero at edges
+        // KBD window should taper to near-zero at edges
         let mut samples = [1.0f32; AC3_BLOCK_SIZE * 2];
         Ac3Decoder::apply_kbd_window(&mut samples);
         
-        // Middle samples should have higher window values than edge samples
+        // Edge samples should be strictly less than middle samples
         let edge = samples[0].abs();
         let middle = samples[AC3_BLOCK_SIZE].abs();
-        // The window should suppress edge samples more than middle
-        assert!(edge <= middle || (edge - middle).abs() < 0.5,
-            "KBD window should taper edges: edge={edge}, middle={middle}");
+        assert!(edge < middle, "KBD window edge ({edge}) should be less than middle ({middle})");
     }
 
     #[test]

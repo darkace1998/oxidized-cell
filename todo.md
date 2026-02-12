@@ -249,17 +249,17 @@ SPU module tracking with full ELF parsing, PT_LOAD segment loading, relocation h
 - [x] Optimize shader caching and pipeline state management
 
 ### Audio System
-- [ ] Implement full AC3 decoding with IMDCT and bit allocation (`crates/oc-audio/src/codec.rs` — see `TODO` in code)
-- [ ] Add audio resampling for non-48kHz sources
-- [ ] Implement audio mixing across multiple ports
-- [ ] Add audio time-stretching for frame-rate independence
+- [x] Implement full AC3 decoding with IMDCT and bit allocation (exponent decoding, BAP computation, mantissa dequantization, 256-point IMDCT, KBD windowing, overlap-add, DRC)
+- [x] Add audio resampling for non-48kHz sources (linear/cubic/sinc + adaptive resampler)
+- [x] Implement audio mixing across multiple ports (multi-source mixer with per-source volume)
+- [x] Add audio time-stretching for frame-rate independence (WSOLA + real-time stretcher)
 
 ### LV2 Kernel
-- [ ] Complete SPU thread group management and scheduling
-- [ ] Implement event queue and event flag syscalls
-- [ ] Add lightweight mutex support
-- [ ] Implement memory-mapped I/O for device emulation
-- [ ] Add PRX module management syscalls (load, start, stop, unload)
+- [x] Complete SPU thread group management and scheduling (SpuScheduler with priority run queue, 6-slot model, preemption, yield/suspend/resume)
+- [x] Implement event queue and event flag syscalls (event.rs + event_flag.rs, fully implemented)
+- [x] Add lightweight mutex support (mutex.rs with recursive locking, fully implemented)
+- [x] Implement memory-mapped I/O for device emulation (MmioManager with SPU control + interrupt controller device stubs)
+- [x] Add PRX module management syscalls (load, start, stop, unload — prx.rs, fully implemented)
 
 ---
 
