@@ -2338,7 +2338,10 @@ impl<'a> FpSpirVGen<'a> {
                 r
             }
 
-            // Pack/unpack operations - pass through on host (no format conversion needed)
+            // Pack/unpack operations — the emulated GPU works with full-precision
+            // floats internally, so these format conversion ops are no-ops in SPIR-V.
+            // The RSX uses them for half-float and byte packing in register files,
+            // which is unnecessary when targeting a modern GPU via Vulkan.
             FpOpcode::Pk2 | FpOpcode::Up2 | FpOpcode::Pk4 | FpOpcode::Up4 |
             FpOpcode::Pkb | FpOpcode::Upb | FpOpcode::Pk16 | FpOpcode::Up16 |
             FpOpcode::Pkg | FpOpcode::Upg => {
@@ -2346,7 +2349,10 @@ impl<'a> FpSpirVGen<'a> {
             }
 
             FpOpcode::Bem => {
-                // Bump environment map: result = src0 + src1 (texture coordinate perturbation)
+                // Bump environment map (simplified): result = src0 + src1.
+                // Full BEM applies a 2×2 matrix from constants, but most RSX
+                // games use BEM as a simple texture coordinate perturbation,
+                // so addition is a reasonable approximation.
                 let r = self.builder.alloc_id();
                 self.builder.functions.push(SpirVBuilder::encode_word(OP_FADD, 5));
                 self.builder.functions.push(self.builder.type_vec4);

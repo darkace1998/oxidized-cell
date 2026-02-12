@@ -4029,9 +4029,11 @@ impl FramebufferCopier {
                     let dst_row_offset = ((dy + row) * fb_pitch + dx * bpp) as usize;
                     let row_bytes = (sw * bpp) as usize;
                     
+                    // Check bounds and ensure source and destination don't overlap
                     if src_row_offset + row_bytes <= fb_data.len() 
                         && dst_row_offset + row_bytes <= fb_data.len()
-                        && src_row_offset + row_bytes <= dst_row_offset  // Non-overlapping forward
+                        && (src_row_offset + row_bytes <= dst_row_offset
+                            || dst_row_offset + row_bytes <= src_row_offset)
                     {
                         let (left, right) = fb_data.split_at_mut(dst_row_offset);
                         let src_slice = &left[src_row_offset..src_row_offset + row_bytes];
@@ -4043,21 +4045,40 @@ impl FramebufferCopier {
             // Scaled copy using nearest-neighbor sampling
             else if dw > 0 && dh > 0 {
                 let src_bpp = copy.src_bpp;
-                let dst_bpp = copy.dst_bpp.min(copy.src_bpp); // Use smaller bpp for copy
+                // When formats differ, copy the minimum of src/dst bpp bytes per pixel
+                // (truncating extra channels rather than converting formats)
+                let dst_bpp = copy.dst_bpp.min(copy.src_bpp);
+                
+                // Read source pixels into a temporary row buffer to avoid
+                // aliasing issues when source and destination overlap
+                let row_buf_size = (dw * dst_bpp) as usize;
+                let mut row_buf = vec![0u8; row_buf_size];
                 
                 for dy_row in 0..dh {
                     let src_row = sy + (dy_row * sh / dh);
+                    
+                    // Read source pixels into temporary buffer
                     for dx_col in 0..dw {
                         let src_col = sx + (dx_col * sw / dw);
-                        
                         let src_off = ((src_row * fb_pitch) + src_col * src_bpp) as usize;
-                        let dst_off = (((dy + dy_row) * fb_pitch) + (dx + dx_col) * dst_bpp) as usize;
+                        let buf_off = (dx_col * dst_bpp) as usize;
+                        let copy_bytes = dst_bpp as usize;
                         
-                        let copy_bytes = dst_bpp.min(src_bpp) as usize;
-                        if src_off + copy_bytes <= fb_data.len() && dst_off + copy_bytes <= fb_data.len() {
-                            for b in 0..copy_bytes {
-                                fb_data[dst_off + b] = fb_data[src_off + b];
-                            }
+                        if src_off + copy_bytes <= fb_data.len() && buf_off + copy_bytes <= row_buf.len() {
+                            row_buf[buf_off..buf_off + copy_bytes]
+                                .copy_from_slice(&fb_data[src_off..src_off + copy_bytes]);
+                        }
+                    }
+                    
+                    // Write from buffer to destination
+                    for dx_col in 0..dw {
+                        let dst_off = (((dy + dy_row) * fb_pitch) + (dx + dx_col) * dst_bpp) as usize;
+                        let buf_off = (dx_col * dst_bpp) as usize;
+                        let copy_bytes = dst_bpp as usize;
+                        
+                        if dst_off + copy_bytes <= fb_data.len() && buf_off + copy_bytes <= row_buf.len() {
+                            fb_data[dst_off..dst_off + copy_bytes]
+                                .copy_from_slice(&row_buf[buf_off..buf_off + copy_bytes]);
                         }
                     }
                 }

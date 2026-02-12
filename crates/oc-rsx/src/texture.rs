@@ -1536,10 +1536,13 @@ pub fn decompress_astc_4x4_block(block: &[u8]) -> [u8; 64] {
         let g1 = block[9];
         let b1 = block[10];
 
-        for pixel in 0..16u32 {
-            let idx = (pixel as usize) * 4;
-            // Use a per-pixel weight derived from block data for basic variation
-            let weight = ((block[(12 + pixel / 4) as usize] >> ((pixel % 4) * 2)) & 0x3) as u32;
+        // Weight data starts at byte offset 12 in the ASTC block
+        const ASTC_WEIGHT_DATA_OFFSET: usize = 12;
+        
+        for pixel_idx in 0..16u32 {
+            let idx = (pixel_idx as usize) * 4;
+            // Extract 2-bit per-pixel weight from the weight data region
+            let weight = ((block[ASTC_WEIGHT_DATA_OFFSET + (pixel_idx / 4) as usize] >> ((pixel_idx % 4) * 2)) & 0x3) as u32;
             // Map 2-bit weight (0-3) to byte range: 0→0, 1→85, 2→170, 3→255
             let w = weight * 85;
             output[idx] = ((r0 as u32 * (255 - w) + r1 as u32 * w) / 255) as u8;
