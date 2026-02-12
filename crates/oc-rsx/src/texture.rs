@@ -1302,6 +1302,259 @@ pub mod mipmap {
     }
 }
 
+// =============================================================================
+// Tile De-tiling
+// =============================================================================
+
+/// De-tile a tiled RSX surface texture to linear format.
+/// RSX tiled surfaces use a proprietary tiling pattern for cache efficiency.
+/// The tile size is typically 64 bytes wide × 8 rows (bank-interleaved).
+///
+/// # Parameters
+/// - `src`: tiled source pixel data
+/// - `width`: texture width in pixels
+/// - `height`: texture height in pixels
+/// - `bpp`: bytes per pixel (1, 2, 4, 8, or 16)
+/// - `tile_pitch`: pitch of the tiled surface in bytes (must be power-of-two aligned)
+///
+/// # Returns
+/// Linear pixel data, or empty Vec if parameters are invalid
+pub fn detile_texture(src: &[u8], width: u32, height: u32, bpp: u32, tile_pitch: u32) -> Vec<u8> {
+    if width == 0 || height == 0 || bpp == 0 || tile_pitch == 0 {
+        return Vec::new();
+    }
+
+    let linear_pitch = width * bpp;
+    let dst_size = (linear_pitch * height) as usize;
+    let mut dst = vec![0u8; dst_size];
+
+    // RSX tile dimensions: 64 bytes wide, 8 rows tall (512 bytes per tile)
+    let tile_width_bytes: u32 = 64;
+    let tile_height: u32 = 8;
+    let tile_size: u32 = tile_width_bytes * tile_height;
+
+    let tiles_per_row = tile_pitch / tile_width_bytes;
+    let rows_of_tiles = (height + tile_height - 1) / tile_height;
+
+    for tile_row in 0..rows_of_tiles {
+        for tile_col in 0..tiles_per_row {
+            let tile_offset = ((tile_row * tiles_per_row + tile_col) * tile_size) as usize;
+
+            for row_in_tile in 0..tile_height {
+                let src_y = tile_row * tile_height + row_in_tile;
+                if src_y >= height {
+                    break;
+                }
+
+                let src_offset = tile_offset + (row_in_tile * tile_width_bytes) as usize;
+                let dst_x_bytes = tile_col * tile_width_bytes;
+
+                if dst_x_bytes >= linear_pitch {
+                    continue;
+                }
+
+                let copy_bytes = tile_width_bytes.min(linear_pitch - dst_x_bytes) as usize;
+                let dst_offset = (src_y * linear_pitch + dst_x_bytes) as usize;
+
+                if src_offset + copy_bytes <= src.len() && dst_offset + copy_bytes <= dst.len() {
+                    dst[dst_offset..dst_offset + copy_bytes]
+                        .copy_from_slice(&src[src_offset..src_offset + copy_bytes]);
+                }
+            }
+        }
+    }
+
+    dst
+}
+
+// =============================================================================
+// ETC1 / ETC2 Decompression
+// =============================================================================
+
+/// Decompress an ETC1 4×4 block (8 bytes) into 16 RGBA pixels (64 bytes).
+///
+/// ETC1 encodes a 4×4 block using a base color, a table codeword, and 2-bit
+/// per-pixel modifiers. It supports two sub-block modes: horizontal (2×4)
+/// and vertical (4×2) partitions.
+pub fn decompress_etc1_block(block: &[u8]) -> [u8; 64] {
+    let mut output = [255u8; 64]; // Alpha defaults to 255
+
+    if block.len() < 8 {
+        return output;
+    }
+
+    // Read block as big-endian u64
+    let bits = u64::from_be_bytes([
+        block[0], block[1], block[2], block[3],
+        block[4], block[5], block[6], block[7],
+    ]);
+
+    let diff_bit = (bits >> 33) & 1 != 0;
+    let flip_bit = (bits >> 32) & 1 != 0;
+
+    // ETC1 modifier tables (per spec)
+    let modifier_table: [[i32; 4]; 8] = [
+        [2, 8, -2, -8],
+        [5, 17, -5, -17],
+        [9, 29, -9, -29],
+        [13, 42, -13, -42],
+        [18, 56, -18, -56],
+        [24, 71, -24, -71],
+        [33, 92, -33, -92],
+        [47, 124, -47, -124],
+    ];
+
+    let table_idx0 = ((bits >> 37) & 0x7) as usize;
+    let table_idx1 = ((bits >> 34) & 0x7) as usize;
+
+    // Decode base colors
+    let (r0, g0, b0, r1, g1, b1) = if diff_bit {
+        // Differential mode: 5-bit base + 3-bit delta
+        let r = ((bits >> 59) & 0x1F) as i32;
+        let g = ((bits >> 51) & 0x1F) as i32;
+        let b = ((bits >> 43) & 0x1F) as i32;
+        let dr = (((bits >> 56) & 0x7) as i32) - if (bits >> 56) & 0x4 != 0 { 8 } else { 0 };
+        let dg = (((bits >> 48) & 0x7) as i32) - if (bits >> 48) & 0x4 != 0 { 8 } else { 0 };
+        let db = (((bits >> 40) & 0x7) as i32) - if (bits >> 40) & 0x4 != 0 { 8 } else { 0 };
+
+        let r0 = ((r << 3) | (r >> 2)) as u8;
+        let g0 = ((g << 3) | (g >> 2)) as u8;
+        let b0 = ((b << 3) | (b >> 2)) as u8;
+        let r1c = (r + dr).clamp(0, 31);
+        let g1c = (g + dg).clamp(0, 31);
+        let b1c = (b + db).clamp(0, 31);
+        let r1 = ((r1c << 3) | (r1c >> 2)) as u8;
+        let g1 = ((g1c << 3) | (g1c >> 2)) as u8;
+        let b1 = ((b1c << 3) | (b1c >> 2)) as u8;
+        (r0, g0, b0, r1, g1, b1)
+    } else {
+        // Individual mode: 4-bit per component per sub-block
+        let r0 = ((bits >> 60) & 0xF) as u8;
+        let r0 = (r0 << 4) | r0;
+        let g0 = ((bits >> 52) & 0xF) as u8;
+        let g0 = (g0 << 4) | g0;
+        let b0 = ((bits >> 44) & 0xF) as u8;
+        let b0 = (b0 << 4) | b0;
+        let r1 = ((bits >> 56) & 0xF) as u8;
+        let r1 = (r1 << 4) | r1;
+        let g1 = ((bits >> 48) & 0xF) as u8;
+        let g1 = (g1 << 4) | g1;
+        let b1 = ((bits >> 40) & 0xF) as u8;
+        let b1 = (b1 << 4) | b1;
+        (r0, g0, b0, r1, g1, b1)
+    };
+
+    // Decode pixel indices (2 bits per pixel, MSB and LSB in separate 16-bit fields)
+    for y in 0..4u32 {
+        for x in 0..4u32 {
+            let pixel_idx = y * 4 + x;
+            // MSB is in bits 16-31, LSB is in bits 0-15
+            let msb = ((bits >> (16 + pixel_idx)) & 1) as usize;
+            let lsb = ((bits >> pixel_idx) & 1) as usize;
+            let modifier_idx = (msb << 1) | lsb;
+
+            // Determine which sub-block this pixel belongs to
+            let in_sub0 = if flip_bit { y < 2 } else { x < 2 };
+
+            let (base_r, base_g, base_b, table) = if in_sub0 {
+                (r0, g0, b0, &modifier_table[table_idx0])
+            } else {
+                (r1, g1, b1, &modifier_table[table_idx1])
+            };
+
+            let modifier = table[modifier_idx];
+            let out_idx = (pixel_idx as usize) * 4;
+            output[out_idx] = (base_r as i32 + modifier).clamp(0, 255) as u8;
+            output[out_idx + 1] = (base_g as i32 + modifier).clamp(0, 255) as u8;
+            output[out_idx + 2] = (base_b as i32 + modifier).clamp(0, 255) as u8;
+            // output[out_idx + 3] already 255 (alpha)
+        }
+    }
+
+    output
+}
+
+/// Decompress an ETC2 RGB 4×4 block (8 bytes) into 16 RGBA pixels (64 bytes).
+///
+/// ETC2 is backward-compatible with ETC1 but adds three new modes for
+/// blocks that would be poorly represented by ETC1's limited palette.
+/// For simplicity, this implementation delegates to ETC1 decompression
+/// since the base encoding is identical; full ETC2 T/H/P modes would
+/// be needed for perfect quality.
+pub fn decompress_etc2_block(block: &[u8]) -> [u8; 64] {
+    // ETC2 is a superset of ETC1 — the base encoding path is identical.
+    // The three new ETC2 modes (T, H, Planar) activate when the differential
+    // mode produces out-of-range base colors. For now, use ETC1 path.
+    decompress_etc1_block(block)
+}
+
+// =============================================================================
+// ASTC 4×4 Decompression
+// =============================================================================
+
+/// Decompress an ASTC 4×4 block (16 bytes) into 16 RGBA pixels (64 bytes).
+///
+/// ASTC is a highly flexible format with many encoding modes. This
+/// simplified implementation extracts the void-extent (constant color)
+/// blocks and generates a weighted average for encoded blocks.
+/// Full ASTC decoding requires ~2000 lines of code; this provides
+/// a reasonable approximation for emulation purposes.
+pub fn decompress_astc_4x4_block(block: &[u8]) -> [u8; 64] {
+    let mut output = [255u8; 64];
+
+    if block.len() < 16 {
+        return output;
+    }
+
+    // Check for void-extent block (constant color)
+    // Void-extent is signaled when the first 9 bits are 0b111111100 (0x1FC)
+    let mode_bits = (block[0] as u16) | ((block[1] as u16) << 8);
+    let is_void_extent = (mode_bits & 0x1FF) == 0x1FC;
+
+    if is_void_extent {
+        // Void-extent: color is stored in the last 8 bytes as RGBA16
+        let r = ((block[8] as u16) | ((block[9] as u16) << 8)) >> 8;
+        let g = ((block[10] as u16) | ((block[11] as u16) << 8)) >> 8;
+        let b = ((block[12] as u16) | ((block[13] as u16) << 8)) >> 8;
+        let a = ((block[14] as u16) | ((block[15] as u16) << 8)) >> 8;
+
+        for i in 0..16 {
+            let idx = i * 4;
+            output[idx] = r as u8;
+            output[idx + 1] = g as u8;
+            output[idx + 2] = b as u8;
+            output[idx + 3] = a as u8;
+        }
+    } else {
+        // Non-void-extent: extract endpoint colors from the block header.
+        // ASTC uses interpolation between two endpoint colors.
+        // This is a simplified path that computes an average.
+        let r0 = block[4];
+        let g0 = block[5];
+        let b0 = block[6];
+        let r1 = block[8];
+        let g1 = block[9];
+        let b1 = block[10];
+
+        // Weight data starts at byte offset 12 in the ASTC block
+        const ASTC_WEIGHT_DATA_OFFSET: usize = 12;
+        
+        for pixel_idx in 0..16u32 {
+            let idx = (pixel_idx as usize) * 4;
+            // Extract 2-bit per-pixel weight from the weight data region
+            let weight = ((block[ASTC_WEIGHT_DATA_OFFSET + (pixel_idx / 4) as usize] >> ((pixel_idx % 4) * 2)) & 0x3) as u32;
+            // Map 2-bit weight (0-3) to byte range: 0→0, 1→85, 2→170, 3→255
+            let w = weight * 85;
+            output[idx] = ((r0 as u32 * (255 - w) + r1 as u32 * w) / 255) as u8;
+            output[idx + 1] = ((g0 as u32 * (255 - w) + g1 as u32 * w) / 255) as u8;
+            output[idx + 2] = ((b0 as u32 * (255 - w) + b1 as u32 * w) / 255) as u8;
+            output[idx + 3] = 255;
+        }
+    }
+
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1622,5 +1875,96 @@ mod tests {
         assert_eq!(mipmap::level_offset(256, 256, 0, 4), 0);
         assert_eq!(mipmap::level_offset(256, 256, 1, 4), 262144);
         assert_eq!(mipmap::level_offset(256, 256, 2, 4), 262144 + 65536);
+    }
+
+    #[test]
+    fn test_detile_empty() {
+        let result = detile_texture(&[], 0, 0, 4, 64);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_detile_basic() {
+        // A simple 16×8 texture with 4 bpp and 64-byte tile pitch
+        let width = 16u32;
+        let height = 8u32;
+        let bpp = 4u32;
+        let tile_pitch = 64u32;
+        let src = vec![0xAA; (tile_pitch * height) as usize];
+        let result = detile_texture(&src, width, height, bpp, tile_pitch);
+        assert_eq!(result.len(), (width * height * bpp) as usize);
+    }
+
+    #[test]
+    fn test_etc1_block_all_zero() {
+        let block = [0u8; 8];
+        let result = decompress_etc1_block(&block);
+        // All pixels should be valid RGBA (alpha = 255)
+        for i in 0..16 {
+            assert_eq!(result[i * 4 + 3], 255, "Alpha should be 255");
+        }
+    }
+
+    #[test]
+    fn test_etc1_block_short_input() {
+        let block = [0u8; 4]; // Too short
+        let result = decompress_etc1_block(&block);
+        // Should return default (all white with alpha=255)
+        for i in 0..16 {
+            assert_eq!(result[i * 4 + 3], 255);
+        }
+    }
+
+    #[test]
+    fn test_etc2_delegates_to_etc1() {
+        let block = [0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF];
+        let etc1 = decompress_etc1_block(&block);
+        let etc2 = decompress_etc2_block(&block);
+        assert_eq!(etc1, etc2);
+    }
+
+    #[test]
+    fn test_astc_void_extent() {
+        // Construct a void-extent block: first 9 bits = 0x1FC
+        let mut block = [0u8; 16];
+        block[0] = 0xFC; // lower 8 bits of 0x1FC
+        block[1] = 0x01; // upper bit
+        // Set color: R=128, G=64, B=192, A=255
+        block[8] = 0x00; block[9] = 128;
+        block[10] = 0x00; block[11] = 64;
+        block[12] = 0x00; block[13] = 192;
+        block[14] = 0x00; block[15] = 255;
+
+        let result = decompress_astc_4x4_block(&block);
+        // All 16 pixels should have the same color
+        for i in 0..16 {
+            assert_eq!(result[i * 4], 128);
+            assert_eq!(result[i * 4 + 1], 64);
+            assert_eq!(result[i * 4 + 2], 192);
+            assert_eq!(result[i * 4 + 3], 255);
+        }
+    }
+
+    #[test]
+    fn test_astc_short_input() {
+        let block = [0u8; 8]; // Too short
+        let result = decompress_astc_4x4_block(&block);
+        // Should return default (all white, alpha=255)
+        for i in 0..16 {
+            assert_eq!(result[i * 4 + 3], 255);
+        }
+    }
+
+    #[test]
+    fn test_astc_non_void_extent() {
+        // Non-void-extent block (first 9 bits != 0x1FC)
+        let block = [0x00u8, 0x00, 0x00, 0x00, 0x80, 0x40, 0xC0, 0x00,
+                     0x40, 0x80, 0x60, 0x00, 0xAA, 0x55, 0xAA, 0x55];
+        let result = decompress_astc_4x4_block(&block);
+        assert_eq!(result.len(), 64);
+        // All pixels should have alpha = 255
+        for i in 0..16 {
+            assert_eq!(result[i * 4 + 3], 255);
+        }
     }
 }

@@ -134,6 +134,12 @@ pub const CELL_VDEC_ERROR_BUSY: i32 = 0x80610903u32 as i32;
 pub const CELL_VDEC_ERROR_EMPTY: i32 = 0x80610904u32 as i32;
 pub const CELL_VDEC_ERROR_FATAL: i32 = 0x80610905u32 as i32;
 
+/// Callback notification message types
+pub const CELL_VDEC_MSG_TYPE_AUDONE: u32 = 0;
+pub const CELL_VDEC_MSG_TYPE_PICOUT: u32 = 1;
+pub const CELL_VDEC_MSG_TYPE_SEQDONE: u32 = 2;
+pub const CELL_VDEC_MSG_TYPE_ERROR: u32 = 3;
+
 /// Video decoder entry
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -147,6 +153,11 @@ struct VdecEntry {
     decoder: Option<VideoDecoderBackend>,
     /// Frame rate configuration (in units of 1/90000 seconds per frame)
     frame_rate: u32,
+    /// Callback function address (in guest memory) and argument
+    cb_func: u32,
+    cb_arg: u32,
+    /// Pending callback notification queue
+    notification_queue: VecDeque<CellVdecCbMsg>,
 }
 
 /// H.264/AVC profile types
@@ -2411,6 +2422,9 @@ impl VdecEntry {
             decoder: Some(decoder),
             // Frame duration in 90kHz clock units (3003 units ≈ 33.37ms, giving ~29.97fps)
             frame_rate: 3003,
+            cb_func: 0,
+            cb_arg: 0,
+            notification_queue: VecDeque::new(),
         }
     }
 }
@@ -2430,10 +2444,16 @@ impl VdecManager {
     }
 
     pub fn open(&mut self, codec_type: u32, profile_level: u32) -> Result<VdecHandle, i32> {
+        self.open_with_cb(codec_type, profile_level, 0, 0)
+    }
+
+    pub fn open_with_cb(&mut self, codec_type: u32, profile_level: u32, cb_func: u32, cb_arg: u32) -> Result<VdecHandle, i32> {
         let handle = self.next_handle;
         self.next_handle += 1;
         
-        let entry = VdecEntry::new(codec_type, profile_level);
+        let mut entry = VdecEntry::new(codec_type, profile_level);
+        entry.cb_func = cb_func;
+        entry.cb_arg = cb_arg;
         self.decoders.insert(handle, entry);
         
         Ok(handle)
@@ -2467,6 +2487,13 @@ impl VdecManager {
         entry.is_seq_started = false;
         entry.picture_queue.clear();
         entry.au_count = 0;
+        
+        // Fire SEQDONE callback notification
+        entry.notification_queue.push_back(CellVdecCbMsg {
+            msg_type: CELL_VDEC_MSG_TYPE_SEQDONE,
+            error_code: 0,
+        });
+        
         Ok(())
     }
 
@@ -2502,8 +2529,20 @@ impl VdecManager {
             entry.picture_queue.push_back(pic_item);
             entry.au_count += 1;
             
-            trace!("VdecManager::decode_au: handle={}, codec={:?}, au_count={}", 
-                   handle, decoder.codec, entry.au_count);
+            // Fire AUDONE callback notification (access unit decoded)
+            entry.notification_queue.push_back(CellVdecCbMsg {
+                msg_type: CELL_VDEC_MSG_TYPE_AUDONE,
+                error_code: 0,
+            });
+            
+            // Fire PICOUT callback notification (picture available for retrieval)
+            entry.notification_queue.push_back(CellVdecCbMsg {
+                msg_type: CELL_VDEC_MSG_TYPE_PICOUT,
+                error_code: 0,
+            });
+            
+            trace!("VdecManager::decode_au: handle={}, codec={:?}, au_count={}, pending_notifications={}", 
+                   handle, decoder.codec, entry.au_count, entry.notification_queue.len());
             
             Ok(())
         } else {
@@ -2540,6 +2579,24 @@ impl VdecManager {
         trace!("VdecManager::set_frame_rate: handle={}, frame_rate={}", handle, frame_rate);
         Ok(())
     }
+
+    /// Poll the next pending callback notification (returns None if queue is empty)
+    pub fn poll_notification(&mut self, handle: VdecHandle) -> Result<Option<CellVdecCbMsg>, i32> {
+        let entry = self.decoders.get_mut(&handle).ok_or(CELL_VDEC_ERROR_ARG)?;
+        Ok(entry.notification_queue.pop_front())
+    }
+
+    /// Get callback info for a decoder
+    pub fn get_callback_info(&self, handle: VdecHandle) -> Result<(u32, u32), i32> {
+        let entry = self.decoders.get(&handle).ok_or(CELL_VDEC_ERROR_ARG)?;
+        Ok((entry.cb_func, entry.cb_arg))
+    }
+
+    /// Get the number of pending notifications
+    pub fn pending_notification_count(&self, handle: VdecHandle) -> Result<usize, i32> {
+        let entry = self.decoders.get(&handle).ok_or(CELL_VDEC_ERROR_ARG)?;
+        Ok(entry.notification_queue.len())
+    }
 }
 
 impl Default for VdecManager {
@@ -2572,7 +2629,7 @@ pub unsafe fn cell_vdec_query_attr(
 pub unsafe fn cell_vdec_open(
     vdec_type: *const CellVdecType,
     _resource: *const CellVdecResource,
-    _cb: *const CellVdecCb,
+    cb: *const CellVdecCb,
     handle: *mut VdecHandle,
 ) -> i32 {
     trace!("cellVdecOpen called");
@@ -2582,7 +2639,14 @@ pub unsafe fn cell_vdec_open(
     }
     
     unsafe {
-        match crate::context::get_hle_context_mut().vdec.open((*vdec_type).codec_type, (*vdec_type).profile_level) {
+        let (cb_func, cb_arg) = if !cb.is_null() {
+            ((*cb).cb_func, (*cb).cb_arg)
+        } else {
+            (0, 0)
+        };
+        match crate::context::get_hle_context_mut().vdec.open_with_cb(
+            (*vdec_type).codec_type, (*vdec_type).profile_level, cb_func, cb_arg
+        ) {
             Ok(h) => {
                 *handle = h;
                 0 // CELL_OK
@@ -3077,5 +3141,82 @@ mod tests {
         
         let frame = decoder.get_yuv420_frame();
         assert_eq!(frame.len(), 384); // 16*16 + 16*16/4 + 16*16/4
+    }
+
+    #[test]
+    fn test_vdec_callback_notification_on_decode() {
+        let mut manager = VdecManager::new();
+        // profile_level encodes profile in upper 16 bits and level in lower 16 bits
+        let profile_level = (66 << 16) | 41; // Baseline, Level 4.1
+        let handle = manager.open_with_cb(CellVdecCodecType::Avc as u32, profile_level, 0x1000, 0x2000).unwrap();
+        
+        // Verify callback info stored
+        let (cb_func, cb_arg) = manager.get_callback_info(handle).unwrap();
+        assert_eq!(cb_func, 0x1000);
+        assert_eq!(cb_arg, 0x2000);
+        
+        // No notifications yet
+        assert_eq!(manager.pending_notification_count(handle).unwrap(), 0);
+        
+        manager.start_seq(handle).unwrap();
+        
+        let au_info = CellVdecAuInfo {
+            pts: 1000,
+            dts: 1000,
+            user_data: 0,
+            codec_spec_info: 0,
+        };
+        
+        manager.decode_au(handle, &au_info).unwrap();
+        
+        // Should have 2 notifications: AUDONE + PICOUT
+        assert_eq!(manager.pending_notification_count(handle).unwrap(), 2);
+        
+        let msg1 = manager.poll_notification(handle).unwrap().unwrap();
+        assert_eq!(msg1.msg_type, CELL_VDEC_MSG_TYPE_AUDONE);
+        assert_eq!(msg1.error_code, 0);
+        
+        let msg2 = manager.poll_notification(handle).unwrap().unwrap();
+        assert_eq!(msg2.msg_type, CELL_VDEC_MSG_TYPE_PICOUT);
+        
+        // Queue should be empty now
+        assert!(manager.poll_notification(handle).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_vdec_callback_notification_on_end_seq() {
+        let mut manager = VdecManager::new();
+        let profile_level = (66 << 16) | 41;
+        let handle = manager.open(CellVdecCodecType::Avc as u32, profile_level).unwrap();
+        
+        manager.start_seq(handle).unwrap();
+        manager.end_seq(handle).unwrap();
+        
+        // Should have SEQDONE notification
+        let msg = manager.poll_notification(handle).unwrap().unwrap();
+        assert_eq!(msg.msg_type, CELL_VDEC_MSG_TYPE_SEQDONE);
+    }
+
+    #[test]
+    fn test_vdec_callback_notification_multiple_decodes() {
+        let mut manager = VdecManager::new();
+        let profile_level = (4 << 16) | 8; // MPEG-2 Main profile
+        let handle = manager.open(CellVdecCodecType::Mpeg2 as u32, profile_level).unwrap();
+        manager.start_seq(handle).unwrap();
+        
+        let au_info = CellVdecAuInfo {
+            pts: 0,
+            dts: 0,
+            user_data: 0,
+            codec_spec_info: 0,
+        };
+        
+        // Decode 3 times
+        manager.decode_au(handle, &au_info).unwrap();
+        manager.decode_au(handle, &au_info).unwrap();
+        manager.decode_au(handle, &au_info).unwrap();
+        
+        // Should have 6 notifications (2 per decode)
+        assert_eq!(manager.pending_notification_count(handle).unwrap(), 6);
     }
 }

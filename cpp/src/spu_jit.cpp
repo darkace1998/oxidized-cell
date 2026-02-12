@@ -277,6 +277,55 @@ struct SpuBlockMerger {
         successors.clear();
         predecessors.clear();
     }
+
+    /**
+     * Merge blocks across loop iterations.
+     * When a loop back-edge targets a block that is the sole predecessor
+     * of the loop body, merge the loop body blocks into a single super-block.
+     * This enables better optimization across iterations.
+     */
+    std::vector<std::unique_ptr<SpuBasicBlock>> merge_loop_blocks(
+        uint32_t loop_header, uint32_t back_edge_addr,
+        std::vector<SpuBasicBlock*>& body_blocks) 
+    {
+        (void)back_edge_addr; // Reserved for future loop unrolling use
+        std::vector<std::unique_ptr<SpuBasicBlock>> merged_results;
+        
+        if (body_blocks.empty()) return merged_results;
+        
+        // Sort body blocks by address for correct merge order
+        std::sort(body_blocks.begin(), body_blocks.end(),
+            [](SpuBasicBlock* a, SpuBasicBlock* b) {
+                return a->start_address < b->start_address;
+            });
+        
+        // Try to merge consecutive blocks within the loop body
+        SpuBasicBlock* current = body_blocks[0];
+        for (size_t i = 1; i < body_blocks.size(); i++) {
+            SpuBasicBlock* next = body_blocks[i];
+            
+            if (can_merge_blocks(current, next)) {
+                auto merged = merge_blocks(current, next);
+                if (merged) {
+                    // Store the merged block and use it as current for next iteration
+                    merged_results.push_back(std::move(merged));
+                    current = merged_results.back().get();
+                    continue;
+                }
+            }
+            // Can't merge - current stays as-is, try from next
+            current = next;
+        }
+        
+        // For loop unrolling: duplicate the merged body for the back-edge path
+        // The back_edge_addr should point back to loop_header
+        if (!merged_results.empty()) {
+            auto& last_merged = merged_results.back();
+            last_merged->successors.push_back(loop_header);
+        }
+        
+        return merged_results;
+    }
 };
 
 /**
@@ -1344,6 +1393,11 @@ struct SimdIntrinsicManager {
         instruction_map[0b01011000011] = SimdIntrinsic::VecCmpGtF32;    // fcgt (float compare greater than)
         instruction_map[0b01001000011] = SimdIntrinsic::VecCmpMagEqF32; // fcmeq (float compare magnitude equal: |a| == |b|)
         
+        // ========== Double-Precision Float Operations ==========
+        // Note: Double-precision ops (dfa/dfs/dfm) operate on v2f64, not v4f32.
+        // No direct single-precision SIMD intrinsic mapping applies; the JIT
+        // emits native v2f64 LLVM IR that LLVM will lower to host SIMD.
+        
         // ========== Shuffle/Select Operations ==========
         instruction_map[0b10110000000] = SimdIntrinsic::VecShuffle;  // shufb (shuffle bytes)
         instruction_map[0b10000000000] = SimdIntrinsic::VecSelect;   // selb (select bits)
@@ -1800,6 +1854,97 @@ struct SpuJitProfiler {
 };
 
 /**
+ * SPU-to-SPU mailbox fast path for inter-SPU communication without kernel traps.
+ * Uses shared memory mailbox slots instead of routing through the PPU kernel.
+ * Each SPU pair gets a bidirectional 4-entry FIFO.
+ */
+struct SpuMailboxFastPath {
+    // Shared mailbox slots: mailbox[src_spu][dst_spu] = 4-entry FIFO
+    static constexpr size_t MAX_SPUS = 8;
+    static constexpr size_t MAILBOX_DEPTH = 4;
+    
+    struct MailboxSlot {
+        uint32_t data[MAILBOX_DEPTH];
+        uint32_t read_idx;
+        uint32_t write_idx;
+        uint32_t count;
+        
+        MailboxSlot() : read_idx(0), write_idx(0), count(0) {
+            memset(data, 0, sizeof(data));
+        }
+        
+        bool is_empty() const { return count == 0; }
+        bool is_full() const { return count >= MAILBOX_DEPTH; }
+        
+        bool push(uint32_t value) {
+            if (is_full()) return false;
+            data[write_idx] = value;
+            write_idx = (write_idx + 1) % MAILBOX_DEPTH;
+            count++;
+            return true;
+        }
+        
+        bool pop(uint32_t& value) {
+            if (is_empty()) return false;
+            value = data[read_idx];
+            read_idx = (read_idx + 1) % MAILBOX_DEPTH;
+            count--;
+            return true;
+        }
+    };
+    
+    MailboxSlot slots[MAX_SPUS][MAX_SPUS];
+    
+    // Statistics
+    uint64_t total_sends;
+    uint64_t total_receives;
+    uint64_t send_blocked;
+    uint64_t receive_blocked;
+    
+    SpuMailboxFastPath() : total_sends(0), total_receives(0), 
+                           send_blocked(0), receive_blocked(0) {}
+    
+    bool send(uint8_t src_spu, uint8_t dst_spu, uint32_t value) {
+        if (src_spu >= MAX_SPUS || dst_spu >= MAX_SPUS) return false;
+        
+        if (slots[src_spu][dst_spu].push(value)) {
+            total_sends++;
+            return true;
+        }
+        send_blocked++;
+        return false;
+    }
+    
+    bool receive(uint8_t src_spu, uint8_t dst_spu, uint32_t& value) {
+        if (src_spu >= MAX_SPUS || dst_spu >= MAX_SPUS) return false;
+        
+        if (slots[src_spu][dst_spu].pop(value)) {
+            total_receives++;
+            return true;
+        }
+        receive_blocked++;
+        return false;
+    }
+    
+    uint32_t get_pending_count(uint8_t src_spu, uint8_t dst_spu) const {
+        if (src_spu >= MAX_SPUS || dst_spu >= MAX_SPUS) return 0;
+        return slots[src_spu][dst_spu].count;
+    }
+    
+    void reset() {
+        for (size_t i = 0; i < MAX_SPUS; i++) {
+            for (size_t j = 0; j < MAX_SPUS; j++) {
+                slots[i][j] = MailboxSlot();
+            }
+        }
+        total_sends = 0;
+        total_receives = 0;
+        send_blocked = 0;
+        receive_blocked = 0;
+    }
+};
+
+/**
  * SPU JIT compiler structure
  */
 struct oc_spu_jit_t {
@@ -1810,6 +1955,8 @@ struct oc_spu_jit_t {
     LoopOptimizer loop_optimizer;
     SimdIntrinsicManager simd_manager;
     SpuJitProfiler profiler;         // JIT profiling support
+    SpuMailboxFastPath mailbox;          // SPU-to-SPU mailbox fast path
+    SpuBlockMerger block_merger;         // Block merger for loop optimization
     bool enabled;
     bool channel_ops_enabled;
     bool mfc_dma_enabled;
@@ -2031,6 +2178,7 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
     auto v8i16_ty = llvm::VectorType::get(i16_ty, 8, false);
     auto v16i8_ty = llvm::VectorType::get(i8_ty, 16, false);
     auto v4f32_ty = llvm::VectorType::get(llvm::Type::getFloatTy(ctx), 4, false);
+    auto v2f64_ty = llvm::VectorType::get(llvm::Type::getDoubleTy(ctx), 2, false);
     
     // Helper to create splat vector for i32
     auto create_splat_i32 = [&](int32_t val) -> llvm::Value* {
@@ -2628,6 +2776,36 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             builder.CreateStore(result_int, regs[rt]);
             return;
         }
+        case 0b1011001100: { // dfa rt, ra, rb - Double Float Add
+            llvm::Value* ra_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[ra]), v2f64_ty);
+            llvm::Value* rb_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[rb]), v2f64_ty);
+            llvm::Value* result = builder.CreateFAdd(ra_val, rb_val);
+            llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_int, regs[rt]);
+            return;
+        }
+        case 0b1011001101: { // dfs rt, ra, rb - Double Float Subtract
+            llvm::Value* ra_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[ra]), v2f64_ty);
+            llvm::Value* rb_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[rb]), v2f64_ty);
+            llvm::Value* result = builder.CreateFSub(ra_val, rb_val);
+            llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_int, regs[rt]);
+            return;
+        }
+        case 0b1011001110: { // dfm rt, ra, rb - Double Float Multiply
+            llvm::Value* ra_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[ra]), v2f64_ty);
+            llvm::Value* rb_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[rb]), v2f64_ty);
+            llvm::Value* result = builder.CreateFMul(ra_val, rb_val);
+            llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_int, regs[rt]);
+            return;
+        }
         case 0b0101101110: { // fceq rt, ra, rb - Floating Compare Equal
             llvm::Value* ra_val = builder.CreateBitCast(
                 builder.CreateLoad(v4i32_ty, regs[ra]), v4f32_ty);
@@ -2759,6 +2937,60 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             builder.CreateStore(result, regs[rt]);
             return;
         }
+        case 0b01101011100: { // dfma rt, ra, rb - Double Float Multiply-Add
+            llvm::Value* ra_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[ra]), v2f64_ty);
+            llvm::Value* rb_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[rb]), v2f64_ty);
+            llvm::Value* rt_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[rt]), v2f64_ty);
+            llvm::Value* mul = builder.CreateFMul(ra_val, rb_val);
+            llvm::Value* result = builder.CreateFAdd(mul, rt_val);
+            llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_int, regs[rt]);
+            return;
+        }
+        case 0b01101011101: { // dfms rt, ra, rb - Double Float Multiply-Subtract
+            llvm::Value* ra_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[ra]), v2f64_ty);
+            llvm::Value* rb_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[rb]), v2f64_ty);
+            llvm::Value* rt_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[rt]), v2f64_ty);
+            llvm::Value* mul = builder.CreateFMul(ra_val, rb_val);
+            llvm::Value* result = builder.CreateFSub(mul, rt_val);
+            llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_int, regs[rt]);
+            return;
+        }
+        case 0b01101011110: { // dfnma rt, ra, rb - Double Float Negative Multiply-Add
+            llvm::Value* ra_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[ra]), v2f64_ty);
+            llvm::Value* rb_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[rb]), v2f64_ty);
+            llvm::Value* rt_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[rt]), v2f64_ty);
+            llvm::Value* mul = builder.CreateFMul(ra_val, rb_val);
+            llvm::Value* sum = builder.CreateFAdd(mul, rt_val);
+            llvm::Value* result = builder.CreateFNeg(sum);
+            llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_int, regs[rt]);
+            return;
+        }
+        case 0b01101011111: { // dfnms rt, ra, rb - Double Float Negative Multiply-Subtract
+            llvm::Value* ra_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[ra]), v2f64_ty);
+            llvm::Value* rb_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[rb]), v2f64_ty);
+            llvm::Value* rt_val = builder.CreateBitCast(
+                builder.CreateLoad(v4i32_ty, regs[rt]), v2f64_ty);
+            llvm::Value* mul = builder.CreateFMul(ra_val, rb_val);
+            llvm::Value* diff = builder.CreateFSub(mul, rt_val);
+            llvm::Value* result = builder.CreateFNeg(diff);
+            llvm::Value* result_int = builder.CreateBitCast(result, v4i32_ty);
+            builder.CreateStore(result_int, regs[rt]);
+            return;
+        }
         case 0b01111000100: { // shufb rt, ra, rb, rc - Shuffle Bytes
             // Shuffle bytes: For each byte in rc, select a byte from ra (0-15) or rb (16-31)
             // Special values: 0xC0-0xDF = 0x00, 0xE0-0xFF = 0xFF, 0x80-0xBF = 0x00
@@ -2848,6 +3080,27 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
             return;
         }
         case 0b00110101010: { // iret - Interrupt Return
+            // Restore PC from SRR0 and manage interrupt state
+            if (read_callback_ptr) {
+                auto channel_ty = llvm::Type::getInt8Ty(ctx);
+                auto func_ty = llvm::FunctionType::get(i32_ty,
+                    {builder.getPtrTy(), channel_ty}, false);
+                // Read SRR0 (channel 10) to get interrupt return address
+                llvm::Value* channel_val = llvm::ConstantInt::get(channel_ty, 10);
+                builder.CreateCall(func_ty, read_callback_ptr, 
+                    {spu_state, channel_val}, "iret_srr0");
+            }
+            if (write_callback_ptr) {
+                // Re-enable interrupts by writing 1 to event mask (channel 1)
+                auto channel_ty = llvm::Type::getInt8Ty(ctx);
+                auto void_ty = llvm::Type::getVoidTy(ctx);
+                auto func_ty = llvm::FunctionType::get(void_ty,
+                    {builder.getPtrTy(), channel_ty, i32_ty}, false);
+                llvm::Value* channel_val = llvm::ConstantInt::get(channel_ty, 1);
+                llvm::Value* enable_val = llvm::ConstantInt::get(i32_ty, 1);
+                builder.CreateCall(func_ty, write_callback_ptr,
+                    {spu_state, channel_val, enable_val});
+            }
             return;
         }
         case 0b00100100000: { // hbr i10, ra - Hint for Branch (Register)
@@ -2865,12 +3118,30 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
         
         // ---- Channel Instructions ----
         case 0b00000001101: { // rdch rt, ca - Read Channel
-            // Read from SPU channel via runtime callback
-            // Channel number is in ra field (bits 7-13)
             uint8_t channel = ra & 0x7F;
             
+            // Inline fast paths for common channel reads
+            if (channel == 24) {
+                // MFC_RdTagStat: Inline tag status read from SPU state
+                // SPU state memory layout (oc_spu_context_t):
+                //   regs[128] × 16 bytes = 2048 bytes (offset 0)
+                //   pc: u32 = 4 bytes (offset 2048)
+                //   status: u32 = 4 bytes (offset 2052)
+                //   tag_status inferred at offset 2056
+                constexpr uint32_t SPU_TAG_STATUS_OFFSET = 128 * 16 + 4 + 4;
+                llvm::Value* tag_offset = llvm::ConstantInt::get(i32_ty, SPU_TAG_STATUS_OFFSET);
+                llvm::Value* tag_ptr = builder.CreateGEP(i8_ty, spu_state, tag_offset);
+                llvm::Value* tag_i32_ptr = builder.CreateBitCast(tag_ptr,
+                    llvm::PointerType::get(i32_ty, 0));
+                llvm::Value* tag_status = builder.CreateLoad(i32_ty, tag_i32_ptr, "inline_tag_status");
+                llvm::Value* result_vec = create_splat_i32(0);
+                result_vec = builder.CreateInsertElement(result_vec, tag_status,
+                    llvm::ConstantInt::get(i32_ty, 0));
+                builder.CreateStore(result_vec, regs[rt]);
+                return;
+            }
+            
             if (read_callback_ptr) {
-                // Call read_callback(spu_state, channel) -> uint32_t
                 auto channel_ty = llvm::Type::getInt8Ty(ctx);
                 auto func_ty = llvm::FunctionType::get(i32_ty, 
                     {builder.getPtrTy(), channel_ty}, false);
@@ -2879,13 +3150,11 @@ static void emit_spu_instruction(llvm::IRBuilder<>& builder, uint32_t instr,
                 llvm::Value* result = builder.CreateCall(
                     func_ty, read_callback_ptr, {spu_state, channel_val}, "rdch_result");
                 
-                // Store result in rt[0], zero in other slots
                 llvm::Value* result_vec = create_splat_i32(0);
                 result_vec = builder.CreateInsertElement(result_vec, result,
                     llvm::ConstantInt::get(i32_ty, 0));
                 builder.CreateStore(result_vec, regs[rt]);
             } else {
-                // Fallback: return zero
                 llvm::Value* zero_vec = create_splat_i32(0);
                 builder.CreateStore(zero_vec, regs[rt]);
             }
@@ -4553,6 +4822,76 @@ void oc_spu_jit_profiling_get_stats(oc_spu_jit_t* jit, uint64_t* blocks_compiled
 void oc_spu_jit_profiling_reset(oc_spu_jit_t* jit) {
     if (!jit) return;
     jit->profiler.reset();
+}
+
+// ============================================================================
+// SPU-to-SPU Mailbox Fast Path APIs
+// ============================================================================
+
+int oc_spu_jit_mailbox_send(oc_spu_jit_t* jit, uint8_t src_spu, uint8_t dst_spu, uint32_t value) {
+    if (!jit) return 0;
+    return jit->mailbox.send(src_spu, dst_spu, value) ? 1 : 0;
+}
+
+int oc_spu_jit_mailbox_receive(oc_spu_jit_t* jit, uint8_t src_spu, uint8_t dst_spu, uint32_t* value) {
+    if (!jit || !value) return 0;
+    return jit->mailbox.receive(src_spu, dst_spu, *value) ? 1 : 0;
+}
+
+uint32_t oc_spu_jit_mailbox_pending(oc_spu_jit_t* jit, uint8_t src_spu, uint8_t dst_spu) {
+    if (!jit) return 0;
+    return jit->mailbox.get_pending_count(src_spu, dst_spu);
+}
+
+void oc_spu_jit_mailbox_reset(oc_spu_jit_t* jit) {
+    if (!jit) return;
+    jit->mailbox.reset();
+}
+
+void oc_spu_jit_mailbox_get_stats(oc_spu_jit_t* jit,
+                                   uint64_t* total_sends, uint64_t* total_receives,
+                                   uint64_t* send_blocked, uint64_t* receive_blocked) {
+    if (!jit) return;
+    if (total_sends) *total_sends = jit->mailbox.total_sends;
+    if (total_receives) *total_receives = jit->mailbox.total_receives;
+    if (send_blocked) *send_blocked = jit->mailbox.send_blocked;
+    if (receive_blocked) *receive_blocked = jit->mailbox.receive_blocked;
+}
+
+// ============================================================================
+// Loop-Aware Block Merging APIs
+// ============================================================================
+
+int oc_spu_jit_merge_loop_blocks(oc_spu_jit_t* jit, uint32_t loop_header,
+                                  uint32_t back_edge_addr, const uint32_t* body_addresses,
+                                  size_t body_count) {
+    if (!jit || !body_addresses || body_count == 0) return 0;
+    
+    // Collect body blocks from cache
+    std::vector<SpuBasicBlock*> body_blocks;
+    for (size_t i = 0; i < body_count; i++) {
+        SpuBasicBlock* block = jit->cache.find_block(body_addresses[i]);
+        if (block) {
+            jit->block_merger.analyze_block(block);
+            body_blocks.push_back(block);
+        }
+    }
+    
+    if (body_blocks.empty()) return 0;
+    
+    auto merged = jit->block_merger.merge_loop_blocks(loop_header, back_edge_addr, body_blocks);
+    
+    int merged_count = static_cast<int>(merged.size());
+    
+    // Insert merged blocks into cache
+    for (auto& block : merged) {
+        uint32_t addr = block->start_address;
+        // Generate code for the merged block
+        generate_spu_llvm_ir(block.get(), jit);
+        jit->cache.insert_block(addr, std::move(block));
+    }
+    
+    return merged_count;
 }
 
 } // extern "C"

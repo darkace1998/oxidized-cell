@@ -7,6 +7,7 @@ use oc_core::error::{EmulatorError, LoaderError};
 use oc_core::Result;
 use oc_hle::ModuleRegistry;
 use oc_memory::MemoryManager;
+use crate::loader::LoadedGame;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Seek};
@@ -1645,6 +1646,122 @@ impl GamePipeline {
         
         Ok(())
     }
+
+    /// Complete end-to-end game boot sequence.
+    ///
+    /// This orchestrates every step of the PS3 game boot process in the
+    /// correct order:
+    ///  1. Set up PS3 memory layout
+    ///  2. Load the EBOOT.BIN / ELF / SELF executable
+    ///  3. Initialize and start system HLE modules (with dependency order)
+    ///  4. Set up the main-thread stack
+    ///  5. Configure thread-local storage (TLS)
+    ///  6. Initialize kernel objects (mutexes, semaphores, event queues)
+    ///  7. Discover and load PRX dependencies from the game directory
+    ///  8. Create the initial PPU thread
+    ///  9. Set up register state (GPRs, PC, SP, TOC, TLS pointer)
+    /// 10. Initialize TLS for the main thread
+    /// 11. Mark the thread as ready for execution
+    ///
+    /// Returns a [`BootSequenceInfo`] containing every subsystem's state so
+    /// the caller (typically [`EmulatorRunner`]) can hand the thread off to
+    /// the PPU interpreter.
+    pub fn boot_game<P: AsRef<Path>>(&mut self, game_path: P) -> Result<BootSequenceInfo> {
+        let game_path = game_path.as_ref();
+        info!("=== GAME BOOT SEQUENCE START: {:?} ===", game_path);
+
+        // ── Step 1: Memory layout ──────────────────────────────────────
+        let memory_layout = self.setup_memory_layout()?;
+        info!("Step 1/11: Memory layout configured");
+
+        // ── Step 2: Load the executable ────────────────────────────────
+        let loader = crate::loader::GameLoader::new(self.memory.clone());
+        let loaded_game = loader.load(game_path)?;
+        info!(
+            "Step 2/11: Executable loaded — entry=0x{:x}, base=0x{:08x}, toc=0x{:x}",
+            loaded_game.entry_point, loaded_game.base_addr, loaded_game.toc
+        );
+
+        // ── Step 3: System HLE modules ─────────────────────────────────
+        self.initialize_system_modules()?;
+        self.start_all_modules()?;
+        info!("Step 3/11: {} system modules initialised & started",
+              self.system_modules.len());
+
+        // ── Step 4: Main-thread stack ──────────────────────────────────
+        let stack_info = self.setup_main_thread_stack(loaded_game.stack_size)?;
+        info!("Step 4/11: Stack ready — SP=0x{:08x}", stack_info.initial_sp);
+
+        // ── Step 5: Thread-local storage ───────────────────────────────
+        const DEFAULT_MAX_THREADS: u32 = 64;
+        let tls_info = self.configure_tls_areas(loaded_game.tls_size, DEFAULT_MAX_THREADS)?;
+        info!("Step 5/11: TLS configured — pointer=0x{:08x}", tls_info.main_tls_pointer);
+
+        // ── Step 6: Kernel objects ─────────────────────────────────────
+        let kernel_info = self.initialize_kernel_objects()?;
+        info!("Step 6/11: Kernel objects ready");
+
+        // ── Step 7: PRX dependencies ───────────────────────────────────
+        let mut game = loaded_game;
+        let game_dir = game_path.parent().unwrap_or(game_path);
+        // GameLoader needs mutable access to its PRX sub-loader, so create
+        // a fresh one for PRX loading.
+        let mut prx_loader = crate::loader::GameLoader::new(self.memory.clone());
+        prx_loader.load_prx_dependencies(&mut game, game_dir)?;
+        info!("Step 7/11: {} PRX modules loaded", game.prx_modules.len());
+
+        // ── Step 8: Create initial PPU thread ──────────────────────────
+        let mut thread_info = self.create_initial_ppu_thread(
+            game.entry_point, &stack_info, &tls_info, game.toc,
+        )?;
+        info!("Step 8/11: Main PPU thread created");
+
+        // ── Step 9: Register state ─────────────────────────────────────
+        let register_state = self.setup_register_state(&thread_info)?;
+        info!("Step 9/11: Registers initialised — PC=0x{:x}", register_state.pc);
+
+        // ── Step 10: TLS initialisation ────────────────────────────────
+        self.initialize_thread_local_storage(&thread_info, &tls_info)?;
+        info!("Step 10/11: TLS initialised for main thread");
+
+        // ── Step 11: Mark ready for execution ──────────────────────────
+        self.start_execution(&mut thread_info)?;
+        info!("Step 11/11: Main thread started");
+
+        info!("=== GAME BOOT SEQUENCE COMPLETE ===");
+
+        Ok(BootSequenceInfo {
+            loaded_game: game,
+            memory_layout,
+            stack_info,
+            tls_info,
+            kernel_info,
+            thread_info,
+            register_state,
+        })
+    }
+}
+
+/// Information returned by the complete boot sequence.
+///
+/// Contains every subsystem result needed by the runner to hand the
+/// loaded game off to the PPU interpreter for execution.
+#[derive(Debug, Clone)]
+pub struct BootSequenceInfo {
+    /// Loaded game executable information
+    pub loaded_game: LoadedGame,
+    /// Memory layout
+    pub memory_layout: MemoryLayoutInfo,
+    /// Main-thread stack
+    pub stack_info: ThreadStackInfo,
+    /// Thread-local storage layout
+    pub tls_info: TlsLayoutInfo,
+    /// Pre-allocated kernel objects
+    pub kernel_info: KernelObjectsInfo,
+    /// Main PPU thread information
+    pub thread_info: MainThreadInfo,
+    /// Initial register state for the main thread
+    pub register_state: RegisterState,
 }
 
 /// Memory layout information
@@ -2145,5 +2262,76 @@ mod tests {
         assert!(kernel_info.mutex_count > 0);
         assert!(kernel_info.semaphore_count > 0);
         assert!(kernel_info.event_queue_count > 0);
+    }
+
+    #[test]
+    fn test_boot_game_missing_file() {
+        let memory = MemoryManager::new().unwrap();
+        let mut pipeline = GamePipeline::new(memory);
+
+        // Attempting to boot a non-existent path should fail gracefully
+        let result = pipeline.boot_game("/nonexistent/path/EBOOT.BIN");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_boot_sequence_info_fields() {
+        // Verify the BootSequenceInfo type has the expected fields by
+        // constructing one from hand-crafted subsystem results.
+        let loaded_game = crate::loader::LoadedGame {
+            entry_point: 0x10000,
+            base_addr: 0x10000000,
+            stack_addr: 0xD0100000,
+            stack_size: 0x100000,
+            toc: 0x18000,
+            tls_addr: 0x28000000,
+            tls_size: 0x10000,
+            path: "/test".to_string(),
+            is_self: false,
+            prx_modules: Vec::new(),
+        };
+
+        let info = BootSequenceInfo {
+            loaded_game,
+            memory_layout: MemoryLayoutInfo {
+                main_memory_base: 0, main_memory_size: 0x1000_0000,
+                user_memory_base: 0x2000_0000, user_memory_size: 0x1000_0000,
+                rsx_map_base: 0x3000_0000, rsx_map_size: 0x1000_0000,
+                rsx_io_base: 0x4000_0000, rsx_io_size: 0x0010_0000,
+                rsx_mem_base: 0xC000_0000, rsx_mem_size: 0x1000_0000,
+                stack_base: 0xD000_0000, stack_size: 0x1000_0000,
+                spu_base: 0xE000_0000, spu_ls_size: 0x0004_0000,
+            },
+            stack_info: ThreadStackInfo {
+                stack_base: 0xD000_0000, stack_size: 0x100000,
+                stack_top: 0xD010_0000, initial_sp: 0xD00F_FEE0,
+            },
+            tls_info: TlsLayoutInfo {
+                base_address: 0x2800_0000, size_per_thread: 0x10000,
+                max_threads: 64, main_tls_pointer: 0x2800_7000,
+                thread_areas: Vec::new(),
+            },
+            kernel_info: KernelObjectsInfo {
+                mutex_count: 16, semaphore_count: 8,
+                event_queue_count: 4, cond_var_count: 0,
+                rwlock_count: 0, initialized: true,
+            },
+            thread_info: MainThreadInfo {
+                state: MainThreadState {
+                    thread_id: 0, entry_point: 0x10000,
+                    stack_base: 0xD000_0000, stack_top: 0xD010_0000,
+                    initial_sp: 0xD00F_FEE0, tls_pointer: 0x2800_7000,
+                    toc: 0x18000, priority: 1000,
+                    name: "main".to_string(),
+                },
+                created: true,
+                started: true,
+            },
+            register_state: RegisterState::default(),
+        };
+
+        assert_eq!(info.loaded_game.entry_point, 0x10000);
+        assert!(info.thread_info.started);
+        assert!(info.kernel_info.initialized);
     }
 }

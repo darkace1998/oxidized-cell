@@ -3,6 +3,7 @@
 use crate::objects::{KernelObject, ObjectId, ObjectManager, ObjectType};
 use oc_core::error::KernelError;
 use parking_lot::Mutex;
+use std::collections::BinaryHeap;
 use std::sync::Arc;
 
 /// Maximum number of SPU threads per thread group
@@ -10,6 +11,9 @@ const MAX_SPU_THREADS: u32 = 6;
 
 /// SPU local storage size
 const SPU_LS_SIZE: u32 = 256 * 1024; // 256KB
+
+/// Number of physical SPU run slots (Cell BE has 6 usable SPUs)
+const NUM_SPU_SLOTS: usize = 6;
 
 /// SPU thread group attributes
 #[derive(Debug, Clone)]
@@ -388,6 +392,302 @@ pub mod syscalls {
     }
 }
 
+/// SPU run slot state
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpuSlotState {
+    /// Slot is idle (no thread assigned)
+    Idle,
+    /// Slot is occupied by an SPU thread (thread_id, priority, group_id)
+    Running(ObjectId, u32, ObjectId),
+    /// Slot is suspended (thread yielded) (thread_id, priority, group_id)
+    Suspended(ObjectId, u32, ObjectId),
+}
+
+/// Priority-ordered entry for the scheduler's run queue
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct SchedulerEntry {
+    priority: u32,
+    group_id: ObjectId,
+    thread_id: ObjectId,
+}
+
+impl Ord for SchedulerEntry {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Lower priority number = higher priority (invert for max-heap)
+        other.priority.cmp(&self.priority)
+    }
+}
+
+impl PartialOrd for SchedulerEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// SPU scheduling statistics
+#[derive(Debug, Clone, Default)]
+pub struct SpuSchedulerStats {
+    /// Total scheduling decisions made
+    pub schedule_count: u64,
+    /// Total preemptions (higher-priority thread displaced lower-priority)
+    pub preemption_count: u64,
+    /// Total yields (thread voluntarily gave up slot)
+    pub yield_count: u64,
+    /// Total suspends
+    pub suspend_count: u64,
+    /// Total resumes
+    pub resume_count: u64,
+}
+
+/// SPU scheduler with priority-based run queue and round-robin time slicing
+///
+/// Manages assignment of SPU thread groups to physical SPU run slots.
+/// The Cell BE has 6 usable SPUs; threads are scheduled based on priority
+/// with preemption support.
+pub struct SpuScheduler {
+    inner: Mutex<SpuSchedulerInner>,
+}
+
+struct SpuSchedulerInner {
+    /// Physical SPU run slots (6 for Cell BE)
+    slots: [SpuSlotState; NUM_SPU_SLOTS],
+    /// Priority queue of threads waiting for a slot
+    run_queue: BinaryHeap<SchedulerEntry>,
+    /// Scheduling statistics
+    stats: SpuSchedulerStats,
+    /// Round-robin index for tie-breaking same-priority threads
+    rr_index: usize,
+}
+
+impl SpuScheduler {
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(SpuSchedulerInner {
+                slots: [SpuSlotState::Idle; NUM_SPU_SLOTS],
+                run_queue: BinaryHeap::new(),
+                stats: SpuSchedulerStats::default(),
+                rr_index: 0,
+            }),
+        }
+    }
+    
+    /// Submit a thread group for scheduling. Threads are enqueued by priority.
+    pub fn submit(
+        &self,
+        group_id: ObjectId,
+        thread_id: ObjectId,
+        priority: u32,
+    ) -> Result<(), KernelError> {
+        let mut inner = self.inner.lock();
+        inner.run_queue.push(SchedulerEntry {
+            priority,
+            group_id,
+            thread_id,
+        });
+        tracing::debug!(
+            "SPU scheduler: submitted thread {} (group {}, priority {})",
+            thread_id, group_id, priority
+        );
+        Ok(())
+    }
+    
+    /// Run one scheduling pass: assign highest-priority waiting threads to idle slots.
+    /// Returns the number of threads that were assigned to slots.
+    pub fn schedule(&self) -> usize {
+        let mut inner = self.inner.lock();
+        let mut assigned = 0;
+        
+        inner.stats.schedule_count += 1;
+        
+        // Find idle slots and assign highest-priority waiting threads
+        for slot_idx in 0..NUM_SPU_SLOTS {
+            if inner.slots[slot_idx] != SpuSlotState::Idle {
+                continue;
+            }
+            
+            if let Some(entry) = inner.run_queue.pop() {
+                inner.slots[slot_idx] = SpuSlotState::Running(entry.thread_id, entry.priority, entry.group_id);
+                assigned += 1;
+                tracing::debug!(
+                    "SPU scheduler: assigned thread {} to slot {} (priority {})",
+                    entry.thread_id, slot_idx, entry.priority
+                );
+            }
+        }
+        
+        // Round-robin index for time slicing
+        inner.rr_index = (inner.rr_index + 1) % NUM_SPU_SLOTS;
+        
+        assigned
+    }
+    
+    /// Preempt: if a higher-priority thread is waiting, displace the lowest-priority
+    /// running thread. Returns (displaced_thread_id, new_thread_id) if preemption occurred.
+    pub fn try_preempt(&self) -> Option<(ObjectId, ObjectId)> {
+        let mut inner = self.inner.lock();
+        
+        // Peek at highest-priority waiting thread
+        let waiting = inner.run_queue.peek()?;
+        let waiting_priority = waiting.priority;
+        
+        // Find the lowest-priority running thread (highest priority number)
+        let mut worst_slot = None;
+        let mut worst_priority = 0u32;
+        let mut worst_group_id = 0u32;
+        
+        for (idx, slot) in inner.slots.iter().enumerate() {
+            if let SpuSlotState::Running(_thread_id, priority, group_id) = *slot {
+                if priority > worst_priority || worst_slot.is_none() {
+                    worst_priority = priority;
+                    worst_group_id = group_id;
+                    worst_slot = Some(idx);
+                }
+            }
+        }
+        
+        let slot_idx = worst_slot?;
+        
+        // Only preempt if waiting thread has strictly higher priority (lower number)
+        if waiting_priority < worst_priority {
+            let displaced = match inner.slots[slot_idx] {
+                SpuSlotState::Running(id, _, _) => id,
+                _ => return None,
+            };
+            
+            let new_entry = inner.run_queue.pop().unwrap();
+            let new_id = new_entry.thread_id;
+            
+            // Displaced thread goes back to run queue preserving its priority and group
+            inner.run_queue.push(SchedulerEntry {
+                priority: worst_priority,
+                group_id: worst_group_id,
+                thread_id: displaced,
+            });
+            
+            inner.slots[slot_idx] = SpuSlotState::Running(new_id, new_entry.priority, new_entry.group_id);
+            inner.stats.preemption_count += 1;
+            
+            tracing::debug!(
+                "SPU scheduler: preempted thread {} (priority {}) with thread {} (priority {}) on slot {}",
+                displaced, worst_priority, new_id, new_entry.priority, slot_idx
+            );
+            
+            Some((displaced, new_id))
+        } else {
+            None
+        }
+    }
+    
+    /// Yield: thread voluntarily gives up its slot and returns to the run queue.
+    pub fn yield_thread(&self, thread_id: ObjectId, priority: u32) -> Result<(), KernelError> {
+        let mut inner = self.inner.lock();
+        
+        for slot in inner.slots.iter_mut() {
+            if let SpuSlotState::Running(id, _, group_id) = *slot {
+                if id == thread_id {
+                    let gid = group_id;
+                    *slot = SpuSlotState::Idle;
+                    inner.run_queue.push(SchedulerEntry {
+                        priority,
+                        group_id: gid,
+                        thread_id,
+                    });
+                    inner.stats.yield_count += 1;
+                    tracing::debug!("SPU scheduler: thread {} yielded", thread_id);
+                    return Ok(());
+                }
+            }
+        }
+        
+        Err(KernelError::InvalidId(thread_id))
+    }
+    
+    /// Suspend: thread is paused but retains its slot (marked Suspended).
+    pub fn suspend_thread(&self, thread_id: ObjectId) -> Result<(), KernelError> {
+        let mut inner = self.inner.lock();
+        
+        for slot in inner.slots.iter_mut() {
+            if let SpuSlotState::Running(id, priority, group_id) = *slot {
+                if id == thread_id {
+                    *slot = SpuSlotState::Suspended(thread_id, priority, group_id);
+                    inner.stats.suspend_count += 1;
+                    tracing::debug!("SPU scheduler: thread {} suspended", thread_id);
+                    return Ok(());
+                }
+            }
+        }
+        
+        Err(KernelError::InvalidId(thread_id))
+    }
+    
+    /// Resume: wake a suspended thread back to Running state.
+    pub fn resume_thread(&self, thread_id: ObjectId) -> Result<(), KernelError> {
+        let mut inner = self.inner.lock();
+        
+        for slot in inner.slots.iter_mut() {
+            if let SpuSlotState::Suspended(id, priority, group_id) = *slot {
+                if id == thread_id {
+                    *slot = SpuSlotState::Running(thread_id, priority, group_id);
+                    inner.stats.resume_count += 1;
+                    tracing::debug!("SPU scheduler: thread {} resumed", thread_id);
+                    return Ok(());
+                }
+            }
+        }
+        
+        Err(KernelError::InvalidId(thread_id))
+    }
+    
+    /// Remove a thread from all scheduler state (slot + run queue).
+    pub fn remove_thread(&self, thread_id: ObjectId) {
+        let mut inner = self.inner.lock();
+        
+        // Clear from slots
+        for slot in inner.slots.iter_mut() {
+            match *slot {
+                SpuSlotState::Running(id, _, _) | SpuSlotState::Suspended(id, _, _) if id == thread_id => {
+                    *slot = SpuSlotState::Idle;
+                }
+                _ => {}
+            }
+        }
+        
+        // Rebuild run queue without this thread
+        let remaining: Vec<_> = inner.run_queue.drain().filter(|e| e.thread_id != thread_id).collect();
+        inner.run_queue = BinaryHeap::from(remaining);
+    }
+    
+    /// Get the state of a specific run slot
+    pub fn get_slot_state(&self, slot: usize) -> Option<SpuSlotState> {
+        let inner = self.inner.lock();
+        inner.slots.get(slot).copied()
+    }
+    
+    /// Get current scheduling statistics
+    pub fn stats(&self) -> SpuSchedulerStats {
+        let inner = self.inner.lock();
+        inner.stats.clone()
+    }
+    
+    /// Get the number of idle slots
+    pub fn idle_slot_count(&self) -> usize {
+        let inner = self.inner.lock();
+        inner.slots.iter().filter(|s| **s == SpuSlotState::Idle).count()
+    }
+    
+    /// Get the number of threads in the run queue
+    pub fn pending_count(&self) -> usize {
+        let inner = self.inner.lock();
+        inner.run_queue.len()
+    }
+}
+
+impl Default for SpuScheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,6 +801,136 @@ mod tests {
         assert_eq!(signal2, 0xABCDEF00);
 
         syscalls::sys_spu_thread_group_destroy(&manager, group_id).unwrap();
+    }
+
+    #[test]
+    fn test_spu_scheduler_creation() {
+        let scheduler = SpuScheduler::new();
+        assert_eq!(scheduler.idle_slot_count(), NUM_SPU_SLOTS);
+        assert_eq!(scheduler.pending_count(), 0);
+    }
+
+    #[test]
+    fn test_spu_scheduler_submit_and_schedule() {
+        let scheduler = SpuScheduler::new();
+        
+        // Submit 3 threads with different priorities
+        scheduler.submit(1, 100, 10).unwrap(); // highest priority
+        scheduler.submit(1, 101, 50).unwrap();
+        scheduler.submit(1, 102, 90).unwrap(); // lowest priority
+        
+        assert_eq!(scheduler.pending_count(), 3);
+        
+        // Schedule: should assign all 3 to slots (we have 6 idle)
+        let assigned = scheduler.schedule();
+        assert_eq!(assigned, 3);
+        assert_eq!(scheduler.idle_slot_count(), 3);
+        assert_eq!(scheduler.pending_count(), 0);
+    }
+
+    #[test]
+    fn test_spu_scheduler_yield() {
+        let scheduler = SpuScheduler::new();
+        scheduler.submit(1, 100, 10).unwrap();
+        scheduler.schedule();
+        
+        // Thread should be running in a slot
+        assert_eq!(scheduler.idle_slot_count(), 5);
+        
+        // Yield: thread goes back to run queue, slot becomes idle
+        scheduler.yield_thread(100, 10).unwrap();
+        assert_eq!(scheduler.idle_slot_count(), 6);
+        assert_eq!(scheduler.pending_count(), 1);
+        
+        let stats = scheduler.stats();
+        assert_eq!(stats.yield_count, 1);
+    }
+
+    #[test]
+    fn test_spu_scheduler_suspend_resume() {
+        let scheduler = SpuScheduler::new();
+        scheduler.submit(1, 100, 10).unwrap();
+        scheduler.schedule();
+        
+        // Suspend: slot changes to Suspended
+        scheduler.suspend_thread(100).unwrap();
+        let stats = scheduler.stats();
+        assert_eq!(stats.suspend_count, 1);
+        
+        // Slot should show suspended
+        let slot0 = scheduler.get_slot_state(0).unwrap();
+        assert_eq!(slot0, SpuSlotState::Suspended(100, 10, 1));
+        
+        // Resume: slot goes back to Running
+        scheduler.resume_thread(100).unwrap();
+        let slot0 = scheduler.get_slot_state(0).unwrap();
+        assert_eq!(slot0, SpuSlotState::Running(100, 10, 1));
+        
+        let stats = scheduler.stats();
+        assert_eq!(stats.resume_count, 1);
+    }
+
+    #[test]
+    fn test_spu_scheduler_remove() {
+        let scheduler = SpuScheduler::new();
+        scheduler.submit(1, 100, 10).unwrap();
+        scheduler.submit(1, 101, 20).unwrap();
+        scheduler.schedule();
+        
+        // Remove thread 100 from its slot
+        scheduler.remove_thread(100);
+        assert_eq!(scheduler.idle_slot_count(), 5);
+        
+        // Remove thread 101
+        scheduler.remove_thread(101);
+        assert_eq!(scheduler.idle_slot_count(), 6);
+    }
+
+    #[test]
+    fn test_spu_scheduler_stats() {
+        let scheduler = SpuScheduler::new();
+        let stats = scheduler.stats();
+        assert_eq!(stats.schedule_count, 0);
+        assert_eq!(stats.preemption_count, 0);
+        assert_eq!(stats.yield_count, 0);
+        
+        scheduler.submit(1, 100, 10).unwrap();
+        scheduler.schedule();
+        
+        let stats = scheduler.stats();
+        assert_eq!(stats.schedule_count, 1);
+    }
+
+    #[test]
+    fn test_spu_scheduler_slot_overflow() {
+        let scheduler = SpuScheduler::new();
+        
+        // Submit more threads than available slots
+        for i in 0..10 {
+            scheduler.submit(1, 200 + i, i as u32 * 10).unwrap();
+        }
+        
+        // Schedule: should fill all 6 slots, leaving 4 pending
+        let assigned = scheduler.schedule();
+        assert_eq!(assigned, 6);
+        assert_eq!(scheduler.idle_slot_count(), 0);
+        assert_eq!(scheduler.pending_count(), 4);
+    }
+
+    #[test]
+    fn test_spu_scheduler_priority_ordering() {
+        let scheduler = SpuScheduler::new();
+        
+        // Submit in reverse priority order
+        scheduler.submit(1, 300, 100).unwrap(); // lowest priority
+        scheduler.submit(1, 301, 1).unwrap();   // highest priority
+        scheduler.submit(1, 302, 50).unwrap();  // medium
+        
+        scheduler.schedule();
+        
+        // Slot 0 should have the highest-priority thread (301, priority 1)
+        let slot0 = scheduler.get_slot_state(0).unwrap();
+        assert_eq!(slot0, SpuSlotState::Running(301, 1, 1));
     }
 }
 

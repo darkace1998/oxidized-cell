@@ -140,6 +140,10 @@ struct PngDecoder {
     transparency: Option<Vec<u8>>,
     /// Compressed IDAT data
     idat_data: Vec<u8>,
+    /// Streaming data accumulator
+    stream_buffer: Vec<u8>,
+    /// Whether header has been parsed from stream
+    header_parsed: bool,
 }
 
 #[allow(dead_code)]
@@ -155,6 +159,8 @@ impl PngDecoder {
             palette: Vec::new(),
             transparency: None,
             idat_data: Vec::new(),
+            stream_buffer: Vec::new(),
+            header_parsed: false,
         }
     }
 
@@ -349,16 +355,23 @@ impl PngDecoder {
                 Ok(data) => data,
                 Err(e) => {
                     debug!("PNG zlib decompression failed: {:?}", e);
-                    // Fall back to generating a test pattern
                     return self.generate_fallback_pattern(dst_buffer, out_width, out_height);
                 }
             }
         } else {
-            // No IDAT data - generate fallback pattern
             return self.generate_fallback_pattern(dst_buffer, out_width, out_height);
         };
         
-        // Calculate scanline parameters
+        // Handle interlaced vs non-interlaced
+        if self.interlace == 1 {
+            self.decode_adam7(&decompressed, dst_buffer, out_width, out_height)
+        } else {
+            self.decode_non_interlaced(&decompressed, dst_buffer, out_width, out_height)
+        }
+    }
+
+    /// Decode non-interlaced PNG
+    fn decode_non_interlaced(&self, decompressed: &[u8], dst_buffer: &mut [u8], out_width: u32, out_height: u32) -> Result<(), i32> {
         let bpp = self.bytes_per_pixel();
         let scanline_bytes = (self.width as usize * bpp * self.bit_depth as usize + 7) / 8;
         let expected_size = self.height as usize * (1 + scanline_bytes);
@@ -368,11 +381,9 @@ impl PngDecoder {
             return self.generate_fallback_pattern(dst_buffer, out_width, out_height);
         }
         
-        // Allocate raw pixel buffer
         let mut raw_pixels = vec![0u8; self.height as usize * scanline_bytes];
         let mut previous_scanline = vec![0u8; scanline_bytes];
         
-        // Unfilter each scanline
         let mut src_offset = 0;
         for y in 0..self.height as usize {
             let filter_type = decompressed[src_offset];
@@ -394,10 +405,126 @@ impl PngDecoder {
             src_offset += scanline_bytes;
         }
         
-        // Convert to RGBA output
-        self.convert_to_rgba(&raw_pixels, dst_buffer, out_width, out_height)?;
+        self.convert_to_rgba(&raw_pixels, dst_buffer, out_width, out_height)
+    }
+
+    /// Decode Adam7 interlaced PNG
+    ///
+    /// Adam7 interlacing uses 7 passes with the following starting positions and steps:
+    /// Pass 1: start (0,0), step (8,8) — 1/64 of pixels
+    /// Pass 2: start (4,0), step (8,8)
+    /// Pass 3: start (0,4), step (4,8)
+    /// Pass 4: start (2,0), step (4,4)
+    /// Pass 5: start (0,2), step (2,4)
+    /// Pass 6: start (1,0), step (2,2)
+    /// Pass 7: start (0,1), step (1,2)
+    fn decode_adam7(&self, decompressed: &[u8], dst_buffer: &mut [u8], out_width: u32, out_height: u32) -> Result<(), i32> {
+        // Adam7 pass parameters: (x_start, y_start, x_step, y_step)
+        const ADAM7_PASSES: [(usize, usize, usize, usize); 7] = [
+            (0, 0, 8, 8),
+            (4, 0, 8, 8),
+            (0, 4, 4, 8),
+            (2, 0, 4, 4),
+            (0, 2, 2, 4),
+            (1, 0, 2, 2),
+            (0, 1, 1, 2),
+        ];
         
-        Ok(())
+        let bpp = self.bytes_per_pixel();
+        let w = self.width as usize;
+        let h = self.height as usize;
+        
+        // Allocate final raw pixel buffer
+        let src_scanline_bytes = (w * bpp * self.bit_depth as usize + 7) / 8;
+        let mut raw_pixels = vec![0u8; h * src_scanline_bytes];
+        
+        let mut src_offset = 0;
+        
+        for &(x_start, y_start, x_step, y_step) in &ADAM7_PASSES {
+            // Calculate dimensions for this pass
+            let pass_width = if w > x_start { (w - x_start + x_step - 1) / x_step } else { 0 };
+            let pass_height = if h > y_start { (h - y_start + y_step - 1) / y_step } else { 0 };
+            
+            if pass_width == 0 || pass_height == 0 {
+                continue;
+            }
+            
+            let pass_scanline_bytes = (pass_width * bpp * self.bit_depth as usize + 7) / 8;
+            let pass_data_size = pass_height * (1 + pass_scanline_bytes);
+            
+            if src_offset + pass_data_size > decompressed.len() {
+                debug!("Adam7 pass data exhausted at offset {}", src_offset);
+                break;
+            }
+            
+            let mut previous_scanline = vec![0u8; pass_scanline_bytes];
+            let mut scanline = vec![0u8; pass_scanline_bytes];
+            
+            // Process each scanline of this pass
+            for pass_y in 0..pass_height {
+                let filter_type = decompressed[src_offset];
+                src_offset += 1;
+                
+                scanline.copy_from_slice(&decompressed[src_offset..src_offset + pass_scanline_bytes]);
+                self.unfilter_scanline(filter_type, &mut scanline, &previous_scanline, bpp);
+                
+                // Place pixels from this pass scanline into the final image
+                let dst_y = y_start + pass_y * y_step;
+                for pass_x in 0..pass_width {
+                    let dst_x = x_start + pass_x * x_step;
+                    if dst_x < w && dst_y < h {
+                        let src_byte_offset = pass_x * bpp;
+                        let dst_byte_offset = dst_y * src_scanline_bytes + dst_x * bpp;
+                        
+                        for b in 0..bpp {
+                            if src_byte_offset + b < scanline.len() && dst_byte_offset + b < raw_pixels.len() {
+                                raw_pixels[dst_byte_offset + b] = scanline[src_byte_offset + b];
+                            }
+                        }
+                    }
+                }
+                
+                previous_scanline.copy_from_slice(&scanline);
+                src_offset += pass_scanline_bytes;
+            }
+        }
+        
+        self.convert_to_rgba(&raw_pixels, dst_buffer, out_width, out_height)
+    }
+
+    /// Feed data for streaming decode (accumulate chunks)
+    fn feed_stream_data(&mut self, chunk: &[u8]) {
+        self.stream_buffer.extend_from_slice(chunk);
+    }
+
+    /// Attempt to parse header from accumulated stream data
+    fn try_parse_stream_header(&mut self) -> Result<bool, i32> {
+        if self.header_parsed {
+            return Ok(true);
+        }
+        
+        // Need at least PNG signature (8) + IHDR chunk (25)
+        if self.stream_buffer.len() < 33 {
+            return Ok(false);
+        }
+        
+        // Parse from the stream buffer directly using a temporary slice
+        let data = std::mem::take(&mut self.stream_buffer);
+        let result = self.parse_header(&data);
+        self.stream_buffer = data;
+        
+        match result {
+            Ok(()) => {
+                self.header_parsed = true;
+                Ok(true)
+            }
+            Err(_) => Ok(false), // Not enough data yet
+        }
+    }
+
+    /// Check if stream has enough data for a full decode
+    fn stream_ready_for_decode(&self) -> bool {
+        self.header_parsed && !self.idat_data.is_empty()
     }
 
     /// Generate a fallback pattern when decoding fails
@@ -730,6 +857,48 @@ impl PngDecManager {
     /// Get decoder count
     pub fn decoder_count(&self) -> usize {
         self.decoders.len()
+    }
+
+    /// Feed raw PNG data into a sub decoder for streaming decode
+    pub fn feed_data(&mut self, main_handle: u32, sub_handle: u32, data: &[u8]) -> i32 {
+        if let Some(entry) = self.decoders.get_mut(&main_handle) {
+            if let Some(sub_entry) = entry.sub_handles.get_mut(&sub_handle) {
+                sub_entry.decoder.feed_stream_data(data);
+                0 // CELL_OK
+            } else {
+                CELL_PNGDEC_ERROR_ARG
+            }
+        } else {
+            CELL_PNGDEC_ERROR_ARG
+        }
+    }
+
+    /// Read header from fed data (streaming mode)
+    pub fn read_header_from_data(&mut self, main_handle: u32, sub_handle: u32, data: &[u8]) -> Result<CellPngDecInfo, i32> {
+        if let Some(entry) = self.decoders.get_mut(&main_handle) {
+            if let Some(sub_entry) = entry.sub_handles.get_mut(&sub_handle) {
+                // Parse header from the provided data
+                sub_entry.decoder.parse_header(data)?;
+                
+                let info = CellPngDecInfo {
+                    image_width: sub_entry.decoder.width,
+                    image_height: sub_entry.decoder.height,
+                    num_components: sub_entry.decoder.get_components(),
+                    color_space: sub_entry.decoder.color_type as u32,
+                    bit_depth: sub_entry.decoder.bit_depth as u32,
+                    interlace_method: sub_entry.decoder.interlace as u32,
+                    chunk_information: 0,
+                };
+                sub_entry.info = Some(info);
+                sub_entry.decoder.header_parsed = true;
+                
+                Ok(info)
+            } else {
+                Err(CELL_PNGDEC_ERROR_ARG)
+            }
+        } else {
+            Err(CELL_PNGDEC_ERROR_ARG)
+        }
     }
 
     /// Get sub decoder count
@@ -1270,5 +1439,149 @@ mod tests {
         };
         assert_eq!(info.image_width, 1920);
         assert_eq!(info.image_height, 1080);
+    }
+
+    #[test]
+    fn test_png_decoder_adam7_small() {
+        // Test Adam7 interlace with a 4x4 image
+        let decoder = PngDecoder {
+            width: 4,
+            height: 4,
+            bit_depth: 8,
+            color_type: PngColorType::Grayscale,
+            interlace: 1,
+            palette: Vec::new(),
+            transparency: None,
+            idat_data: Vec::new(),
+            stream_buffer: Vec::new(),
+            header_parsed: false,
+        };
+        
+        // For a 4x4 grayscale image, Adam7 passes:
+        // Pass 1 (0,0, step 8): pixel at (0,0) → 1x1
+        // Pass 2 (4,0, step 8): no pixels (w=4)
+        // Pass 3 (0,4, step 4): no pixels (h=4)
+        // Pass 4 (2,0, step 4): pixel at (2,0) → 1x1
+        // Pass 5 (0,2, step 2): pixels at (0,2),(2,2) → 2x1
+        // Pass 6 (1,0, step 2): pixels at (1,0),(3,0),(1,2),(3,2) → 2x2
+        // Pass 7 (0,1, step 1): pixels at (0,1),(1,1),(2,1),(3,1),(0,3),(1,3),(2,3),(3,3) → 4x2
+        
+        // Each pass scanline has a filter byte (0=None) prefix
+        let mut adam7_data = Vec::new();
+        
+        // Pass 1: 1x1, bpp=1 → filter(0) + 1 byte
+        adam7_data.push(0); adam7_data.push(10); // (0,0)=10
+        // Pass 4: 1x1 → filter(0) + 1 byte
+        adam7_data.push(0); adam7_data.push(20); // (2,0)=20
+        // Pass 5: 2x1 → filter(0) + 2 bytes
+        adam7_data.push(0); adam7_data.push(30); adam7_data.push(40); // (0,2)=30, (2,2)=40
+        // Pass 6: 2x2 → 2 scanlines: filter(0) + 2 bytes each
+        adam7_data.push(0); adam7_data.push(50); adam7_data.push(60); // row 0: (1,0)=50, (3,0)=60
+        adam7_data.push(0); adam7_data.push(70); adam7_data.push(80); // row 1: (1,2)=70, (3,2)=80
+        // Pass 7: 4x2 → 2 scanlines: filter(0) + 4 bytes each
+        adam7_data.push(0); adam7_data.push(91); adam7_data.push(92); adam7_data.push(93); adam7_data.push(94); // row 0: (0,1)=91...(3,1)=94
+        adam7_data.push(0); adam7_data.push(95); adam7_data.push(96); adam7_data.push(97); adam7_data.push(98); // row 1: (0,3)=95...(3,3)=98
+        
+        let mut dst = vec![0u8; 4 * 4 * 4]; // 4x4 RGBA
+        let result = decoder.decode_adam7(&adam7_data, &mut dst, 4, 4);
+        assert!(result.is_ok());
+        
+        // Check pixel (0,0) = 10 → RGBA (10,10,10,255) (grayscale)
+        assert_eq!(dst[0], 10);
+        assert_eq!(dst[3], 255);
+        
+        // Check pixel (1,0) = 50
+        assert_eq!(dst[4], 50);
+        
+        // Check pixel (2,0) = 20
+        assert_eq!(dst[8], 20);
+    }
+
+    #[test]
+    fn test_png_streaming_decode() {
+        let mut decoder = PngDecoder::new();
+        
+        // Feed data in chunks
+        assert!(!decoder.stream_ready_for_decode());
+        
+        // Feed a minimal PNG header (but not a full PNG)
+        decoder.feed_stream_data(&[137, 80, 78, 71, 13, 10, 26, 10]);
+        assert!(!decoder.stream_ready_for_decode());
+        
+        // After feeding more data, header_parsed should be detectable
+        assert!(!decoder.header_parsed);
+    }
+
+    #[test]
+    fn test_png_read_header_from_data() {
+        use miniz_oxide::deflate::compress_to_vec_zlib;
+        
+        let mut manager = PngDecManager::new();
+        let main_handle = manager.create(4).unwrap();
+        let sub_handle = manager.open(main_handle).unwrap();
+        
+        // Build a minimal valid PNG: 2x2 RGBA
+        let mut png_data = Vec::new();
+        // PNG signature
+        png_data.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
+        
+        // IHDR chunk: width=2, height=2, bit_depth=8, color_type=6 (RGBA), no interlace
+        let mut ihdr_data = Vec::new();
+        ihdr_data.extend_from_slice(&2u32.to_be_bytes()); // width
+        ihdr_data.extend_from_slice(&2u32.to_be_bytes()); // height
+        ihdr_data.push(8);  // bit depth
+        ihdr_data.push(6);  // color type (RGBA)
+        ihdr_data.push(0);  // compression
+        ihdr_data.push(0);  // filter
+        ihdr_data.push(0);  // interlace
+        
+        // Write chunk: length + type + data + CRC
+        png_data.extend_from_slice(&(ihdr_data.len() as u32).to_be_bytes());
+        png_data.extend_from_slice(b"IHDR");
+        png_data.extend_from_slice(&ihdr_data);
+        png_data.extend_from_slice(&[0, 0, 0, 0]); // CRC placeholder
+        
+        // IDAT chunk: 2x2 RGBA pixels (all white), with filter byte per row
+        let mut raw_image = Vec::new();
+        for _ in 0..2 {
+            raw_image.push(0); // filter: None
+            for _ in 0..2 {
+                raw_image.extend_from_slice(&[255, 255, 255, 255]); // white pixel RGBA
+            }
+        }
+        let compressed = compress_to_vec_zlib(&raw_image, 6);
+        
+        png_data.extend_from_slice(&(compressed.len() as u32).to_be_bytes());
+        png_data.extend_from_slice(b"IDAT");
+        png_data.extend_from_slice(&compressed);
+        png_data.extend_from_slice(&[0, 0, 0, 0]); // CRC placeholder
+        
+        // IEND
+        png_data.extend_from_slice(&0u32.to_be_bytes());
+        png_data.extend_from_slice(b"IEND");
+        png_data.extend_from_slice(&[0, 0, 0, 0]);
+        
+        // Read header
+        let info = manager.read_header_from_data(main_handle, sub_handle, &png_data).unwrap();
+        assert_eq!(info.image_width, 2);
+        assert_eq!(info.image_height, 2);
+        assert_eq!(info.num_components, 4); // RGBA
+        assert_eq!(info.bit_depth, 8);
+        
+        // Decode
+        let mut dst = vec![0u8; 2 * 2 * 4];
+        let result = manager.decode_data(main_handle, sub_handle, &png_data, &mut dst);
+        assert!(result.is_ok());
+        
+        // All pixels should be white (255, 255, 255, 255)
+        for i in 0..4 {
+            assert_eq!(dst[i * 4], 255, "pixel {} R", i);
+            assert_eq!(dst[i * 4 + 1], 255, "pixel {} G", i);
+            assert_eq!(dst[i * 4 + 2], 255, "pixel {} B", i);
+            assert_eq!(dst[i * 4 + 3], 255, "pixel {} A", i);
+        }
+        
+        manager.close(main_handle, sub_handle);
+        manager.destroy(main_handle);
     }
 }

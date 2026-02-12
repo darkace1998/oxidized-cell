@@ -364,6 +364,39 @@ impl FontFtManager {
     pub fn is_initialized(&self) -> bool {
         self.initialized
     }
+
+    /// Get kerning between two glyphs
+    ///
+    /// Returns the horizontal advance adjustment in pixels.
+    /// In HLE mode, returns estimated kerning values for
+    /// common letter pairs.
+    pub fn get_kerning(&self, face: FtFace, left_glyph: u32, right_glyph: u32) -> Result<(i32, i32), i32> {
+        if !self.initialized {
+            return Err(CELL_FONT_FT_ERROR_NOT_INITIALIZED);
+        }
+
+        let face_entry = self.faces.iter().find(|f| f.id == face)
+            .ok_or(CELL_FONT_FT_ERROR_INVALID_FONT)?;
+
+        trace!("FontFtManager::get_kerning: face={}, left={}, right={}", face, left_glyph, right_glyph);
+
+        // Simulated kerning table for common English pairs.
+        // Values are fractions of the pixel size.
+        let pixel_size = face_entry.pixel_size as i32;
+        let kern_x = match (left_glyph, right_glyph) {
+            // AV, AW, AY — pull together
+            (0x41, 0x56) | (0x41, 0x57) | (0x41, 0x59) => -(pixel_size / 8),
+            // VA, WA, YA
+            (0x56, 0x41) | (0x57, 0x41) | (0x59, 0x41) => -(pixel_size / 8),
+            // To, Tr
+            (0x54, 0x6F) | (0x54, 0x72) => -(pixel_size / 6),
+            // LT, LV, LW, LY
+            (0x4C, 0x54) | (0x4C, 0x56) | (0x4C, 0x57) | (0x4C, 0x59) => -(pixel_size / 10),
+            _ => 0,
+        };
+
+        Ok((kern_x, 0))
+    }
 }
 
 impl Default for FontFtManager {
@@ -539,6 +572,40 @@ pub fn cell_font_ft_get_char_index(face: u32, char_code: u32) -> u32 {
     crate::context::get_hle_context().font_ft.get_char_index(face, char_code).unwrap_or_default()
 }
 
+/// cellFontFtGetKerning - Get kerning between two glyphs
+///
+/// # Arguments
+/// * `face` - Face handle
+/// * `left_glyph` - Left glyph index
+/// * `right_glyph` - Right glyph index
+/// * `kern_x_addr` - Address to write horizontal kerning
+/// * `kern_y_addr` - Address to write vertical kerning
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_font_ft_get_kerning(
+    face: u32,
+    left_glyph: u32,
+    right_glyph: u32,
+    kern_x_addr: u32,
+    kern_y_addr: u32,
+) -> i32 {
+    trace!("cellFontFtGetKerning(face={}, left={}, right={})", face, left_glyph, right_glyph);
+
+    match crate::context::get_hle_context().font_ft.get_kerning(face, left_glyph, right_glyph) {
+        Ok((kx, ky)) => {
+            if kern_x_addr != 0 {
+                if let Err(e) = write_be32(kern_x_addr, kx as u32) { return e; }
+            }
+            if kern_y_addr != 0 {
+                if let Err(e) = write_be32(kern_y_addr, ky as u32) { return e; }
+            }
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -658,5 +725,30 @@ mod tests {
         let metrics = CellFontFtGlyphMetrics::default();
         assert_eq!(metrics.width, 0);
         assert_eq!(metrics.height, 0);
+    }
+
+    #[test]
+    fn test_font_ft_kerning() {
+        let mut manager = FontFtManager::new();
+        manager.init(CellFontFtConfig::default());
+
+        let face = manager.open_font_memory(0x10000000, 1024, 0).unwrap();
+
+        // AV should have negative kerning
+        let (kx, ky) = manager.get_kerning(face, 0x41, 0x56).unwrap();
+        assert!(kx < 0);
+        assert_eq!(ky, 0);
+
+        // Two random chars should have zero kerning
+        let (kx, _) = manager.get_kerning(face, 0x61, 0x62).unwrap();
+        assert_eq!(kx, 0);
+
+        manager.end();
+    }
+
+    #[test]
+    fn test_font_ft_kerning_not_initialized() {
+        let manager = FontFtManager::new();
+        assert!(manager.get_kerning(1, 0x41, 0x56).is_err());
     }
 }

@@ -66,6 +66,8 @@ pub struct HleDispatcher {
     stub_base: u32,
     /// Call statistics
     call_counts: HashMap<u32, u64>,
+    /// NID → stub address mapping for NID-based dispatch
+    nid_to_stub: HashMap<u32, u32>,
 }
 
 impl HleDispatcher {
@@ -76,6 +78,7 @@ impl HleDispatcher {
             next_stub_id: 0,
             stub_base: 0x2F00_0000,
             call_counts: HashMap::new(),
+            nid_to_stub: HashMap::new(),
         }
     }
 
@@ -171,11 +174,36 @@ impl HleDispatcher {
         self.stub_map.len()
     }
 
+    /// Register a NID → stub address mapping.
+    ///
+    /// Used by the loader when it discovers an import table entry and
+    /// patches the PLT/GOT to point at one of the pre-registered HLE
+    /// stubs.  Later, at runtime, the PPU interpreter can look up the
+    /// NID to find the correct HLE handler.
+    pub fn register_nid_stub(&mut self, nid: u32, stub_addr: u32) {
+        debug!("Mapping NID 0x{:08x} -> stub 0x{:08x}", nid, stub_addr);
+        self.nid_to_stub.insert(nid, stub_addr);
+    }
+
+    /// Look up a stub address by NID.
+    ///
+    /// Returns the stub address that was previously registered for this
+    /// NID, if any.
+    pub fn get_stub_for_nid(&self, nid: u32) -> Option<u32> {
+        self.nid_to_stub.get(&nid).copied()
+    }
+
+    /// Get number of NID → stub mappings.
+    pub fn nid_stub_count(&self) -> usize {
+        self.nid_to_stub.len()
+    }
+
     /// Reset the dispatcher
     pub fn reset(&mut self) {
         self.stub_map.clear();
         self.next_stub_id = 0;
         self.call_counts.clear();
+        self.nid_to_stub.clear();
     }
 }
 
@@ -852,5 +880,29 @@ mod tests {
         
         let result = dispatcher.dispatch(&ctx);
         assert_eq!(result, Some(0));
+    }
+
+    #[test]
+    fn test_nid_stub_registration() {
+        let mut dispatcher = HleDispatcher::new();
+        let addr = dispatcher.register_function("cellFs", "cellFsOpen", hle_stub_return_ok);
+
+        // No NID mapping yet
+        assert_eq!(dispatcher.nid_stub_count(), 0);
+        assert!(dispatcher.get_stub_for_nid(0xB27C8AE7).is_none());
+
+        // Register NID → stub
+        dispatcher.register_nid_stub(0xB27C8AE7, addr);
+        assert_eq!(dispatcher.nid_stub_count(), 1);
+        assert_eq!(dispatcher.get_stub_for_nid(0xB27C8AE7), Some(addr));
+    }
+
+    #[test]
+    fn test_nid_stub_reset() {
+        let mut dispatcher = HleDispatcher::new();
+        dispatcher.register_nid_stub(0x12345678, 0x2F000000);
+        assert_eq!(dispatcher.nid_stub_count(), 1);
+        dispatcher.reset();
+        assert_eq!(dispatcher.nid_stub_count(), 0);
     }
 }

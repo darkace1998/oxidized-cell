@@ -277,6 +277,33 @@ extern "C" {
     // Execution APIs
     fn oc_ppu_jit_execute(jit: *mut PpuJit, context: *mut PpuContext, address: u32) -> i32;
     fn oc_ppu_jit_execute_block(jit: *mut PpuJit, context: *mut PpuContext, address: u32) -> i32;
+    
+    // Block linking APIs
+    fn oc_ppu_jit_link_add(jit: *mut PpuJit, source: u32, target: u32, conditional: i32);
+    fn oc_ppu_jit_link_blocks(jit: *mut PpuJit, source: u32, target: u32) -> i32;
+    fn oc_ppu_jit_unlink_source(jit: *mut PpuJit, source: u32);
+    fn oc_ppu_jit_unlink_target(jit: *mut PpuJit, target: u32);
+    fn oc_ppu_jit_link_get_target(jit: *mut PpuJit, source: u32, target: u32) -> *mut u8;
+    fn oc_ppu_jit_link_record_hit(jit: *mut PpuJit);
+    fn oc_ppu_jit_link_record_miss(jit: *mut PpuJit);
+    fn oc_ppu_jit_link_get_count(jit: *mut PpuJit) -> usize;
+    fn oc_ppu_jit_link_get_active(jit: *mut PpuJit) -> usize;
+    fn oc_ppu_jit_link_clear(jit: *mut PpuJit);
+    
+    // Trace compilation APIs
+    fn oc_ppu_jit_trace_set_hot_threshold(jit: *mut PpuJit, threshold: u64);
+    fn oc_ppu_jit_trace_get_hot_threshold(jit: *mut PpuJit) -> u64;
+    fn oc_ppu_jit_trace_set_max_length(jit: *mut PpuJit, length: usize);
+    fn oc_ppu_jit_trace_detect(jit: *mut PpuJit, header: u32, block_addrs: *const u32, count: usize, back_edge: u32);
+    fn oc_ppu_jit_trace_record_execution(jit: *mut PpuJit, header: u32) -> i32;
+    #[allow(dead_code)]
+    fn oc_ppu_jit_trace_mark_compiled(jit: *mut PpuJit, header: u32, code: *mut u8);
+    fn oc_ppu_jit_trace_get_compiled(jit: *mut PpuJit, header: u32) -> *mut u8;
+    fn oc_ppu_jit_trace_is_header(jit: *mut PpuJit, address: u32) -> i32;
+    fn oc_ppu_jit_trace_clear(jit: *mut PpuJit);
+    
+    // Code verification API
+    fn oc_ppu_jit_verify_codegen(jit: *mut PpuJit) -> i32;
 }
 
 // FFI declarations for SPU JIT
@@ -323,6 +350,16 @@ extern "C" {
     fn oc_spu_jit_is_simd_intrinsics_enabled(jit: *mut SpuJit) -> i32;
     fn oc_spu_jit_get_simd_intrinsic(jit: *mut SpuJit, opcode: u32) -> i32;
     fn oc_spu_jit_has_simd_intrinsic(jit: *mut SpuJit, opcode: u32) -> i32;
+    
+    // SPU-to-SPU Mailbox Fast Path APIs
+    fn oc_spu_jit_mailbox_send(jit: *mut SpuJit, src_spu: u8, dst_spu: u8, value: u32) -> i32;
+    fn oc_spu_jit_mailbox_receive(jit: *mut SpuJit, src_spu: u8, dst_spu: u8, value: *mut u32) -> i32;
+    fn oc_spu_jit_mailbox_pending(jit: *mut SpuJit, src_spu: u8, dst_spu: u8) -> u32;
+    fn oc_spu_jit_mailbox_reset(jit: *mut SpuJit);
+    fn oc_spu_jit_mailbox_get_stats(jit: *mut SpuJit, total_sends: *mut u64, total_receives: *mut u64, send_blocked: *mut u64, receive_blocked: *mut u64);
+    
+    // Loop-Aware Block Merging API
+    fn oc_spu_jit_merge_loop_blocks(jit: *mut SpuJit, loop_header: u32, back_edge_addr: u32, body_addresses: *const u32, body_count: usize) -> i32;
 }
 
 // FFI declarations for RSX Shader Compiler
@@ -398,11 +435,10 @@ impl PpuJitCompiler {
             oc_ppu_jit_compile(self.handle, address, code.as_ptr(), code.len())
         };
         
-        match result {
-            0 => Ok(()),
-            -1 => Err(JitError::InvalidInput),
-            -2 => Err(JitError::Disabled),
-            _ => Err(JitError::CompilationFailed),
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(JitError::from_error_code(result))
         }
     }
 
@@ -651,6 +687,112 @@ impl PpuJitCompiler {
             _ => Err(exit_reason),
         }
     }
+
+    // ========== Block Linking APIs ==========
+
+    /// Register a potential link between two compiled blocks
+    pub fn link_add(&mut self, source: u32, target: u32, conditional: bool) {
+        unsafe { oc_ppu_jit_link_add(self.handle, source, target, conditional as i32) }
+    }
+
+    /// Activate a link: patch source block to jump directly to target
+    pub fn link_blocks(&mut self, source: u32, target: u32) -> bool {
+        unsafe { oc_ppu_jit_link_blocks(self.handle, source, target) != 0 }
+    }
+
+    /// Unlink all outgoing links from a source block
+    pub fn unlink_source(&mut self, source: u32) {
+        unsafe { oc_ppu_jit_unlink_source(self.handle, source) }
+    }
+
+    /// Unlink all incoming links to a target block
+    pub fn unlink_target(&mut self, target: u32) {
+        unsafe { oc_ppu_jit_unlink_target(self.handle, target) }
+    }
+
+    /// Get the linked native code pointer for a source→target edge
+    pub fn link_get_target(&self, source: u32, target: u32) -> Option<*mut u8> {
+        let ptr = unsafe { oc_ppu_jit_link_get_target(self.handle, source, target) };
+        if ptr.is_null() { None } else { Some(ptr) }
+    }
+
+    /// Record a block link hit (direct jump taken)
+    pub fn link_record_hit(&mut self) {
+        unsafe { oc_ppu_jit_link_record_hit(self.handle) }
+    }
+
+    /// Record a block link miss (fell back to dispatcher)
+    pub fn link_record_miss(&mut self) {
+        unsafe { oc_ppu_jit_link_record_miss(self.handle) }
+    }
+
+    /// Get total link count
+    pub fn link_get_count(&self) -> usize {
+        unsafe { oc_ppu_jit_link_get_count(self.handle) }
+    }
+
+    /// Get active link count
+    pub fn link_get_active(&self) -> usize {
+        unsafe { oc_ppu_jit_link_get_active(self.handle) }
+    }
+
+    /// Clear all block links
+    pub fn link_clear(&mut self) {
+        unsafe { oc_ppu_jit_link_clear(self.handle) }
+    }
+
+    // ========== Trace Compilation APIs ==========
+
+    /// Set execution count threshold for trace compilation
+    pub fn trace_set_hot_threshold(&mut self, threshold: u64) {
+        unsafe { oc_ppu_jit_trace_set_hot_threshold(self.handle, threshold) }
+    }
+
+    /// Get trace hot threshold
+    pub fn trace_get_hot_threshold(&self) -> u64 {
+        unsafe { oc_ppu_jit_trace_get_hot_threshold(self.handle) }
+    }
+
+    /// Set maximum trace length (number of blocks)
+    pub fn trace_set_max_length(&mut self, length: usize) {
+        unsafe { oc_ppu_jit_trace_set_max_length(self.handle, length) }
+    }
+
+    /// Detect a trace (hot path) starting at the given header
+    pub fn trace_detect(&mut self, header: u32, block_addrs: &[u32], back_edge: u32) {
+        unsafe {
+            oc_ppu_jit_trace_detect(self.handle, header, block_addrs.as_ptr(),
+                                     block_addrs.len(), back_edge)
+        }
+    }
+
+    /// Record trace execution, returns true if trace should be compiled
+    pub fn trace_record_execution(&mut self, header: u32) -> bool {
+        unsafe { oc_ppu_jit_trace_record_execution(self.handle, header) != 0 }
+    }
+
+    /// Check if an address is a trace header
+    pub fn trace_is_header(&self, address: u32) -> bool {
+        unsafe { oc_ppu_jit_trace_is_header(self.handle, address) != 0 }
+    }
+
+    /// Get compiled trace code
+    pub fn trace_get_compiled(&self, header: u32) -> Option<*mut u8> {
+        let ptr = unsafe { oc_ppu_jit_trace_get_compiled(self.handle, header) };
+        if ptr.is_null() { None } else { Some(ptr) }
+    }
+
+    /// Clear all traces
+    pub fn trace_clear(&mut self) {
+        unsafe { oc_ppu_jit_trace_clear(self.handle) }
+    }
+
+    // ========== Code Verification API ==========
+
+    /// Verify JIT code generation produces valid machine code
+    pub fn verify_codegen(&mut self) -> bool {
+        unsafe { oc_ppu_jit_verify_codegen(self.handle) == 1 }
+    }
 }
 
 impl Drop for PpuJitCompiler {
@@ -685,11 +827,10 @@ impl SpuJitCompiler {
             oc_spu_jit_compile(self.handle, address, code.as_ptr(), code.len())
         };
         
-        match result {
-            0 => Ok(()),
-            -1 => Err(JitError::InvalidInput),
-            -2 => Err(JitError::Disabled),
-            _ => Err(JitError::CompilationFailed),
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(JitError::from_error_code(result))
         }
     }
 
@@ -884,6 +1025,63 @@ impl SpuJitCompiler {
     pub fn has_simd_intrinsic(&self, opcode: u32) -> bool {
         unsafe { oc_spu_jit_has_simd_intrinsic(self.handle, opcode) != 0 }
     }
+    
+    // ========================================================================
+    // SPU-to-SPU Mailbox Fast Path
+    // ========================================================================
+    
+    /// Send a value through the SPU-to-SPU mailbox fast path.
+    /// Returns true on success, false if the mailbox is full.
+    pub fn mailbox_send(&mut self, src_spu: u8, dst_spu: u8, value: u32) -> bool {
+        unsafe { oc_spu_jit_mailbox_send(self.handle, src_spu, dst_spu, value) != 0 }
+    }
+    
+    /// Receive a value from the SPU-to-SPU mailbox fast path.
+    /// Returns Some(value) on success, None if the mailbox is empty.
+    pub fn mailbox_receive(&mut self, src_spu: u8, dst_spu: u8) -> Option<u32> {
+        let mut value: u32 = 0;
+        let result = unsafe { oc_spu_jit_mailbox_receive(self.handle, src_spu, dst_spu, &mut value) };
+        if result != 0 { Some(value) } else { None }
+    }
+    
+    /// Get the number of pending messages in a mailbox slot.
+    pub fn mailbox_pending(&self, src_spu: u8, dst_spu: u8) -> u32 {
+        unsafe { oc_spu_jit_mailbox_pending(self.handle, src_spu, dst_spu) }
+    }
+    
+    /// Reset all mailbox slots.
+    pub fn mailbox_reset(&mut self) {
+        unsafe { oc_spu_jit_mailbox_reset(self.handle) }
+    }
+    
+    /// Get mailbox statistics: (total_sends, total_receives, send_blocked, receive_blocked)
+    pub fn mailbox_get_stats(&self) -> (u64, u64, u64, u64) {
+        let mut sends: u64 = 0;
+        let mut receives: u64 = 0;
+        let mut send_blocked: u64 = 0;
+        let mut receive_blocked: u64 = 0;
+        unsafe {
+            oc_spu_jit_mailbox_get_stats(
+                self.handle, &mut sends, &mut receives, &mut send_blocked, &mut receive_blocked,
+            );
+        }
+        (sends, receives, send_blocked, receive_blocked)
+    }
+    
+    // ========================================================================
+    // Loop-Aware Block Merging
+    // ========================================================================
+    
+    /// Merge basic blocks within a loop body for cross-iteration optimization.
+    /// Returns the number of merged blocks created.
+    pub fn merge_loop_blocks(&mut self, loop_header: u32, back_edge: u32, body_addresses: &[u32]) -> i32 {
+        unsafe {
+            oc_spu_jit_merge_loop_blocks(
+                self.handle, loop_header, back_edge,
+                body_addresses.as_ptr(), body_addresses.len(),
+            )
+        }
+    }
 }
 
 /// Loop information
@@ -1064,7 +1262,7 @@ impl Drop for RsxShaderCompiler {
 unsafe impl Send for RsxShaderCompiler {}
 
 /// JIT compilation errors
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JitError {
     /// Invalid input parameters
     InvalidInput,
@@ -1072,6 +1270,23 @@ pub enum JitError {
     Disabled,
     /// Compilation failed
     CompilationFailed,
+    /// LLVM compilation failed (message may be generic or detail-specific)
+    LlvmError(String),
+    /// Block is empty (no instructions)
+    EmptyBlock,
+}
+
+impl JitError {
+    /// Create a JitError from a C++ error code, with optional LLVM error detail.
+    pub fn from_error_code(code: i32) -> Self {
+        match code {
+            -1 => JitError::InvalidInput,
+            -2 => JitError::Disabled,
+            -3 => JitError::EmptyBlock,
+            -4 => JitError::LlvmError("LLVM IR generation or compilation failed".into()),
+            _ => JitError::CompilationFailed,
+        }
+    }
 }
 
 impl std::fmt::Display for JitError {
@@ -1080,11 +1295,109 @@ impl std::fmt::Display for JitError {
             JitError::InvalidInput => write!(f, "Invalid input parameters"),
             JitError::Disabled => write!(f, "JIT compiler is disabled"),
             JitError::CompilationFailed => write!(f, "JIT compilation failed"),
+            JitError::LlvmError(msg) => write!(f, "LLVM compilation error: {}", msg),
+            JitError::EmptyBlock => write!(f, "Empty code block"),
         }
     }
 }
 
 impl std::error::Error for JitError {}
+
+/// Callback type for interpreter fallback when JIT compilation fails.
+///
+/// When a JIT block fails to compile, this callback is invoked with:
+/// - `address`: the PPU/SPU address that failed to compile
+/// - `error`: the JitError describing the failure
+///
+/// The callback should interpret the block directly and return the number
+/// of instructions executed, or a negative value on interpreter failure.
+pub type InterpreterFallbackFn = Box<dyn Fn(u32, &JitError) -> i32 + Send + Sync>;
+
+/// Manages JIT-to-interpreter fallback for failed compilations.
+///
+/// When the LLVM backend fails to compile a block (e.g. unsupported instruction,
+/// out of memory, LLVM internal error), blocks are routed to the Rust interpreter
+/// instead of silently failing.
+pub struct JitFallbackManager {
+    ppu_fallback: Option<InterpreterFallbackFn>,
+    spu_fallback: Option<InterpreterFallbackFn>,
+    /// Addresses that failed compilation and should always use interpreter
+    failed_addresses: std::collections::HashSet<u32>,
+    /// Statistics
+    total_fallbacks: u64,
+    total_ppu_fallbacks: u64,
+    total_spu_fallbacks: u64,
+}
+
+impl JitFallbackManager {
+    /// Create a new fallback manager with no callbacks registered.
+    pub fn new() -> Self {
+        Self {
+            ppu_fallback: None,
+            spu_fallback: None,
+            failed_addresses: std::collections::HashSet::new(),
+            total_fallbacks: 0,
+            total_ppu_fallbacks: 0,
+            total_spu_fallbacks: 0,
+        }
+    }
+
+    /// Register a PPU interpreter fallback callback.
+    pub fn set_ppu_fallback(&mut self, callback: InterpreterFallbackFn) {
+        self.ppu_fallback = Some(callback);
+    }
+
+    /// Register an SPU interpreter fallback callback.
+    pub fn set_spu_fallback(&mut self, callback: InterpreterFallbackFn) {
+        self.spu_fallback = Some(callback);
+    }
+
+    /// Try to execute a failed PPU block via the interpreter fallback.
+    /// Returns `Some(instructions_executed)` if the fallback was invoked,
+    /// or `None` if no fallback is registered.
+    pub fn fallback_ppu(&mut self, address: u32, error: &JitError) -> Option<i32> {
+        self.failed_addresses.insert(address);
+        self.total_fallbacks += 1;
+        self.total_ppu_fallbacks += 1;
+        self.ppu_fallback.as_ref().map(|cb| cb(address, error))
+    }
+
+    /// Try to execute a failed SPU block via the interpreter fallback.
+    pub fn fallback_spu(&mut self, address: u32, error: &JitError) -> Option<i32> {
+        self.failed_addresses.insert(address);
+        self.total_fallbacks += 1;
+        self.total_spu_fallbacks += 1;
+        self.spu_fallback.as_ref().map(|cb| cb(address, error))
+    }
+
+    /// Check if an address has previously failed JIT compilation.
+    pub fn is_failed(&self, address: u32) -> bool {
+        self.failed_addresses.contains(&address)
+    }
+
+    /// Clear the failed address set (e.g. after re-enabling LLVM or code invalidation).
+    pub fn clear_failed(&mut self) {
+        self.failed_addresses.clear();
+    }
+
+    /// Get fallback statistics: (total, ppu, spu).
+    pub fn get_stats(&self) -> (u64, u64, u64) {
+        (self.total_fallbacks, self.total_ppu_fallbacks, self.total_spu_fallbacks)
+    }
+
+    /// Reset statistics.
+    pub fn reset_stats(&mut self) {
+        self.total_fallbacks = 0;
+        self.total_ppu_fallbacks = 0;
+        self.total_spu_fallbacks = 0;
+    }
+}
+
+impl Default for JitFallbackManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// JIT compiler handle (legacy, for backwards compatibility)
 #[derive(Default)]
@@ -1198,5 +1511,301 @@ mod tests {
         
         // Clear entire cache
         jit.clear_cache();
+    }
+
+    #[test]
+    fn test_ppu_block_linking() {
+        let mut jit = PpuJitCompiler::new().expect("JIT creation failed");
+
+        // Register a link between two blocks
+        jit.link_add(0x1000, 0x2000, false);
+        assert_eq!(jit.link_get_count(), 1);
+        assert_eq!(jit.link_get_active(), 0);
+
+        // Compile target block first
+        let code = [0x60, 0x00, 0x00, 0x00]; // nop
+        jit.compile(0x2000, &code).expect("Compilation failed");
+
+        // Now link them
+        let linked = jit.link_blocks(0x1000, 0x2000);
+        assert!(linked, "Should successfully link blocks");
+        assert_eq!(jit.link_get_active(), 1);
+
+        // Get linked target
+        let target = jit.link_get_target(0x1000, 0x2000);
+        assert!(target.is_some(), "Should have linked target");
+
+        // Unlink source
+        jit.unlink_source(0x1000);
+        assert_eq!(jit.link_get_active(), 0);
+
+        // Record hits and misses
+        jit.link_record_hit();
+        jit.link_record_miss();
+
+        // Clear all
+        jit.link_clear();
+        assert_eq!(jit.link_get_count(), 0);
+    }
+
+    #[test]
+    fn test_ppu_trace_compilation() {
+        let mut jit = PpuJitCompiler::new().expect("JIT creation failed");
+
+        // Set threshold
+        jit.trace_set_hot_threshold(5);
+        assert_eq!(jit.trace_get_hot_threshold(), 5);
+
+        // Set max length
+        jit.trace_set_max_length(16);
+
+        // Detect a loop trace
+        let blocks = [0x1000u32, 0x1010, 0x1020];
+        jit.trace_detect(0x1000, &blocks, 0x1000);
+        assert!(jit.trace_is_header(0x1000));
+        assert!(!jit.trace_is_header(0x2000));
+
+        // Record executions
+        for _ in 0..4 {
+            assert!(!jit.trace_record_execution(0x1000));
+        }
+        // Fifth execution should trigger compilation
+        assert!(jit.trace_record_execution(0x1000));
+
+        // No compiled trace yet (would need actual compilation)
+        assert!(jit.trace_get_compiled(0x1000).is_none());
+
+        // Clear
+        jit.trace_clear();
+        assert!(!jit.trace_is_header(0x1000));
+    }
+
+    #[test]
+    fn test_ppu_verify_codegen() {
+        let mut jit = PpuJitCompiler::new().expect("JIT creation failed");
+        // Verify code generation produces valid output
+        let result = jit.verify_codegen();
+        assert!(result, "Code verification should pass");
+    }
+
+    #[test]
+    fn test_ppu_compile_fallback_on_empty() {
+        let mut jit = PpuJitCompiler::new().expect("JIT creation failed");
+        // Empty code should fail gracefully
+        let result = jit.compile(0x1000, &[]);
+        assert!(result.is_err(), "Empty code should fail");
+    }
+
+    #[test]
+    fn test_ppu_block_linking_conditional() {
+        let mut jit = PpuJitCompiler::new().expect("JIT creation failed");
+
+        // Register conditional link
+        jit.link_add(0x1000, 0x2000, true);
+        assert_eq!(jit.link_get_count(), 1);
+
+        // Unlink non-existent target is a no-op
+        jit.unlink_target(0x3000);
+        assert_eq!(jit.link_get_count(), 1);
+    }
+
+    #[test]
+    fn test_ppu_trace_linear() {
+        let mut jit = PpuJitCompiler::new().expect("JIT creation failed");
+        
+        // Linear trace (no back-edge)
+        let blocks = [0x1000u32, 0x1020, 0x1040, 0x1060];
+        jit.trace_detect(0x1000, &blocks, 0); // back_edge=0 means linear
+        assert!(jit.trace_is_header(0x1000));
+    }
+
+    #[test]
+    fn test_spu_mailbox_send_receive() {
+        let mut jit = SpuJitCompiler::new().expect("JIT creation failed");
+        
+        // Initially empty
+        assert_eq!(jit.mailbox_pending(0, 1), 0);
+        assert!(jit.mailbox_receive(0, 1).is_none());
+        
+        // Send a message from SPU 0 to SPU 1
+        assert!(jit.mailbox_send(0, 1, 0x42));
+        assert_eq!(jit.mailbox_pending(0, 1), 1);
+        
+        // Receive it
+        let val = jit.mailbox_receive(0, 1);
+        assert_eq!(val, Some(0x42));
+        assert_eq!(jit.mailbox_pending(0, 1), 0);
+    }
+
+    #[test]
+    fn test_spu_mailbox_fifo_order() {
+        let mut jit = SpuJitCompiler::new().expect("JIT creation failed");
+        
+        // Send 4 messages (FIFO depth)
+        for i in 0..4u32 {
+            assert!(jit.mailbox_send(2, 3, i + 100));
+        }
+        assert_eq!(jit.mailbox_pending(2, 3), 4);
+        
+        // 5th should fail (full)
+        assert!(!jit.mailbox_send(2, 3, 999));
+        
+        // Receive in FIFO order
+        for i in 0..4u32 {
+            assert_eq!(jit.mailbox_receive(2, 3), Some(i + 100));
+        }
+        
+        // Empty now
+        assert!(jit.mailbox_receive(2, 3).is_none());
+    }
+
+    #[test]
+    fn test_spu_mailbox_stats() {
+        let mut jit = SpuJitCompiler::new().expect("JIT creation failed");
+        
+        jit.mailbox_send(0, 1, 1);
+        jit.mailbox_send(0, 1, 2);
+        jit.mailbox_receive(0, 1);
+        
+        let (sends, receives, _, _) = jit.mailbox_get_stats();
+        assert_eq!(sends, 2);
+        assert_eq!(receives, 1);
+        
+        // Reset
+        jit.mailbox_reset();
+        let (sends, receives, _, _) = jit.mailbox_get_stats();
+        assert_eq!(sends, 0);
+        assert_eq!(receives, 0);
+    }
+
+    #[test]
+    fn test_spu_mailbox_invalid_spu() {
+        let mut jit = SpuJitCompiler::new().expect("JIT creation failed");
+        
+        // SPU IDs >= 8 should fail
+        assert!(!jit.mailbox_send(8, 0, 42));
+        assert!(jit.mailbox_receive(0, 8).is_none());
+        assert_eq!(jit.mailbox_pending(8, 8), 0);
+    }
+
+    #[test]
+    fn test_spu_merge_loop_blocks_empty() {
+        let mut jit = SpuJitCompiler::new().expect("JIT creation failed");
+        
+        // Empty body list should return 0
+        let result = jit.merge_loop_blocks(0x100, 0x200, &[]);
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_spu_merge_loop_blocks_no_cache() {
+        let mut jit = SpuJitCompiler::new().expect("JIT creation failed");
+        
+        // Body addresses not in cache should return 0
+        let body = [0x100u32, 0x110, 0x120];
+        let result = jit.merge_loop_blocks(0x100, 0x120, &body);
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_jit_error_from_error_code() {
+        assert_eq!(JitError::from_error_code(-1), JitError::InvalidInput);
+        assert_eq!(JitError::from_error_code(-2), JitError::Disabled);
+        assert_eq!(JitError::from_error_code(-3), JitError::EmptyBlock);
+        assert!(matches!(JitError::from_error_code(-4), JitError::LlvmError(_)));
+        assert_eq!(JitError::from_error_code(-99), JitError::CompilationFailed);
+    }
+
+    #[test]
+    fn test_jit_error_display() {
+        let err = JitError::LlvmError("test error".into());
+        let msg = format!("{}", err);
+        assert!(msg.contains("LLVM"), "Display should mention LLVM: {}", msg);
+        assert!(msg.contains("test error"));
+    }
+
+    #[test]
+    fn test_fallback_manager_ppu() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+        
+        let mut mgr = JitFallbackManager::new();
+        
+        // No fallback registered — should return None
+        assert!(mgr.fallback_ppu(0x1000, &JitError::CompilationFailed).is_none());
+        
+        // Register a PPU fallback
+        let call_count = Arc::new(AtomicU32::new(0));
+        let cc = call_count.clone();
+        mgr.set_ppu_fallback(Box::new(move |addr, _err| {
+            cc.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(addr, 0x2000);
+            42  // "interpreted 42 instructions"
+        }));
+        
+        let result = mgr.fallback_ppu(0x2000, &JitError::EmptyBlock);
+        assert_eq!(result, Some(42));
+        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        assert!(mgr.is_failed(0x2000));
+        
+        let (total, ppu, spu) = mgr.get_stats();
+        assert_eq!(total, 2);  // 1 from the None case + 1 from the Some case
+        assert_eq!(ppu, 2);
+        assert_eq!(spu, 0);
+    }
+
+    #[test]
+    fn test_fallback_manager_spu() {
+        let mut mgr = JitFallbackManager::new();
+        
+        mgr.set_spu_fallback(Box::new(|_addr, _err| 10));
+        
+        let result = mgr.fallback_spu(0x100, &JitError::LlvmError("oops".into()));
+        assert_eq!(result, Some(10));
+        assert!(mgr.is_failed(0x100));
+        
+        // Clear failed set
+        mgr.clear_failed();
+        assert!(!mgr.is_failed(0x100));
+    }
+
+    #[test]
+    fn test_fallback_manager_stats_reset() {
+        let mut mgr = JitFallbackManager::new();
+        mgr.set_ppu_fallback(Box::new(|_, _| 0));
+        mgr.fallback_ppu(0x1000, &JitError::CompilationFailed);
+        mgr.fallback_ppu(0x2000, &JitError::CompilationFailed);
+        
+        let (total, _, _) = mgr.get_stats();
+        assert_eq!(total, 2);
+        
+        mgr.reset_stats();
+        let (total, _, _) = mgr.get_stats();
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn test_ppu_compile_empty_returns_error() {
+        let mut jit = PpuJitCompiler::new().expect("JIT creation failed");
+        let result = jit.compile(0x1000, &[]);
+        assert!(result.is_err(), "Empty block should return an error");
+        // May return EmptyBlock (-3) or InvalidInput (-1) depending on C++ validation order
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, JitError::EmptyBlock | JitError::InvalidInput),
+            "Expected EmptyBlock or InvalidInput, got: {:?}", err
+        );
+    }
+
+    #[test]
+    fn test_spu_compile_empty_returns_error() {
+        let mut jit = SpuJitCompiler::new().expect("JIT creation failed");
+        let result = jit.compile(0x1000, &[]);
+        assert!(result.is_err(), "Empty block should return an error");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, JitError::EmptyBlock | JitError::InvalidInput),
+            "Expected EmptyBlock or InvalidInput, got: {:?}", err
+        );
     }
 }

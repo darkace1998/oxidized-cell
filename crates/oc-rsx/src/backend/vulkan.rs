@@ -3871,6 +3871,378 @@ impl GraphicsBackend for VulkanBackend {
     }
 }
 
+/// Render-to-texture (RTT) management.
+/// Tracks framebuffers bound to texture offsets so the GPU can render
+/// directly into a texture that is later sampled by a shader.
+#[derive(Debug)]
+pub struct RenderToTexture {
+    /// Map from texture offset → framebuffer handle index
+    bindings: std::collections::HashMap<u32, u32>,
+    /// Whether RTT is currently active
+    active: bool,
+    /// Currently bound RTT target offset
+    current_target: u32,
+    /// Resolution of the current RTT surface
+    current_width: u32,
+    current_height: u32,
+}
+
+impl RenderToTexture {
+    pub fn new() -> Self {
+        Self {
+            bindings: std::collections::HashMap::new(),
+            active: false,
+            current_target: 0,
+            current_width: 0,
+            current_height: 0,
+        }
+    }
+
+    /// Begin rendering to a texture at the given offset.
+    /// Returns `true` if the target was successfully bound, `false` if already active.
+    pub fn begin_rtt(&mut self, texture_offset: u32, width: u32, height: u32) -> bool {
+        if self.active {
+            return false;
+        }
+        self.active = true;
+        self.current_target = texture_offset;
+        self.current_width = width;
+        self.current_height = height;
+        // Assign a framebuffer index
+        let fb_idx = self.bindings.len() as u32;
+        self.bindings.insert(texture_offset, fb_idx);
+        true
+    }
+
+    /// End rendering to the current RTT target.
+    /// Returns the texture offset that was being rendered to, or 0 if not active.
+    pub fn end_rtt(&mut self) -> u32 {
+        if !self.active {
+            return 0;
+        }
+        self.active = false;
+        let target = self.current_target;
+        self.current_target = 0;
+        self.current_width = 0;
+        self.current_height = 0;
+        target
+    }
+
+    /// Check if a texture offset has an associated RTT framebuffer.
+    pub fn has_rtt_binding(&self, texture_offset: u32) -> bool {
+        self.bindings.contains_key(&texture_offset)
+    }
+
+    /// Get the framebuffer index for a texture offset.
+    pub fn get_rtt_framebuffer(&self, texture_offset: u32) -> Option<u32> {
+        self.bindings.get(&texture_offset).copied()
+    }
+
+    /// Whether RTT is currently active.
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    /// Get current target dimensions (returns (0,0) if not active).
+    pub fn current_dimensions(&self) -> (u32, u32) {
+        if self.active {
+            (self.current_width, self.current_height)
+        } else {
+            (0, 0)
+        }
+    }
+
+    /// Remove an RTT binding.
+    pub fn remove_binding(&mut self, texture_offset: u32) -> bool {
+        self.bindings.remove(&texture_offset).is_some()
+    }
+
+    /// Get total number of RTT bindings.
+    pub fn binding_count(&self) -> usize {
+        self.bindings.len()
+    }
+}
+
+impl Default for RenderToTexture {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Framebuffer copy/blit operations.
+/// Handles copying pixel data between framebuffers, including format conversion
+/// and scaling via blit.
+#[derive(Debug)]
+pub struct FramebufferCopier {
+    /// Pending copy operations
+    pending_copies: Vec<FramebufferCopy>,
+    /// Statistics
+    total_copies: u64,
+    total_bytes: u64,
+}
+
+/// A single framebuffer copy operation descriptor.
+#[derive(Debug, Clone)]
+pub struct FramebufferCopy {
+    /// Source framebuffer offset
+    pub src_offset: u32,
+    /// Destination framebuffer offset
+    pub dst_offset: u32,
+    /// Source rectangle (x, y, width, height)
+    pub src_rect: (u32, u32, u32, u32),
+    /// Destination rectangle (x, y, width, height)
+    pub dst_rect: (u32, u32, u32, u32),
+    /// Source format (bytes per pixel)
+    pub src_bpp: u32,
+    /// Destination format (bytes per pixel)
+    pub dst_bpp: u32,
+}
+
+impl FramebufferCopier {
+    pub fn new() -> Self {
+        Self {
+            pending_copies: Vec::new(),
+            total_copies: 0,
+            total_bytes: 0,
+        }
+    }
+
+    /// Queue a framebuffer copy operation.
+    pub fn queue_copy(&mut self, copy: FramebufferCopy) {
+        self.pending_copies.push(copy);
+    }
+
+    /// Execute all pending copy operations on a linear framebuffer.
+    /// Returns the number of copies performed.
+    pub fn execute_copies(&mut self, fb_data: &mut [u8], fb_pitch: u32) -> usize {
+        let count = self.pending_copies.len();
+        
+        for copy in self.pending_copies.drain(..) {
+            let (sx, sy, sw, sh) = copy.src_rect;
+            let (dx, dy, dw, dh) = copy.dst_rect;
+            
+            // Simple 1:1 copy (no scaling) when dimensions match
+            if sw == dw && sh == dh && copy.src_bpp == copy.dst_bpp {
+                let bpp = copy.src_bpp;
+                for row in 0..sh {
+                    let src_row_offset = ((sy + row) * fb_pitch + sx * bpp) as usize;
+                    let dst_row_offset = ((dy + row) * fb_pitch + dx * bpp) as usize;
+                    let row_bytes = (sw * bpp) as usize;
+                    
+                    // Check bounds and ensure source and destination don't overlap
+                    if src_row_offset + row_bytes <= fb_data.len() 
+                        && dst_row_offset + row_bytes <= fb_data.len()
+                        && (src_row_offset + row_bytes <= dst_row_offset
+                            || dst_row_offset + row_bytes <= src_row_offset)
+                    {
+                        let (left, right) = fb_data.split_at_mut(dst_row_offset);
+                        let src_slice = &left[src_row_offset..src_row_offset + row_bytes];
+                        right[..row_bytes].copy_from_slice(src_slice);
+                    }
+                }
+                self.total_bytes += (sw * sh * bpp) as u64;
+            }
+            // Scaled copy using nearest-neighbor sampling
+            else if dw > 0 && dh > 0 {
+                let src_bpp = copy.src_bpp;
+                // When formats differ, copy the minimum of src/dst bpp bytes per pixel
+                // (truncating extra channels rather than converting formats)
+                let dst_bpp = copy.dst_bpp.min(copy.src_bpp);
+                
+                // Read source pixels into a temporary row buffer to avoid
+                // aliasing issues when source and destination overlap
+                let row_buf_size = (dw * dst_bpp) as usize;
+                let mut row_buf = vec![0u8; row_buf_size];
+                
+                for dy_row in 0..dh {
+                    let src_row = sy + (dy_row * sh / dh);
+                    
+                    // Read source pixels into temporary buffer
+                    for dx_col in 0..dw {
+                        let src_col = sx + (dx_col * sw / dw);
+                        let src_off = ((src_row * fb_pitch) + src_col * src_bpp) as usize;
+                        let buf_off = (dx_col * dst_bpp) as usize;
+                        let copy_bytes = dst_bpp as usize;
+                        
+                        if src_off + copy_bytes <= fb_data.len() && buf_off + copy_bytes <= row_buf.len() {
+                            row_buf[buf_off..buf_off + copy_bytes]
+                                .copy_from_slice(&fb_data[src_off..src_off + copy_bytes]);
+                        }
+                    }
+                    
+                    // Write from buffer to destination
+                    for dx_col in 0..dw {
+                        let dst_off = (((dy + dy_row) * fb_pitch) + (dx + dx_col) * dst_bpp) as usize;
+                        let buf_off = (dx_col * dst_bpp) as usize;
+                        let copy_bytes = dst_bpp as usize;
+                        
+                        if dst_off + copy_bytes <= fb_data.len() && buf_off + copy_bytes <= row_buf.len() {
+                            fb_data[dst_off..dst_off + copy_bytes]
+                                .copy_from_slice(&row_buf[buf_off..buf_off + copy_bytes]);
+                        }
+                    }
+                }
+                self.total_bytes += (dw * dh * dst_bpp) as u64;
+            }
+            
+            self.total_copies += 1;
+        }
+        
+        count
+    }
+
+    /// Get the number of pending copy operations.
+    pub fn pending_count(&self) -> usize {
+        self.pending_copies.len()
+    }
+
+    /// Get total copies executed.
+    pub fn total_copies(&self) -> u64 {
+        self.total_copies
+    }
+
+    /// Get total bytes copied.
+    pub fn total_bytes(&self) -> u64 {
+        self.total_bytes
+    }
+}
+
+impl Default for FramebufferCopier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// MSAA (Multi-Sample Anti-Aliasing) resolver.
+/// Handles resolving multi-sampled render targets to single-sampled textures.
+#[derive(Debug)]
+pub struct MsaaResolver {
+    /// Current sample count (1, 2, 4, or 8)
+    sample_count: u8,
+    /// Sample positions for custom patterns (normalized 0.0-1.0)
+    sample_positions: Vec<(f32, f32)>,
+    /// Whether MSAA is currently enabled
+    enabled: bool,
+    /// Total resolves performed
+    resolve_count: u64,
+}
+
+impl MsaaResolver {
+    pub fn new() -> Self {
+        Self {
+            sample_count: 1,
+            sample_positions: Vec::new(),
+            enabled: false,
+            resolve_count: 0,
+        }
+    }
+
+    /// Configure MSAA with the given sample count.
+    /// Valid counts are 1, 2, 4, and 8.
+    pub fn configure(&mut self, sample_count: u8, enabled: bool) {
+        self.sample_count = match sample_count {
+            1 | 2 | 4 | 8 => sample_count,
+            _ => 1,
+        };
+        self.enabled = enabled;
+        self.sample_positions = Self::default_positions(self.sample_count);
+    }
+
+    /// Get the current sample count.
+    pub fn sample_count(&self) -> u8 {
+        self.sample_count
+    }
+
+    /// Whether MSAA is enabled.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled && self.sample_count > 1
+    }
+
+    /// Resolve multi-sampled color data to single-sampled by box-filter averaging.
+    /// `src` contains `sample_count` samples per pixel in interleaved order.
+    /// `width` × `height` is the resolved output size.
+    /// Returns the resolved pixel data (4 bytes per pixel: RGBA).
+    pub fn resolve_color(&mut self, src: &[u8], width: u32, height: u32) -> Vec<u8> {
+        let pixel_count = (width * height) as usize;
+        let samples = self.sample_count as usize;
+        let mut dst = vec![0u8; pixel_count * 4];
+        
+        if samples <= 1 || src.len() < pixel_count * samples * 4 {
+            // No MSAA or insufficient data — copy directly
+            let copy_len = dst.len().min(src.len());
+            dst[..copy_len].copy_from_slice(&src[..copy_len]);
+            self.resolve_count += 1;
+            return dst;
+        }
+        
+        // Box filter: average all samples for each pixel
+        for pixel in 0..pixel_count {
+            let mut r: u32 = 0;
+            let mut g: u32 = 0;
+            let mut b: u32 = 0;
+            let mut a: u32 = 0;
+            
+            for s in 0..samples {
+                let src_idx = (pixel * samples + s) * 4;
+                if src_idx + 3 < src.len() {
+                    r += src[src_idx] as u32;
+                    g += src[src_idx + 1] as u32;
+                    b += src[src_idx + 2] as u32;
+                    a += src[src_idx + 3] as u32;
+                }
+            }
+            
+            let dst_idx = pixel * 4;
+            dst[dst_idx] = (r / samples as u32) as u8;
+            dst[dst_idx + 1] = (g / samples as u32) as u8;
+            dst[dst_idx + 2] = (b / samples as u32) as u8;
+            dst[dst_idx + 3] = (a / samples as u32) as u8;
+        }
+        
+        self.resolve_count += 1;
+        dst
+    }
+
+    /// Get total number of resolve operations performed.
+    pub fn resolve_count(&self) -> u64 {
+        self.resolve_count
+    }
+
+    /// Generate default sample positions for the given sample count.
+    fn default_positions(count: u8) -> Vec<(f32, f32)> {
+        match count {
+            2 => vec![(0.25, 0.25), (0.75, 0.75)],
+            4 => vec![
+                (0.375, 0.125), (0.875, 0.375),
+                (0.125, 0.625), (0.625, 0.875),
+            ],
+            8 => vec![
+                (0.5625, 0.3125), (0.4375, 0.6875),
+                (0.8125, 0.5625), (0.3125, 0.1875),
+                (0.1875, 0.8125), (0.0625, 0.4375),
+                (0.6875, 0.9375), (0.9375, 0.0625),
+            ],
+            _ => vec![(0.5, 0.5)], // 1 sample = center
+        }
+    }
+
+    /// Get current sample positions.
+    pub fn sample_positions(&self) -> &[(f32, f32)] {
+        &self.sample_positions
+    }
+
+    /// Set custom sample positions.
+    pub fn set_sample_positions(&mut self, positions: Vec<(f32, f32)>) {
+        self.sample_positions = positions;
+    }
+}
+
+impl Default for MsaaResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3974,5 +4346,147 @@ mod tests {
         assert_eq!(VulkanBackend::sample_count_to_flags(4), vk::SampleCountFlags::TYPE_4);
         assert_eq!(VulkanBackend::sample_count_to_flags(8), vk::SampleCountFlags::TYPE_8);
         assert_eq!(VulkanBackend::sample_count_to_flags(99), vk::SampleCountFlags::TYPE_1); // Invalid defaults to 1
+    }
+}
+
+#[cfg(test)]
+mod rtt_msaa_tests {
+    use super::*;
+
+    #[test]
+    fn test_rtt_begin_end() {
+        let mut rtt = RenderToTexture::new();
+        assert!(!rtt.is_active());
+        assert!(rtt.begin_rtt(0x1000, 1920, 1080));
+        assert!(rtt.is_active());
+        assert_eq!(rtt.current_dimensions(), (1920, 1080));
+        assert!(rtt.has_rtt_binding(0x1000));
+        
+        let target = rtt.end_rtt();
+        assert_eq!(target, 0x1000);
+        assert!(!rtt.is_active());
+    }
+
+    #[test]
+    fn test_rtt_double_begin() {
+        let mut rtt = RenderToTexture::new();
+        assert!(rtt.begin_rtt(0x1000, 640, 480));
+        assert!(!rtt.begin_rtt(0x2000, 800, 600)); // Should fail
+        assert!(rtt.is_active());
+    }
+
+    #[test]
+    fn test_rtt_end_without_begin() {
+        let mut rtt = RenderToTexture::new();
+        assert_eq!(rtt.end_rtt(), 0);
+    }
+
+    #[test]
+    fn test_rtt_binding_management() {
+        let mut rtt = RenderToTexture::new();
+        rtt.begin_rtt(0x1000, 100, 100);
+        rtt.end_rtt();
+        rtt.begin_rtt(0x2000, 200, 200);
+        rtt.end_rtt();
+        
+        assert_eq!(rtt.binding_count(), 2);
+        assert!(rtt.has_rtt_binding(0x1000));
+        assert!(rtt.has_rtt_binding(0x2000));
+        assert!(!rtt.has_rtt_binding(0x3000));
+        
+        assert!(rtt.remove_binding(0x1000));
+        assert_eq!(rtt.binding_count(), 1);
+    }
+
+    #[test]
+    fn test_fb_copy_simple() {
+        let mut copier = FramebufferCopier::new();
+        assert_eq!(copier.pending_count(), 0);
+        
+        // Create a simple 8x2 framebuffer, 4bpp
+        let mut fb = vec![0u8; 8 * 2 * 4]; // 8 wide, 2 tall, 4 bpp
+        // Fill first row with 0xAA
+        for b in 0..32 { fb[b] = 0xAA; }
+        
+        copier.queue_copy(FramebufferCopy {
+            src_offset: 0,
+            dst_offset: 0,
+            src_rect: (0, 0, 4, 1),
+            dst_rect: (4, 1, 4, 1),
+            src_bpp: 4,
+            dst_bpp: 4,
+        });
+        
+        assert_eq!(copier.pending_count(), 1);
+        let count = copier.execute_copies(&mut fb, 8 * 4);
+        assert_eq!(count, 1);
+        assert_eq!(copier.total_copies(), 1);
+        
+        // Check destination was written
+        assert_eq!(fb[32 + 16], 0xAA); // Row 1, col 4
+    }
+
+    #[test]
+    fn test_msaa_configure() {
+        let mut msaa = MsaaResolver::new();
+        assert!(!msaa.is_enabled());
+        assert_eq!(msaa.sample_count(), 1);
+        
+        msaa.configure(4, true);
+        assert!(msaa.is_enabled());
+        assert_eq!(msaa.sample_count(), 4);
+        assert_eq!(msaa.sample_positions().len(), 4);
+    }
+
+    #[test]
+    fn test_msaa_invalid_count() {
+        let mut msaa = MsaaResolver::new();
+        msaa.configure(3, true); // Invalid, should clamp to 1
+        assert_eq!(msaa.sample_count(), 1);
+        assert!(!msaa.is_enabled()); // 1 sample = not really MSAA
+    }
+
+    #[test]
+    fn test_msaa_resolve_4x() {
+        let mut msaa = MsaaResolver::new();
+        msaa.configure(4, true);
+        
+        // 1x1 pixel with 4 samples: R varies, G/B/A constant
+        let src = vec![
+            100, 50, 25, 255, // Sample 0
+            200, 50, 25, 255, // Sample 1
+            100, 50, 25, 255, // Sample 2
+            200, 50, 25, 255, // Sample 3
+        ];
+        
+        let result = msaa.resolve_color(&src, 1, 1);
+        assert_eq!(result.len(), 4);
+        assert_eq!(result[0], 150); // Average of 100,200,100,200
+        assert_eq!(result[1], 50);
+        assert_eq!(result[2], 25);
+        assert_eq!(result[3], 255);
+    }
+
+    #[test]
+    fn test_msaa_resolve_no_msaa() {
+        let mut msaa = MsaaResolver::new();
+        msaa.configure(1, false);
+        
+        let src = vec![128, 64, 32, 255];
+        let result = msaa.resolve_color(&src, 1, 1);
+        assert_eq!(result, vec![128, 64, 32, 255]);
+    }
+
+    #[test]
+    fn test_msaa_sample_positions_8x() {
+        let mut msaa = MsaaResolver::new();
+        msaa.configure(8, true);
+        assert_eq!(msaa.sample_positions().len(), 8);
+        
+        // Positions should be within [0, 1] range
+        for (x, y) in msaa.sample_positions() {
+            assert!(*x >= 0.0 && *x <= 1.0);
+            assert!(*y >= 0.0 && *y <= 1.0);
+        }
     }
 }

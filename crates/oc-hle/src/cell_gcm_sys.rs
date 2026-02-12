@@ -437,6 +437,197 @@ struct MemoryMapping {
     offset: u32,
 }
 
+// ============================================================================
+// RSX FIFO Command Opcodes (NV4097/NV406E subset)
+// ============================================================================
+
+/// NV406E set reference command
+pub const NV406E_SET_REFERENCE: u32 = 0x00000050;
+/// NV4097 set surface color target
+pub const NV4097_SET_SURFACE_COLOR_TARGET: u32 = 0x00000208;
+/// NV4097 set context DMA color A
+pub const NV4097_SET_CONTEXT_DMA_COLOR_A: u32 = 0x00000184;
+/// NV4097 set context DMA color B
+pub const NV4097_SET_CONTEXT_DMA_COLOR_B: u32 = 0x00000188;
+/// NV4097 set context DMA zeta
+pub const NV4097_SET_CONTEXT_DMA_ZETA: u32 = 0x00000198;
+/// NV4097 set surface pitch A
+pub const NV4097_SET_SURFACE_PITCH_A: u32 = 0x0000020C;
+/// NV4097 set surface pitch B
+pub const NV4097_SET_SURFACE_PITCH_B: u32 = 0x00000210;
+/// NV4097 set surface pitch Z
+pub const NV4097_SET_SURFACE_PITCH_Z: u32 = 0x0000021C;
+/// NV4097 invalidate vertex file
+pub const NV4097_INVALIDATE_VERTEX_FILE: u32 = 0x00001710;
+/// NV4097 set begin/end
+pub const NV4097_SET_BEGIN_END: u32 = 0x00001808;
+/// NV4097 draw arrays
+pub const NV4097_DRAW_ARRAYS: u32 = 0x00001814;
+/// NV4097 no operation
+pub const NV4097_NO_OPERATION: u32 = 0x00000100;
+
+/// Parsed FIFO command
+#[derive(Debug, Clone, Copy)]
+pub struct FifoCommand {
+    /// Method register
+    pub method: u32,
+    /// Sub-channel (0-7)
+    pub subchannel: u8,
+    /// Number of data words following the header
+    pub count: u16,
+    /// Non-incrementing flag
+    pub non_incrementing: bool,
+    /// Data payload (first word)
+    pub data: u32,
+}
+
+// ============================================================================
+// Memory Mapping Cache
+// ============================================================================
+
+/// Memory mapping cache for fast RSX ↔ main memory translation
+#[derive(Debug)]
+struct MemoryMappingCache {
+    /// Cache entries (RSX offset -> main memory address)
+    rsx_to_main: HashMap<u32, u32>,
+    /// Reverse cache (main memory address -> RSX offset)
+    main_to_rsx: HashMap<u32, u32>,
+    /// Cache hit count
+    hits: u64,
+    /// Cache miss count
+    misses: u64,
+}
+
+impl MemoryMappingCache {
+    fn new() -> Self {
+        Self {
+            rsx_to_main: HashMap::new(),
+            main_to_rsx: HashMap::new(),
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    /// Insert a mapping into the cache
+    fn insert(&mut self, rsx_offset: u32, main_addr: u32) {
+        self.rsx_to_main.insert(rsx_offset, main_addr);
+        self.main_to_rsx.insert(main_addr, rsx_offset);
+    }
+
+    /// Look up main memory address from RSX offset
+    fn lookup_main(&mut self, rsx_offset: u32) -> Option<u32> {
+        if let Some(&addr) = self.rsx_to_main.get(&rsx_offset) {
+            self.hits += 1;
+            Some(addr)
+        } else {
+            self.misses += 1;
+            None
+        }
+    }
+
+    /// Look up RSX offset from main memory address
+    fn lookup_rsx(&mut self, main_addr: u32) -> Option<u32> {
+        if let Some(&offset) = self.main_to_rsx.get(&main_addr) {
+            self.hits += 1;
+            Some(offset)
+        } else {
+            self.misses += 1;
+            None
+        }
+    }
+
+    /// Remove a mapping by RSX offset
+    fn remove_by_rsx(&mut self, rsx_offset: u32) {
+        if let Some(main_addr) = self.rsx_to_main.remove(&rsx_offset) {
+            self.main_to_rsx.remove(&main_addr);
+        }
+    }
+
+    /// Clear the cache
+    fn clear(&mut self) {
+        self.rsx_to_main.clear();
+        self.main_to_rsx.clear();
+    }
+
+    /// Get cache statistics
+    fn stats(&self) -> (u64, u64) {
+        (self.hits, self.misses)
+    }
+}
+
+// ============================================================================
+// Tile/Zcull Region Management
+// ============================================================================
+
+/// Maximum tile regions
+pub const CELL_GCM_MAX_TILE_REGIONS: usize = 15;
+
+/// Maximum zcull regions
+pub const CELL_GCM_MAX_ZCULL_REGIONS: usize = 8;
+
+/// Tile region configuration
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CellGcmTileInfo {
+    /// Tile region index
+    pub index: u32,
+    /// Tile offset in video memory
+    pub offset: u32,
+    /// Tile size
+    pub size: u32,
+    /// Tile pitch (bytes per row)
+    pub pitch: u32,
+    /// Compression tag base
+    pub comp: u32,
+    /// Base address
+    pub base: u32,
+    /// Bank sense
+    pub bank: u32,
+    /// Is bound to RSX
+    pub bound: bool,
+}
+
+/// Zcull region configuration
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CellGcmZcullInfo {
+    /// Zcull region index
+    pub index: u32,
+    /// Zcull offset
+    pub offset: u32,
+    /// Region width
+    pub width: u32,
+    /// Region height
+    pub height: u32,
+    /// Cull start
+    pub cull_start: u32,
+    /// Zcull direction (0=less, 1=greater)
+    pub z_direction: u32,
+    /// Zcull format
+    pub z_format: u32,
+    /// Anti-alias format
+    pub aa_format: u32,
+    /// Is bound
+    pub bound: bool,
+}
+
+// ============================================================================
+// Cursor Management
+// ============================================================================
+
+/// Cursor configuration
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CursorState {
+    /// Cursor enabled
+    pub enabled: bool,
+    /// Cursor X position
+    pub x: u32,
+    /// Cursor Y position
+    pub y: u32,
+    /// Cursor image offset in video memory
+    pub image_offset: u32,
+}
+
 /// Flip status
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -532,6 +723,14 @@ pub struct GcmManager {
     draw_call_count: u64,
     /// RSX bridge sender for forwarding commands to RSX thread
     rsx_bridge: Option<RsxBridgeSender>,
+    /// Memory mapping cache
+    mapping_cache: MemoryMappingCache,
+    /// Tile regions
+    tile_regions: [CellGcmTileInfo; CELL_GCM_MAX_TILE_REGIONS],
+    /// Zcull regions
+    zcull_regions: [CellGcmZcullInfo; CELL_GCM_MAX_ZCULL_REGIONS],
+    /// Cursor state
+    cursor: CursorState,
 }
 
 impl GcmManager {
@@ -560,6 +759,10 @@ impl GcmManager {
             flip_status: CellGcmFlipStatus::default(),
             draw_call_count: 0,
             rsx_bridge: None,
+            mapping_cache: MemoryMappingCache::new(),
+            tile_regions: [CellGcmTileInfo::default(); CELL_GCM_MAX_TILE_REGIONS],
+            zcull_regions: [CellGcmZcullInfo::default(); CELL_GCM_MAX_ZCULL_REGIONS],
+            cursor: CursorState::default(),
         }
     }
     
@@ -597,6 +800,9 @@ impl GcmManager {
         
         // Initialize command buffer
         self.command_buffer.clear();
+        
+        // Clear memory mapping cache
+        self.mapping_cache.clear();
         
         // Initialize texture slots
         for slot in &mut self.texture_slots {
@@ -906,15 +1112,61 @@ impl GcmManager {
     // Render Target Configuration
     // ========================================================================
 
+    /// Validate surface parameters for 3D rendering
+    fn validate_surface_params(&self, surface: &CellGcmSurface) -> Result<(), i32> {
+        // Validate dimensions
+        if surface.width == 0 || surface.height == 0 {
+            return Err(0x80410002u32 as i32); // CELL_GCM_ERROR_INVALID_VALUE
+        }
+
+        // Maximum supported surface dimensions
+        if surface.width > 4096 || surface.height > 4096 {
+            return Err(0x80410002u32 as i32);
+        }
+
+        // Validate color format (must be a known format)
+        match surface.color_format {
+            0x00 | 0x01 | 0x02 | 0x03 => {} // Argb8, Float32, HalfFloat4, Rgba8
+            _ => return Err(0x80410002u32 as i32),
+        }
+
+        // Validate depth format
+        match surface.depth_format {
+            0x00 | 0x01 => {} // Z16, Z24S8
+            _ => return Err(0x80410002u32 as i32),
+        }
+
+        // Validate color buffer pitches (must be aligned to 64 bytes for RSX)
+        for i in 0..CELL_GCM_MAX_RENDER_TARGETS {
+            if surface.color_pitch[i] != 0 && surface.color_pitch[i] % 64 != 0 {
+                debug!("GcmManager: color_pitch[{}]={} not 64-byte aligned", i, surface.color_pitch[i]);
+                return Err(0x80410002u32 as i32);
+            }
+        }
+
+        // Validate depth buffer pitch
+        if surface.depth_pitch != 0 && surface.depth_pitch % 64 != 0 {
+            debug!("GcmManager: depth_pitch={} not 64-byte aligned", surface.depth_pitch);
+            return Err(0x80410002u32 as i32);
+        }
+
+        // Validate anti-aliasing mode (0-3)
+        if surface.antialias > 3 {
+            return Err(0x80410002u32 as i32);
+        }
+
+        Ok(())
+    }
+
     /// Set the render target configuration
     pub fn set_surface(&mut self, surface: CellGcmSurface) -> i32 {
         if !self.initialized {
             return 0x80410001u32 as i32; // CELL_GCM_ERROR_FAILURE
         }
         
-        // Validate dimensions
-        if surface.width == 0 || surface.height == 0 {
-            return 0x80410002u32 as i32; // CELL_GCM_ERROR_INVALID_VALUE
+        // Validate surface parameters
+        if let Err(e) = self.validate_surface_params(&surface) {
+            return e;
         }
         
         debug!(
@@ -1264,6 +1516,7 @@ impl GcmManager {
             size: aligned_size,
             offset,
         });
+        self.mapping_cache.insert(offset, address);
         
         // Update I/O memory configuration
         if self.config.io_addr == 0 {
@@ -1290,6 +1543,7 @@ impl GcmManager {
             
             // Update I/O size
             self.config.io_size = self.config.io_size.saturating_sub(mapping.size);
+            self.mapping_cache.remove_by_rsx(offset);
             
             0 // CELL_OK
         } else {
@@ -1321,6 +1575,380 @@ impl GcmManager {
     /// Get current flip status
     pub fn get_flip_status(&self) -> CellGcmFlipStatus {
         self.flip_status
+    }
+
+    // ========================================================================
+    // FIFO Command Parsing
+    // ========================================================================
+
+    /// Parse inline RSX FIFO commands from a raw command buffer
+    pub fn parse_fifo_commands(&mut self, buffer: &[u32]) -> Vec<FifoCommand> {
+        // NV40-style FIFO header format:
+        // [30]    = non-incrementing flag
+        // [28:18] = method count (11 bits)
+        // [15:13] = subchannel
+        // [12:2]  = method offset
+        // [1]     = call flag
+        // [0]     = jump flag (if set, rest is jump target)
+
+        let mut commands = Vec::new();
+        let mut i = 0;
+
+        while i < buffer.len() {
+            let header = buffer[i];
+
+            // Check for special commands
+            if header == 0 {
+                // NOP - skip
+                i += 1;
+                continue;
+            }
+
+            // Check jump flag
+            if header & 1 != 0 {
+                trace!("GcmManager::parse_fifo: JUMP to 0x{:08X}", header & !3);
+                i += 1;
+                continue;
+            }
+
+            // Check for CALL (bit 1 set, bit 0 clear)
+            if header & 2 != 0 {
+                trace!("GcmManager::parse_fifo: CALL to 0x{:08X}", header & !3);
+                i += 1;
+                continue;
+            }
+
+            // Parse normal method header
+            let subchannel = ((header >> 13) & 0x7) as u8;
+            let count = ((header >> 18) & 0x7FF) as u16;
+            let method = header & 0x1FFC;
+            let non_incrementing = (header & 0x40000000) != 0;
+
+            if count == 0 {
+                i += 1;
+                continue;
+            }
+
+            // Read data words
+            for j in 0..count as usize {
+                if i + 1 + j >= buffer.len() {
+                    break;
+                }
+                let data = buffer[i + 1 + j];
+                let cmd_method = if non_incrementing {
+                    method
+                } else {
+                    method + (j as u32 * 4)
+                };
+
+                commands.push(FifoCommand {
+                    method: cmd_method,
+                    subchannel,
+                    count,
+                    non_incrementing,
+                    data,
+                });
+
+                // Process the command through the existing command buffer
+                let _ = self.command_buffer.push(cmd_method, data);
+            }
+
+            i += 1 + count as usize;
+        }
+
+        trace!("GcmManager::parse_fifo: parsed {} commands from {} words", commands.len(), buffer.len());
+        commands
+    }
+
+    // ========================================================================
+    // Memory Translation
+    // ========================================================================
+
+    /// Translate RSX offset to main memory address using cache
+    pub fn translate_rsx_to_main(&mut self, rsx_offset: u32) -> Option<u32> {
+        // Check cache first
+        if let Some(addr) = self.mapping_cache.lookup_main(rsx_offset) {
+            return Some(addr);
+        }
+
+        // Fall back to linear search
+        for mapping in &self.memory_mappings {
+            if rsx_offset >= mapping.offset && rsx_offset < mapping.offset + mapping.size {
+                let main_addr = mapping.main_addr + (rsx_offset - mapping.offset);
+                // Populate cache
+                self.mapping_cache.insert(rsx_offset, main_addr);
+                return Some(main_addr);
+            }
+        }
+
+        None
+    }
+
+    /// Translate main memory address to RSX offset using cache
+    pub fn translate_main_to_rsx(&mut self, main_addr: u32) -> Option<u32> {
+        // Check cache first
+        if let Some(offset) = self.mapping_cache.lookup_rsx(main_addr) {
+            return Some(offset);
+        }
+
+        // Fall back to linear search
+        for mapping in &self.memory_mappings {
+            if main_addr >= mapping.main_addr && main_addr < mapping.main_addr + mapping.size {
+                let rsx_offset = mapping.offset + (main_addr - mapping.main_addr);
+                // Populate cache
+                self.mapping_cache.insert(rsx_offset, main_addr);
+                return Some(rsx_offset);
+            }
+        }
+
+        None
+    }
+
+    /// Get memory mapping cache statistics
+    pub fn get_mapping_cache_stats(&self) -> (u64, u64) {
+        self.mapping_cache.stats()
+    }
+
+    // ========================================================================
+    // Tile/Zcull Management
+    // ========================================================================
+
+    /// Set tile region information
+    pub fn set_tile_info(
+        &mut self,
+        index: u32,
+        offset: u32,
+        size: u32,
+        pitch: u32,
+        comp: u32,
+        base: u32,
+        bank: u32,
+    ) -> i32 {
+        if !self.initialized {
+            return 0x80410001u32 as i32;
+        }
+
+        if index >= CELL_GCM_MAX_TILE_REGIONS as u32 {
+            return 0x80410002u32 as i32;
+        }
+
+        // Validate pitch alignment (must be power of 2, minimum 256)
+        if pitch != 0 && (pitch < 256 || !pitch.is_power_of_two()) {
+            return 0x80410002u32 as i32;
+        }
+
+        debug!(
+            "GcmManager::set_tile_info: index={}, offset=0x{:X}, size=0x{:X}, pitch={}",
+            index, offset, size, pitch
+        );
+
+        self.tile_regions[index as usize] = CellGcmTileInfo {
+            index,
+            offset,
+            size,
+            pitch,
+            comp,
+            base,
+            bank,
+            bound: false,
+        };
+
+        0 // CELL_OK
+    }
+
+    /// Bind tile region to RSX
+    pub fn bind_tile(&mut self, index: u32) -> i32 {
+        if !self.initialized {
+            return 0x80410001u32 as i32;
+        }
+
+        if index >= CELL_GCM_MAX_TILE_REGIONS as u32 {
+            return 0x80410002u32 as i32;
+        }
+
+        debug!("GcmManager::bind_tile: index={}", index);
+
+        self.tile_regions[index as usize].bound = true;
+
+        // Submit tile configuration commands to RSX
+        let tile = &self.tile_regions[index as usize];
+        let tile_offset = tile.offset;
+        let tile_size = tile.size;
+        let tile_pitch = tile.pitch;
+        let tile_comp = tile.comp;
+        let _ = self.submit_command(0x0B00 + index * 0x10, tile_offset);
+        let _ = self.submit_command(0x0B04 + index * 0x10, tile_size);
+        let _ = self.submit_command(0x0B08 + index * 0x10, tile_pitch);
+        let _ = self.submit_command(0x0B0C + index * 0x10, tile_comp);
+
+        0 // CELL_OK
+    }
+
+    /// Unbind tile region
+    pub fn unbind_tile(&mut self, index: u32) -> i32 {
+        if !self.initialized {
+            return 0x80410001u32 as i32;
+        }
+
+        if index >= CELL_GCM_MAX_TILE_REGIONS as u32 {
+            return 0x80410002u32 as i32;
+        }
+
+        debug!("GcmManager::unbind_tile: index={}", index);
+
+        self.tile_regions[index as usize].bound = false;
+
+        0 // CELL_OK
+    }
+
+    /// Get tile info
+    pub fn get_tile_info(&self, index: u32) -> Option<&CellGcmTileInfo> {
+        if index < CELL_GCM_MAX_TILE_REGIONS as u32 {
+            Some(&self.tile_regions[index as usize])
+        } else {
+            None
+        }
+    }
+
+    /// Set zcull region
+    pub fn set_zcull_info(
+        &mut self,
+        index: u32,
+        offset: u32,
+        width: u32,
+        height: u32,
+        cull_start: u32,
+        z_direction: u32,
+        z_format: u32,
+        aa_format: u32,
+    ) -> i32 {
+        if !self.initialized {
+            return 0x80410001u32 as i32;
+        }
+
+        if index >= CELL_GCM_MAX_ZCULL_REGIONS as u32 {
+            return 0x80410002u32 as i32;
+        }
+
+        debug!(
+            "GcmManager::set_zcull_info: index={}, offset=0x{:X}, {}x{}",
+            index, offset, width, height
+        );
+
+        self.zcull_regions[index as usize] = CellGcmZcullInfo {
+            index,
+            offset,
+            width,
+            height,
+            cull_start,
+            z_direction,
+            z_format,
+            aa_format,
+            bound: false,
+        };
+
+        0 // CELL_OK
+    }
+
+    /// Bind zcull region
+    pub fn bind_zcull(&mut self, index: u32) -> i32 {
+        if !self.initialized {
+            return 0x80410001u32 as i32;
+        }
+
+        if index >= CELL_GCM_MAX_ZCULL_REGIONS as u32 {
+            return 0x80410002u32 as i32;
+        }
+
+        debug!("GcmManager::bind_zcull: index={}", index);
+
+        self.zcull_regions[index as usize].bound = true;
+
+        // Submit zcull configuration commands
+        let zcull = &self.zcull_regions[index as usize];
+        let zcull_offset = zcull.offset;
+        let zcull_width = zcull.width;
+        let zcull_height = zcull.height;
+        let _ = self.submit_command(0x1B00 + index * 0x20, zcull_offset);
+        let _ = self.submit_command(0x1B04 + index * 0x20, zcull_width);
+        let _ = self.submit_command(0x1B08 + index * 0x20, zcull_height);
+
+        0 // CELL_OK
+    }
+
+    /// Unbind zcull region
+    pub fn unbind_zcull(&mut self, index: u32) -> i32 {
+        if !self.initialized {
+            return 0x80410001u32 as i32;
+        }
+
+        if index >= CELL_GCM_MAX_ZCULL_REGIONS as u32 {
+            return 0x80410002u32 as i32;
+        }
+
+        self.zcull_regions[index as usize].bound = false;
+        0 // CELL_OK
+    }
+
+    /// Get zcull info
+    pub fn get_zcull_info(&self, index: u32) -> Option<&CellGcmZcullInfo> {
+        if index < CELL_GCM_MAX_ZCULL_REGIONS as u32 {
+            Some(&self.zcull_regions[index as usize])
+        } else {
+            None
+        }
+    }
+
+    // ========================================================================
+    // Cursor Management
+    // ========================================================================
+
+    /// Enable or disable the cursor
+    pub fn set_cursor_enable(&mut self, enable: bool) -> i32 {
+        if !self.initialized {
+            return 0x80410001u32 as i32;
+        }
+
+        debug!("GcmManager::set_cursor_enable: {}", enable);
+        self.cursor.enabled = enable;
+
+        let _ = self.submit_command(0x0300, if enable { 1 } else { 0 });
+
+        0 // CELL_OK
+    }
+
+    /// Set cursor position
+    pub fn set_cursor_position(&mut self, x: u32, y: u32) -> i32 {
+        if !self.initialized {
+            return 0x80410001u32 as i32;
+        }
+
+        trace!("GcmManager::set_cursor_position: x={}, y={}", x, y);
+        self.cursor.x = x;
+        self.cursor.y = y;
+
+        let _ = self.submit_command(0x0304, (x << 16) | y);
+
+        0 // CELL_OK
+    }
+
+    /// Set cursor image
+    pub fn set_cursor_image(&mut self, image_offset: u32) -> i32 {
+        if !self.initialized {
+            return 0x80410001u32 as i32;
+        }
+
+        debug!("GcmManager::set_cursor_image: offset=0x{:X}", image_offset);
+        self.cursor.image_offset = image_offset;
+
+        let _ = self.submit_command(0x0308, image_offset);
+
+        0 // CELL_OK
+    }
+
+    /// Get cursor state
+    pub fn get_cursor_state(&self) -> &CursorState {
+        &self.cursor
     }
 }
 
@@ -2147,6 +2775,83 @@ pub fn cell_gcm_get_flip_status() -> u32 {
     crate::context::get_hle_context().gcm.get_flip_status() as u32
 }
 
+// ============================================================================
+// Tile/Zcull/Cursor Public API Functions
+// ============================================================================
+
+/// cellGcmSetTileInfo - Set tile region info
+pub fn cell_gcm_set_tile_info(
+    index: u32,
+    offset: u32,
+    size: u32,
+    pitch: u32,
+    comp: u32,
+    base: u32,
+    bank: u32,
+) -> i32 {
+    debug!("cellGcmSetTileInfo(index={}, offset=0x{:X})", index, offset);
+    crate::context::get_hle_context_mut().gcm.set_tile_info(index, offset, size, pitch, comp, base, bank)
+}
+
+/// cellGcmBindTile - Bind tile region
+pub fn cell_gcm_bind_tile(index: u32) -> i32 {
+    debug!("cellGcmBindTile(index={})", index);
+    crate::context::get_hle_context_mut().gcm.bind_tile(index)
+}
+
+/// cellGcmUnbindTile - Unbind tile region
+pub fn cell_gcm_unbind_tile(index: u32) -> i32 {
+    debug!("cellGcmUnbindTile(index={})", index);
+    crate::context::get_hle_context_mut().gcm.unbind_tile(index)
+}
+
+/// cellGcmSetZcullInfo - Set zcull region info
+pub fn cell_gcm_set_zcull_info(
+    index: u32,
+    offset: u32,
+    width: u32,
+    height: u32,
+    cull_start: u32,
+    z_direction: u32,
+    z_format: u32,
+    aa_format: u32,
+) -> i32 {
+    debug!("cellGcmSetZcullInfo(index={})", index);
+    crate::context::get_hle_context_mut().gcm.set_zcull_info(
+        index, offset, width, height, cull_start, z_direction, z_format, aa_format,
+    )
+}
+
+/// cellGcmBindZcull - Bind zcull region
+pub fn cell_gcm_bind_zcull(index: u32) -> i32 {
+    debug!("cellGcmBindZcull(index={})", index);
+    crate::context::get_hle_context_mut().gcm.bind_zcull(index)
+}
+
+/// cellGcmUnbindZcull - Unbind zcull region
+pub fn cell_gcm_unbind_zcull(index: u32) -> i32 {
+    debug!("cellGcmUnbindZcull(index={})", index);
+    crate::context::get_hle_context_mut().gcm.unbind_zcull(index)
+}
+
+/// cellGcmSetCursorEnable - Enable/disable cursor
+pub fn cell_gcm_set_cursor_enable(enable: u32) -> i32 {
+    debug!("cellGcmSetCursorEnable(enable={})", enable);
+    crate::context::get_hle_context_mut().gcm.set_cursor_enable(enable != 0)
+}
+
+/// cellGcmSetCursorPosition - Set cursor position
+pub fn cell_gcm_set_cursor_position(x: u32, y: u32) -> i32 {
+    trace!("cellGcmSetCursorPosition(x={}, y={})", x, y);
+    crate::context::get_hle_context_mut().gcm.set_cursor_position(x, y)
+}
+
+/// cellGcmSetCursorImage - Set cursor image
+pub fn cell_gcm_set_cursor_image(offset: u32) -> i32 {
+    debug!("cellGcmSetCursorImage(offset=0x{:X})", offset);
+    crate::context::get_hle_context_mut().gcm.set_cursor_image(offset)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2899,5 +3604,146 @@ mod tests {
         assert_eq!(scissor.y, 0);
         assert_eq!(scissor.width, 4096);
         assert_eq!(scissor.height, 4096);
+    }
+
+    #[test]
+    fn test_fifo_command_parsing() {
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 0x100000);
+
+        // Create a simple FIFO buffer with NV4097 commands
+        // Header format: subchannel=0, count=1, method=0x100, non-incr=false
+        let header = (1u32 << 18) | 0x0100; // count=1, method=0x100 (NOP)
+        let buffer = vec![header, 0x00000000]; // header + data
+
+        let commands = manager.parse_fifo_commands(&buffer);
+        assert_eq!(commands.len(), 1);
+        assert_eq!(commands[0].method, 0x0100);
+    }
+
+    #[test]
+    fn test_fifo_nop_skip() {
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 0x100000);
+
+        let buffer = vec![0u32, 0u32, 0u32]; // Three NOPs
+        let commands = manager.parse_fifo_commands(&buffer);
+        assert_eq!(commands.len(), 0);
+    }
+
+    #[test]
+    fn test_surface_validation() {
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 0x100000);
+
+        // Valid surface
+        let mut surface = CellGcmSurface::default();
+        surface.width = 1920;
+        surface.height = 1080;
+        surface.color_format = 0; // Argb8
+        surface.depth_format = 1; // Z24S8
+        assert_eq!(manager.set_surface(surface), 0);
+
+        // Invalid - too large
+        let mut surface = CellGcmSurface::default();
+        surface.width = 8192;
+        surface.height = 1080;
+        assert_ne!(manager.set_surface(surface), 0);
+
+        // Invalid color format
+        let mut surface = CellGcmSurface::default();
+        surface.width = 1920;
+        surface.height = 1080;
+        surface.color_format = 99;
+        assert_ne!(manager.set_surface(surface), 0);
+    }
+
+    #[test]
+    fn test_tile_management() {
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 0x100000);
+
+        // Set tile info
+        assert_eq!(manager.set_tile_info(0, 0x1000, 0x10000, 256, 0, 0, 0), 0);
+
+        let tile = manager.get_tile_info(0).unwrap();
+        assert_eq!(tile.offset, 0x1000);
+        assert!(!tile.bound);
+
+        // Bind tile
+        assert_eq!(manager.bind_tile(0), 0);
+        let tile = manager.get_tile_info(0).unwrap();
+        assert!(tile.bound);
+
+        // Unbind tile
+        assert_eq!(manager.unbind_tile(0), 0);
+        let tile = manager.get_tile_info(0).unwrap();
+        assert!(!tile.bound);
+
+        // Invalid index
+        assert_ne!(manager.set_tile_info(15, 0, 0, 0, 0, 0, 0), 0);
+    }
+
+    #[test]
+    fn test_zcull_management() {
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 0x100000);
+
+        assert_eq!(manager.set_zcull_info(0, 0x2000, 1920, 1080, 0, 0, 0, 0), 0);
+
+        let zcull = manager.get_zcull_info(0).unwrap();
+        assert_eq!(zcull.width, 1920);
+        assert!(!zcull.bound);
+
+        assert_eq!(manager.bind_zcull(0), 0);
+        let zcull = manager.get_zcull_info(0).unwrap();
+        assert!(zcull.bound);
+
+        // Invalid index
+        assert_ne!(manager.set_zcull_info(8, 0, 0, 0, 0, 0, 0, 0), 0);
+    }
+
+    #[test]
+    fn test_cursor_management() {
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 0x100000);
+
+        // Enable cursor
+        assert_eq!(manager.set_cursor_enable(true), 0);
+        assert!(manager.get_cursor_state().enabled);
+
+        // Set position
+        assert_eq!(manager.set_cursor_position(100, 200), 0);
+        assert_eq!(manager.get_cursor_state().x, 100);
+        assert_eq!(manager.get_cursor_state().y, 200);
+
+        // Set image
+        assert_eq!(manager.set_cursor_image(0x5000), 0);
+        assert_eq!(manager.get_cursor_state().image_offset, 0x5000);
+
+        // Disable cursor
+        assert_eq!(manager.set_cursor_enable(false), 0);
+        assert!(!manager.get_cursor_state().enabled);
+    }
+
+    #[test]
+    fn test_memory_mapping_cache() {
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 0x100000);
+
+        // Map some memory
+        let offset = manager.map_main_memory(0x20000000, 0x100000).unwrap();
+
+        // Test cache lookup
+        let main_addr = manager.translate_rsx_to_main(offset);
+        assert_eq!(main_addr, Some(0x20000000));
+
+        let rsx_off = manager.translate_main_to_rsx(0x20000000);
+        assert_eq!(rsx_off, Some(offset));
+
+        // Unmap and verify cache is cleared
+        manager.unmap_main_memory(offset);
+        let main_addr = manager.translate_rsx_to_main(offset);
+        assert_eq!(main_addr, None);
     }
 }

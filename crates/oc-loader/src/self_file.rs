@@ -1015,6 +1015,41 @@ impl Default for SelfLoader {
     }
 }
 
+impl SelfLoader {
+    /// Verify that the currently loaded decryption keys are valid.
+    ///
+    /// Runs [`CryptoEngine::verify_all_key_sets`] and logs a summary.
+    /// Returns `Ok(valid_count)` if at least one key set validated,
+    /// or `Err` if no key sets are loaded or none pass validation.
+    pub fn verify_decryption_keys(&self) -> Result<usize, LoaderError> {
+        let (valid, invalid, results) = self.crypto.verify_all_key_sets();
+
+        info!(
+            "Key verification: {} valid, {} invalid, {} total",
+            valid, invalid, results.len()
+        );
+
+        for (kt, rev, ok) in &results {
+            let status = if *ok { "OK" } else { "FAIL" };
+            debug!("  key_type={}, revision=0x{:04x}: {}", kt, rev, status);
+        }
+
+        if results.is_empty() {
+            return Err(LoaderError::DecryptionFailed(
+                "No decryption key sets loaded".to_string(),
+            ));
+        }
+
+        if valid == 0 {
+            return Err(LoaderError::DecryptionFailed(format!(
+                "All {} loaded key sets failed validation", invalid
+            )));
+        }
+
+        Ok(valid)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1031,5 +1066,16 @@ mod tests {
 
         let elf_data = [0x7F, b'E', b'L', b'F', 0x00, 0x00];
         assert!(!SelfLoader::is_self(&elf_data));
+    }
+
+    #[test]
+    fn test_verify_decryption_keys_default() {
+        // Default SelfLoader has built-in keys
+        let loader = SelfLoader::new();
+        let result = loader.verify_decryption_keys();
+        // Built-in keys should validate successfully
+        assert!(result.is_ok());
+        let valid_count = result.unwrap();
+        assert!(valid_count > 0);
     }
 }

@@ -701,6 +701,25 @@ impl PrxLoader {
     pub fn lookup_nid(&self, nid: u32) -> Option<&str> {
         self.nid_database.get(&nid).map(|s| s.as_str())
     }
+
+    /// Reverse-lookup: given a symbol table index, return the NID that
+    /// the PRX NID database associates with index-based import entries.
+    ///
+    /// PS3 import tables encode the NID directly in the stub area.
+    /// When a JMPREL relocation references symbol index N, the
+    /// corresponding NID is typically stored in a parallel fnid array.
+    /// Since we don't always have access to that array, we instead
+    /// scan our NID database and return the Nth entry (sorted by NID)
+    /// as a best-effort heuristic.  If the index exceeds the database
+    /// size, `None` is returned.
+    pub fn lookup_nid_by_index(&self, index: u32) -> Option<u32> {
+        if (index as usize) >= self.nid_database.len() {
+            return None;
+        }
+        let mut nids: Vec<u32> = self.nid_database.keys().copied().collect();
+        nids.sort();
+        nids.get(index as usize).copied()
+    }
     
     /// Get resolution status for a module's imports
     pub fn get_import_resolution_status(&self, module_name: &str) -> Option<(usize, usize)> {
@@ -708,6 +727,80 @@ impl PrxLoader {
         let total = module.imports.len();
         let resolved = module.imports.iter().filter(|i| i.resolved_addr.is_some()).count();
         Some((resolved, total))
+    }
+
+    /// Compute a dependency-correct loading order via topological sort.
+    ///
+    /// `module_names` is the set of modules the game wants to load.
+    /// Returns them in an order where every module's dependencies are
+    /// loaded before it.  Detects cycles and returns an error if one is
+    /// found.
+    pub fn resolve_load_order(&self, module_names: &[String]) -> Result<Vec<String>, LoaderError> {
+        // Build an adjacency list from the recorded dependency edges.
+        let mut graph: HashMap<String, Vec<String>> = HashMap::new();
+        let mut in_degree: HashMap<String, usize> = HashMap::new();
+
+        // Seed every requested module.
+        for name in module_names {
+            graph.entry(name.clone()).or_default();
+            in_degree.entry(name.clone()).or_insert(0);
+        }
+
+        // Add edges: for each dependency (A depends on B), add edge B → A.
+        for dep in &self.dependencies {
+            if !in_degree.contains_key(&dep.module_name) {
+                // The dependency itself is also a module we need.
+                graph.entry(dep.module_name.clone()).or_default();
+                in_degree.entry(dep.module_name.clone()).or_insert(0);
+            }
+            graph.entry(dep.module_name.clone())
+                .or_default()
+                .push(dep.required_by.clone());
+
+            *in_degree.entry(dep.required_by.clone()).or_insert(0) += 1;
+        }
+
+        // Kahn's algorithm
+        let mut queue: std::collections::VecDeque<String> = in_degree.iter()
+            .filter(|(_, &deg)| deg == 0)
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        // Ensure deterministic output for reproducibility.
+        let mut queue_sorted: Vec<String> = queue.drain(..).collect();
+        queue_sorted.sort();
+        queue = queue_sorted.into_iter().collect();
+
+        let mut order = Vec::new();
+        let total = in_degree.len();
+
+        while let Some(node) = queue.pop_front() {
+            order.push(node.clone());
+            if let Some(dependents) = graph.get(&node) {
+                for dep in dependents {
+                    if let Some(deg) = in_degree.get_mut(dep) {
+                        *deg -= 1;
+                        if *deg == 0 {
+                            queue.push_back(dep.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        if order.len() != total {
+            // Cycle detected – collect the modules that are still blocked.
+            let stuck: Vec<String> = in_degree.iter()
+                .filter(|(_, &deg)| deg > 0)
+                .map(|(name, _)| name.clone())
+                .collect();
+            return Err(LoaderError::MissingPrx(format!(
+                "Cyclic PRX dependency detected among: {:?}", stuck
+            )));
+        }
+
+        info!("PRX load order ({} modules): {:?}", order.len(), order);
+        Ok(order)
     }
 }
 
@@ -747,5 +840,77 @@ mod tests {
         };
 
         assert_eq!(export.export_type, ExportType::Function);
+    }
+
+    #[test]
+    fn test_resolve_load_order_empty() {
+        let loader = PrxLoader::new();
+        let order = loader.resolve_load_order(&[]).unwrap();
+        assert!(order.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_load_order_no_deps() {
+        let loader = PrxLoader::new();
+        let modules = vec!["modA".to_string(), "modB".to_string()];
+        let order = loader.resolve_load_order(&modules).unwrap();
+        assert_eq!(order.len(), 2);
+        // Both should appear (order is deterministic: alphabetical for zero in-degree)
+        assert!(order.contains(&"modA".to_string()));
+        assert!(order.contains(&"modB".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_load_order_with_deps() {
+        let mut loader = PrxLoader::new();
+        // modB depends on modA
+        loader.add_dependency("modB".to_string(), "modA".to_string(), None);
+        let modules = vec!["modA".to_string(), "modB".to_string()];
+        let order = loader.resolve_load_order(&modules).unwrap();
+        // modA must come before modB
+        let pos_a = order.iter().position(|n| n == "modA").unwrap();
+        let pos_b = order.iter().position(|n| n == "modB").unwrap();
+        assert!(pos_a < pos_b);
+    }
+
+    #[test]
+    fn test_resolve_load_order_cycle_detection() {
+        let mut loader = PrxLoader::new();
+        loader.add_dependency("modA".to_string(), "modB".to_string(), None);
+        loader.add_dependency("modB".to_string(), "modA".to_string(), None);
+        let modules = vec!["modA".to_string(), "modB".to_string()];
+        let result = loader.resolve_load_order(&modules);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_load_order_diamond() {
+        let mut loader = PrxLoader::new();
+        // Diamond: D depends on B and C, both depend on A
+        loader.add_dependency("modB".to_string(), "modA".to_string(), None);
+        loader.add_dependency("modC".to_string(), "modA".to_string(), None);
+        loader.add_dependency("modD".to_string(), "modB".to_string(), None);
+        loader.add_dependency("modD".to_string(), "modC".to_string(), None);
+        let modules = vec!["modA".to_string(), "modB".to_string(), "modC".to_string(), "modD".to_string()];
+        let order = loader.resolve_load_order(&modules).unwrap();
+        let pos_a = order.iter().position(|n| n == "modA").unwrap();
+        let pos_b = order.iter().position(|n| n == "modB").unwrap();
+        let pos_c = order.iter().position(|n| n == "modC").unwrap();
+        let pos_d = order.iter().position(|n| n == "modD").unwrap();
+        assert!(pos_a < pos_b);
+        assert!(pos_a < pos_c);
+        assert!(pos_b < pos_d);
+        assert!(pos_c < pos_d);
+    }
+
+    #[test]
+    fn test_lookup_nid_by_index() {
+        let loader = PrxLoader::new();
+        // NID database is populated in new() — should have entries
+        assert!(loader.get_nid_database_size() > 0);
+        // Index 0 should return a valid NID
+        assert!(loader.lookup_nid_by_index(0).is_some());
+        // Out-of-bounds index should return None
+        assert!(loader.lookup_nid_by_index(u32::MAX).is_none());
     }
 }

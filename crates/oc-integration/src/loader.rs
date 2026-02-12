@@ -955,6 +955,8 @@ impl GameLoader {
         }
         
         // Also patch JMPREL (PLT relocations) if present
+        // The r_info field encodes the symbol index (upper 32 bits) which
+        // can be used to look up the function NID from the symbol table.
         if let (Some(jmprel), Some(size)) = (jmprel_addr, jmprel_size) {
             let rela_entry_size = 24;  // sizeof(Elf64_Rela)
             let num_relas = size / rela_entry_size;
@@ -966,6 +968,13 @@ impl GameLoader {
                     Ok(off) => off as u32,
                     Err(_) => continue,
                 };
+                
+                // Extract symbol index from r_info (upper 32 bits of Elf64_Rela.r_info)
+                let r_info = match self.memory.read_be64(rela_addr + 8) {
+                    Ok(info) => info,
+                    Err(_) => continue,
+                };
+                let sym_index = (r_info >> 32) as u32;
                 
                 // Check if the relocation target contains 0
                 let target_val = match self.memory.read_be64(r_offset) {
@@ -979,9 +988,20 @@ impl GameLoader {
                         Err(_) => continue,
                     };
                     
-                    // Register with HLE dispatcher
+                    // Try to map the symbol index to a NID via the PRX
+                    // NID database. If found, register a NID→stub mapping
+                    // so the HLE dispatcher can route calls to the correct
+                    // handler at runtime.
+                    let nid_for_sym = self.prx_loader.lookup_nid_by_index(sym_index);
                     {
                         let mut dispatcher = get_dispatcher_mut();
+                        if let Some(nid) = nid_for_sym {
+                            dispatcher.register_nid_stub(nid, stub_addr);
+                            debug!(
+                                "Patched JMPREL[{}] at 0x{:08x} -> NID 0x{:08x} stub 0x{:08x}",
+                                i, r_offset, nid, stub_addr
+                            );
+                        }
                         dispatcher.register_generic_stub(stub_addr, r_offset);
                     }
                     
@@ -990,7 +1010,6 @@ impl GameLoader {
                         continue;
                     }
                     
-                    debug!("Patched JMPREL target at 0x{:08x} -> stub 0x{:08x}", r_offset, stub_addr);
                     *stub_count += 1;
                     patched += 1;
                 }

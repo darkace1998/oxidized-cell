@@ -87,6 +87,10 @@ struct FontData {
     style_name: String,
     /// Glyph bounding boxes (indexed by glyph ID)
     glyph_bounds: HashMap<u32, (f32, f32, f32, f32)>,
+    /// Unicode codepoint → glyph index mapping (cmap)
+    cmap: HashMap<u32, u32>,
+    /// Kerning pairs: (left_glyph, right_glyph) → x_advance adjustment
+    kerning: HashMap<(u32, u32), i16>,
 }
 
 impl Default for FontData {
@@ -97,6 +101,8 @@ impl Default for FontData {
             family_name: "Unknown".to_string(),
             style_name: "Regular".to_string(),
             glyph_bounds: HashMap::new(),
+            cmap: HashMap::new(),
+            kerning: HashMap::new(),
         }
     }
 }
@@ -413,82 +419,313 @@ impl FontManager {
     }
 
     /// Parse font data from binary data
-    /// Supports TrueType (TTF) and Type1 font formats
+    /// Supports TrueType (TTF) and Type1 font formats.
+    /// Parses the offset table, then walks the table directory to find
+    /// 'head', 'name', 'maxp', 'cmap', and 'kern' tables.
     fn parse_font_data(&self, font_type: CellFontType, data: &[u8]) -> FontData {
         let mut font_data = FontData::default();
 
         match font_type {
             CellFontType::TrueType => {
-                // Parse TrueType font header if data is available
                 if data.len() >= 12 {
-                    // Read sfnt version (0x00010000 for TrueType, 'OTTO' for OpenType)
-                    let sfnt_version = if data.len() >= 4 {
-                        u32::from_be_bytes([data[0], data[1], data[2], data[3]])
-                    } else {
-                        0x00010000
-                    };
-                    
-                    // Read numTables from offset table
-                    let num_tables = if data.len() >= 6 {
-                        u16::from_be_bytes([data[4], data[5]]) as u32
-                    } else {
-                        0
-                    };
-                    
+                    // --- Offset Table ---
+                    let sfnt_version = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
+                    let num_tables = u16::from_be_bytes([data[4], data[5]]) as usize;
                     trace!("FontManager: TrueType sfnt=0x{:08X}, tables={}", sfnt_version, num_tables);
-                    
-                    // Parse 'head' table for unitsPerEm
-                    // Parse 'name' table for family/style names
-                    // Parse 'maxp' table for glyph count
-                    font_data.units_per_em = 2048; // Default TrueType value
-                    font_data.glyph_count = 256; // Conservative default
+
+                    // --- Walk Table Directory (starts at offset 12) ---
+                    let mut head_offset: Option<usize> = None;
+                    let mut head_length: usize = 0;
+                    let mut maxp_offset: Option<usize> = None;
+                    let mut name_offset: Option<usize> = None;
+                    let mut name_length: usize = 0;
+                    let mut cmap_offset: Option<usize> = None;
+                    let mut cmap_length: usize = 0;
+                    let mut kern_offset: Option<usize> = None;
+                    let mut kern_length: usize = 0;
+
+                    for i in 0..num_tables {
+                        let entry_start = 12 + i * 16;
+                        if entry_start + 16 > data.len() { break; }
+                        let tag = &data[entry_start..entry_start + 4];
+                        let offset = u32::from_be_bytes([
+                            data[entry_start + 8], data[entry_start + 9],
+                            data[entry_start + 10], data[entry_start + 11],
+                        ]) as usize;
+                        let length = u32::from_be_bytes([
+                            data[entry_start + 12], data[entry_start + 13],
+                            data[entry_start + 14], data[entry_start + 15],
+                        ]) as usize;
+
+                        match tag {
+                            b"head" => { head_offset = Some(offset); head_length = length; }
+                            b"maxp" => { maxp_offset = Some(offset); }
+                            b"name" => { name_offset = Some(offset); name_length = length; }
+                            b"cmap" => { cmap_offset = Some(offset); cmap_length = length; }
+                            b"kern" => { kern_offset = Some(offset); kern_length = length; }
+                            _ => {}
+                        }
+                    }
+
+                    // --- 'head' table: unitsPerEm (at offset 18 inside table) ---
+                    if let Some(off) = head_offset {
+                        if off + head_length.min(54) <= data.len() && head_length >= 54 {
+                            font_data.units_per_em =
+                                u16::from_be_bytes([data[off + 18], data[off + 19]]) as u32;
+                            trace!("FontManager: head.unitsPerEm = {}", font_data.units_per_em);
+                        }
+                    }
+
+                    // --- 'maxp' table: numGlyphs (at offset 4 inside table) ---
+                    if let Some(off) = maxp_offset {
+                        if off + 6 <= data.len() {
+                            font_data.glyph_count =
+                                u16::from_be_bytes([data[off + 4], data[off + 5]]) as u32;
+                            trace!("FontManager: maxp.numGlyphs = {}", font_data.glyph_count);
+                        }
+                    }
+
+                    // --- 'name' table: family + style names ---
+                    if let Some(off) = name_offset {
+                        Self::parse_name_table(data, off, name_length, &mut font_data);
+                    }
+
+                    // --- 'cmap' table: Unicode → glyph mapping ---
+                    if let Some(off) = cmap_offset {
+                        Self::parse_cmap_table(data, off, cmap_length, &mut font_data);
+                    }
+
+                    // --- 'kern' table: kerning pairs ---
+                    if let Some(off) = kern_offset {
+                        Self::parse_kern_table(data, off, kern_length, &mut font_data);
+                    }
                 } else {
                     font_data.units_per_em = 2048;
                     font_data.glyph_count = 256;
                 }
-                
-                font_data.family_name = "TrueType Font".to_string();
-                font_data.style_name = "Regular".to_string();
-                
-                // Add placeholder glyph bounding boxes for ASCII range
-                for glyph_id in 0..256 {
-                    font_data.glyph_bounds.insert(
-                        glyph_id,
-                        (0.0, 0.0, 16.0, 16.0), // Simple 16x16 bounding box
+
+                // Fill family/style defaults if name table was empty
+                if font_data.family_name == "Unknown" {
+                    font_data.family_name = "TrueType Font".to_string();
+                }
+                if font_data.style_name == "Regular" || font_data.style_name.is_empty() {
+                    font_data.style_name = "Regular".to_string();
+                }
+
+                // Build default cmap (identity for ASCII) when no cmap table was found
+                if font_data.cmap.is_empty() {
+                    for cp in 0x20u32..0x7F {
+                        font_data.cmap.insert(cp, cp);
+                    }
+                }
+
+                // Populate placeholder glyph bounds for all known glyphs
+                for glyph_id in 0..font_data.glyph_count.min(65536) {
+                    font_data.glyph_bounds.entry(glyph_id).or_insert(
+                        (0.0, 0.0, 16.0, 16.0),
                     );
                 }
             }
             CellFontType::Type1 => {
-                // Parse Type1 font header if data is available
                 if data.len() >= 2 && data[0] == 0x80 && data[1] == 0x01 {
-                    // PFB format - skip 6-byte header
                     trace!("FontManager: Type1 PFB format detected");
                 }
-                
+
                 font_data.family_name = "Type1 Font".to_string();
                 font_data.style_name = "Regular".to_string();
                 font_data.glyph_count = 256;
                 font_data.units_per_em = 1000;
-                
-                // Add placeholder glyph bounding boxes
+
                 for glyph_id in 0..256 {
-                    font_data.glyph_bounds.insert(
-                        glyph_id,
-                        (0.0, 0.0, 12.0, 14.0), // Type1 typical metrics
-                    );
+                    font_data.glyph_bounds.insert(glyph_id, (0.0, 0.0, 12.0, 14.0));
+                }
+
+                // Identity cmap for ASCII
+                for cp in 0x20u32..0x7F {
+                    font_data.cmap.insert(cp, cp);
                 }
             }
         }
 
-        trace!("FontManager: Parsed {} font with {} glyphs", 
-            match font_type {
-                CellFontType::TrueType => "TrueType",
-                CellFontType::Type1 => "Type1",
-            },
-            font_data.glyph_count
+        trace!("FontManager: Parsed {} font with {} glyphs, {} cmap entries, {} kern pairs",
+            match font_type { CellFontType::TrueType => "TrueType", CellFontType::Type1 => "Type1" },
+            font_data.glyph_count,
+            font_data.cmap.len(),
+            font_data.kerning.len(),
         );
 
         font_data
+    }
+
+    /// Parse the TrueType 'name' table for family and style names
+    fn parse_name_table(data: &[u8], off: usize, length: usize, font_data: &mut FontData) {
+        let end = (off + length).min(data.len());
+        if off + 6 > end { return; }
+
+        let count = u16::from_be_bytes([data[off + 2], data[off + 3]]) as usize;
+        let string_offset = u16::from_be_bytes([data[off + 4], data[off + 5]]) as usize;
+        let storage_base = off + string_offset;
+
+        for i in 0..count {
+            let rec = off + 6 + i * 12;
+            if rec + 12 > end { break; }
+
+            let _platform = u16::from_be_bytes([data[rec], data[rec + 1]]);
+            let _encoding = u16::from_be_bytes([data[rec + 2], data[rec + 3]]);
+            let _language = u16::from_be_bytes([data[rec + 4], data[rec + 5]]);
+            let name_id = u16::from_be_bytes([data[rec + 6], data[rec + 7]]);
+            let str_len = u16::from_be_bytes([data[rec + 8], data[rec + 9]]) as usize;
+            let str_off = u16::from_be_bytes([data[rec + 10], data[rec + 11]]) as usize;
+
+            let abs_off = storage_base + str_off;
+            if abs_off + str_len > data.len() { continue; }
+            let raw = &data[abs_off..abs_off + str_len];
+
+            // Try UTF-16BE first (platform 3), fall back to ASCII
+            let text = if _platform == 3 && raw.len() >= 2 {
+                let chars: Vec<u16> = raw.chunks_exact(2)
+                    .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                    .collect();
+                String::from_utf16_lossy(&chars)
+            } else {
+                String::from_utf8_lossy(raw).to_string()
+            };
+
+            if text.is_empty() { continue; }
+
+            match name_id {
+                1 => {
+                    font_data.family_name = text;
+                    trace!("FontManager: name.family = {}", font_data.family_name);
+                }
+                2 => {
+                    font_data.style_name = text;
+                    trace!("FontManager: name.style = {}", font_data.style_name);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Parse the TrueType 'cmap' table to build Unicode→glyph mapping
+    fn parse_cmap_table(data: &[u8], off: usize, length: usize, font_data: &mut FontData) {
+        let end = (off + length).min(data.len());
+        if off + 4 > end { return; }
+
+        let num_sub = u16::from_be_bytes([data[off + 2], data[off + 3]]) as usize;
+
+        // Walk sub-tables, prefer platform 3 (Windows) encoding 1 (Unicode BMP)
+        let mut best_subtable_off: Option<usize> = None;
+        for i in 0..num_sub {
+            let rec = off + 4 + i * 8;
+            if rec + 8 > end { break; }
+            let platform = u16::from_be_bytes([data[rec], data[rec + 1]]);
+            let encoding = u16::from_be_bytes([data[rec + 2], data[rec + 3]]);
+            let sub_off = u32::from_be_bytes([data[rec + 4], data[rec + 5], data[rec + 6], data[rec + 7]]) as usize;
+            if (platform == 3 && encoding == 1) || (platform == 0) {
+                best_subtable_off = Some(off + sub_off);
+                if platform == 3 { break; } // prefer Windows table
+            }
+        }
+
+        if let Some(sub) = best_subtable_off {
+            if sub + 2 > data.len() { return; }
+            let format = u16::from_be_bytes([data[sub], data[sub + 1]]);
+
+            match format {
+                4 => Self::parse_cmap_format4(data, sub, font_data),
+                0 => Self::parse_cmap_format0(data, sub, font_data),
+                _ => {
+                    trace!("FontManager: unsupported cmap format {}, falling back to identity", format);
+                }
+            }
+        }
+    }
+
+    /// Parse cmap format 0 (byte encoding)
+    fn parse_cmap_format0(data: &[u8], off: usize, font_data: &mut FontData) {
+        if off + 6 + 256 > data.len() { return; }
+        for cp in 0u32..256 {
+            let glyph_id = data[off + 6 + cp as usize] as u32;
+            if glyph_id != 0 {
+                font_data.cmap.insert(cp, glyph_id);
+            }
+        }
+    }
+
+    /// Parse cmap format 4 (segment mapping to delta values)
+    fn parse_cmap_format4(data: &[u8], off: usize, font_data: &mut FontData) {
+        if off + 14 > data.len() { return; }
+        let seg_count = u16::from_be_bytes([data[off + 6], data[off + 7]]) as usize / 2;
+        if seg_count == 0 { return; }
+
+        let end_codes = off + 14;
+        let start_codes = end_codes + seg_count * 2 + 2; // +2 for reservedPad
+        let deltas = start_codes + seg_count * 2;
+        let offsets = deltas + seg_count * 2;
+
+        if offsets + seg_count * 2 > data.len() { return; }
+
+        for seg in 0..seg_count {
+            let ec = u16::from_be_bytes([data[end_codes + seg * 2], data[end_codes + seg * 2 + 1]]) as u32;
+            let sc = u16::from_be_bytes([data[start_codes + seg * 2], data[start_codes + seg * 2 + 1]]) as u32;
+            let delta = i16::from_be_bytes([data[deltas + seg * 2], data[deltas + seg * 2 + 1]]) as i32;
+            let range_off = u16::from_be_bytes([data[offsets + seg * 2], data[offsets + seg * 2 + 1]]) as usize;
+
+            if sc == 0xFFFF { break; }
+
+            for cp in sc..=ec {
+                let glyph_id = if range_off == 0 {
+                    ((cp as i32 + delta) & 0xFFFF) as u32
+                } else {
+                    let idx = offsets + seg * 2 + range_off + (cp - sc) as usize * 2;
+                    if idx + 2 <= data.len() {
+                        let gid = u16::from_be_bytes([data[idx], data[idx + 1]]) as u32;
+                        if gid != 0 { ((gid as i32 + delta) & 0xFFFF) as u32 } else { 0 }
+                    } else {
+                        0
+                    }
+                };
+                if glyph_id != 0 {
+                    font_data.cmap.insert(cp, glyph_id);
+                }
+            }
+        }
+    }
+
+    /// Parse the TrueType 'kern' table (format 0) for kerning pairs
+    fn parse_kern_table(data: &[u8], off: usize, length: usize, font_data: &mut FontData) {
+        let end = (off + length).min(data.len());
+        if off + 4 > end { return; }
+
+        let _version = u16::from_be_bytes([data[off], data[off + 1]]);
+        let num_subtables = u16::from_be_bytes([data[off + 2], data[off + 3]]) as usize;
+        let mut pos = off + 4;
+
+        for _ in 0..num_subtables {
+            if pos + 6 > end { break; }
+            let _sub_version = u16::from_be_bytes([data[pos], data[pos + 1]]);
+            let sub_length = u16::from_be_bytes([data[pos + 2], data[pos + 3]]) as usize;
+            let coverage = u16::from_be_bytes([data[pos + 4], data[pos + 5]]);
+            let format = (coverage >> 8) & 0xFF;
+
+            if format == 0 && pos + 8 <= end {
+                // Kern format 0
+                let n_pairs = u16::from_be_bytes([data[pos + 6], data[pos + 7]]) as usize;
+                let pairs_start = pos + 14; // skip header
+                for p in 0..n_pairs {
+                    let pair_off = pairs_start + p * 6;
+                    if pair_off + 6 > end { break; }
+                    let left = u16::from_be_bytes([data[pair_off], data[pair_off + 1]]) as u32;
+                    let right = u16::from_be_bytes([data[pair_off + 2], data[pair_off + 3]]) as u32;
+                    let value = i16::from_be_bytes([data[pair_off + 4], data[pair_off + 5]]);
+                    font_data.kerning.insert((left, right), value);
+                }
+                trace!("FontManager: kern format 0 loaded {} pairs", n_pairs);
+            }
+
+            pos += sub_length.max(6);
+        }
     }
 
     /// Render glyph to surface
@@ -557,6 +794,133 @@ impl FontManager {
         } else {
             0x80540004u32 as i32 // CELL_FONT_ERROR_INVALID_PARAMETER
         }
+    }
+
+    // ========================================================================
+    // Unicode Codepoint → Glyph Mapping
+    // ========================================================================
+
+    /// Map a Unicode codepoint to a glyph index for the given font
+    pub fn get_glyph_index(&self, font_id: u32, codepoint: u32) -> Option<u32> {
+        let font = self.fonts.get(&font_id)?;
+        font.data.cmap.get(&codepoint).copied()
+    }
+
+    /// Get the number of cmap entries for a font
+    pub fn get_cmap_entry_count(&self, font_id: u32) -> usize {
+        self.fonts.get(&font_id)
+            .map(|f| f.data.cmap.len())
+            .unwrap_or(0)
+    }
+
+    // ========================================================================
+    // Kerning
+    // ========================================================================
+
+    /// Get the kerning value between two glyphs
+    ///
+    /// Returns the horizontal advance adjustment in font units.
+    pub fn get_kerning(&self, font_id: u32, left_glyph: u32, right_glyph: u32) -> Option<i16> {
+        let font = self.fonts.get(&font_id)?;
+        font.data.kerning.get(&(left_glyph, right_glyph)).copied()
+    }
+
+    /// Get the number of kerning pairs for a font
+    pub fn get_kerning_pair_count(&self, font_id: u32) -> usize {
+        self.fonts.get(&font_id)
+            .map(|f| f.data.kerning.len())
+            .unwrap_or(0)
+    }
+
+    // ========================================================================
+    // System Font Loading
+    // ========================================================================
+
+    /// Known PS3 system font paths under /dev_flash/data/font/
+    pub const SYSTEM_FONT_PATHS: &'static [&'static str] = &[
+        "/dev_flash/data/font/SCE-PS3-RD-R-LATIN.TTF",
+        "/dev_flash/data/font/SCE-PS3-RD-B-LATIN.TTF",
+        "/dev_flash/data/font/SCE-PS3-RD-L-LATIN.TTF",
+        "/dev_flash/data/font/SCE-PS3-NR-R-JPN.TTF",
+        "/dev_flash/data/font/SCE-PS3-NR-B-JPN.TTF",
+        "/dev_flash/data/font/SCE-PS3-NR-L-JPN.TTF",
+        "/dev_flash/data/font/SCE-PS3-YG-R-KOR.TTF",
+        "/dev_flash/data/font/SCE-PS3-DH-R-CGB.TTF",
+        "/dev_flash/data/font/SCE-PS3-CP-R-KANA.TTF",
+    ];
+
+    /// Open a system font by its well-known path
+    ///
+    /// System fonts reside under `/dev_flash/data/font/`.  In HLE mode
+    /// we create a font entry with placeholder data so callers can
+    /// query metrics and render glyphs using the default metrics.
+    pub fn open_system_font(&mut self, path: &str) -> Result<u32, i32> {
+        if !self.initialized {
+            return Err(0x80540002u32 as i32); // CELL_FONT_ERROR_UNINITIALIZED
+        }
+
+        if self.fonts.len() >= self.config.user_font_entry_max as usize {
+            return Err(0x80540003u32 as i32); // CELL_FONT_ERROR_NO_SUPPORT
+        }
+
+        debug!("FontManager::open_system_font: {}", path);
+
+        // Derive a meaningful family name from the path
+        let family = path.rsplit('/').next().unwrap_or("SystemFont")
+            .trim_end_matches(".TTF")
+            .trim_end_matches(".ttf");
+
+        let font_id = self.next_font_id;
+        self.next_font_id += 1;
+
+        let mut font_data = FontData::default();
+        font_data.family_name = family.to_string();
+        font_data.glyph_count = 65535; // system fonts support large Unicode ranges
+        font_data.units_per_em = 2048;
+
+        // Populate identity cmap for BMP
+        for cp in 0x20u32..0x7F {
+            font_data.cmap.insert(cp, cp);
+        }
+        // CJK Unified Ideographs (representative range)
+        for cp in 0x4E00u32..0x4E80 {
+            font_data.cmap.insert(cp, cp);
+        }
+        // Katakana
+        for cp in 0x30A0u32..0x3100 {
+            font_data.cmap.insert(cp, cp);
+        }
+        // Hangul Syllables (representative range)
+        for cp in 0xAC00u32..0xAC80 {
+            font_data.cmap.insert(cp, cp);
+        }
+
+        // Placeholder glyph bounds
+        for (_, &gid) in font_data.cmap.iter() {
+            font_data.glyph_bounds.entry(gid).or_insert((0.0, 0.0, 16.0, 16.0));
+        }
+
+        let entry = FontEntry {
+            id: font_id,
+            font_type: CellFontType::TrueType,
+            size: 0,
+            source: path.to_string(),
+            data: font_data,
+        };
+
+        self.fonts.insert(font_id, entry);
+
+        Ok(font_id)
+    }
+
+    /// Get font family name
+    pub fn get_font_family(&self, font_id: u32) -> Option<&str> {
+        self.fonts.get(&font_id).map(|f| f.data.family_name.as_str())
+    }
+
+    /// Get font style name
+    pub fn get_font_style(&self, font_id: u32) -> Option<&str> {
+        self.fonts.get(&font_id).map(|f| f.data.style_name.as_str())
     }
 }
 
@@ -979,5 +1343,106 @@ mod tests {
         let config = CellFontRendererConfig::default();
         assert_eq!(config.surface_w, 1920);
         assert_eq!(config.surface_h, 1080);
+    }
+
+    // ========================================================================
+    // TrueType Parsing Tests
+    // ========================================================================
+
+    #[test]
+    fn test_font_truetype_parsing_empty() {
+        let mut manager = FontManager::new();
+        manager.init(CellFontConfig::default());
+
+        // Opening with empty data should still succeed with default metrics
+        let id = manager.open_font_memory(0x10000000, 0, CellFontType::TrueType).unwrap();
+        assert!(manager.is_font_open(id));
+
+        // Should have a default ASCII cmap
+        assert!(manager.get_cmap_entry_count(id) > 0);
+
+        manager.end();
+    }
+
+    // ========================================================================
+    // Cmap / Unicode Tests
+    // ========================================================================
+
+    #[test]
+    fn test_font_cmap_lookup() {
+        let mut manager = FontManager::new();
+        manager.init(CellFontConfig::default());
+
+        let id = manager.open_font_memory(0x10000000, 0, CellFontType::TrueType).unwrap();
+
+        // ASCII 'A' (0x41) should be mapped
+        let glyph = manager.get_glyph_index(id, 0x41);
+        assert!(glyph.is_some());
+
+        // Space (0x20) should be mapped
+        assert!(manager.get_glyph_index(id, 0x20).is_some());
+
+        // Very high codepoint unlikely to be mapped with default data
+        assert!(manager.get_glyph_index(id, 0xFFFFFF).is_none());
+
+        manager.end();
+    }
+
+    // ========================================================================
+    // Kerning Tests
+    // ========================================================================
+
+    #[test]
+    fn test_font_kerning_empty() {
+        let mut manager = FontManager::new();
+        manager.init(CellFontConfig::default());
+
+        let id = manager.open_font_memory(0x10000000, 0, CellFontType::TrueType).unwrap();
+
+        // With no real kern table loaded, kerning should be None
+        assert_eq!(manager.get_kerning_pair_count(id), 0);
+        assert!(manager.get_kerning(id, 0x41, 0x56).is_none());
+
+        manager.end();
+    }
+
+    // ========================================================================
+    // System Font Tests
+    // ========================================================================
+
+    #[test]
+    fn test_font_system_font_loading() {
+        let mut manager = FontManager::new();
+        manager.init(CellFontConfig::default());
+
+        let id = manager.open_system_font("/dev_flash/data/font/SCE-PS3-RD-R-LATIN.TTF").unwrap();
+        assert!(manager.is_font_open(id));
+
+        // Should have a family name derived from the path
+        let family = manager.get_font_family(id).unwrap();
+        assert!(family.contains("SCE-PS3-RD-R-LATIN"));
+
+        // Should have cmap entries for ASCII and CJK ranges
+        assert!(manager.get_cmap_entry_count(id) > 95); // at least ASCII printable
+
+        manager.end();
+    }
+
+    #[test]
+    fn test_font_system_font_paths() {
+        assert!(!FontManager::SYSTEM_FONT_PATHS.is_empty());
+        assert!(FontManager::SYSTEM_FONT_PATHS.iter().all(|p| p.starts_with("/dev_flash/")));
+    }
+
+    #[test]
+    fn test_font_family_style() {
+        let mut manager = FontManager::new();
+        manager.init(CellFontConfig::default());
+
+        let id = manager.open_font_memory(0x10000000, 0, CellFontType::TrueType).unwrap();
+        assert!(manager.get_font_family(id).is_some());
+        assert!(manager.get_font_style(id).is_some());
+
+        manager.end();
     }
 }

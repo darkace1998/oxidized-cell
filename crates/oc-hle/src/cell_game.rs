@@ -4,8 +4,8 @@
 //! including disc content, digital content, and game directories.
 
 use std::collections::HashMap;
-use tracing::{debug, trace};
-use crate::memory::write_be32;
+use tracing::{debug, trace, warn};
+use crate::memory::{write_be32, write_be64, write_string};
 
 /// Game data type
 #[repr(u32)]
@@ -235,6 +235,63 @@ pub struct DlcManagerState {
     pub download_progress: u32,
 }
 
+// ============================================================================
+// Game Patch Handling
+// ============================================================================
+
+/// Game patch state
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PatchState {
+    /// No patch detected
+    #[default]
+    None = 0,
+    /// Patch detected and pending merge
+    Detected = 1,
+    /// Patch merge in progress
+    Merging = 2,
+    /// Patch merged successfully
+    Applied = 3,
+    /// Patch merge failed
+    Failed = 4,
+}
+
+/// Information about a detected game patch
+#[derive(Debug, Clone, Default)]
+pub struct PatchInfo {
+    /// Patch state
+    pub state: PatchState,
+    /// Patch version string (e.g. "01.02")
+    pub version: String,
+    /// Patch source path (where patch files reside)
+    pub source_path: String,
+    /// Patch size in KB
+    pub size_kb: u64,
+    /// Number of files in the patch
+    pub file_count: u32,
+    /// Number of files merged so far
+    pub merged_count: u32,
+    /// Error code (if failed)
+    pub error_code: i32,
+}
+
+// ============================================================================
+// Content Info for DLC Enumeration
+// ============================================================================
+
+/// Content info entry returned by cellGameGetContentInfoList
+#[derive(Debug, Clone)]
+pub struct ContentInfoEntry {
+    /// Content ID string
+    pub content_id: String,
+    /// Content path on HDD
+    pub path: String,
+    /// Content size in KB
+    pub size_kb: u64,
+    /// Is installed
+    pub installed: bool,
+}
+
 /// Game manager
 pub struct GameManager {
     /// Current game data type
@@ -265,6 +322,8 @@ pub struct GameManager {
     update_info: GameUpdateInfo,
     /// DLC manager state
     dlc_state: DlcManagerState,
+    /// Game patch info
+    patch_info: PatchInfo,
 }
 
 impl GameManager {
@@ -285,6 +344,7 @@ impl GameManager {
             usrdir_path: String::new(),
             update_info: GameUpdateInfo::default(),
             dlc_state: DlcManagerState::default(),
+            patch_info: PatchInfo::default(),
         };
         
         // Initialize default parameters
@@ -1085,6 +1145,194 @@ impl GameManager {
     pub fn get_downloading_dlc_id(&self) -> Option<&str> {
         self.dlc_state.downloading_id.as_deref()
     }
+
+    // ========================================================================
+    // Game Patch Detection and Merge
+    // ========================================================================
+
+    /// Detect if a patch exists for the current game
+    ///
+    /// Checks the standard PS3 patch directory structure:
+    /// `/dev_hdd0/game/<TITLE_ID>/USRDIR/` overlay files
+    pub fn detect_patch(&mut self) -> i32 {
+        if self.dir_name.is_empty() {
+            return 0x8002b101u32 as i32; // CELL_GAME_ERROR_PARAM
+        }
+
+        let patch_path = format!("/dev_hdd0/game/{}_patch", self.dir_name);
+
+        debug!("GameManager::detect_patch: checking {}", patch_path);
+
+        // Try to find patch directory on host filesystem
+        if let Some(host_path) = self.get_host_game_path(&format!("{}_patch", self.dir_name)) {
+            let path = std::path::Path::new(&host_path);
+            if path.exists() && path.is_dir() {
+                // Count patch files
+                let file_count = Self::count_files_recursive(path);
+                let size = Self::calculate_directory_size(path);
+                let size_kb = (size + 1023) / 1024;
+
+                // Try to read patch version from PARAM.SFO
+                let version = self.read_patch_version(path);
+
+                self.patch_info = PatchInfo {
+                    state: PatchState::Detected,
+                    version,
+                    source_path: patch_path.clone(),
+                    size_kb,
+                    file_count,
+                    merged_count: 0,
+                    error_code: 0,
+                };
+
+                // Set the PATCH attribute flag
+                self.attributes |= CELL_GAME_ATTRIBUTE_PATCH;
+
+                debug!(
+                    "GameManager::detect_patch: found patch v{} ({} files, {} KB)",
+                    self.patch_info.version, file_count, size_kb
+                );
+
+                return 0;
+            }
+        }
+
+        // No patch found — this is not an error
+        self.patch_info.state = PatchState::None;
+        debug!("GameManager::detect_patch: no patch found");
+
+        0 // CELL_OK
+    }
+
+    /// Apply a detected patch by merging files into the game directory
+    ///
+    /// In a real implementation this would copy/overlay each file from the
+    /// patch directory into the base game directory.  For HLE we track the
+    /// merge progress and update the version string.
+    pub fn apply_patch(&mut self) -> i32 {
+        if self.patch_info.state != PatchState::Detected {
+            return 0x8002b101u32 as i32; // No patch to apply
+        }
+
+        debug!("GameManager::apply_patch: merging {} files", self.patch_info.file_count);
+
+        self.patch_info.state = PatchState::Merging;
+
+        // Simulate merging all files
+        self.patch_info.merged_count = self.patch_info.file_count;
+        self.patch_info.state = PatchState::Applied;
+
+        // Update the game version to the patch version
+        if !self.patch_info.version.is_empty() {
+            self.param_string.insert(
+                CellGameParamId::Version as u32,
+                self.patch_info.version.clone(),
+            );
+        }
+
+        debug!(
+            "GameManager::apply_patch: patch applied, version now {}",
+            self.patch_info.version
+        );
+
+        0 // CELL_OK
+    }
+
+    /// Get patch state
+    pub fn get_patch_state(&self) -> PatchState {
+        self.patch_info.state
+    }
+
+    /// Get patch info
+    pub fn get_patch_info(&self) -> &PatchInfo {
+        &self.patch_info
+    }
+
+    /// Check if a patch has been detected
+    pub fn has_patch(&self) -> bool {
+        self.patch_info.state != PatchState::None
+    }
+
+    /// Reset patch state
+    pub fn reset_patch(&mut self) {
+        self.patch_info = PatchInfo::default();
+        self.attributes &= !CELL_GAME_ATTRIBUTE_PATCH;
+    }
+
+    /// Default version string used when a patch's PARAM.SFO cannot be parsed.
+    const DEFAULT_PATCH_VERSION: &'static str = "01.01";
+
+    /// Read patch version from a PARAM.SFO file in the patch directory
+    fn read_patch_version(&self, patch_dir: &std::path::Path) -> String {
+        let sfo_path = patch_dir.join("PARAM.SFO");
+        if let Ok(data) = std::fs::read(&sfo_path) {
+            // Minimal SFO parse: look for VERSION key's value
+            // Full parsing is in load_param_sfo; here we just extract the version
+            if data.len() > 20 && data[0..4] == [0x00, 0x50, 0x53, 0x46] {
+                // For HLE we return a stub version; real impl would parse SFO
+                return Self::DEFAULT_PATCH_VERSION.to_string();
+            }
+        }
+        Self::DEFAULT_PATCH_VERSION.to_string()
+    }
+
+    /// Count files in a directory recursively
+    fn count_files_recursive(path: &std::path::Path) -> u32 {
+        let mut count = 0u32;
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_file() {
+                    count += 1;
+                } else if p.is_dir() {
+                    count += Self::count_files_recursive(&p);
+                }
+            }
+        }
+        count
+    }
+
+    // ========================================================================
+    // Web Content Path
+    // ========================================================================
+
+    /// Get the local web content path for web-content titles
+    ///
+    /// Returns the path to the web content directory within the game's USRDIR.
+    pub fn get_web_content_path(&self) -> String {
+        if self.dir_name.is_empty() {
+            return String::new();
+        }
+        format!("/dev_hdd0/game/{}/USRDIR/web", self.dir_name)
+    }
+
+    // ========================================================================
+    // Content Info List (DLC Enumeration via HLE)
+    // ========================================================================
+
+    /// Get content info list for DLC enumeration
+    ///
+    /// Returns a list of all registered DLC content entries as
+    /// `ContentInfoEntry` values suitable for the `cellGameGetContentInfoList` API.
+    pub fn get_content_info_list(&self) -> Vec<ContentInfoEntry> {
+        self.dlc_state.entries.iter().map(|dlc| {
+            ContentInfoEntry {
+                content_id: dlc.content_id.clone(),
+                path: if dlc.install_path.is_empty() {
+                    format!("/dev_hdd0/game/{}/USRDIR/dlc/{}", self.dir_name, dlc.content_id)
+                } else {
+                    dlc.install_path.clone()
+                },
+                size_kb: dlc.size_kb,
+                installed: dlc.state == DlcState::Installed,
+            }
+        }).collect()
+    }
+
+    /// Get count of available content info entries
+    pub fn get_content_info_count(&self) -> u32 {
+        self.dlc_state.entries.len() as u32
+    }
 }
 
 impl Default for GameManager {
@@ -1258,18 +1506,24 @@ pub fn cell_game_get_param_string(id: u32, _buf_addr: u32, bufsize: u32) -> i32 
 /// cellGameGetLocalWebContentPath - Get local web content path
 ///
 /// # Arguments
-/// * `path_addr` - Address to write path
+/// * `path_addr` - Address to write path (null-terminated string, max 1024 bytes)
 ///
 /// # Returns
 /// * 0 on success
-pub fn cell_game_get_local_web_content_path(_path_addr: u32) -> i32 {
-    debug!("cellGameGetLocalWebContentPath()");
+pub fn cell_game_get_local_web_content_path(path_addr: u32) -> i32 {
+    debug!("cellGameGetLocalWebContentPath(path_addr=0x{:08X})", path_addr);
 
-    // Get directory name from global game manager
-    let _dir_name = crate::context::get_hle_context().game.get_dir_name();
+    let ctx = crate::context::get_hle_context();
+    let web_path = ctx.game.get_web_content_path();
 
-    // Note: Writing path to memory requires memory subsystem integration
-    // Path would be like "/dev_hdd0/game/GAME00000/USRDIR/web"
+    if web_path.is_empty() {
+        warn!("cellGameGetLocalWebContentPath: game not initialized");
+        return 0x8002b101u32 as i32; // CELL_GAME_ERROR_PARAM
+    }
+
+    if let Err(e) = write_string(path_addr, &web_path, 1024) {
+        return e;
+    }
 
     0 // CELL_OK
 }
@@ -1424,6 +1678,70 @@ pub fn cell_game_drm_is_available(_content_id_addr: u32) -> i32 {
     trace!("cellGameDrmIsAvailable()");
     
     // For HLE, all content is considered available
+    0 // CELL_OK
+}
+
+/// cellGameGetContentInfoList - Enumerate DLC / additional content
+///
+/// Writes up to `max_entries` content-info structures into guest memory.
+///
+/// Each entry is laid out as:
+/// ```text
+///   offset 0x00: content_id (128 bytes, null-terminated)
+///   offset 0x80: path       (256 bytes, null-terminated)
+///   offset 0x180: size_kb   (u64, big-endian)
+///   offset 0x188: installed (u32, big-endian, 1 = installed)
+/// ```
+///
+/// The total entry count is written to `count_addr`.
+///
+/// # Arguments
+/// * `list_addr` - Address of output buffer for entries
+/// * `max_entries` - Maximum number of entries to write
+/// * `count_addr` - Address to write actual number of entries
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_game_get_content_info_list(list_addr: u32, max_entries: u32, count_addr: u32) -> i32 {
+    debug!(
+        "cellGameGetContentInfoList(list=0x{:08X}, max={}, count=0x{:08X})",
+        list_addr, max_entries, count_addr
+    );
+
+    let ctx = crate::context::get_hle_context();
+    let entries = ctx.game.get_content_info_list();
+
+    let write_count = std::cmp::min(entries.len() as u32, max_entries);
+
+    const ENTRY_SIZE: u32 = 0x190; // 128 + 256 + 8 + 4 = 396 (round to 0x190 = 400)
+
+    for i in 0..write_count {
+        let entry = &entries[i as usize];
+        let base = list_addr + i * ENTRY_SIZE;
+
+        // Write content_id (128 bytes, null-terminated)
+        if let Err(e) = write_string(base, &entry.content_id, 128) {
+            return e;
+        }
+        // Write path (256 bytes, null-terminated)
+        if let Err(e) = write_string(base + 0x80, &entry.path, 256) {
+            return e;
+        }
+        // Write size_kb (u64)
+        if let Err(e) = write_be64(base + 0x180, entry.size_kb) {
+            return e;
+        }
+        // Write installed flag (u32)
+        if let Err(e) = write_be32(base + 0x188, if entry.installed { 1 } else { 0 }) {
+            return e;
+        }
+    }
+
+    // Write actual count
+    if let Err(e) = write_be32(count_addr, write_count) {
+        return e;
+    }
+
     0 // CELL_OK
 }
 
@@ -2044,5 +2362,176 @@ mod tests {
         let new_size = manager.get_content_size();
         assert!(new_size.size_kb > 0);
         assert!(new_size.sys_size_kb > 0);
+    }
+
+    // ========================================================================
+    // Patch Detection and Merge Tests
+    // ========================================================================
+
+    #[test]
+    fn test_patch_state_enum() {
+        assert_eq!(PatchState::None as u32, 0);
+        assert_eq!(PatchState::Detected as u32, 1);
+        assert_eq!(PatchState::Merging as u32, 2);
+        assert_eq!(PatchState::Applied as u32, 3);
+        assert_eq!(PatchState::Failed as u32, 4);
+    }
+
+    #[test]
+    fn test_patch_info_default() {
+        let info = PatchInfo::default();
+        assert_eq!(info.state, PatchState::None);
+        assert!(info.version.is_empty());
+        assert_eq!(info.size_kb, 0);
+        assert_eq!(info.file_count, 0);
+    }
+
+    #[test]
+    fn test_detect_patch_no_dir_name() {
+        let mut manager = GameManager::new();
+        // dir_name is empty → should return error
+        let result = manager.detect_patch();
+        assert_ne!(result, 0);
+    }
+
+    #[test]
+    fn test_detect_patch_no_patch_directory() {
+        let mut manager = GameManager::new();
+        manager.boot_check();
+
+        // No patch directory exists on disk → state should be None
+        let result = manager.detect_patch();
+        assert_eq!(result, 0);
+        assert_eq!(manager.get_patch_state(), PatchState::None);
+        assert!(!manager.has_patch());
+    }
+
+    #[test]
+    fn test_detect_and_apply_patch_with_real_dir() {
+        let mut manager = GameManager::new();
+        manager.boot_check();
+
+        // Create a temporary patch directory
+        let temp_dir = std::env::temp_dir().join("oxidized_cell_test_patch");
+        let patch_dir = temp_dir.join("GAME00000_patch");
+        let _ = std::fs::create_dir_all(&patch_dir);
+
+        // Add a fake patch file
+        let _ = std::fs::write(patch_dir.join("EBOOT.BIN"), b"patched_data");
+
+        // Point env var to our temp dir
+        std::env::set_var("OXIDIZED_CELL_GAMES", temp_dir.to_str().unwrap());
+
+        assert_eq!(manager.detect_patch(), 0);
+        assert_eq!(manager.get_patch_state(), PatchState::Detected);
+        assert!(manager.has_patch());
+        assert!(manager.get_attributes() & CELL_GAME_ATTRIBUTE_PATCH != 0);
+        assert_eq!(manager.get_patch_info().file_count, 1);
+        assert!(manager.get_patch_info().size_kb > 0);
+
+        // Apply the patch
+        assert_eq!(manager.apply_patch(), 0);
+        assert_eq!(manager.get_patch_state(), PatchState::Applied);
+        assert_eq!(manager.get_patch_info().merged_count, 1);
+
+        // Reset
+        manager.reset_patch();
+        assert_eq!(manager.get_patch_state(), PatchState::None);
+        assert!(manager.get_attributes() & CELL_GAME_ATTRIBUTE_PATCH == 0);
+
+        // Cleanup
+        std::env::remove_var("OXIDIZED_CELL_GAMES");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_apply_patch_without_detection() {
+        let mut manager = GameManager::new();
+        manager.boot_check();
+
+        // Should fail: no patch detected
+        assert_ne!(manager.apply_patch(), 0);
+    }
+
+    // ========================================================================
+    // Web Content Path Tests
+    // ========================================================================
+
+    #[test]
+    fn test_web_content_path_empty_before_init() {
+        let manager = GameManager::new();
+        assert!(manager.get_web_content_path().is_empty());
+    }
+
+    #[test]
+    fn test_web_content_path_after_boot() {
+        let mut manager = GameManager::new();
+        manager.boot_check();
+
+        let path = manager.get_web_content_path();
+        assert_eq!(path, "/dev_hdd0/game/GAME00000/USRDIR/web");
+    }
+
+    #[test]
+    fn test_web_content_path_after_data_check() {
+        let mut manager = GameManager::new();
+        manager.data_check(CellGameDataType::Hdd, "WEBGAME01");
+
+        let path = manager.get_web_content_path();
+        assert_eq!(path, "/dev_hdd0/game/WEBGAME01/USRDIR/web");
+    }
+
+    // ========================================================================
+    // Content Info List (DLC Enumeration) Tests
+    // ========================================================================
+
+    #[test]
+    fn test_content_info_list_empty() {
+        let manager = GameManager::new();
+        let list = manager.get_content_info_list();
+        assert!(list.is_empty());
+        assert_eq!(manager.get_content_info_count(), 0);
+    }
+
+    #[test]
+    fn test_content_info_list_with_dlc() {
+        let mut manager = GameManager::new();
+        manager.boot_check();
+
+        manager.register_dlc("DLC001", "Extra Maps", 51200);
+        manager.register_dlc("DLC002", "Costume Pack", 10240);
+
+        // Install one
+        manager.start_dlc_download("DLC001");
+        manager.complete_dlc_download();
+
+        let list = manager.get_content_info_list();
+        assert_eq!(list.len(), 2);
+        assert_eq!(manager.get_content_info_count(), 2);
+
+        // Check first entry (installed)
+        assert_eq!(list[0].content_id, "DLC001");
+        assert_eq!(list[0].size_kb, 51200);
+        assert!(list[0].installed);
+        assert!(!list[0].path.is_empty());
+
+        // Check second entry (not installed)
+        assert_eq!(list[1].content_id, "DLC002");
+        assert_eq!(list[1].size_kb, 10240);
+        assert!(!list[1].installed);
+        assert!(list[1].path.contains("DLC002"));
+    }
+
+    #[test]
+    fn test_content_info_entry_path_default() {
+        let mut manager = GameManager::new();
+        manager.boot_check();
+        manager.register_dlc("MY_DLC", "Test", 100);
+
+        let list = manager.get_content_info_list();
+        assert_eq!(
+            list[0].path,
+            "/dev_hdd0/game/GAME00000/USRDIR/dlc/MY_DLC"
+        );
     }
 }

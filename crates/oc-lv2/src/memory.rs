@@ -40,6 +40,159 @@ struct MemoryAllocation {
 pub struct MemoryManager {
     allocations: Mutex<HashMap<u64, MemoryAllocation>>,
     next_addr: Mutex<u64>,
+    mmio: Mutex<MmioManager>,
+}
+
+/// MMIO device register access trait
+///
+/// Devices implement this trait to handle memory-mapped register reads and writes.
+pub trait MmioDevice: Send + Sync {
+    /// Read a 32-bit register at the given offset from the device's base address
+    fn read32(&self, offset: u32) -> u32;
+    /// Write a 32-bit value to a register at the given offset
+    fn write32(&mut self, offset: u32, value: u32);
+    /// Device name for debugging
+    fn name(&self) -> &str;
+}
+
+/// MMIO address region mapping a physical address range to a device
+#[derive(Debug, Clone)]
+pub struct MmioRegion {
+    /// Base address of the MMIO region
+    pub base: u64,
+    /// Size of the MMIO region in bytes
+    pub size: u64,
+    /// Device name (for lookup)
+    pub device_name: String,
+}
+
+/// MMIO manager that dispatches read/write to registered devices
+pub struct MmioManager {
+    /// Registered MMIO regions (base_addr → region info)
+    regions: Vec<MmioRegion>,
+    /// Device register storage (device_name → register_map)
+    /// Uses a simple HashMap<offset, value> for each device
+    devices: HashMap<String, HashMap<u32, u32>>,
+}
+
+impl MmioManager {
+    pub fn new() -> Self {
+        let mut mgr = Self {
+            regions: Vec::new(),
+            devices: HashMap::new(),
+        };
+        
+        // Register built-in PS3 MMIO devices
+        mgr.register_builtin_devices();
+        mgr
+    }
+    
+    /// Register built-in PS3 device stubs
+    fn register_builtin_devices(&mut self) {
+        // SPU problem state area (one per SPU, at 0x200B0000 + n*0x20000)
+        for i in 0..6u64 {
+            let base = 0x200B_0000 + i * 0x2_0000;
+            let name = format!("spu_ctrl_{}", i);
+            self.regions.push(MmioRegion {
+                base,
+                size: 0x2_0000,
+                device_name: name.clone(),
+            });
+            let mut regs = HashMap::new();
+            // SPU_Status register at offset 0x4000 (default: stopped)
+            regs.insert(0x4000, 0x0000_0000);
+            // SPU_NPC (next program counter) at offset 0x4008
+            regs.insert(0x4008, 0x0000_0000);
+            // SPU_RunCntl at offset 0x401C
+            regs.insert(0x401C, 0x0000_0000);
+            self.devices.insert(name, regs);
+        }
+        
+        // Interrupt controller at 0x0E000000
+        self.regions.push(MmioRegion {
+            base: 0x0E00_0000,
+            size: 0x1000,
+            device_name: "interrupt_ctrl".to_string(),
+        });
+        let mut ic_regs = HashMap::new();
+        // IRQ_STATUS register
+        ic_regs.insert(0x0000, 0x0000_0000);
+        // IRQ_MASK register
+        ic_regs.insert(0x0004, 0x0000_0000);
+        // IRQ_CLEAR register
+        ic_regs.insert(0x0008, 0x0000_0000);
+        self.devices.insert("interrupt_ctrl".to_string(), ic_regs);
+    }
+    
+    /// Register a custom MMIO region for a device
+    pub fn register_device(
+        &mut self,
+        base: u64,
+        size: u64,
+        name: String,
+    ) -> Result<(), KernelError> {
+        // Check for overlap with existing regions
+        for region in &self.regions {
+            if base < region.base + region.size && base + size > region.base {
+                return Err(KernelError::PermissionDenied);
+            }
+        }
+        
+        self.regions.push(MmioRegion {
+            base,
+            size,
+            device_name: name.clone(),
+        });
+        self.devices.entry(name).or_insert_with(HashMap::new);
+        Ok(())
+    }
+    
+    /// Read a 32-bit register from an MMIO address
+    pub fn read32(&self, addr: u64) -> Result<u32, KernelError> {
+        for region in &self.regions {
+            if addr >= region.base && addr < region.base + region.size {
+                let offset = (addr - region.base) as u32;
+                if let Some(regs) = self.devices.get(&region.device_name) {
+                    let value = regs.get(&offset).copied().unwrap_or(0);
+                    tracing::debug!(
+                        "MMIO read: {}[0x{:x}] = 0x{:08x}",
+                        region.device_name, offset, value
+                    );
+                    return Ok(value);
+                }
+            }
+        }
+        Err(KernelError::InvalidId(addr as u32))
+    }
+    
+    /// Write a 32-bit value to an MMIO address
+    pub fn write32(&mut self, addr: u64, value: u32) -> Result<(), KernelError> {
+        for region in &self.regions {
+            if addr >= region.base && addr < region.base + region.size {
+                let offset = (addr - region.base) as u32;
+                let device_name = region.device_name.clone();
+                if let Some(regs) = self.devices.get_mut(&device_name) {
+                    tracing::debug!(
+                        "MMIO write: {}[0x{:x}] = 0x{:08x}",
+                        device_name, offset, value
+                    );
+                    regs.insert(offset, value);
+                    return Ok(());
+                }
+            }
+        }
+        Err(KernelError::InvalidId(addr as u32))
+    }
+    
+    /// Get the list of registered MMIO regions
+    pub fn regions(&self) -> &[MmioRegion] {
+        &self.regions
+    }
+    
+    /// Check if an address is in an MMIO region
+    pub fn is_mmio_addr(&self, addr: u64) -> bool {
+        self.regions.iter().any(|r| addr >= r.base && addr < r.base + r.size)
+    }
 }
 
 impl MemoryManager {
@@ -47,6 +200,7 @@ impl MemoryManager {
         Self {
             allocations: Mutex::new(HashMap::new()),
             next_addr: Mutex::new(0x3000_0000), // Start of user memory region
+            mmio: Mutex::new(MmioManager::new()),
         }
     }
 
@@ -118,6 +272,41 @@ impl MemoryManager {
     pub fn get_allocation(&self, addr: u64) -> Option<(u64, usize)> {
         let allocations = self.allocations.lock();
         allocations.get(&addr).map(|a| (a.addr, a.size))
+    }
+    
+    /// Read a 32-bit value from an MMIO device register
+    pub fn mmio_read32(&self, addr: u64) -> Result<u32, KernelError> {
+        let mmio = self.mmio.lock();
+        mmio.read32(addr)
+    }
+    
+    /// Write a 32-bit value to an MMIO device register
+    pub fn mmio_write32(&self, addr: u64, value: u32) -> Result<(), KernelError> {
+        let mut mmio = self.mmio.lock();
+        mmio.write32(addr, value)
+    }
+    
+    /// Register a custom MMIO device region
+    pub fn register_mmio_device(
+        &self,
+        base: u64,
+        size: u64,
+        name: String,
+    ) -> Result<(), KernelError> {
+        let mut mmio = self.mmio.lock();
+        mmio.register_device(base, size, name)
+    }
+    
+    /// Check if an address maps to an MMIO device
+    pub fn is_mmio_addr(&self, addr: u64) -> bool {
+        let mmio = self.mmio.lock();
+        mmio.is_mmio_addr(addr)
+    }
+    
+    /// Get the number of registered MMIO regions
+    pub fn mmio_region_count(&self) -> usize {
+        let mmio = self.mmio.lock();
+        mmio.regions().len()
     }
 }
 
@@ -352,6 +541,101 @@ mod tests {
 
         // Free
         syscalls::sys_memory_free(&manager, addr).unwrap();
+    }
+
+    #[test]
+    fn test_mmio_builtin_devices() {
+        let manager = MemoryManager::new();
+        
+        // Built-in devices: 6 SPU controllers + 1 interrupt controller = 7 regions
+        assert_eq!(manager.mmio_region_count(), 7);
+    }
+
+    #[test]
+    fn test_mmio_spu_ctrl_read_write() {
+        let manager = MemoryManager::new();
+        
+        // SPU 0 problem state at 0x200B0000
+        let spu0_status = 0x200B_0000 + 0x4000; // SPU_Status register
+        
+        // Read default value (0)
+        let value = manager.mmio_read32(spu0_status).unwrap();
+        assert_eq!(value, 0);
+        
+        // Write a status value
+        manager.mmio_write32(spu0_status, 0x0000_0001).unwrap();
+        let value = manager.mmio_read32(spu0_status).unwrap();
+        assert_eq!(value, 0x0000_0001);
+    }
+
+    #[test]
+    fn test_mmio_interrupt_ctrl() {
+        let manager = MemoryManager::new();
+        
+        // Interrupt controller at 0x0E000000
+        let irq_status = 0x0E00_0000;
+        let irq_mask = 0x0E00_0004;
+        
+        // Write and read IRQ mask
+        manager.mmio_write32(irq_mask, 0xFF00_FF00).unwrap();
+        let mask = manager.mmio_read32(irq_mask).unwrap();
+        assert_eq!(mask, 0xFF00_FF00);
+        
+        // Status should still be 0
+        let status = manager.mmio_read32(irq_status).unwrap();
+        assert_eq!(status, 0);
+    }
+
+    #[test]
+    fn test_mmio_is_mmio_addr() {
+        let manager = MemoryManager::new();
+        
+        // SPU control area is MMIO
+        assert!(manager.is_mmio_addr(0x200B_0000));
+        // Regular memory is not MMIO
+        assert!(!manager.is_mmio_addr(0x3000_0000));
+    }
+
+    #[test]
+    fn test_mmio_invalid_addr() {
+        let manager = MemoryManager::new();
+        
+        // Address not in any MMIO region
+        let result = manager.mmio_read32(0xDEAD_BEEF);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_mmio_register_custom_device() {
+        let manager = MemoryManager::new();
+        let initial_count = manager.mmio_region_count();
+        
+        // Register a custom device
+        manager.register_mmio_device(
+            0xF000_0000,
+            0x1000,
+            "custom_dev".to_string(),
+        ).unwrap();
+        
+        assert_eq!(manager.mmio_region_count(), initial_count + 1);
+        
+        // Read/write to custom device
+        manager.mmio_write32(0xF000_0000, 0x1234).unwrap();
+        let value = manager.mmio_read32(0xF000_0000).unwrap();
+        assert_eq!(value, 0x1234);
+    }
+
+    #[test]
+    fn test_mmio_overlapping_region_rejected() {
+        let manager = MemoryManager::new();
+        
+        // Try to register a region that overlaps with SPU 0 control area
+        let result = manager.register_mmio_device(
+            0x200B_0000,
+            0x1000,
+            "overlapping".to_string(),
+        );
+        assert!(result.is_err());
     }
 }
 

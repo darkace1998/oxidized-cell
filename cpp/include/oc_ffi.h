@@ -1532,6 +1532,51 @@ void oc_spu_jit_profiling_get_stats(oc_spu_jit_t* jit, uint64_t* blocks_compiled
 void oc_spu_jit_profiling_reset(oc_spu_jit_t* jit);
 
 // ============================================================================
+// SPU-to-SPU Mailbox Fast Path
+// ============================================================================
+
+/**
+ * Send a value through the SPU-to-SPU mailbox fast path
+ * Returns 1 on success, 0 if mailbox is full
+ */
+int oc_spu_jit_mailbox_send(oc_spu_jit_t* jit, uint8_t src_spu, uint8_t dst_spu, uint32_t value);
+
+/**
+ * Receive a value from the SPU-to-SPU mailbox fast path
+ * Returns 1 on success with value written to *value, 0 if mailbox is empty
+ */
+int oc_spu_jit_mailbox_receive(oc_spu_jit_t* jit, uint8_t src_spu, uint8_t dst_spu, uint32_t* value);
+
+/**
+ * Get the number of pending messages in a mailbox slot
+ */
+uint32_t oc_spu_jit_mailbox_pending(oc_spu_jit_t* jit, uint8_t src_spu, uint8_t dst_spu);
+
+/**
+ * Reset all mailbox slots
+ */
+void oc_spu_jit_mailbox_reset(oc_spu_jit_t* jit);
+
+/**
+ * Get mailbox statistics
+ */
+void oc_spu_jit_mailbox_get_stats(oc_spu_jit_t* jit,
+                                   uint64_t* total_sends, uint64_t* total_receives,
+                                   uint64_t* send_blocked, uint64_t* receive_blocked);
+
+// ============================================================================
+// Loop-Aware Block Merging
+// ============================================================================
+
+/**
+ * Merge basic blocks within a loop body for cross-iteration optimization.
+ * Returns the number of merged blocks created.
+ */
+int oc_spu_jit_merge_loop_blocks(oc_spu_jit_t* jit, uint32_t loop_header,
+                                  uint32_t back_edge_addr, const uint32_t* body_addresses,
+                                  size_t body_count);
+
+// ============================================================================
 // RSX Shader Compiler
 // ============================================================================
 
@@ -1629,11 +1674,13 @@ size_t oc_rsx_shader_get_vertex_cache_count(oc_rsx_shader_t* shader);
 size_t oc_rsx_shader_get_fragment_cache_count(oc_rsx_shader_t* shader);
 
 // ============================================================================
-// Atomics
+// Atomics (mutex-guarded on non-x86_64 platforms)
 // ============================================================================
 
 /**
  * 128-bit atomic compare-and-swap
+ * On x86_64: uses cmpxchg16b for true hardware atomicity
+ * On other platforms: mutex-guarded for thread safety
  */
 int oc_atomic_cas128(void* ptr, oc_v128_t* expected, const oc_v128_t* desired);
 
@@ -1646,6 +1693,164 @@ void oc_atomic_load128(const void* ptr, oc_v128_t* result);
  * 128-bit atomic store
  */
 void oc_atomic_store128(void* ptr, const oc_v128_t* value);
+
+// ============================================================================
+// DMA Transfer Acceleration
+// ============================================================================
+
+/**
+ * Execute a DMA transfer between SPU local storage and main memory.
+ * cmd: DMA command type (0x40=GET, 0x20=PUT, etc.)
+ * Returns: 0 on success, negative on error
+ */
+int oc_dma_transfer(void* local_storage, uint32_t local_addr,
+                    void* main_memory, uint64_t ea, uint32_t size,
+                    uint16_t tag, uint8_t cmd);
+
+/**
+ * Execute a DMA list (scatter-gather) transfer.
+ * list_addr: offset in local storage where the list elements are
+ * list_size: total size of list data in bytes
+ * Returns: number of list entries processed, or negative on error
+ */
+int oc_dma_list_transfer(void* local_storage, uint32_t list_addr,
+                         void* main_memory, uint32_t list_size,
+                         uint16_t tag, uint8_t cmd);
+
+/**
+ * Insert a DMA fence for a tag group.
+ * All subsequent transfers on this tag must wait for prior ones to complete.
+ */
+int oc_dma_fence(uint16_t tag);
+
+/**
+ * Insert a DMA barrier.
+ * All subsequent transfers on ALL tags must wait for all prior transfers.
+ */
+int oc_dma_barrier(void);
+
+/**
+ * Get DMA tag completion status.
+ * Returns: 32-bit mask where bit N is set if tag N has no pending transfers.
+ */
+uint32_t oc_dma_get_tag_status(void);
+
+/**
+ * Mark all pending DMA transfers for a tag as complete.
+ */
+int oc_dma_complete_tag(uint16_t tag);
+
+/**
+ * Get DMA statistics.
+ */
+void oc_dma_get_stats(uint64_t* gets, uint64_t* puts,
+                      uint64_t* list_gets, uint64_t* list_puts,
+                      uint64_t* bytes_in, uint64_t* bytes_out,
+                      uint64_t* fences, uint64_t* barriers);
+
+/**
+ * Reset DMA statistics and clear all pending transfers.
+ */
+void oc_dma_reset_stats(void);
+
+// ============================================================================
+// SIMD Helpers (with runtime CPU feature detection)
+// ============================================================================
+
+/**
+ * Get detected SIMD level.
+ * Returns: 0=Scalar, 1=SSE4.2, 2=AVX2
+ */
+int oc_simd_get_level(void);
+
+/**
+ * Get human-readable name of detected SIMD level.
+ */
+const char* oc_simd_get_level_name(void);
+
+/** Vector add: result = a + b (4 x int32) */
+void oc_simd_vec_add(oc_v128_t* result, const oc_v128_t* a, const oc_v128_t* b);
+
+/** Vector sub: result = a - b (4 x int32) */
+void oc_simd_vec_sub(oc_v128_t* result, const oc_v128_t* a, const oc_v128_t* b);
+
+/** Vector AND: result = a & b */
+void oc_simd_vec_and(oc_v128_t* result, const oc_v128_t* a, const oc_v128_t* b);
+
+/** Vector OR: result = a | b */
+void oc_simd_vec_or(oc_v128_t* result, const oc_v128_t* a, const oc_v128_t* b);
+
+/** Vector XOR: result = a ^ b */
+void oc_simd_vec_xor(oc_v128_t* result, const oc_v128_t* a, const oc_v128_t* b);
+
+/**
+ * SPU SHUFB (shuffle bytes).
+ * For each byte in pattern: if bit 7 set → special value; else index into {a||b}.
+ * Maps to _mm_shuffle_epi8 / vpshufb on x86.
+ */
+void oc_simd_vec_shufb(oc_v128_t* result, const oc_v128_t* a,
+                       const oc_v128_t* b, const oc_v128_t* pattern);
+
+/** Vector compare equal: result = (a == b) ? 0xFFFFFFFF : 0 (4 x int32) */
+void oc_simd_vec_cmpeq(oc_v128_t* result, const oc_v128_t* a, const oc_v128_t* b);
+
+/** Vector compare greater than (signed): result = (a > b) ? 0xFFFFFFFF : 0 (4 x int32) */
+void oc_simd_vec_cmpgt(oc_v128_t* result, const oc_v128_t* a, const oc_v128_t* b);
+
+/** Vector float add: result = a + b (4 x float32) */
+void oc_simd_vec_fadd(oc_v128_t* result, const oc_v128_t* a, const oc_v128_t* b);
+
+/** Vector float sub: result = a - b (4 x float32) */
+void oc_simd_vec_fsub(oc_v128_t* result, const oc_v128_t* a, const oc_v128_t* b);
+
+/** Vector float mul: result = a * b (4 x float32) */
+void oc_simd_vec_fmul(oc_v128_t* result, const oc_v128_t* a, const oc_v128_t* b);
+
+// ============================================================================
+// PPU JIT Block Linking APIs
+// ============================================================================
+
+void oc_ppu_jit_link_add(oc_ppu_jit_t* jit, uint32_t source, uint32_t target, int conditional);
+int oc_ppu_jit_link_blocks(oc_ppu_jit_t* jit, uint32_t source, uint32_t target);
+void oc_ppu_jit_unlink_source(oc_ppu_jit_t* jit, uint32_t source);
+void oc_ppu_jit_unlink_target(oc_ppu_jit_t* jit, uint32_t target);
+void* oc_ppu_jit_link_get_target(oc_ppu_jit_t* jit, uint32_t source, uint32_t target);
+void oc_ppu_jit_link_record_hit(oc_ppu_jit_t* jit);
+void oc_ppu_jit_link_record_miss(oc_ppu_jit_t* jit);
+void oc_ppu_jit_link_get_stats(oc_ppu_jit_t* jit, uint64_t* total_links,
+                                uint64_t* active_links, uint64_t* hits,
+                                uint64_t* misses, uint64_t* unlinks);
+size_t oc_ppu_jit_link_get_count(oc_ppu_jit_t* jit);
+size_t oc_ppu_jit_link_get_active(oc_ppu_jit_t* jit);
+void oc_ppu_jit_link_reset_stats(oc_ppu_jit_t* jit);
+void oc_ppu_jit_link_clear(oc_ppu_jit_t* jit);
+
+// ============================================================================
+// PPU JIT Trace Compilation APIs
+// ============================================================================
+
+void oc_ppu_jit_trace_set_hot_threshold(oc_ppu_jit_t* jit, uint64_t threshold);
+uint64_t oc_ppu_jit_trace_get_hot_threshold(oc_ppu_jit_t* jit);
+void oc_ppu_jit_trace_set_max_length(oc_ppu_jit_t* jit, size_t length);
+void oc_ppu_jit_trace_detect(oc_ppu_jit_t* jit, uint32_t header,
+                              const uint32_t* block_addrs, size_t count,
+                              uint32_t back_edge);
+int oc_ppu_jit_trace_record_execution(oc_ppu_jit_t* jit, uint32_t header);
+void oc_ppu_jit_trace_mark_compiled(oc_ppu_jit_t* jit, uint32_t header, void* code);
+void* oc_ppu_jit_trace_get_compiled(oc_ppu_jit_t* jit, uint32_t header);
+int oc_ppu_jit_trace_is_header(oc_ppu_jit_t* jit, uint32_t address);
+void oc_ppu_jit_trace_get_stats(oc_ppu_jit_t* jit, uint64_t* detected,
+                                 uint64_t* compiled, uint64_t* loops,
+                                 uint64_t* linear, uint64_t* executions,
+                                 uint64_t* aborts);
+void oc_ppu_jit_trace_reset_stats(oc_ppu_jit_t* jit);
+void oc_ppu_jit_trace_clear(oc_ppu_jit_t* jit);
+
+// ============================================================================
+// PPU JIT Code Verification API
+// ============================================================================
+
+int oc_ppu_jit_verify_codegen(oc_ppu_jit_t* jit);
 
 #ifdef __cplusplus
 }
