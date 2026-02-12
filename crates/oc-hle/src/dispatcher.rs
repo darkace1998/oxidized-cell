@@ -1285,4 +1285,105 @@ mod tests {
         dispatcher.reset();
         assert_eq!(dispatcher.nid_stub_count(), 0);
     }
+
+    // Phase 1 dispatcher integration tests
+
+    #[test]
+    fn test_phase1_video_out_registration() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+
+        // cellVideoOut functions should be registered
+        let has_get_state = dispatcher.stub_map.values()
+            .any(|info| info.name == "cellVideoOutGetState");
+        let has_configure = dispatcher.stub_map.values()
+            .any(|info| info.name == "cellVideoOutConfigure");
+        let has_get_config = dispatcher.stub_map.values()
+            .any(|info| info.name == "cellVideoOutGetConfiguration");
+        let has_res_avail = dispatcher.stub_map.values()
+            .any(|info| info.name == "cellVideoOutGetResolutionAvailability");
+        
+        assert!(has_get_state, "cellVideoOutGetState should be registered");
+        assert!(has_configure, "cellVideoOutConfigure should be registered");
+        assert!(has_get_config, "cellVideoOutGetConfiguration should be registered");
+        assert!(has_res_avail, "cellVideoOutGetResolutionAvailability should be registered");
+    }
+
+    #[test]
+    fn test_phase1_game_content_permit_registration() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+
+        let has_content_permit = dispatcher.stub_map.values()
+            .any(|info| info.name == "cellGameContentPermit");
+
+        assert!(has_content_permit, "cellGameContentPermit should be registered");
+    }
+
+    #[test]
+    fn test_phase1_fs_dir_registration() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+
+        let has_opendir = dispatcher.stub_map.values()
+            .any(|info| info.name == "cellFsOpendir");
+        let has_readdir = dispatcher.stub_map.values()
+            .any(|info| info.name == "cellFsReaddir");
+        let has_lseek = dispatcher.stub_map.values()
+            .any(|info| info.name == "cellFsLseek64");
+
+        assert!(has_opendir, "cellFsOpendir should be registered");
+        assert!(has_readdir, "cellFsReaddir should be registered");
+        assert!(has_lseek, "cellFsLseek64 should be registered");
+    }
+
+    #[test]
+    fn test_phase1_registration_count() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+
+        // Verify we have a reasonable number of functions registered
+        // Previous count was ~37, new count should be ~47 (added ~10 new functions)
+        assert!(dispatcher.stub_map.len() >= 45,
+            "Expected at least 45 registered functions, got {}", dispatcher.stub_map.len());
+    }
+
+    #[test]
+    fn test_video_out_get_resolution_availability() {
+        let mut dispatcher = HleDispatcher::new();
+        let addr = dispatcher.register_function(
+            "cellSysutil", "cellVideoOutGetResolutionAvailability",
+            hle_video_out_get_resolution_availability
+        );
+
+        // Test: video_out=0 (PRIMARY), resolution=5 (720p), aspect=0 → should be 1 (available)
+        let ctx = HleCallContext {
+            stub_addr: addr,
+            args: [0, 5, 0, 0, 0, 0, 0, 0],
+            toc: 0,
+            lr: 0,
+        };
+        let result = dispatcher.dispatch(&ctx);
+        assert_eq!(result, Some(1), "720p should be available on primary output");
+
+        // Test: video_out=0, resolution=7 (1080p) → should be 1
+        let ctx_1080 = HleCallContext {
+            stub_addr: addr,
+            args: [0, 7, 0, 0, 0, 0, 0, 0],
+            toc: 0,
+            lr: 0,
+        };
+        let result_1080 = dispatcher.dispatch(&ctx_1080);
+        assert_eq!(result_1080, Some(1), "1080p should be available");
+
+        // Test: video_out=99 (invalid), resolution=5 → should be 0 (not available)
+        let ctx_invalid = HleCallContext {
+            stub_addr: addr,
+            args: [99, 5, 0, 0, 0, 0, 0, 0],
+            toc: 0,
+            lr: 0,
+        };
+        let result_invalid = dispatcher.dispatch(&ctx_invalid);
+        assert_eq!(result_invalid, Some(0), "Invalid video output should return 0");
+    }
 }
