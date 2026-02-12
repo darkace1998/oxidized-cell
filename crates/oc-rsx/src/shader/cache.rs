@@ -346,6 +346,176 @@ pub struct CacheStats {
     pub fragment_count: usize,
 }
 
+/// LRU shader cache with configurable maximum entry count.
+/// When the cache exceeds `max_entries`, the least-recently-used entry is evicted.
+pub struct LruShaderCache {
+    /// Maximum number of entries before eviction
+    max_entries: usize,
+    /// Entries stored as (hash, bytecode, last_access_order)
+    entries: Vec<(u64, Vec<u32>, u64)>,
+    /// Monotonic access counter
+    access_counter: u64,
+    /// Cache statistics
+    pub stats: LruCacheStats,
+}
+
+/// Statistics for the LRU shader cache.
+#[derive(Debug, Default, Clone)]
+pub struct LruCacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub evictions: u64,
+    pub insertions: u64,
+}
+
+impl LruShaderCache {
+    /// Create a new LRU cache with the given maximum entry count.
+    pub fn new(max_entries: usize) -> Self {
+        Self {
+            max_entries: max_entries.max(1),
+            entries: Vec::new(),
+            access_counter: 0,
+            stats: LruCacheStats::default(),
+        }
+    }
+
+    /// Look up a shader by hash. Returns bytecode if found and updates access order.
+    pub fn get(&mut self, hash: u64) -> Option<&[u32]> {
+        self.access_counter += 1;
+        if let Some(entry) = self.entries.iter_mut().find(|(h, _, _)| *h == hash) {
+            entry.2 = self.access_counter;
+            self.stats.hits += 1;
+            Some(&entry.1)
+        } else {
+            self.stats.misses += 1;
+            None
+        }
+    }
+
+    /// Insert a shader into the cache. Evicts the LRU entry if at capacity.
+    pub fn insert(&mut self, hash: u64, bytecode: Vec<u32>) {
+        // Check if already present
+        if let Some(entry) = self.entries.iter_mut().find(|(h, _, _)| *h == hash) {
+            self.access_counter += 1;
+            entry.1 = bytecode;
+            entry.2 = self.access_counter;
+            return;
+        }
+        
+        // Evict LRU if at capacity
+        if self.entries.len() >= self.max_entries {
+            // Find entry with smallest access_counter (LRU)
+            if let Some(lru_idx) = self.entries.iter()
+                .enumerate()
+                .min_by_key(|(_, (_, _, access))| *access)
+                .map(|(idx, _)| idx)
+            {
+                self.entries.swap_remove(lru_idx);
+                self.stats.evictions += 1;
+            }
+        }
+        
+        self.access_counter += 1;
+        self.entries.push((hash, bytecode, self.access_counter));
+        self.stats.insertions += 1;
+    }
+
+    /// Get the number of entries in the cache.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Check if the cache is empty.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Clear all entries.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.access_counter = 0;
+    }
+
+    /// Get the hit rate as a percentage (0.0 - 100.0).
+    pub fn hit_rate(&self) -> f64 {
+        let total = self.stats.hits + self.stats.misses;
+        if total == 0 { 0.0 } else { (self.stats.hits as f64 / total as f64) * 100.0 }
+    }
+}
+
+impl Default for LruShaderCache {
+    fn default() -> Self {
+        Self::new(1024)
+    }
+}
+
+/// Combined pipeline state hash for linked vertex+fragment program caching.
+/// Instead of caching VP and FP separately, this combines them with
+/// relevant pipeline state into a single hash for the full pipeline.
+pub struct PipelineStateHasher;
+
+impl PipelineStateHasher {
+    /// Compute a combined hash for a linked VP+FP pipeline.
+    ///
+    /// Combines:
+    /// - Vertex program hash
+    /// - Fragment program hash
+    /// - Blend state (enable, src/dst factors, equation)
+    /// - Depth state (enable, func, write)
+    /// - Cull state (enable, mode)
+    /// - MSAA sample count
+    pub fn compute(
+        vp_hash: u64,
+        fp_hash: u64,
+        blend_enable: bool,
+        blend_src: u32,
+        blend_dst: u32,
+        blend_eq: u32,
+        depth_enable: bool,
+        depth_func: u32,
+        depth_write: bool,
+        cull_enable: bool,
+        cull_mode: u32,
+        sample_count: u8,
+    ) -> u64 {
+        // FNV-1a hash combining
+        let mut hash: u64 = 0xcbf29ce484222325;
+        let prime: u64 = 0x100000001b3;
+        
+        for byte in vp_hash.to_le_bytes() {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(prime);
+        }
+        for byte in fp_hash.to_le_bytes() {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(prime);
+        }
+        
+        hash ^= blend_enable as u64;
+        hash = hash.wrapping_mul(prime);
+        hash ^= blend_src as u64;
+        hash = hash.wrapping_mul(prime);
+        hash ^= blend_dst as u64;
+        hash = hash.wrapping_mul(prime);
+        hash ^= blend_eq as u64;
+        hash = hash.wrapping_mul(prime);
+        hash ^= depth_enable as u64;
+        hash = hash.wrapping_mul(prime);
+        hash ^= depth_func as u64;
+        hash = hash.wrapping_mul(prime);
+        hash ^= depth_write as u64;
+        hash = hash.wrapping_mul(prime);
+        hash ^= cull_enable as u64;
+        hash = hash.wrapping_mul(prime);
+        hash ^= cull_mode as u64;
+        hash = hash.wrapping_mul(prime);
+        hash ^= sample_count as u64;
+        hash = hash.wrapping_mul(prime);
+        
+        hash
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,5 +613,123 @@ mod tests {
 
         // Cleanup
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+}
+
+#[cfg(test)]
+mod lru_tests {
+    use super::*;
+
+    #[test]
+    fn test_lru_cache_basic() {
+        let mut cache = LruShaderCache::new(4);
+        assert!(cache.is_empty());
+        
+        cache.insert(0x1234, vec![1, 2, 3]);
+        assert_eq!(cache.len(), 1);
+        assert!(!cache.is_empty());
+        
+        let result = cache.get(0x1234);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), &[1, 2, 3]);
+        assert_eq!(cache.stats.hits, 1);
+    }
+
+    #[test]
+    fn test_lru_cache_miss() {
+        let mut cache = LruShaderCache::new(4);
+        cache.insert(0x1234, vec![1, 2, 3]);
+        
+        assert!(cache.get(0x5678).is_none());
+        assert_eq!(cache.stats.misses, 1);
+    }
+
+    #[test]
+    fn test_lru_eviction() {
+        let mut cache = LruShaderCache::new(3);
+        
+        cache.insert(0x1, vec![1]);
+        cache.insert(0x2, vec![2]);
+        cache.insert(0x3, vec![3]);
+        assert_eq!(cache.len(), 3);
+        
+        // Access 0x1 to make it recently used
+        cache.get(0x1);
+        
+        // Insert 0x4 — should evict 0x2 (LRU)
+        cache.insert(0x4, vec![4]);
+        assert_eq!(cache.len(), 3);
+        assert_eq!(cache.stats.evictions, 1);
+        
+        // 0x2 should be evicted
+        assert!(cache.get(0x2).is_none());
+        // 0x1, 0x3, 0x4 should remain
+        assert!(cache.get(0x1).is_some());
+        assert!(cache.get(0x3).is_some());
+        assert!(cache.get(0x4).is_some());
+    }
+
+    #[test]
+    fn test_lru_update_existing() {
+        let mut cache = LruShaderCache::new(4);
+        cache.insert(0x1, vec![1, 2, 3]);
+        cache.insert(0x1, vec![4, 5, 6]); // Update
+        
+        assert_eq!(cache.len(), 1); // Should not add duplicate
+        assert_eq!(cache.get(0x1).unwrap(), &[4, 5, 6]);
+    }
+
+    #[test]
+    fn test_lru_hit_rate() {
+        let mut cache = LruShaderCache::new(10);
+        cache.insert(0x1, vec![1]);
+        
+        cache.get(0x1); // Hit
+        cache.get(0x1); // Hit
+        cache.get(0x2); // Miss
+        
+        let rate = cache.hit_rate();
+        // 2 hits, 1 miss = 66.67%
+        assert!(rate > 66.0 && rate < 67.0);
+    }
+
+    #[test]
+    fn test_lru_clear() {
+        let mut cache = LruShaderCache::new(10);
+        cache.insert(0x1, vec![1]);
+        cache.insert(0x2, vec![2]);
+        assert_eq!(cache.len(), 2);
+        
+        cache.clear();
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn test_pipeline_state_hasher() {
+        let hash1 = PipelineStateHasher::compute(
+            0x1234, 0x5678, true, 1, 2, 3, true, 4, true, false, 0, 4
+        );
+        let hash2 = PipelineStateHasher::compute(
+            0x1234, 0x5678, true, 1, 2, 3, true, 4, true, false, 0, 4
+        );
+        assert_eq!(hash1, hash2); // Same inputs = same hash
+        
+        let hash3 = PipelineStateHasher::compute(
+            0x1234, 0x5678, false, 1, 2, 3, true, 4, true, false, 0, 4
+        );
+        assert_ne!(hash1, hash3); // Different blend_enable = different hash
+    }
+
+    #[test]
+    fn test_pipeline_state_hasher_all_different() {
+        let hash1 = PipelineStateHasher::compute(0, 0, false, 0, 0, 0, false, 0, false, false, 0, 1);
+        let hash2 = PipelineStateHasher::compute(1, 0, false, 0, 0, 0, false, 0, false, false, 0, 1);
+        let hash3 = PipelineStateHasher::compute(0, 1, false, 0, 0, 0, false, 0, false, false, 0, 1);
+        
+        // All should be different
+        assert_ne!(hash1, hash2);
+        assert_ne!(hash1, hash3);
+        assert_ne!(hash2, hash3);
     }
 }
