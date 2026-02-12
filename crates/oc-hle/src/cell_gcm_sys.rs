@@ -1572,9 +1572,55 @@ impl GcmManager {
         0 // CELL_OK
     }
 
-    /// Get current flip status
-    pub fn get_flip_status(&self) -> CellGcmFlipStatus {
+    /// Get current flip status.
+    ///
+    /// If the RSX bridge reports that the flip has completed (the RSX thread
+    /// processed the flip and cleared its pending flag), the local status is
+    /// automatically updated to `NotPending` so the game can proceed.
+    pub fn get_flip_status(&mut self) -> CellGcmFlipStatus {
+        // Sync local status from the bridge: if RSX has finished the flip,
+        // clear the local pending flag so the game sees completion.
+        if self.flip_status == CellGcmFlipStatus::Pending {
+            if let Some(ref bridge) = self.rsx_bridge {
+                let bridge_status = bridge.get_flip_status();
+                if !bridge_status.flip_pending {
+                    self.flip_status = CellGcmFlipStatus::NotPending;
+                }
+            }
+        }
         self.flip_status
+    }
+
+    /// Wait until the current flip operation completes.
+    ///
+    /// On real hardware this is an RSX-side wait; in our HLE implementation
+    /// flips are processed during `process_rsx()` in the emulation runner,
+    /// so by the time the game calls this the flip is usually already done.
+    /// We poll the bridge briefly and return immediately if complete.
+    pub fn wait_flip(&mut self) -> i32 {
+        if !self.initialized {
+            return 0x80410001u32 as i32; // CELL_GCM_ERROR_FAILURE
+        }
+
+        trace!("GcmManager::wait_flip");
+
+        // Quick-check: if not pending, nothing to wait for
+        if self.flip_status == CellGcmFlipStatus::NotPending {
+            return 0;
+        }
+
+        // Poll the bridge for flip completion
+        if let Some(ref bridge) = self.rsx_bridge {
+            let bridge_status = bridge.get_flip_status();
+            if !bridge_status.flip_pending {
+                self.flip_status = CellGcmFlipStatus::NotPending;
+            }
+        } else {
+            // No bridge — flip completes immediately in local-only mode
+            self.flip_status = CellGcmFlipStatus::NotPending;
+        }
+
+        0 // CELL_OK
     }
 
     // ========================================================================
@@ -2015,6 +2061,20 @@ pub fn cell_gcm_set_flip(buffer_id: u32) -> i32 {
     }
 
     crate::context::get_hle_context_mut().gcm.set_flip(buffer_id)
+}
+
+/// cellGcmSetWaitFlip - Wait for the current flip to complete
+///
+/// This function blocks until the RSX backend has finished the previously
+/// queued flip operation.  In the HLE implementation flips are processed
+/// during the emulation frame loop, so this typically returns immediately.
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_gcm_set_wait_flip() -> i32 {
+    trace!("cellGcmSetWaitFlip()");
+
+    crate::context::get_hle_context_mut().gcm.wait_flip()
 }
 
 /// cellGcmSetDisplayBuffer - Configure display buffer
@@ -2772,7 +2832,7 @@ pub fn cell_gcm_reset_flip_status() -> i32 {
 pub fn cell_gcm_get_flip_status() -> u32 {
     trace!("cellGcmGetFlipStatus()");
     
-    crate::context::get_hle_context().gcm.get_flip_status() as u32
+    crate::context::get_hle_context_mut().gcm.get_flip_status() as u32
 }
 
 // ============================================================================
@@ -3745,5 +3805,52 @@ mod tests {
         manager.unmap_main_memory(offset);
         let main_addr = manager.translate_rsx_to_main(offset);
         assert_eq!(main_addr, None);
+    }
+
+    #[test]
+    fn test_gcm_wait_flip_not_initialized() {
+        let mut manager = GcmManager::new();
+        // wait_flip should fail when not initialized
+        assert_ne!(manager.wait_flip(), 0);
+    }
+
+    #[test]
+    fn test_gcm_wait_flip_no_bridge() {
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 1024 * 1024);
+
+        // No bridge — wait_flip immediately completes
+        manager.set_display_buffer(0, 0, 1920 * 4, 1920, 1080);
+        manager.set_flip(0);
+        assert_eq!(manager.get_flip_status(), CellGcmFlipStatus::Pending);
+        assert_eq!(manager.wait_flip(), 0);
+        assert_eq!(manager.get_flip_status(), CellGcmFlipStatus::NotPending);
+    }
+
+    #[test]
+    fn test_gcm_set_wait_flip_api() {
+        crate::context::reset_hle_context();
+        crate::context::get_hle_context_mut().gcm.init(0x10000000, 1024 * 1024);
+
+        assert_eq!(cell_gcm_set_wait_flip(), 0);
+    }
+
+    #[test]
+    fn test_gcm_flip_status_syncs_from_bridge() {
+        // When no bridge is connected, get_flip_status should still work
+        let mut manager = GcmManager::new();
+        manager.init(0x10000000, 1024 * 1024);
+
+        // Initially not pending
+        assert_eq!(manager.get_flip_status(), CellGcmFlipStatus::NotPending);
+
+        // After set_flip (no bridge), local status is pending
+        manager.set_display_buffer(0, 0, 1920 * 4, 1920, 1080);
+        manager.set_flip(0);
+        assert_eq!(manager.get_flip_status(), CellGcmFlipStatus::Pending);
+
+        // Reset clears it
+        manager.reset_flip_status();
+        assert_eq!(manager.get_flip_status(), CellGcmFlipStatus::NotPending);
     }
 }

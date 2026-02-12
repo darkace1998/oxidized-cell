@@ -14,18 +14,18 @@
 
 These issues prevent *any* game from reaching a menu screen.
 
-- [ ] **HLE callback execution loop**
+- [x] **HLE callback execution loop**
   - `cell_sysutil::check_callback()` queues callbacks but the runner never invokes them on the PPU thread.
   - Add a callback pump in `EmulatorRunner::run_frame()` that pops pending callbacks and executes them as PPU function calls (set PC, LR, R3–R5 from callback info, run until return).
   - *Files:* `crates/oc-integration/src/runner.rs`, `crates/oc-hle/src/cell_sysutil.rs`
 
-- [ ] **RSX present / flip path**
+- [x] **RSX present / flip path**
   - Vulkan backend has no `present()` or `flip()` — rendered framebuffer never reaches the screen.
   - Wire `end_frame()` in the Vulkan backend to copy the active display buffer into a staging buffer and expose it via `get_framebuffer()`.
   - Ensure `EmulatorRunner::get_framebuffer()` returns real RGBA pixel data so the egui emulation view can display it.
   - *Files:* `crates/oc-rsx/src/backend/vulkan.rs`, `crates/oc-rsx/src/backend/mod.rs`, `crates/oc-integration/src/runner.rs`
 
-- [ ] **GCM display-buffer flip handling**
+- [x] **GCM display-buffer flip handling**
   - `cellGcmSetFlip` / `cellGcmSetWaitFlip` must signal the RSX backend to swap display buffers and unblock the PPU.
   - Implement flip-queue logic in `cell_gcm_sys.rs` and bridge it to `oc-rsx`.
   - *Files:* `crates/oc-hle/src/cell_gcm_sys.rs`, `crates/oc-rsx/src/lib.rs`
