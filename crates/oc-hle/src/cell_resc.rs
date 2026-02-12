@@ -165,7 +165,7 @@ impl FramerateConverter {
     /// Create a new framerate converter
     pub fn new(source: FramerateStandard, target: FramerateStandard) -> Self {
         let source_period = match source {
-            FramerateStandard::Ntsc => 1001.0 / 60000.0, // ~16.683ms
+            FramerateStandard::Ntsc => 1001.0 / 60000.0, // ~16.683ms (exact: 1001/60000)
             FramerateStandard::Pal => 1.0 / 50.0,         // 20.0ms
         };
         let target_period = match target {
@@ -787,6 +787,8 @@ impl RescManager {
                     }
 
                     if weight_sum > 0.0 {
+                        // Clamp needed: Lanczos kernel has negative lobes that can
+                        // produce values outside [0, 255]
                         dst[dst_idx + c as usize] = (sum / weight_sum).round().clamp(0.0, 255.0) as u8;
                     }
                 }

@@ -112,7 +112,7 @@ pub struct SpuSegment {
     pub mem_size: u32,
     /// Segment flags
     pub flags: u32,
-    /// File offset
+    /// File offset within the ELF binary
     pub offset: u32,
 }
 
@@ -598,20 +598,19 @@ impl SpuRuntimeManager {
                 }
                 SpuRelocationType::Addr16 => {
                     // (S + A) >> 2, used for SPU branch targets (word-addressed)
+                    // Patches the 16-bit immediate field of a 4-byte instruction word
                     let val = sym_value.wrapping_add(a as u32) >> 2;
-                    if offset + 2 <= local_store.memory.len() {
+                    if offset >= 2 && offset + 2 <= local_store.memory.len() {
+                        let instr_off = offset - 2; // instruction starts 2 bytes before the imm16 field
                         let existing = u32::from_be_bytes([
-                            local_store.memory[offset.saturating_sub(2).min(offset)],
-                            local_store.memory[offset.saturating_sub(1).min(offset)],
-                            local_store.memory[offset],
-                            local_store.memory[(offset + 1).min(local_store.memory.len() - 1)],
+                            local_store.memory[instr_off],
+                            local_store.memory[instr_off + 1],
+                            local_store.memory[instr_off + 2],
+                            local_store.memory[instr_off + 3],
                         ]);
-                        // Patch the 16-bit immediate field (bits 15:0 of the instruction word)
                         let patched = (existing & 0xFFFF0000) | (val & 0xFFFF);
-                        let bytes = patched.to_be_bytes();
-                        if offset >= 2 && offset + 2 <= local_store.memory.len() {
-                            local_store.memory[offset - 2..offset + 2].copy_from_slice(&bytes);
-                        }
+                        local_store.memory[instr_off..instr_off + 4]
+                            .copy_from_slice(&patched.to_be_bytes());
                         applied += 1;
                     }
                 }
@@ -695,10 +694,17 @@ impl SpuRuntimeManager {
             let shndx = u16::from_be_bytes([data[soff + 14], data[soff + 15]]);
 
             // Read name from string table
-            let name = if name_idx > 0 && strtab_offset + name_idx < strtab_offset + strtab_size && strtab_offset + name_idx < data.len() {
+            let name = if name_idx > 0 && strtab_size > 0 {
                 let start = strtab_offset + name_idx;
-                let end = data[start..].iter().position(|&b| b == 0).map(|p| start + p).unwrap_or(start);
-                String::from_utf8_lossy(&data[start..end]).to_string()
+                if start < data.len() {
+                    let end = data[start..].iter()
+                        .position(|&b| b == 0)
+                        .map(|p| start + p)
+                        .unwrap_or(start);
+                    String::from_utf8_lossy(&data[start..end]).to_string()
+                } else {
+                    String::new()
+                }
             } else {
                 String::new()
             };
