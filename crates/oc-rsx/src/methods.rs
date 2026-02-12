@@ -709,6 +709,28 @@ impl MethodHandler {
                 }
             }
 
+            NV4097_SET_SURFACE_PITCH_Z => {
+                state.surface_pitch_z = data;
+            }
+            NV4097_SET_SURFACE_CLIP_ID => {
+                state.surface_clip_id = data;
+            }
+            NV4097_SET_INDEX_ARRAY_ADDRESS => {
+                state.index_array_address = data;
+            }
+            NV4097_SET_INDEX_ARRAY_DMA => {
+                state.index_array_dma = data;
+            }
+            NV4097_SET_VERTEX_PROGRAM_START_SLOT => {
+                state.vertex_program_start_slot = data;
+            }
+            NV4097_SET_VERTEX_PROGRAM_LOAD_SLOT => {
+                state.vertex_program_load_slot = data;
+            }
+            NV4097_SET_BLEND_COLOR2 => {
+                state.blend_color2 = data;
+            }
+
             _ => {
                 // Check for vertex attribute array ranges
                 if method >= NV4097_SET_VERTEX_DATA_ARRAY_FORMAT 
@@ -985,5 +1007,49 @@ mod tests {
         
         MethodHandler::execute(NV4097_SET_VERTEX_ATTRIB_OUTPUT_MASK, 0x00FF, &mut state);
         assert_eq!(state.vertex_attrib_output_mask, 0x00FF);
+    }
+
+    #[test]
+    fn test_surface_pitch_z() {
+        let mut state = RsxState::new();
+        MethodHandler::execute(NV4097_SET_SURFACE_PITCH_Z, 0x100, &mut state);
+        assert_eq!(state.surface_pitch_z, 0x100);
+    }
+
+    #[test]
+    fn test_surface_clip_id() {
+        let mut state = RsxState::new();
+        MethodHandler::execute(NV4097_SET_SURFACE_CLIP_ID, 0x03, &mut state);
+        assert_eq!(state.surface_clip_id, 0x03);
+    }
+
+    #[test]
+    fn test_index_array_address() {
+        let mut state = RsxState::new();
+        MethodHandler::execute(NV4097_SET_INDEX_ARRAY_ADDRESS, 0x80000, &mut state);
+        assert_eq!(state.index_array_address, 0x80000);
+    }
+
+    #[test]
+    fn test_index_array_dma() {
+        let mut state = RsxState::new();
+        MethodHandler::execute(NV4097_SET_INDEX_ARRAY_DMA, 0xFEED0001, &mut state);
+        assert_eq!(state.index_array_dma, 0xFEED0001);
+    }
+
+    #[test]
+    fn test_vertex_program_slots() {
+        let mut state = RsxState::new();
+        MethodHandler::execute(NV4097_SET_VERTEX_PROGRAM_START_SLOT, 10, &mut state);
+        assert_eq!(state.vertex_program_start_slot, 10);
+        MethodHandler::execute(NV4097_SET_VERTEX_PROGRAM_LOAD_SLOT, 20, &mut state);
+        assert_eq!(state.vertex_program_load_slot, 20);
+    }
+
+    #[test]
+    fn test_blend_color2() {
+        let mut state = RsxState::new();
+        MethodHandler::execute(NV4097_SET_BLEND_COLOR2, 0xFF00FF00, &mut state);
+        assert_eq!(state.blend_color2, 0xFF00FF00);
     }
 }

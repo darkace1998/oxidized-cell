@@ -159,6 +159,7 @@ pub struct RsxState {
     
     // Blend color state (RGBA constant for blending)
     pub blend_color: [f32; 4],
+    pub blend_color2: u32,
     
     // Front stencil operations (back stencil already exists)
     pub stencil_op_fail: u32,
@@ -183,9 +184,13 @@ pub struct RsxState {
     pub draw_count: u32,
     pub draw_index_offset: u32,
     pub draw_index_type: u32,  // 0 = u16, 1 = u32
+    pub index_array_address: u32,
+    pub index_array_dma: u32,
     
     // Surface extended state
     pub surface_type: u32,      // Linear, Swizzle, Tile
+    pub surface_pitch_z: u32,
+    pub surface_clip_id: u32,
     pub surface_antialias: u32, // MSAA mode
     pub surface_depth_format: u32,
     pub surface_color_format: u32,
@@ -196,6 +201,8 @@ pub struct RsxState {
     pub vertex_constants: [[f32; 4]; 512],
     /// Currently loading VP constant index
     pub vertex_constant_load_slot: u32,
+    pub vertex_program_start_slot: u32,
+    pub vertex_program_load_slot: u32,
     
     // Fragment program constants (embedded in program memory)
     // These are indexed by address offset within the FP
@@ -318,6 +325,7 @@ impl RsxState {
             shader_control: 0,
             // Blend color state
             blend_color: [0.0; 4],
+            blend_color2: 0,
             // Front stencil operations
             stencil_op_fail: 0,
             stencil_op_zfail: 0,
@@ -338,8 +346,12 @@ impl RsxState {
             draw_count: 0,
             draw_index_offset: 0,
             draw_index_type: 0,
+            index_array_address: 0,
+            index_array_dma: 0,
             // Surface extended state
             surface_type: 0,
+            surface_pitch_z: 0,
+            surface_clip_id: 0,
             surface_antialias: 0,
             surface_depth_format: 0,
             surface_color_format: 0,
@@ -347,6 +359,8 @@ impl RsxState {
             surface_log2_height: 0,
             vertex_constants: [[0.0; 4]; 512],
             vertex_constant_load_slot: 0,
+            vertex_program_start_slot: 0,
+            vertex_program_load_slot: 0,
             fragment_constants: Vec::new(),
             texture_width: [1; 16],
             texture_height: [1; 16],
