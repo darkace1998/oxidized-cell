@@ -24,6 +24,9 @@ pub mod error {
     pub const CELL_ENOTINIT: i64 = 0x80010013u32 as i64;
 }
 
+/// Maximum bytes to transfer in a single cellFsRead/cellFsWrite dispatcher call
+const FS_MAX_TRANSFER_SIZE: u64 = 64 * 1024;
+
 /// HLE function call context
 #[derive(Debug, Clone)]
 pub struct HleCallContext {
@@ -570,7 +573,7 @@ fn hle_fs_read(ctx: &HleCallContext) -> i64 {
     debug!("cellFsRead(fd={}, buf=0x{:08x}, size={}, nread_ptr=0x{:08x})", fd, buf, size, nread_ptr);
     
     // Allocate a temporary buffer to read into
-    let read_size = size.min(64 * 1024) as usize; // Cap at 64KB per read
+    let read_size = size.min(FS_MAX_TRANSFER_SIZE) as usize;
     let mut temp_buf = vec![0u8; read_size];
     
     let mut hle_ctx = get_hle_context_mut();
@@ -603,7 +606,7 @@ fn hle_fs_write(ctx: &HleCallContext) -> i64 {
     debug!("cellFsWrite(fd={}, buf=0x{:08x}, size={}, nwrite_ptr=0x{:08x})", fd, buf, size, nwrite_ptr);
     
     // Read data from guest memory
-    let write_size = size.min(64 * 1024) as u32; // Cap at 64KB per write
+    let write_size = size.min(FS_MAX_TRANSFER_SIZE) as u32;
     let data = match crate::memory::read_bytes(buf, write_size) {
         Ok(d) => d,
         Err(_) => return error::CELL_EFAULT,
