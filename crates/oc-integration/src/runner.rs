@@ -477,6 +477,10 @@ impl EmulatorRunner {
     /// invokes it by temporarily redirecting the PPU thread's PC to the callback
     /// function, running until it returns (the `blr` lands on our sentinel address),
     /// then restoring the original PPU state.
+    ///
+    /// **Thread safety:** This method accesses the global HLE callback queue and
+    /// acquires a write lock on the main PPU thread. It must only be called from
+    /// the single-threaded emulation loop (i.e., within `run_frame()`).
     fn pump_hle_callbacks(&self) {
         // Maximum callbacks to process per frame to avoid infinite loops
         const MAX_CALLBACKS_PER_FRAME: usize = 16;
@@ -537,7 +541,10 @@ impl EmulatorRunner {
                 match self.ppu_interpreter.step(&mut thread) {
                     Ok(()) => {}
                     Err(e) => {
-                        tracing::error!("HLE callback execution error after {} cycles: {}", cycles, e);
+                        tracing::error!(
+                            "HLE callback at 0x{:08X} execution error after {} cycles: {}",
+                            cb.func, cycles, e
+                        );
                         break;
                     }
                 }
