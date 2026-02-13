@@ -98,8 +98,7 @@ impl GraphicsBackend for NullBackend {
             }
         }
         
-        // Draw an animated horizontal stripe to show the emulator is alive
-        // The stripe moves vertically based on frame_count
+        // Draw an animated horizontal bar that moves down the screen to show the emulator is alive
         let stripe_y = (self.frame_count as u32 * 2) % self.height;
         let stripe_height = 4u32;
         for dy in 0..stripe_height {

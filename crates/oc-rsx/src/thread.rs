@@ -618,8 +618,8 @@ mod tests {
         thread.init_backend().unwrap();
         
         thread.begin_frame();
-        // Clear to red
-        thread.execute_command(0x0304, 0xFF000000); // Red clear color
+        // Set clear color to opaque red (RGBA: R=255, G=0, B=0, A=255)
+        thread.execute_command(0x0304, 0xFF0000FF);
         thread.execute_command(0x1D94, 0xF3); // Clear all
         thread.end_frame();
         
