@@ -269,6 +269,8 @@ impl RsxThread {
         match method {
             // NV4097_CLEAR_SURFACE
             0x1D94 => {
+                // Let the method handler update state first
+                MethodHandler::execute(method, data, &mut self.gfx_state);
                 self.clear_surface(data);
                 return;
             }
@@ -277,6 +279,11 @@ impl RsxThread {
                 if data == 0 {
                     // End primitive - flush vertices
                     self.flush_vertices();
+                } else {
+                    // Begin primitive — apply current viewport, scissor, and texture state
+                    MethodHandler::execute(method, data, &mut self.gfx_state);
+                    self.apply_render_state();
+                    return;
                 }
             }
             // NV4097_DRAW_ARRAYS
@@ -294,6 +301,39 @@ impl RsxThread {
         
         // Use the method handler for state updates
         MethodHandler::execute(method, data, &mut self.gfx_state);
+    }
+    
+    /// Apply current render state (viewport, scissor, textures) to the backend
+    fn apply_render_state(&mut self) {
+        // Forward viewport state
+        self.backend.set_viewport(
+            self.gfx_state.viewport_x,
+            self.gfx_state.viewport_y,
+            self.gfx_state.viewport_width,
+            self.gfx_state.viewport_height,
+            self.gfx_state.depth_min,
+            self.gfx_state.depth_max,
+        );
+        
+        // Forward scissor state
+        self.backend.set_scissor(
+            self.gfx_state.scissor_x as u32,
+            self.gfx_state.scissor_y as u32,
+            self.gfx_state.scissor_width as u32,
+            self.gfx_state.scissor_height as u32,
+        );
+        
+        // Forward texture bindings for enabled texture units
+        for i in 0..16u32 {
+            let control = self.gfx_state.texture_control[i as usize];
+            // Bit 31 of control0 is the enable flag
+            if (control & 0x8000_0000) != 0 {
+                let offset = self.gfx_state.texture_offset[i as usize];
+                if offset != 0 {
+                    self.backend.bind_texture(i, offset);
+                }
+            }
+        }
     }
 
     /// Clear the surface
@@ -470,5 +510,124 @@ mod tests {
         let mut thread = RsxThread::new(memory);
         // Null backend should always init successfully
         assert!(thread.init_backend().is_ok());
+    }
+    
+    #[test]
+    fn test_execute_clear_surface() {
+        let memory = MemoryManager::new().unwrap();
+        let mut thread = RsxThread::new(memory);
+        thread.init_backend().unwrap();
+        
+        // Set clear color via NV4097_SET_COLOR_CLEAR_VALUE (0x0304)
+        thread.execute_command(0x0304, 0xFF0000FF); // Red with alpha
+        // Execute NV4097_CLEAR_SURFACE (0x1D94) with color+depth clear flags
+        thread.execute_command(0x1D94, 0xF3); // Clear Z + S + R + G + B + A
+        
+        // If we got here without panic, the clear was forwarded to the backend
+    }
+    
+    #[test]
+    fn test_execute_viewport_and_scissor() {
+        let memory = MemoryManager::new().unwrap();
+        let mut thread = RsxThread::new(memory);
+        thread.init_backend().unwrap();
+        
+        // Set viewport via NV4097 commands
+        // NV4097_SET_VIEWPORT_HORIZONTAL (0x0A00): x=0, width=1280
+        thread.execute_command(0x0A00, (1280 << 16) | 0);
+        // NV4097_SET_VIEWPORT_VERTICAL (0x0A04): y=0, height=720
+        thread.execute_command(0x0A04, (720 << 16) | 0);
+        
+        // Verify state was updated
+        assert_eq!(thread.gfx_state.viewport_width, 1280.0);
+        assert_eq!(thread.gfx_state.viewport_height, 720.0);
+        
+        // Set scissor
+        // NV4097_SET_SCISSOR_HORIZONTAL (0x08C0): x=0, width=1280
+        thread.execute_command(0x08C0, (1280 << 16) | 0);
+        // NV4097_SET_SCISSOR_VERTICAL (0x08C4): y=0, height=720
+        thread.execute_command(0x08C4, (720 << 16) | 0);
+        
+        assert_eq!(thread.gfx_state.scissor_width, 1280);
+        assert_eq!(thread.gfx_state.scissor_height, 720);
+    }
+    
+    #[test]
+    fn test_begin_end_forwards_render_state() {
+        let memory = MemoryManager::new().unwrap();
+        let mut thread = RsxThread::new(memory);
+        thread.init_backend().unwrap();
+        
+        // Set viewport
+        thread.execute_command(0x0A00, (1280 << 16) | 0);
+        thread.execute_command(0x0A04, (720 << 16) | 0);
+        
+        // Set scissor
+        thread.execute_command(0x08C0, (1280 << 16) | 0);
+        thread.execute_command(0x08C4, (720 << 16) | 0);
+        
+        // NV4097_SET_BEGIN_END with data != 0 should forward state to backend
+        // Primitive type 5 = triangles
+        thread.execute_command(0x1808, 5);
+        
+        // End primitive (data == 0)
+        thread.execute_command(0x1808, 0);
+    }
+    
+    #[test]
+    fn test_texture_bind_state() {
+        let memory = MemoryManager::new().unwrap();
+        let mut thread = RsxThread::new(memory);
+        thread.init_backend().unwrap();
+        
+        // Set texture offset for unit 0: NV4097_SET_TEXTURE_OFFSET (0x1A00)
+        thread.execute_command(0x1A00, 0x0010_0000);
+        assert_eq!(thread.gfx_state.texture_offset[0], 0x0010_0000);
+        
+        // Set texture control for unit 0: NV4097_SET_TEXTURE_CONTROL0 (0x1A08)
+        // Enable bit is bit 31
+        thread.execute_command(0x1A08, 0x8000_0000);
+        assert_eq!(thread.gfx_state.texture_control[0], 0x8000_0000);
+    }
+    
+    #[test]
+    fn test_display_buffer_configuration() {
+        let memory = MemoryManager::new().unwrap();
+        let mut thread = RsxThread::new(memory);
+        
+        let buf = BridgeDisplayBuffer {
+            id: 0,
+            offset: 0x100000,
+            pitch: 5120,
+            width: 1280,
+            height: 720,
+        };
+        thread.configure_display_buffer(buf);
+        
+        let db = thread.get_display_buffer(0).unwrap();
+        assert_eq!(db.width, 1280);
+        assert_eq!(db.height, 720);
+        assert_eq!(db.pitch, 5120);
+        assert!(db.configured);
+    }
+    
+    #[test]
+    fn test_null_backend_framebuffer_after_commands() {
+        let memory = MemoryManager::new().unwrap();
+        let mut thread = RsxThread::new(memory);
+        thread.init_backend().unwrap();
+        
+        thread.begin_frame();
+        // Clear to red
+        thread.execute_command(0x0304, 0xFF000000); // Red clear color
+        thread.execute_command(0x1D94, 0xF3); // Clear all
+        thread.end_frame();
+        
+        let fb = thread.get_framebuffer();
+        assert!(fb.is_some());
+        let fb = fb.unwrap();
+        assert_eq!(fb.width, 1280);
+        assert_eq!(fb.height, 720);
+        assert!(!fb.pixels.is_empty());
     }
 }

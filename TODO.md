@@ -70,12 +70,12 @@ The smallest set of HLE functions games call between `main()` and their first re
 
 Get basic 2D/3D graphics on screen so menus are visible.
 
-- [ ] **NV4097 command processing** — process minimum command set: clear, draw arrays, draw indexed, set render target, set viewport/scissor, texture bind
-- [ ] **Vertex shader passthrough** — translate a simple VP (position + texcoord) through SPIR-V pipeline
-- [ ] **Fragment shader passthrough** — translate a simple FP (texture sample → output) through SPIR-V pipeline
-- [ ] **Texture upload** — DXT1/DXT5 and RGBA8 textures from guest memory to Vulkan images
-- [ ] **Render-target → display-buffer blit** — copy rendered image to the active display buffer for presentation
-- [ ] **Null-backend fallback** — ensure the null graphics backend returns a solid-color framebuffer so the UI still shows something during development
+- [x] **NV4097 command processing** — 100+ method handlers process state updates; `execute_command()` in thread.rs now forwards viewport/scissor/texture state to the backend on `SET_BEGIN_END`, and handles clear/draw_arrays/draw_indexed directly
+- [x] **Vertex shader passthrough** — VpSpirVGen generates passthrough SPIR-V (position input → position output) for empty programs; vertex attribute flush reads data from RSX memory and submits to backend
+- [x] **Fragment shader passthrough** — FpSpirVGen generates passthrough SPIR-V (outputs white 1,1,1,1) for empty programs; texture sampling supported for non-empty programs
+- [x] **Texture upload** — DXT1/DXT3/DXT5 block decompression and RGBA8 support in texture.rs; TextureCache with LRU eviction; async texture loader; detiling for tiled RSX surfaces
+- [x] **Render-target → display-buffer blit** — `perform_flip()` calls `end_frame()`/`begin_frame()` and signals flip complete via bridge; Vulkan `get_framebuffer()` does image→staging buffer readback for egui display
+- [x] **Null-backend fallback** — null backend now fills framebuffer with the game's clear color (dark blue default) plus an animated white stripe to show the emulator is alive; tracks draw calls per frame
 
 ---
 
