@@ -2855,6 +2855,83 @@ impl VulkanBackend {
             }
         }
     }
+    
+    /// Ensure a render pass is active, starting one if needed
+    fn ensure_render_pass(&mut self) {
+        if self.in_render_pass {
+            return;
+        }
+        if let (Some(device), Some(cmd_buffer), Some(render_pass), Some(framebuffer)) =
+            (&self.device, self.current_cmd_buffer, self.render_pass, self.framebuffer)
+        {
+            let clear_values = [
+                vk::ClearValue {
+                    color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] },
+                },
+                vk::ClearValue {
+                    depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 },
+                },
+            ];
+            let render_pass_info = vk::RenderPassBeginInfo::default()
+                .render_pass(render_pass)
+                .framebuffer(framebuffer)
+                .render_area(vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent: vk::Extent2D { width: self.width, height: self.height },
+                })
+                .clear_values(&clear_values);
+            unsafe {
+                device.cmd_begin_render_pass(cmd_buffer, &render_pass_info, vk::SubpassContents::INLINE);
+            }
+            self.in_render_pass = true;
+        }
+    }
+    
+    /// Ensure pipeline and descriptor sets are bound before a draw call
+    fn ensure_pipeline_bound(&mut self) {
+        // Ensure we have a render pass active
+        self.ensure_render_pass();
+        
+        // Bind pipeline if available
+        if let (Some(device), Some(cmd_buffer), Some(pipeline)) = 
+            (&self.device, self.current_cmd_buffer, self.pipeline) 
+        {
+            unsafe {
+                device.cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            }
+            
+            // Bind descriptor sets
+            if let Some(layout) = self.pipeline_layout {
+                if self.descriptor_sets.len() > self.current_frame {
+                    let descriptor_set = self.descriptor_sets[self.current_frame];
+                    unsafe {
+                        device.cmd_bind_descriptor_sets(
+                            cmd_buffer,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            layout,
+                            0,
+                            &[descriptor_set],
+                            &[],
+                        );
+                    }
+                }
+            }
+            
+            // Re-bind vertex buffers that were previously submitted
+            for &(binding, buffer, _, _) in &self.vertex_buffers {
+                unsafe {
+                    device.cmd_bind_vertex_buffers(cmd_buffer, binding, &[buffer], &[0]);
+                }
+            }
+            
+            // Re-bind index buffer if available
+            if let Some((buffer, _, _, index_type)) = &self.index_buffer {
+                unsafe {
+                    device.cmd_bind_index_buffer(cmd_buffer, *buffer, 0, *index_type);
+                }
+            }
+        }
+    }
 }
 
 impl Default for VulkanBackend {
@@ -3263,38 +3340,72 @@ impl GraphicsBackend for VulkanBackend {
             stencil
         );
 
-        // Begin render pass with clear values if we have a framebuffer
-        if let (Some(device), Some(cmd_buffer), Some(render_pass), Some(framebuffer)) =
-            (&self.device, self.current_cmd_buffer, self.render_pass, self.framebuffer)
-        {
-            let clear_values = [
-                vk::ClearValue {
-                    color: vk::ClearColorValue { float32: color },
-                },
-                vk::ClearValue {
-                    depth_stencil: vk::ClearDepthStencilValue {
-                        depth,
-                        stencil: stencil as u32,
+        if let (Some(device), Some(cmd_buffer)) = (&self.device, self.current_cmd_buffer) {
+            if self.in_render_pass {
+                // Already in a render pass — use vkCmdClearAttachments for in-pass clears
+                let clear_rect = vk::ClearRect {
+                    rect: vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: vk::Extent2D { width: self.width, height: self.height },
                     },
-                },
-            ];
-
-            let render_pass_info = vk::RenderPassBeginInfo::default()
-                .render_pass(render_pass)
-                .framebuffer(framebuffer)
-                .render_area(vk::Rect2D {
-                    offset: vk::Offset2D { x: 0, y: 0 },
-                    extent: vk::Extent2D {
-                        width: self.width,
-                        height: self.height,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                };
+                
+                let attachments = [
+                    vk::ClearAttachment {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        color_attachment: 0,
+                        clear_value: vk::ClearValue {
+                            color: vk::ClearColorValue { float32: color },
+                        },
                     },
-                })
-                .clear_values(&clear_values);
+                    vk::ClearAttachment {
+                        aspect_mask: vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL,
+                        color_attachment: 0,
+                        clear_value: vk::ClearValue {
+                            depth_stencil: vk::ClearDepthStencilValue {
+                                depth,
+                                stencil: stencil as u32,
+                            },
+                        },
+                    },
+                ];
+                
+                unsafe {
+                    device.cmd_clear_attachments(cmd_buffer, &attachments, &[clear_rect]);
+                }
+            } else if let (Some(render_pass), Some(framebuffer)) = (self.render_pass, self.framebuffer) {
+                // Not in a render pass — begin one with clear values
+                let clear_values = [
+                    vk::ClearValue {
+                        color: vk::ClearColorValue { float32: color },
+                    },
+                    vk::ClearValue {
+                        depth_stencil: vk::ClearDepthStencilValue {
+                            depth,
+                            stencil: stencil as u32,
+                        },
+                    },
+                ];
 
-            unsafe {
-                device.cmd_begin_render_pass(cmd_buffer, &render_pass_info, vk::SubpassContents::INLINE);
+                let render_pass_info = vk::RenderPassBeginInfo::default()
+                    .render_pass(render_pass)
+                    .framebuffer(framebuffer)
+                    .render_area(vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: vk::Extent2D {
+                            width: self.width,
+                            height: self.height,
+                        },
+                    })
+                    .clear_values(&clear_values);
+
+                unsafe {
+                    device.cmd_begin_render_pass(cmd_buffer, &render_pass_info, vk::SubpassContents::INLINE);
+                }
+                self.in_render_pass = true;
             }
-            self.in_render_pass = true;
         }
     }
 
@@ -3309,6 +3420,9 @@ impl GraphicsBackend for VulkanBackend {
             first,
             count
         );
+
+        // Ensure pipeline, descriptor sets, and buffers are bound
+        self.ensure_pipeline_bound();
 
         // Record draw command into command buffer
         if let (Some(device), Some(cmd_buffer)) = (&self.device, self.current_cmd_buffer) {
@@ -3345,6 +3459,9 @@ impl GraphicsBackend for VulkanBackend {
             first,
             count
         );
+
+        // Ensure pipeline, descriptor sets, and buffers are bound
+        self.ensure_pipeline_bound();
 
         // Record indexed draw command into command buffer
         if let (Some(device), Some(cmd_buffer)) = (&self.device, self.current_cmd_buffer) {

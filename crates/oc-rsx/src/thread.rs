@@ -303,7 +303,7 @@ impl RsxThread {
         MethodHandler::execute(method, data, &mut self.gfx_state);
     }
     
-    /// Apply current render state (viewport, scissor, textures) to the backend
+    /// Apply current render state (viewport, scissor, textures, vertex attributes) to the backend
     fn apply_render_state(&mut self) {
         // Forward viewport state
         self.backend.set_viewport(
@@ -333,6 +333,57 @@ impl RsxThread {
                     self.backend.bind_texture(i, offset);
                 }
             }
+        }
+        
+        // Build and forward vertex attribute descriptions from RSX state
+        self.apply_vertex_attributes();
+    }
+    
+    /// Build vertex attribute descriptors from RSX state and forward to the backend
+    fn apply_vertex_attributes(&mut self) {
+        use crate::vertex::{VertexAttribute, VertexAttributeType};
+        
+        let input_mask = self.gfx_state.vertex_attrib_input_mask;
+        let mut attrs = Vec::new();
+        
+        for i in 0..16u32 {
+            if (input_mask & (1 << i)) == 0 {
+                continue;
+            }
+            
+            let format = self.gfx_state.vertex_attrib_format[i as usize];
+            if format == 0 {
+                continue;
+            }
+            
+            let type_bits = format & 0xF;
+            let size = ((format >> 4) & 0xF) as u8;
+            let stride = ((format >> 8) & 0xFF) as u16;
+            
+            let attr_type = match type_bits {
+                1 => VertexAttributeType::FLOAT,
+                2 => VertexAttributeType::HALF_FLOAT,
+                4 => VertexAttributeType::BYTE,
+                5 => VertexAttributeType::SHORT,
+                6 => VertexAttributeType::COMPRESSED,
+                7 => VertexAttributeType::BYTE,
+                _ => VertexAttributeType::FLOAT,
+            };
+            
+            let normalized = matches!(type_bits, 4 | 6); // u8n and compressed are normalized
+            
+            attrs.push(VertexAttribute {
+                index: i as u8,
+                size: size.max(1),
+                type_: attr_type,
+                stride,
+                offset: 0,
+                normalized,
+            });
+        }
+        
+        if !attrs.is_empty() {
+            self.backend.set_vertex_attributes(&attrs);
         }
     }
 
@@ -470,6 +521,33 @@ impl RsxThread {
                             i, offset, e
                         );
                     }
+                }
+            }
+        }
+        
+        // Submit index buffer if index array is configured
+        let index_addr = self.gfx_state.index_array_address;
+        if index_addr != 0 {
+            let index_type = self.gfx_state.draw_index_type;
+            let index_type_size = if index_type == 1 { 4u32 } else { 2u32 }; // 1=u32, 0=u16
+            let index_count = self.gfx_state.draw_count.max(1);
+            let index_data_size = index_count * index_type_size;
+            let max_index_size = 4096u32;
+            let read_size = index_data_size.min(max_index_size);
+            
+            match self.memory.read_rsx(index_addr, read_size) {
+                Ok(index_data) => {
+                    self.backend.submit_index_buffer(&index_data, index_type_size);
+                    tracing::trace!(
+                        "Submitted index buffer: addr=0x{:08x}, type_size={}, count={}",
+                        index_addr, index_type_size, index_count
+                    );
+                }
+                Err(e) => {
+                    tracing::trace!(
+                        "Could not read index data at 0x{:08x}: {:?}",
+                        index_addr, e
+                    );
                 }
             }
         }
@@ -629,5 +707,190 @@ mod tests {
         assert_eq!(fb.width, 1280);
         assert_eq!(fb.height, 720);
         assert!(!fb.pixels.is_empty());
+    }
+    
+    #[test]
+    fn test_vertex_attributes_forwarded_on_begin() {
+        let memory = MemoryManager::new().unwrap();
+        let mut thread = RsxThread::new(memory);
+        thread.init_backend().unwrap();
+        
+        // Enable vertex attribute 0 in the input mask
+        thread.gfx_state.vertex_attrib_input_mask = 0x1; // Attr 0 enabled
+        // Configure format: type=1 (f32), size=4 components, stride=16
+        thread.gfx_state.vertex_attrib_format[0] = (16 << 8) | (4 << 4) | 1;
+        
+        // SET_BEGIN_END with primitive type triggers apply_render_state
+        // which should now call set_vertex_attributes
+        thread.execute_command(0x1808, 5); // Begin triangles
+        thread.execute_command(0x1808, 0); // End primitive
+        
+        // The apply_vertex_attributes should have been called via apply_render_state
+        // If we got here without panic, the path is connected
+    }
+    
+    #[test]
+    fn test_multiple_vertex_attributes_forwarded() {
+        let memory = MemoryManager::new().unwrap();
+        let mut thread = RsxThread::new(memory);
+        thread.init_backend().unwrap();
+        
+        // Enable vertex attributes 0, 1, and 2
+        thread.gfx_state.vertex_attrib_input_mask = 0x7; // Attrs 0-2
+        // Attr 0: position (4x f32, stride 32)
+        thread.gfx_state.vertex_attrib_format[0] = (32 << 8) | (4 << 4) | 1;
+        // Attr 1: normal (3x f32, stride 32)
+        thread.gfx_state.vertex_attrib_format[1] = (32 << 8) | (3 << 4) | 1;
+        // Attr 2: texcoord (2x f32, stride 32)
+        thread.gfx_state.vertex_attrib_format[2] = (32 << 8) | (2 << 4) | 1;
+        
+        thread.execute_command(0x1808, 5); // Begin triangles
+        thread.execute_command(0x1808, 0); // End primitive
+    }
+    
+    #[test]
+    fn test_draw_arrays_runs_full_pipeline() {
+        let memory = MemoryManager::new().unwrap();
+        let mut thread = RsxThread::new(memory);
+        thread.init_backend().unwrap();
+        
+        thread.begin_frame();
+        // Clear first
+        thread.execute_command(0x0304, 0x000000FF);
+        thread.execute_command(0x1D94, 0xF3);
+        
+        // Set up viewport
+        thread.execute_command(0x0A00, (1280 << 16) | 0);
+        thread.execute_command(0x0A04, (720 << 16) | 0);
+        
+        // Begin primitive
+        thread.execute_command(0x1808, 5); // Triangles
+        
+        // Draw arrays: first=0, count=3
+        let draw_data = (3 << 24) | 0; // count=3, first=0
+        thread.execute_command(0x1810, draw_data);
+        
+        // End primitive
+        thread.execute_command(0x1808, 0);
+        
+        thread.end_frame();
+    }
+    
+    #[test]
+    fn test_draw_indexed_runs_full_pipeline() {
+        let memory = MemoryManager::new().unwrap();
+        let mut thread = RsxThread::new(memory);
+        thread.init_backend().unwrap();
+        
+        thread.begin_frame();
+        thread.execute_command(0x0304, 0x000000FF);
+        thread.execute_command(0x1D94, 0xF3);
+        
+        // Begin primitive
+        thread.execute_command(0x1808, 5);
+        
+        // Draw indexed: first=0, count=6
+        let draw_data = (6 << 24) | 0;
+        thread.execute_command(0x1814, draw_data);
+        
+        thread.execute_command(0x1808, 0);
+        thread.end_frame();
+    }
+    
+    #[test]
+    fn test_surface_configuration_stored() {
+        let memory = MemoryManager::new().unwrap();
+        let mut thread = RsxThread::new(memory);
+        thread.init_backend().unwrap();
+        
+        // SET_SURFACE_FORMAT (0x0180)
+        thread.execute_command(0x0180, 0x121);
+        assert_eq!(thread.gfx_state.surface_format, 0x121);
+        
+        // SET_SURFACE_COLOR_TARGET (0x0200)
+        thread.execute_command(0x0200, 1);
+        assert_eq!(thread.gfx_state.surface_color_target, 1);
+        
+        // SET_SURFACE_COLOR_AOFFSET (0x0194)
+        thread.execute_command(0x0194, 0x00100000);
+        assert_eq!(thread.gfx_state.surface_offset_color[0], 0x00100000);
+        
+        // SET_SURFACE_ZETA_OFFSET (0x01B8)
+        thread.execute_command(0x01B8, 0x00200000);
+        assert_eq!(thread.gfx_state.surface_offset_depth, 0x00200000);
+        
+        // SET_SURFACE_PITCH_A (0x01A4)
+        thread.execute_command(0x01A4, 5120);
+        assert_eq!(thread.gfx_state.surface_pitch[0], 5120);
+        
+        // SET_SURFACE_CLIP (0x02BC, 0x02C0)
+        thread.execute_command(0x02BC, (1280 << 16) | 0); // x=0, width=1280
+        thread.execute_command(0x02C0, (720 << 16) | 0);  // y=0, height=720
+        assert_eq!(thread.gfx_state.surface_clip_width, 1280);
+        assert_eq!(thread.gfx_state.surface_clip_height, 720);
+    }
+    
+    #[test]
+    fn test_multiple_clears_in_frame() {
+        let memory = MemoryManager::new().unwrap();
+        let mut thread = RsxThread::new(memory);
+        thread.init_backend().unwrap();
+        
+        thread.begin_frame();
+        
+        // First clear: red
+        thread.execute_command(0x0304, 0xFF0000FF);
+        thread.execute_command(0x1D94, 0xF3);
+        
+        // Second clear: blue (in-render-pass clear path)
+        thread.execute_command(0x0304, 0x0000FFFF);
+        thread.execute_command(0x1D94, 0xF3);
+        
+        thread.end_frame();
+    }
+    
+    #[test]
+    fn test_full_draw_pipeline_sequence() {
+        // Simulates a typical game frame: clear → set state → begin → draw → end
+        let memory = MemoryManager::new().unwrap();
+        let mut thread = RsxThread::new(memory);
+        thread.init_backend().unwrap();
+        
+        thread.begin_frame();
+        
+        // 1. Surface setup
+        thread.execute_command(0x0180, 0x121);  // SET_SURFACE_FORMAT
+        thread.execute_command(0x0200, 1);       // SET_SURFACE_COLOR_TARGET
+        
+        // 2. Clear
+        thread.execute_command(0x0304, 0x000000FF);
+        thread.execute_command(0x1D94, 0xF3);
+        
+        // 3. Set viewport + scissor
+        thread.execute_command(0x0A00, (1280 << 16));
+        thread.execute_command(0x0A04, (720 << 16));
+        thread.execute_command(0x08C0, (1280 << 16));
+        thread.execute_command(0x08C4, (720 << 16));
+        
+        // 4. Configure vertex attributes
+        thread.gfx_state.vertex_attrib_input_mask = 0x3;
+        thread.gfx_state.vertex_attrib_format[0] = (32 << 8) | (4 << 4) | 1;
+        thread.gfx_state.vertex_attrib_format[1] = (32 << 8) | (2 << 4) | 1;
+        
+        // 5. Begin primitive
+        thread.execute_command(0x1808, 5);
+        
+        // 6. Draw
+        thread.execute_command(0x1810, (3 << 24));
+        
+        // 7. End primitive
+        thread.execute_command(0x1808, 0);
+        
+        // 8. End frame
+        thread.end_frame();
+        
+        // Verify framebuffer is valid
+        let fb = thread.get_framebuffer();
+        assert!(fb.is_some());
     }
 }
