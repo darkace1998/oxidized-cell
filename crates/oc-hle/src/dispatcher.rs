@@ -1076,8 +1076,8 @@ fn hle_resc_set_src(ctx: &HleCallContext) -> i64 {
     let src = crate::cell_resc::CellRescSrc {
         format: read_be32(src_ptr).unwrap_or(0),
         pitch: read_be32(src_ptr + 4).unwrap_or(0),
-        width: read_be32(src_ptr + 8).unwrap_or(0) as u16,
-        height: (read_be32(src_ptr + 8).unwrap_or(0) >> 16) as u16,
+        width: (read_be32(src_ptr + 8).unwrap_or(0) >> 16) as u16,
+        height: (read_be32(src_ptr + 8).unwrap_or(0) & 0xFFFF) as u16,
         offset: read_be32(src_ptr + 12).unwrap_or(0),
     };
     
@@ -1585,7 +1585,10 @@ fn hle_save_data_list_load2(ctx: &HleCallContext) -> i64 {
     }
     
     drop(ctx_guard);
-    let _ = (func_list, func_stat, func_file); // Callbacks not yet invoked
+    // TODO: Invoke func_list/func_stat/func_file callbacks on PPU thread for proper
+    // save data directory selection and file I/O. Currently returns CELL_OK with
+    // directory count written, which lets games proceed past save-check screens.
+    let _ = (func_list, func_stat, func_file);
     error::CELL_OK
 }
 
