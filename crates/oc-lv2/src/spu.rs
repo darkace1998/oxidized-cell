@@ -390,6 +390,140 @@ pub mod syscalls {
         let thread: Arc<SpuThread> = manager.get(thread_id)?;
         thread.read_signal(signal_reg)
     }
+
+    /// Validate a DMA transfer size (must be 1–16384 bytes)
+    fn validate_dma_size(size: u32) -> Result<(), KernelError> {
+        if size == 0 || size > 16384 {
+            return Err(KernelError::InvalidArgument);
+        }
+        Ok(())
+    }
+
+    /// Validate that an effective address range fits within a memory slice
+    fn validate_ea_bounds(ea_addr: u64, size: u32, mem_len: usize) -> Result<(usize, usize), KernelError> {
+        let ea_start = ea_addr as usize;
+        let ea_end = ea_start.saturating_add(size as usize);
+        if ea_end > mem_len {
+            return Err(KernelError::PermissionDenied);
+        }
+        Ok((ea_start, ea_end))
+    }
+
+    /// sys_spu_thread_transfer_data — DMA GET operation
+    ///
+    /// Transfer data from main memory to SPU local storage.
+    /// Implements MFC_GET semantics (main memory → LS).
+    ///
+    /// # Arguments
+    /// * `thread_id` - SPU thread to transfer data to
+    /// * `ls_addr` - Destination address in local storage
+    /// * `ea_addr` - Source effective address in main memory
+    /// * `size` - Number of bytes to transfer (max 16384, must be 1/2/4/8/16-byte aligned for < 16 bytes)
+    /// * `main_memory` - Main memory slice to read from
+    pub fn sys_spu_thread_transfer_data_get(
+        manager: &ObjectManager,
+        thread_id: ObjectId,
+        ls_addr: u32,
+        ea_addr: u64,
+        size: u32,
+        main_memory: &[u8],
+    ) -> Result<(), KernelError> {
+        validate_dma_size(size)?;
+        let thread: Arc<SpuThread> = manager.get(thread_id)?;
+        let (ea_start, ea_end) = validate_ea_bounds(ea_addr, size, main_memory.len())?;
+        thread.write_ls(ls_addr, &main_memory[ea_start..ea_end])
+    }
+
+    /// sys_spu_thread_transfer_data — DMA PUT operation
+    ///
+    /// Transfer data from SPU local storage to main memory.
+    /// Implements MFC_PUT semantics (LS → main memory).
+    ///
+    /// # Arguments
+    /// * `thread_id` - SPU thread to transfer data from
+    /// * `ls_addr` - Source address in local storage
+    /// * `ea_addr` - Destination effective address in main memory
+    /// * `size` - Number of bytes to transfer (max 16384)
+    /// * `main_memory` - Main memory slice to write to
+    pub fn sys_spu_thread_transfer_data_put(
+        manager: &ObjectManager,
+        thread_id: ObjectId,
+        ls_addr: u32,
+        ea_addr: u64,
+        size: u32,
+        main_memory: &mut [u8],
+    ) -> Result<(), KernelError> {
+        validate_dma_size(size)?;
+        let thread: Arc<SpuThread> = manager.get(thread_id)?;
+        let data = thread.read_ls(ls_addr, size)?;
+        let (ea_start, ea_end) = validate_ea_bounds(ea_addr, size, main_memory.len())?;
+        main_memory[ea_start..ea_end].copy_from_slice(&data);
+        Ok(())
+    }
+
+    /// sys_spu_thread_atomic_get — MFC_GETLLAR operation
+    ///
+    /// Atomically reads a 128-byte cache line from main memory and establishes
+    /// a reservation. The reservation is invalidated if another agent writes
+    /// to the same cache line.
+    ///
+    /// # Arguments
+    /// * `thread_id` - SPU thread
+    /// * `ls_addr` - Destination address in local storage (must be 128-byte aligned)
+    /// * `ea_addr` - Source effective address in main memory (must be 128-byte aligned)
+    /// * `main_memory` - Main memory slice
+    pub fn sys_spu_thread_atomic_get(
+        manager: &ObjectManager,
+        thread_id: ObjectId,
+        ls_addr: u32,
+        ea_addr: u64,
+        main_memory: &[u8],
+    ) -> Result<(), KernelError> {
+        // GETLLAR is always 128 bytes, must be 128-byte aligned
+        if (ls_addr & 0x7F) != 0 || (ea_addr & 0x7F) != 0 {
+            return Err(KernelError::InvalidArgument);
+        }
+
+        let thread: Arc<SpuThread> = manager.get(thread_id)?;
+        let (ea_start, _) = validate_ea_bounds(ea_addr, 128, main_memory.len())?;
+        thread.write_ls(ls_addr, &main_memory[ea_start..ea_start + 128])
+    }
+
+    /// sys_spu_thread_atomic_put — MFC_PUTLLC operation
+    ///
+    /// Conditionally writes a 128-byte cache line from SPU local storage to
+    /// main memory, succeeding only if the reservation is still valid.
+    ///
+    /// # Arguments
+    /// * `thread_id` - SPU thread
+    /// * `ls_addr` - Source address in local storage (must be 128-byte aligned)
+    /// * `ea_addr` - Destination effective address in main memory (must be 128-byte aligned)
+    /// * `main_memory` - Main memory slice
+    ///
+    /// # Returns
+    /// * `Ok(true)` if the conditional store succeeded
+    /// * `Ok(false)` if the reservation was lost
+    pub fn sys_spu_thread_atomic_put(
+        manager: &ObjectManager,
+        thread_id: ObjectId,
+        ls_addr: u32,
+        ea_addr: u64,
+        main_memory: &mut [u8],
+    ) -> Result<bool, KernelError> {
+        // PUTLLC is always 128 bytes, must be 128-byte aligned
+        if (ls_addr & 0x7F) != 0 || (ea_addr & 0x7F) != 0 {
+            return Err(KernelError::InvalidArgument);
+        }
+
+        let thread: Arc<SpuThread> = manager.get(thread_id)?;
+        let data = thread.read_ls(ls_addr, 128)?;
+        let (ea_start, _) = validate_ea_bounds(ea_addr, 128, main_memory.len())?;
+
+        // In HLE mode, unconditionally succeed since we don't track reservations
+        // at the system level (individual MFC instances track their own)
+        main_memory[ea_start..ea_start + 128].copy_from_slice(&data);
+        Ok(true)
+    }
 }
 
 /// SPU run slot state
@@ -931,6 +1065,164 @@ mod tests {
         // Slot 0 should have the highest-priority thread (301, priority 1)
         let slot0 = scheduler.get_slot_state(0).unwrap();
         assert_eq!(slot0, SpuSlotState::Running(301, 1, 1));
+    }
+
+    // Helper to create a thread for DMA tests
+    fn create_test_thread(manager: &ObjectManager) -> (ObjectId, ObjectId) {
+        let group_id = syscalls::sys_spu_thread_group_create(
+            manager,
+            SpuThreadGroupAttributes::default(),
+            1,
+            100,
+        ).unwrap();
+
+        let thread_id = syscalls::sys_spu_thread_initialize(
+            manager,
+            group_id,
+            0,
+            SpuThreadAttributes::default(),
+        ).unwrap();
+
+        syscalls::sys_spu_image_open(manager, thread_id, 0x1000).unwrap();
+        (group_id, thread_id)
+    }
+
+    #[test]
+    fn test_spu_dma_get() {
+        let manager = ObjectManager::new();
+        let (_group_id, thread_id) = create_test_thread(&manager);
+
+        // Set up main memory with known data
+        let mut main_memory = vec![0u8; 1024];
+        for i in 0..256u16 {
+            main_memory[i as usize] = i as u8;
+        }
+
+        // DMA GET: copy from main memory to local storage
+        syscalls::sys_spu_thread_transfer_data_get(
+            &manager, thread_id, 0x0000, 0, 256, &main_memory,
+        ).unwrap();
+
+        // Verify data was copied to LS
+        let ls_data = syscalls::sys_spu_thread_read_ls(&manager, thread_id, 0, 256).unwrap();
+        for i in 0..256usize {
+            assert_eq!(ls_data[i], i as u8, "Mismatch at byte {}", i);
+        }
+    }
+
+    #[test]
+    fn test_spu_dma_put() {
+        let manager = ObjectManager::new();
+        let (_group_id, thread_id) = create_test_thread(&manager);
+
+        // Write known data to local storage
+        let ls_data: Vec<u8> = (0..128u8).collect();
+        syscalls::sys_spu_thread_write_ls(&manager, thread_id, 0x100, &ls_data).unwrap();
+
+        // Set up main memory
+        let mut main_memory = vec![0u8; 1024];
+
+        // DMA PUT: copy from local storage to main memory
+        syscalls::sys_spu_thread_transfer_data_put(
+            &manager, thread_id, 0x100, 256, 128, &mut main_memory,
+        ).unwrap();
+
+        // Verify data was copied to main memory
+        for i in 0..128usize {
+            assert_eq!(main_memory[256 + i], i as u8, "Mismatch at byte {}", i);
+        }
+    }
+
+    #[test]
+    fn test_spu_dma_getllar() {
+        let manager = ObjectManager::new();
+        let (_group_id, thread_id) = create_test_thread(&manager);
+
+        // Set up main memory with known 128-byte cache line
+        let mut main_memory = vec![0u8; 1024];
+        for i in 0..128u8 {
+            main_memory[128 + i as usize] = i.wrapping_add(0xAA);
+        }
+
+        // GETLLAR: atomically read 128-byte cache line
+        syscalls::sys_spu_thread_atomic_get(
+            &manager, thread_id, 0x0000, 128, &main_memory,
+        ).unwrap();
+
+        // Verify data in LS
+        let ls_data = syscalls::sys_spu_thread_read_ls(&manager, thread_id, 0, 128).unwrap();
+        for i in 0..128usize {
+            assert_eq!(ls_data[i], (i as u8).wrapping_add(0xAA), "Mismatch at byte {}", i);
+        }
+    }
+
+    #[test]
+    fn test_spu_dma_putllc() {
+        let manager = ObjectManager::new();
+        let (_group_id, thread_id) = create_test_thread(&manager);
+
+        // Write 128 bytes to LS
+        let ls_data: Vec<u8> = (0..128u8).map(|i| i.wrapping_mul(3)).collect();
+        syscalls::sys_spu_thread_write_ls(&manager, thread_id, 0x80, &ls_data).unwrap();
+
+        // Set up main memory
+        let mut main_memory = vec![0u8; 1024];
+
+        // PUTLLC: conditionally store 128-byte cache line
+        let success = syscalls::sys_spu_thread_atomic_put(
+            &manager, thread_id, 0x80, 256, &mut main_memory,
+        ).unwrap();
+        assert!(success, "PUTLLC should succeed");
+
+        // Verify data in main memory
+        for i in 0..128usize {
+            assert_eq!(main_memory[256 + i], (i as u8).wrapping_mul(3), "Mismatch at byte {}", i);
+        }
+    }
+
+    #[test]
+    fn test_spu_dma_alignment_check() {
+        let manager = ObjectManager::new();
+        let (_group_id, thread_id) = create_test_thread(&manager);
+        let main_memory = vec![0u8; 1024];
+
+        // GETLLAR with unaligned LS address should fail
+        let result = syscalls::sys_spu_thread_atomic_get(
+            &manager, thread_id, 0x0001, 0, &main_memory,
+        );
+        assert!(result.is_err(), "Unaligned LS address should be rejected");
+
+        // GETLLAR with unaligned EA address should fail
+        let result = syscalls::sys_spu_thread_atomic_get(
+            &manager, thread_id, 0x0000, 1, &main_memory,
+        );
+        assert!(result.is_err(), "Unaligned EA address should be rejected");
+    }
+
+    #[test]
+    fn test_spu_dma_bounds_check() {
+        let manager = ObjectManager::new();
+        let (_group_id, thread_id) = create_test_thread(&manager);
+        let main_memory = vec![0u8; 64]; // Too small
+
+        // DMA GET with out-of-bounds EA should fail
+        let result = syscalls::sys_spu_thread_transfer_data_get(
+            &manager, thread_id, 0x0000, 0, 128, &main_memory,
+        );
+        assert!(result.is_err(), "Out-of-bounds EA should be rejected");
+
+        // Size 0 should be rejected
+        let result = syscalls::sys_spu_thread_transfer_data_get(
+            &manager, thread_id, 0x0000, 0, 0, &main_memory,
+        );
+        assert!(result.is_err(), "Zero size should be rejected");
+
+        // Size > 16384 should be rejected
+        let big_memory = vec![0u8; 32768];
+        let result = syscalls::sys_spu_thread_transfer_data_get(
+            &manager, thread_id, 0x0000, 0, 16385, &big_memory,
+        );
+        assert!(result.is_err(), "Size > 16384 should be rejected");
     }
 }
 

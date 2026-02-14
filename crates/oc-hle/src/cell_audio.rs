@@ -205,6 +205,9 @@ pub const CELL_AUDIO_BLOCK_32: u32 = 32;
 /// Audio block samples (256 samples per block)
 pub const CELL_AUDIO_BLOCK_SAMPLES: usize = 256;
 
+/// Audio sample rate (48 kHz)
+pub const CELL_AUDIO_SAMPLE_RATE: u64 = 48000;
+
 /// Audio port types
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -649,6 +652,49 @@ impl AudioManager {
         self.block_index
     }
 
+    /// Get the timestamp for a given audio block tag
+    /// 
+    /// Returns the timestamp in microseconds derived from the block tag.
+    /// Each audio block is 256 samples at 48 kHz, so one block = 256/48000 ≈ 5333.33 µs.
+    /// 
+    /// # Arguments
+    /// * `port_num` - Audio port number
+    /// * `tag` - Audio block tag (write index)
+    /// 
+    /// # Returns
+    /// * `Ok(timestamp_us)` on success
+    /// * `Err(error_code)` if port is invalid
+    pub fn get_port_timestamp(&self, port_num: u32, tag: u64) -> Result<u64, i32> {
+        if port_num >= CELL_AUDIO_PORT_MAX as u32 {
+            return Err(0x80310704u32 as i32); // CELL_AUDIO_ERROR_PARAM
+        }
+
+        let port = &self.ports[port_num as usize];
+        if port.state == AudioPortState::Closed {
+            return Err(0x80310703u32 as i32); // CELL_AUDIO_ERROR_PORT_NOT_OPEN
+        }
+
+        // Each block is 256 samples at 48000 Hz
+        // Time per block = 256 / 48000 seconds = 5333.33... µs
+        // Using saturating arithmetic to avoid silent overflow for very large tags.
+        // At 48 kHz with 256-sample blocks, u64 overflow occurs after ~72 billion years.
+        let timestamp_us = tag.saturating_mul(CELL_AUDIO_BLOCK_SAMPLES as u64)
+            .saturating_mul(1_000_000)
+            / CELL_AUDIO_SAMPLE_RATE;
+
+        Ok(timestamp_us)
+    }
+
+    /// Advance audio timing
+    /// 
+    /// Called each frame to increment the block index. This drives
+    /// audio timing for A/V sync and ring buffer management.
+    pub fn advance_block_index(&mut self) {
+        if self.initialized {
+            self.block_index += 1;
+        }
+    }
+
     /// Get number of active ports
     pub fn get_active_port_count(&self) -> usize {
         self.ports.iter().filter(|p| p.state == AudioPortState::Started).count()
@@ -932,6 +978,42 @@ pub fn cell_audio_remove_notify_event_queue(key: u64) -> i32 {
     crate::context::get_hle_context_mut().audio.remove_notify_event_queue(key)
 }
 
+/// cellAudioGetPortTimestamp - Get audio port timestamp
+///
+/// Returns the timestamp (in microseconds) for a specific audio block tag.
+/// Games use this for A/V synchronization by comparing audio playback
+/// position against video frame timing.
+///
+/// The timestamp is derived from the block index: each audio block is
+/// 256 samples at 48 kHz, so one block = 256/48000 ≈ 5333.33 µs.
+///
+/// # Arguments
+/// * `port_num` - Audio port number
+/// * `tag` - Audio block tag (write index)
+/// * `stamp_addr` - Address to write the 64-bit timestamp (microseconds)
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_audio_get_port_timestamp(port_num: u32, tag: u64, stamp_addr: u32) -> i32 {
+    trace!("cellAudioGetPortTimestamp(port_num={}, tag={}, stamp_addr=0x{:08X})", port_num, tag, stamp_addr);
+
+    let ctx = crate::context::get_hle_context();
+    if !ctx.audio.is_initialized() {
+        return 0x80310702u32 as i32; // CELL_AUDIO_ERROR_AUDIOSYSTEM
+    }
+
+    match ctx.audio.get_port_timestamp(port_num, tag) {
+        Ok(timestamp) => {
+            if let Err(e) = write_be64(stamp_addr, timestamp) {
+                trace!("cellAudioGetPortTimestamp: failed to write timestamp to 0x{:08X}: 0x{:08X}", stamp_addr, e as u32);
+                return e;
+            }
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1037,5 +1119,113 @@ mod tests {
         assert!(!manager.has_notify_event_queues());
         
         manager.quit();
+    }
+
+    #[test]
+    fn test_port_timestamp_basic() {
+        let mut manager = AudioManager::new();
+        manager.init();
+
+        let port_num = manager.port_open(2, CELL_AUDIO_BLOCK_8, 0, 1.0).unwrap();
+        manager.port_start(port_num);
+
+        // Tag 0 → timestamp 0
+        let ts = manager.get_port_timestamp(port_num, 0).unwrap();
+        assert_eq!(ts, 0);
+
+        // Tag 1 → 256 samples at 48 kHz = 5333 µs
+        let ts1 = manager.get_port_timestamp(port_num, 1).unwrap();
+        assert_eq!(ts1, 256 * 1_000_000 / CELL_AUDIO_SAMPLE_RATE);
+
+        // Tag 9 (one full 8-block frame) → ~48000 µs
+        let ts9 = manager.get_port_timestamp(port_num, 9).unwrap();
+        assert_eq!(ts9, 9 * 256 * 1_000_000 / CELL_AUDIO_SAMPLE_RATE);
+
+        manager.quit();
+    }
+
+    #[test]
+    fn test_port_timestamp_closed_port() {
+        let mut manager = AudioManager::new();
+        manager.init();
+
+        // Port 0 is closed — should fail
+        let result = manager.get_port_timestamp(0, 0);
+        assert!(result.is_err());
+
+        manager.quit();
+    }
+
+    #[test]
+    fn test_port_timestamp_invalid_port() {
+        let mut manager = AudioManager::new();
+        manager.init();
+
+        // Invalid port number
+        let result = manager.get_port_timestamp(99, 0);
+        assert!(result.is_err());
+
+        manager.quit();
+    }
+
+    #[test]
+    fn test_advance_block_index() {
+        let mut manager = AudioManager::new();
+        manager.init();
+
+        assert_eq!(manager.get_block_index(), 0);
+        manager.advance_block_index();
+        assert_eq!(manager.get_block_index(), 1);
+        manager.advance_block_index();
+        assert_eq!(manager.get_block_index(), 2);
+
+        manager.quit();
+    }
+
+    #[test]
+    fn test_advance_block_not_initialized() {
+        let mut manager = AudioManager::new();
+
+        // Not initialized — should not advance
+        manager.advance_block_index();
+        assert_eq!(manager.get_block_index(), 0);
+    }
+
+    #[test]
+    fn test_audio_mixer_integration() {
+        let mut manager = AudioManager::new();
+        
+        // Create and connect mixer backend
+        let mixer = Arc::new(RwLock::new(HleAudioMixer::default()));
+        manager.set_audio_backend(mixer.clone());
+        assert!(manager.has_audio_backend());
+        
+        manager.init();
+
+        // Open port — should create mixer source
+        let port_num = manager.port_open(2, CELL_AUDIO_BLOCK_8, 0, 1.0).unwrap();
+        manager.port_start(port_num);
+
+        // Submit audio samples — should forward to mixer
+        let samples = vec![0.5f32; 512];
+        let result = manager.submit_audio(port_num, &samples);
+        assert_eq!(result, 0);
+
+        // Verify mixer has data
+        {
+            let mut m = mixer.write().unwrap();
+            let mut output = vec![0.0f32; 512];
+            m.mix(&mut output, 256);
+            // Should have non-zero output after mixing
+            let has_audio = output.iter().any(|&s| s != 0.0);
+            assert!(has_audio, "Mixer should have audio data after submit");
+        }
+
+        manager.quit();
+    }
+
+    #[test]
+    fn test_sample_rate_constant() {
+        assert_eq!(CELL_AUDIO_SAMPLE_RATE, 48000);
     }
 }

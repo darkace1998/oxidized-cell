@@ -3232,17 +3232,12 @@ impl GraphicsBackend for VulkanBackend {
                     return;
                 }
 
-                // Set up synchronization
-                let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
-                let signal_semaphores = [self.render_finished_semaphores[self.current_frame]];
-                let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-
+                // Submit without swapchain semaphore wait — this is an offscreen
+                // renderer whose output is read back to CPU via get_framebuffer().
+                // Fence-only synchronization is sufficient here.
                 let cmd_buffers = [cmd_buffer];
                 let submit_info = vk::SubmitInfo::default()
-                    .wait_semaphores(&wait_semaphores)
-                    .wait_dst_stage_mask(&wait_stages)
-                    .command_buffers(&cmd_buffers)
-                    .signal_semaphores(&signal_semaphores);
+                    .command_buffers(&cmd_buffers);
 
                 let fence = self.in_flight_fences[self.current_frame];
                 if let Err(e) = device.queue_submit(queue, &[submit_info], fence) {
