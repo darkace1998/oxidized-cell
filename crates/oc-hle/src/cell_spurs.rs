@@ -20,6 +20,10 @@ pub const CELL_SPURS_ATTRIBUTE_FLAG_SIGNAL_TO_PPU: u32 = 1;
 /// SPURS priorities
 pub const CELL_SPURS_MAX_PRIORITY: u32 = 16;
 
+/// SPURS error codes
+pub const CELL_SPURS_ERROR_STAT: i32 = 0x80410801u32 as i32;
+pub const CELL_SPURS_ERROR_INVAL: i32 = 0x80410802u32 as i32;
+
 /// SPURS workload state
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -2116,7 +2120,7 @@ pub fn cell_spurs_create_taskset(_spurs_addr: u32, taskset_addr: u32) -> i32 {
 
     let mut ctx = crate::context::get_hle_context_mut();
     if !ctx.spurs.is_initialized() {
-        return 0x80410801u32 as i32; // CELL_SPURS_ERROR_STAT
+        return CELL_SPURS_ERROR_STAT;
     }
 
     match ctx.spurs.create_taskset() {
@@ -2125,7 +2129,7 @@ pub fn cell_spurs_create_taskset(_spurs_addr: u32, taskset_addr: u32) -> i32 {
             // Write taskset ID to output address
             if taskset_addr != 0 && crate::memory::is_hle_memory_initialized() {
                 if let Err(_) = crate::memory::write_be32(taskset_addr, taskset_id) {
-                    return 0x80410801u32 as i32; // CELL_SPURS_ERROR_STAT
+                    return CELL_SPURS_ERROR_STAT;
                 }
             }
             0 // CELL_OK
@@ -2189,7 +2193,7 @@ pub fn cell_spurs_create_task(
 
     let mut ctx = crate::context::get_hle_context_mut();
     if !ctx.spurs.is_initialized() {
-        return 0x80410801u32 as i32; // CELL_SPURS_ERROR_STAT
+        return CELL_SPURS_ERROR_STAT;
     }
 
     // Create a task queue if none exists, then push a task
@@ -2204,7 +2208,7 @@ pub fn cell_spurs_create_task(
             // Write task ID to output address
             if task_id_addr != 0 && crate::memory::is_hle_memory_initialized() {
                 if let Err(_) = crate::memory::write_be32(task_id_addr, task_id) {
-                    return 0x80410801u32 as i32; // CELL_SPURS_ERROR_STAT
+                    return CELL_SPURS_ERROR_STAT;
                 }
             }
             0 // CELL_OK
@@ -2228,13 +2232,13 @@ pub fn cell_spurs_set_max_contention(_spurs_addr: u32, wid: u32, max_contention:
     debug!("cellSpursSetMaxContention(wid={}, max={})", wid, max_contention);
 
     if wid >= CELL_SPURS_MAX_WORKLOAD as u32 {
-        return 0x80410802u32 as i32; // CELL_SPURS_ERROR_INVALID_ARGUMENT
+        return CELL_SPURS_ERROR_INVAL;
     }
 
     // Max contention is informational for HLE — workload scheduling uses priorities
     let ctx = crate::context::get_hle_context();
     if !ctx.spurs.is_initialized() {
-        return 0x80410801u32 as i32; // CELL_SPURS_ERROR_STAT
+        return CELL_SPURS_ERROR_STAT;
     }
 
     0 // CELL_OK

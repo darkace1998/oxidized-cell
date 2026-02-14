@@ -391,6 +391,24 @@ pub mod syscalls {
         thread.read_signal(signal_reg)
     }
 
+    /// Validate a DMA transfer size (must be 1–16384 bytes)
+    fn validate_dma_size(size: u32) -> Result<(), KernelError> {
+        if size == 0 || size > 16384 {
+            return Err(KernelError::InvalidArgument);
+        }
+        Ok(())
+    }
+
+    /// Validate that an effective address range fits within a memory slice
+    fn validate_ea_bounds(ea_addr: u64, size: u32, mem_len: usize) -> Result<(usize, usize), KernelError> {
+        let ea_start = ea_addr as usize;
+        let ea_end = ea_start.saturating_add(size as usize);
+        if ea_end > mem_len {
+            return Err(KernelError::PermissionDenied);
+        }
+        Ok((ea_start, ea_end))
+    }
+
     /// sys_spu_thread_transfer_data — DMA GET operation
     ///
     /// Transfer data from main memory to SPU local storage.
@@ -410,21 +428,10 @@ pub mod syscalls {
         size: u32,
         main_memory: &[u8],
     ) -> Result<(), KernelError> {
-        if size == 0 || size > 16384 {
-            return Err(KernelError::InvalidArgument);
-        }
-
+        validate_dma_size(size)?;
         let thread: Arc<SpuThread> = manager.get(thread_id)?;
-        
-        // Read from main memory
-        let ea_start = ea_addr as usize;
-        let ea_end = ea_start.saturating_add(size as usize);
-        if ea_end > main_memory.len() {
-            return Err(KernelError::PermissionDenied);
-        }
-
-        let data = &main_memory[ea_start..ea_end];
-        thread.write_ls(ls_addr, data)
+        let (ea_start, ea_end) = validate_ea_bounds(ea_addr, size, main_memory.len())?;
+        thread.write_ls(ls_addr, &main_memory[ea_start..ea_end])
     }
 
     /// sys_spu_thread_transfer_data — DMA PUT operation
@@ -446,22 +453,10 @@ pub mod syscalls {
         size: u32,
         main_memory: &mut [u8],
     ) -> Result<(), KernelError> {
-        if size == 0 || size > 16384 {
-            return Err(KernelError::InvalidArgument);
-        }
-
+        validate_dma_size(size)?;
         let thread: Arc<SpuThread> = manager.get(thread_id)?;
-        
-        // Read from local storage
         let data = thread.read_ls(ls_addr, size)?;
-        
-        // Write to main memory
-        let ea_start = ea_addr as usize;
-        let ea_end = ea_start.saturating_add(size as usize);
-        if ea_end > main_memory.len() {
-            return Err(KernelError::PermissionDenied);
-        }
-
+        let (ea_start, ea_end) = validate_ea_bounds(ea_addr, size, main_memory.len())?;
         main_memory[ea_start..ea_end].copy_from_slice(&data);
         Ok(())
     }
@@ -490,14 +485,8 @@ pub mod syscalls {
         }
 
         let thread: Arc<SpuThread> = manager.get(thread_id)?;
-        
-        let ea_start = ea_addr as usize;
-        if ea_start + 128 > main_memory.len() {
-            return Err(KernelError::PermissionDenied);
-        }
-
-        let data = &main_memory[ea_start..ea_start + 128];
-        thread.write_ls(ls_addr, data)
+        let (ea_start, _) = validate_ea_bounds(ea_addr, 128, main_memory.len())?;
+        thread.write_ls(ls_addr, &main_memory[ea_start..ea_start + 128])
     }
 
     /// sys_spu_thread_atomic_put — MFC_PUTLLC operation
@@ -527,13 +516,8 @@ pub mod syscalls {
         }
 
         let thread: Arc<SpuThread> = manager.get(thread_id)?;
-        
         let data = thread.read_ls(ls_addr, 128)?;
-        
-        let ea_start = ea_addr as usize;
-        if ea_start + 128 > main_memory.len() {
-            return Err(KernelError::PermissionDenied);
-        }
+        let (ea_start, _) = validate_ea_bounds(ea_addr, 128, main_memory.len())?;
 
         // In HLE mode, unconditionally succeed since we don't track reservations
         // at the system level (individual MFC instances track their own)
