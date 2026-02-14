@@ -1189,6 +1189,11 @@ mod tests {
 
     // ── Phase 7 — Testing & Validation ──────────────────────────────────
 
+    /// Bytes per pixel in RGBA framebuffer data
+    const BYTES_PER_PIXEL: usize = 4;
+    /// Minimum percentage of pixels that must match for screenshot comparison
+    const MIN_PIXEL_MATCH_PCT: f64 = 99.9;
+
     #[test]
     fn test_null_backend_produces_non_black_framebuffer() {
         // Validates Phase 0-2: NullBackend produces a visible framebuffer
@@ -1201,10 +1206,10 @@ mod tests {
 
         assert_eq!(fb.width, 1280);
         assert_eq!(fb.height, 720);
-        assert_eq!(fb.pixels.len(), (1280 * 720 * 4) as usize);
+        assert_eq!(fb.pixels.len(), (1280 * 720 * BYTES_PER_PIXEL) as usize);
 
         // Verify the framebuffer is NOT all-black (at least one non-zero RGB pixel)
-        let has_color = fb.pixels.chunks(4).any(|px| px[0] > 0 || px[1] > 0 || px[2] > 0);
+        let has_color = fb.pixels.chunks(BYTES_PER_PIXEL).any(|px| px[0] > 0 || px[1] > 0 || px[2] > 0);
         assert!(has_color, "framebuffer should not be all-black");
     }
 
@@ -1277,15 +1282,15 @@ mod tests {
         let mut backend = NullBackend::new();
         backend.init().unwrap();
 
-        // Set a bright red clear color and run a frame
+        // Set a red clear color [R=1.0, G=0.0, B=0.0, A=1.0], depth=1.0, stencil=0
         backend.begin_frame();
         backend.clear([1.0, 0.0, 0.0, 1.0], 1.0, 0);
         backend.end_frame();
 
         let fb = backend.get_framebuffer().expect("framebuffer should exist");
 
-        // Sample the center pixel — it should be red (or close to it)
-        let center = ((360 * 1280 + 640) * 4) as usize;
+        // Sample the center pixel (height/2 * width + width/2) * bytes_per_pixel
+        let center = ((360 * 1280 + 640) * BYTES_PER_PIXEL) as usize;
         let r = fb.pixels[center];
         let g = fb.pixels[center + 1];
         let b = fb.pixels[center + 2];
@@ -1317,7 +1322,8 @@ mod tests {
         let total = fb1.pixels.len();
         let match_pct = (matching as f64 / total as f64) * 100.0;
 
-        assert!(match_pct > 99.9,
-            "reference vs capture should be >99.9% identical, got {:.2}%", match_pct);
+        assert!(match_pct > MIN_PIXEL_MATCH_PCT,
+            "reference vs capture should be >{:.1}% identical, got {:.2}%",
+            MIN_PIXEL_MATCH_PCT, match_pct);
     }
 }
