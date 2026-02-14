@@ -155,6 +155,8 @@ pub struct VulkanBackend {
     dynamic_states_enabled: Vec<vk::DynamicState>,
     /// Per-attachment blend states (up to 4 MRT)
     per_attachment_blend: [BlendAttachmentConfig; 4],
+    /// Whether pipeline state needs to be re-bound before the next draw call
+    pipeline_dirty: bool,
 }
 
 /// Small buffer suballocation pool
@@ -759,6 +761,7 @@ impl VulkanBackend {
             compute_descriptor_set_layout: None,
             dynamic_states_enabled: vec![vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR],
             per_attachment_blend: [BlendAttachmentConfig::default(); 4],
+            pipeline_dirty: true,
         }
     }
 
@@ -2892,6 +2895,11 @@ impl VulkanBackend {
         // Ensure we have a render pass active
         self.ensure_render_pass();
         
+        // Only re-bind if state is dirty (pipeline/buffer changes since last bind)
+        if !self.pipeline_dirty {
+            return;
+        }
+        
         // Bind pipeline if available
         if let (Some(device), Some(cmd_buffer), Some(pipeline)) = 
             (&self.device, self.current_cmd_buffer, self.pipeline) 
@@ -2930,6 +2938,8 @@ impl VulkanBackend {
                     device.cmd_bind_index_buffer(cmd_buffer, *buffer, 0, *index_type);
                 }
             }
+            
+            self.pipeline_dirty = false;
         }
     }
 }
@@ -3284,6 +3294,9 @@ impl GraphicsBackend for VulkanBackend {
                     tracing::error!("Failed to begin command buffer: {:?}", e);
                 }
             }
+            
+            // Pipeline state needs to be re-bound for the new command buffer
+            self.pipeline_dirty = true;
         }
     }
 
@@ -3713,6 +3726,7 @@ impl GraphicsBackend for VulkanBackend {
         }
 
         tracing::trace!("Vertex buffer submitted and bound for binding {}", binding);
+        self.pipeline_dirty = true;
     }
     
     fn submit_index_buffer(&mut self, data: &[u8], index_type: u32) {
@@ -3824,6 +3838,7 @@ impl GraphicsBackend for VulkanBackend {
         }
 
         tracing::trace!("Index buffer submitted and bound");
+        self.pipeline_dirty = true;
     }
     
     fn get_framebuffer(&self) -> Option<super::FramebufferData> {

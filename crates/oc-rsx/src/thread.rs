@@ -370,11 +370,16 @@ impl RsxThread {
                 _ => VertexAttributeType::FLOAT,
             };
             
-            let normalized = matches!(type_bits, 4 | 6); // u8n and compressed are normalized
+            let normalized = matches!(type_bits, 4 | 6); // u8n (4) and compressed (6) are normalized; u8 (7) is raw
+            
+            if size == 0 {
+                tracing::warn!("Vertex attribute {} has size=0, clamping to 1", i);
+            }
+            let size = size.max(1);
             
             attrs.push(VertexAttribute {
                 index: i as u8,
-                size: size.max(1),
+                size,
                 type_: attr_type,
                 stride,
                 offset: 0,
@@ -529,7 +534,14 @@ impl RsxThread {
         let index_addr = self.gfx_state.index_array_address;
         if index_addr != 0 {
             let index_type = self.gfx_state.draw_index_type;
-            let index_type_size = if index_type == 1 { 4u32 } else { 2u32 }; // 1=u32, 0=u16
+            let index_type_size = match index_type {
+                1 => 4u32, // u32 indices
+                0 => 2u32, // u16 indices
+                _ => {
+                    tracing::warn!("Unknown index type {}, defaulting to u16", index_type);
+                    2u32
+                }
+            };
             let index_count = self.gfx_state.draw_count.max(1);
             let index_data_size = index_count * index_type_size;
             let max_index_size = 4096u32;
