@@ -74,6 +74,9 @@ pub struct EmulatorRunner {
     /// Monotonically increasing SPU thread ID counter
     /// Ensures unique thread IDs even after thread removal
     next_spu_thread_id: AtomicU32,
+    /// Audio backend (cpal) — kept alive for the emulator's lifetime
+    /// so the audio stream continues playing. Dropped when the runner is dropped.
+    _audio_backend: Option<oc_audio::backend::cpal_backend::CpalAudioBackend>,
 }
 
 impl EmulatorRunner {
@@ -132,6 +135,45 @@ impl EmulatorRunner {
         
         tracing::info!("Input backend connected: cellPad HLE <-> DualShock3Manager");
 
+        // Create audio mixer and connect to cellAudio HLE
+        // The HleAudioMixer is shared between the audio callback (CpalBackend) and
+        // the AudioManager (HLE ports). When games submit audio via cellAudio,
+        // samples flow: game ring buffer → AudioManager → HleAudioMixer → CpalBackend → speakers.
+        let audio_mixer = std::sync::Arc::new(std::sync::RwLock::new(
+            oc_hle::cell_audio::HleAudioMixer::default()
+        ));
+        oc_hle::set_audio_backend(audio_mixer.clone());
+
+        // Initialize the cpal audio backend and wire it to the mixer
+        let mixer_for_callback = audio_mixer.clone();
+        let mut audio_backend_storage: Option<oc_audio::backend::cpal_backend::CpalAudioBackend> = None;
+        match oc_audio::backend::cpal_backend::CpalAudioBackend::new() {
+            Ok(mut cpal_backend) => {
+                if cpal_backend.init().is_ok() {
+                    cpal_backend.set_callback(move |output: &mut [f32]| {
+                        // Pull mixed audio from the HLE mixer into the cpal output buffer
+                        let frames = output.len() / 2; // stereo: 2 samples per frame
+                        if let Ok(mut mixer) = mixer_for_callback.write() {
+                            mixer.mix(output, frames);
+                        } else {
+                            output.fill(0.0);
+                        }
+                    });
+                    if let Err(e) = cpal_backend.start() {
+                        tracing::warn!("Failed to start audio stream: {}", e);
+                    } else {
+                        tracing::info!("Audio backend connected: cellAudio HLE <-> CpalBackend");
+                    }
+                    audio_backend_storage = Some(cpal_backend);
+                } else {
+                    tracing::warn!("Audio device init failed — audio output disabled");
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to create audio backend: {} — audio output disabled", e);
+            }
+        }
+
         // Create syscall handler with emulator memory access
         let syscall_handler = Arc::new(SyscallHandler::with_emulator_memory(memory.clone()));
 
@@ -160,6 +202,7 @@ impl EmulatorRunner {
             target_frame_time,
             next_ppu_thread_id: AtomicU32::new(0),
             next_spu_thread_id: AtomicU32::new(0),
+            _audio_backend: audio_backend_storage,
         })
     }
 
@@ -444,6 +487,12 @@ impl EmulatorRunner {
         // Run threads for this frame
         self.run_threads()?;
 
+        // Pump HLE callbacks — invoke pending sysutil callbacks on the PPU
+        self.pump_hle_callbacks();
+
+        // Advance audio timing — drives A/V sync timestamps
+        oc_hle::advance_audio();
+
         // Process RSX commands
         self.process_rsx()?;
 
@@ -465,6 +514,105 @@ impl EmulatorRunner {
         self.last_frame_time = Instant::now();
 
         Ok(())
+    }
+
+    /// Pump pending HLE callbacks by executing them on the main PPU thread.
+    ///
+    /// After games call `cellSysutilCheckCallback()`, pending events are converted
+    /// to callbacks queued in the HLE context. This method pops each callback and
+    /// invokes it by temporarily redirecting the PPU thread's PC to the callback
+    /// function, running until it returns (the `blr` lands on our sentinel address),
+    /// then restoring the original PPU state.
+    ///
+    /// **Thread safety:** This method accesses the global HLE callback queue and
+    /// acquires a write lock on the main PPU thread. It must only be called from
+    /// the single-threaded emulation loop (i.e., within `run_frame()`).
+    fn pump_hle_callbacks(&self) {
+        // Maximum callbacks to process per frame to avoid infinite loops
+        const MAX_CALLBACKS_PER_FRAME: usize = 16;
+        // Maximum PPU instructions to execute per callback invocation
+        const MAX_CALLBACK_CYCLES: u64 = 10_000;
+        // Sentinel address placed in LR — when the callback executes `blr`,
+        // execution jumps here and we know the callback has returned.
+        const CALLBACK_RETURN_SENTINEL: u64 = 0xDEAD_CAFE_0000_0000;
+
+        let mut count = 0;
+        while let Some(cb) = oc_hle::pop_sysutil_callback() {
+            if count >= MAX_CALLBACKS_PER_FRAME {
+                tracing::warn!("HLE callback pump: hit per-frame limit ({})", MAX_CALLBACKS_PER_FRAME);
+                break;
+            }
+
+            tracing::debug!(
+                "HLE callback pump: invoking func=0x{:08X}, status=0x{:X}, param=0x{:X}, userdata=0x{:08X}",
+                cb.func, cb.status, cb.param, cb.userdata
+            );
+
+            // Grab the first PPU thread (main thread)
+            let threads = self.ppu_threads.read();
+            let thread_arc = match threads.first() {
+                Some(t) => t.clone(),
+                None => {
+                    tracing::warn!("HLE callback pump: no PPU thread available, dropping callback");
+                    break;
+                }
+            };
+            drop(threads); // release read lock before acquiring write
+
+            let mut thread = thread_arc.write();
+
+            // Save current PPU state
+            let saved_pc = thread.pc();
+            let saved_lr = thread.regs.lr;
+            let saved_r3 = thread.gpr(3);
+            let saved_r4 = thread.gpr(4);
+            let saved_r5 = thread.gpr(5);
+
+            // Set up callback invocation
+            thread.set_pc(cb.func as u64);
+            thread.regs.lr = CALLBACK_RETURN_SENTINEL;
+            thread.set_gpr(3, cb.status);          // arg 1: event status
+            thread.set_gpr(4, cb.param);            // arg 2: event param
+            thread.set_gpr(5, cb.userdata as u64);  // arg 3: userdata
+
+            // Execute PPU instructions until the callback returns (blr → sentinel)
+            let mut cycles: u64 = 0;
+            while cycles < MAX_CALLBACK_CYCLES {
+                let pc = thread.pc();
+                if pc == CALLBACK_RETURN_SENTINEL {
+                    tracing::trace!("HLE callback returned after {} cycles", cycles);
+                    break;
+                }
+
+                match self.ppu_interpreter.step(&mut thread) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        tracing::error!(
+                            "HLE callback at 0x{:08X} execution error after {} cycles: {}",
+                            cb.func, cycles, e
+                        );
+                        break;
+                    }
+                }
+                cycles += 1;
+            }
+
+            if cycles >= MAX_CALLBACK_CYCLES {
+                tracing::warn!(
+                    "HLE callback at 0x{:08X} did not return within {} cycles",
+                    cb.func, MAX_CALLBACK_CYCLES
+                );
+            }
+
+            // Restore PPU state
+            thread.set_pc(saved_pc);
+            thread.regs.lr = saved_lr;
+            thread.set_gpr(3, saved_r3);
+            thread.set_gpr(4, saved_r4);
+            thread.set_gpr(5, saved_r5);
+
+            count += 1;
+        }
     }
 
     /// Process SPU bridge messages from SPURS
@@ -1005,5 +1153,37 @@ mod tests {
         let thread_id2 = runner.create_spu_thread(200).unwrap();
         assert_eq!(thread_id2, 1);
         assert_eq!(runner.spu_thread_count(), 2);
+    }
+
+    #[test]
+    fn test_pump_hle_callbacks_no_threads() {
+        // When there are no PPU threads, the pump should not panic
+        let config = Config::default();
+        let runner = EmulatorRunner::new(config).unwrap();
+
+        // Queue a callback through the HLE context
+        oc_hle::reset_hle_context();
+        let mut ctx = oc_hle::get_hle_context_mut();
+        ctx.sysutil.register_callback(0, 0x1000, 0x2000);
+        ctx.sysutil.queue_event(0x100, 0);
+        ctx.sysutil.check_callback();
+        drop(ctx);
+
+        assert!(oc_hle::has_pending_sysutil_callbacks());
+
+        // Pump should drop the callback gracefully (no threads available)
+        runner.pump_hle_callbacks();
+    }
+
+    #[test]
+    fn test_pump_hle_callbacks_no_pending() {
+        // When there are no pending callbacks, the pump should be a no-op
+        let config = Config::default();
+        let runner = EmulatorRunner::new(config).unwrap();
+        oc_hle::reset_hle_context();
+        assert!(!oc_hle::has_pending_sysutil_callbacks());
+
+        // Should not panic
+        runner.pump_hle_callbacks();
     }
 }

@@ -307,6 +307,29 @@ pub fn poll_input() -> i32 {
     get_hle_context_mut().pad.poll_input()
 }
 
+/// Connect the HLE audio mixer backend to AudioManager
+/// 
+/// This allows HLE audio ports to feed audio samples into the mixer,
+/// which is then consumed by the cpal audio backend for playback.
+/// 
+/// # Arguments
+/// * `backend` - Shared reference to the HleAudioMixer
+pub fn set_audio_backend(backend: std::sync::Arc<std::sync::RwLock<crate::cell_audio::HleAudioMixer>>) {
+    get_hle_context_mut().audio.set_audio_backend(backend);
+}
+
+/// Check if audio backend is connected
+pub fn has_audio_backend() -> bool {
+    get_hle_context().audio.has_audio_backend()
+}
+
+/// Advance audio block timing
+/// 
+/// Should be called each frame to drive audio A/V sync timing.
+pub fn advance_audio() {
+    get_hle_context_mut().audio.advance_block_index();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

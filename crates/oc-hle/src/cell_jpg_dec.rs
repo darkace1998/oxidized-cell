@@ -1316,6 +1316,23 @@ impl JpgDecManager {
         Ok(sub_entry.clone())
     }
 
+    /// Read header and return output parameters with public fields
+    pub fn read_header_params(&self, main_handle: u32, sub_handle: u32) -> Result<CellJpgDecOutParam, i32> {
+        let entry = self.main_handles.get(&main_handle)
+            .ok_or(CELL_JPGDEC_ERROR_ARG)?;
+
+        let sub_entry = entry.sub_handles.get(&sub_handle)
+            .ok_or(CELL_JPGDEC_ERROR_ARG)?;
+
+        Ok(CellJpgDecOutParam {
+            width: sub_entry.width,
+            height: sub_entry.height,
+            num_components: sub_entry.num_components,
+            color_space: sub_entry.color_space,
+            down_scale: sub_entry.down_scale,
+        })
+    }
+
     /// Decode JPEG data
     pub fn decode_data(&mut self, main_handle: u32, sub_handle: u32) -> Result<JpgSubDecEntry, i32> {
         let entry = self.main_handles.get_mut(&main_handle)
