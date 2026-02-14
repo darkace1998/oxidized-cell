@@ -30,21 +30,21 @@
 The Vulkan backend has infrastructure (device, render passes, pipelines, shaders) but the
 draw pipeline is not fully connected. This is the single biggest blocker for visual output.
 
-- [ ] **Connect vertex buffer binding to draw calls**
+- [x] **Connect vertex buffer binding to draw calls**
   - `submit_vertex_buffer()` exists but vertex data is not bound before `vkCmdDraw`
   - Wire vertex attribute descriptions from RSX state into Vulkan vertex input
   - Support all 16 vertex attribute slots
 
-- [ ] **Connect index buffer binding to indexed draws**
+- [x] **Connect index buffer binding to indexed draws**
   - `draw_indexed()` records `vkCmdDrawIndexed` but no index buffer is bound
   - Allocate GPU-side index buffers and bind before indexed draw calls
 
-- [ ] **Bind graphics pipeline before draw calls**
+- [x] **Bind graphics pipeline before draw calls**
   - `bind_pipeline()` exists but is not called from the draw path
   - Create/cache pipelines keyed by current RSX state (blend, depth, stencil, shaders)
   - Call `vkCmdBindPipeline` at start of each render pass or on state change
 
-- [ ] **Bind descriptor sets for textures**
+- [x] **Bind descriptor sets for textures**
   - Descriptor sets and texture samplers exist but are not bound during draws
   - Wire `SET_TEXTURE_*` NV4097 commands to descriptor set updates
   - Support at least 4 texture units (most games use 1-4)
@@ -60,7 +60,7 @@ draw pipeline is not fully connected. This is the single biggest blocker for vis
   - Handle RSX vertex programs (VP) and fragment programs (FP) from game memory
   - Test with basic clear + triangle shaders
 
-- [ ] **Render target / surface configuration**
+- [x] **Render target / surface configuration**
   - Wire `SET_SURFACE_FORMAT`, `SET_SURFACE_COLOR_*`, `SET_SURFACE_ZETA` to actual framebuffers
   - Support multiple render target formats (ARGB8, FP16, FP32)
   - Handle render-to-texture scenarios
@@ -70,7 +70,7 @@ draw pipeline is not fully connected. This is the single biggest blocker for vis
   - Wire GCM `cellGcmSetFlip` → RSX bridge → Vulkan swapchain present
   - Implement double/triple buffering
 
-- [ ] **Clear operations**
+- [x] **Clear operations**
   - Wire `CLEAR_SURFACE` NV4097 command to `vkCmdClearAttachments`
   - Support color + depth + stencil clears
 
