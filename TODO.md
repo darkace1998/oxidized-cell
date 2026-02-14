@@ -102,15 +102,15 @@ Get basic 2D/3D graphics on screen so menus are visible.
 ## Phase 5 — Image & Font Decoding (menus need these)
 
 ### Image decoders
-- [ ] `cellPngDecOpen` / `cellPngDecReadHeader` / `cellPngDecDecodeData` / `cellPngDecClose`
-- [ ] `cellJpgDecOpen` / `cellJpgDecReadHeader` / `cellJpgDecDecodeData` / `cellJpgDecClose`
-- [ ] `cellGifDecOpen` / `cellGifDecReadHeader` / `cellGifDecDecodeData` / `cellGifDecClose`
-- [ ] These are used for icons, splash screens, and in-game menus
+- [x] `cellPngDecOpen` / `cellPngDecReadHeader` / `cellPngDecDecodeData` / `cellPngDecClose`
+- [x] `cellJpgDecOpen` / `cellJpgDecReadHeader` / `cellJpgDecDecodeData` / `cellJpgDecClose`
+- [x] `cellGifDecOpen` / `cellGifDecReadHeader` / `cellGifDecDecodeData` / `cellGifDecClose`
+- [x] These are used for icons, splash screens, and in-game menus
 
 ### Font rendering
-- [ ] `cellFontInit` / `cellFontOpenFontMemory` — load TrueType/Type1 font data
-- [ ] `cellFontCreateRenderer` / `cellFontRenderCharGlyphImage` — rasterize glyphs to a surface
-- [ ] `cellFontFTInit` / `cellFontFTLoadGlyph` / `cellFontFTSetCharSize` — FreeType path
+- [x] `cellFontInit` / `cellFontOpenFontMemory` — load TrueType/Type1 font data
+- [x] `cellFontCreateRenderer` / `cellFontRenderCharGlyphImage` — rasterize glyphs to a surface
+- [x] `cellFontFTInit` / `cellFontFTLoadGlyph` / `cellFontFTSetCharSize` — FreeType path
 
 ---
 

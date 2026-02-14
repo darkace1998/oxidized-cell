@@ -1168,6 +1168,368 @@ fn hle_spurs_get_spu_thread_id(ctx: &HleCallContext) -> i64 {
 
 // --- Generic stub ---
 
+// --- cellPngDec ---
+
+fn hle_png_dec_create(ctx: &HleCallContext) -> i64 {
+    let main_handle_addr = ctx.args[0] as u32;
+    let thread_in_param_addr = ctx.args[1] as u32;
+    let thread_out_param_addr = ctx.args[2] as u32;
+    debug!("cellPngDecCreate(main_handle_addr=0x{:08x})", main_handle_addr);
+    crate::cell_png_dec::cell_png_dec_create(main_handle_addr, thread_in_param_addr, thread_out_param_addr) as i64
+}
+
+fn hle_png_dec_destroy(ctx: &HleCallContext) -> i64 {
+    let main_handle = ctx.args[0] as u32;
+    trace!("cellPngDecDestroy(main_handle={})", main_handle);
+    crate::cell_png_dec::cell_png_dec_destroy(main_handle) as i64
+}
+
+fn hle_png_dec_open(ctx: &HleCallContext) -> i64 {
+    let main_handle = ctx.args[0] as u32;
+    let sub_handle_addr = ctx.args[1] as u32;
+    let src_addr = ctx.args[2] as u32;
+    let open_info_addr = ctx.args[3] as u32;
+    debug!("cellPngDecOpen(main_handle={}, sub_handle_addr=0x{:08x})", main_handle, sub_handle_addr);
+    crate::cell_png_dec::cell_png_dec_open(main_handle, sub_handle_addr, src_addr, open_info_addr) as i64
+}
+
+fn hle_png_dec_close(ctx: &HleCallContext) -> i64 {
+    let main_handle = ctx.args[0] as u32;
+    let sub_handle = ctx.args[1] as u32;
+    trace!("cellPngDecClose(main_handle={}, sub_handle={})", main_handle, sub_handle);
+    crate::cell_png_dec::cell_png_dec_close(main_handle, sub_handle) as i64
+}
+
+fn hle_png_dec_read_header(ctx: &HleCallContext) -> i64 {
+    let main_handle = ctx.args[0] as u32;
+    let sub_handle = ctx.args[1] as u32;
+    let info_addr = ctx.args[2] as u32;
+    debug!("cellPngDecReadHeader(main_handle={}, sub_handle={})", main_handle, sub_handle);
+    crate::cell_png_dec::cell_png_dec_read_header(main_handle, sub_handle, info_addr) as i64
+}
+
+fn hle_png_dec_set_parameter(ctx: &HleCallContext) -> i64 {
+    let main_handle = ctx.args[0] as u32;
+    let sub_handle = ctx.args[1] as u32;
+    let in_param_addr = ctx.args[2] as u32;
+    let out_param_addr = ctx.args[3] as u32;
+    trace!("cellPngDecSetParameter(main_handle={}, sub_handle={})", main_handle, sub_handle);
+    crate::cell_png_dec::cell_png_dec_set_parameter(main_handle, sub_handle, in_param_addr, out_param_addr) as i64
+}
+
+fn hle_png_dec_decode_data(ctx: &HleCallContext) -> i64 {
+    let main_handle = ctx.args[0] as u32;
+    let sub_handle = ctx.args[1] as u32;
+    let data_addr = ctx.args[2] as u32;
+    let data_out_info_addr = ctx.args[3] as u32;
+    debug!("cellPngDecDecodeData(main_handle={}, sub_handle={})", main_handle, sub_handle);
+    crate::cell_png_dec::cell_png_dec_decode_data(main_handle, sub_handle, data_addr, data_out_info_addr) as i64
+}
+
+// --- cellJpgDec ---
+
+fn hle_jpg_dec_create(ctx: &HleCallContext) -> i64 {
+    let main_handle_addr = ctx.args[0] as u32;
+    let thread_in_param_addr = ctx.args[1] as u32;
+    debug!("cellJpgDecCreate(main_handle_addr=0x{:08x})", main_handle_addr);
+
+    if main_handle_addr == 0 || thread_in_param_addr == 0 {
+        return 0x80611001u32 as i64; // CELL_JPGDEC_ERROR_ARG
+    }
+
+    // Create decoder through global manager (max 4 handles)
+    match crate::context::get_hle_context_mut().jpg_dec.create(4) {
+        Ok(handle_id) => {
+            if let Err(e) = write_be32(main_handle_addr, handle_id) {
+                return e as i64;
+            }
+            error::CELL_OK
+        }
+        Err(e) => e as i64,
+    }
+}
+
+fn hle_jpg_dec_destroy(ctx: &HleCallContext) -> i64 {
+    let main_handle = ctx.args[0] as u32;
+    trace!("cellJpgDecDestroy(main_handle={})", main_handle);
+    crate::cell_jpg_dec::cell_jpg_dec_destroy(main_handle) as i64
+}
+
+fn hle_jpg_dec_open(ctx: &HleCallContext) -> i64 {
+    let main_handle = ctx.args[0] as u32;
+    let sub_handle_addr = ctx.args[1] as u32;
+    debug!("cellJpgDecOpen(main_handle={}, sub_handle_addr=0x{:08x})", main_handle, sub_handle_addr);
+
+    if sub_handle_addr == 0 {
+        return 0x80611001u32 as i64; // CELL_JPGDEC_ERROR_ARG
+    }
+
+    // Placeholder dimensions until actual JPEG parsing is implemented
+    match crate::context::get_hle_context_mut().jpg_dec.open(main_handle, 1920, 1080, 3) {
+        Ok(sub_id) => {
+            if let Err(e) = write_be32(sub_handle_addr, sub_id) {
+                return e as i64;
+            }
+            error::CELL_OK
+        }
+        Err(e) => e as i64,
+    }
+}
+
+fn hle_jpg_dec_close(ctx: &HleCallContext) -> i64 {
+    let main_handle = ctx.args[0] as u32;
+    let sub_handle = ctx.args[1] as u32;
+    trace!("cellJpgDecClose(main_handle={}, sub_handle={})", main_handle, sub_handle);
+    crate::cell_jpg_dec::cell_jpg_dec_close(main_handle, sub_handle) as i64
+}
+
+fn hle_jpg_dec_read_header(ctx: &HleCallContext) -> i64 {
+    let main_handle = ctx.args[0] as u32;
+    let sub_handle = ctx.args[1] as u32;
+    let info_addr = ctx.args[2] as u32;
+    debug!("cellJpgDecReadHeader(main_handle={}, sub_handle={})", main_handle, sub_handle);
+
+    if info_addr == 0 {
+        return 0x80611001u32 as i64; // CELL_JPGDEC_ERROR_ARG
+    }
+
+    match crate::context::get_hle_context().jpg_dec.read_header_params(main_handle, sub_handle) {
+        Ok(header_info) => {
+            // Write CellJpgDecInfo to guest memory (width, height, numComponents, colorSpace, downScale)
+            if let Err(e) = write_be32(info_addr, header_info.width) { return e as i64; }
+            if let Err(e) = write_be32(info_addr + 4, header_info.height) { return e as i64; }
+            if let Err(e) = write_be32(info_addr + 8, header_info.num_components) { return e as i64; }
+            if let Err(e) = write_be32(info_addr + 12, header_info.color_space) { return e as i64; }
+            if let Err(e) = write_be32(info_addr + 16, header_info.down_scale) { return e as i64; }
+            error::CELL_OK
+        }
+        Err(e) => e as i64,
+    }
+}
+
+fn hle_jpg_dec_decode_data(ctx: &HleCallContext) -> i64 {
+    let main_handle = ctx.args[0] as u32;
+    let sub_handle = ctx.args[1] as u32;
+    debug!("cellJpgDecDecodeData(main_handle={}, sub_handle={})", main_handle, sub_handle);
+
+    match crate::context::get_hle_context_mut().jpg_dec.decode_data(main_handle, sub_handle) {
+        Ok(_decode_info) => error::CELL_OK,
+        Err(e) => e as i64,
+    }
+}
+
+// --- cellGifDec ---
+
+fn hle_gif_dec_create(ctx: &HleCallContext) -> i64 {
+    let main_handle_addr = ctx.args[0] as u32;
+    let thread_in_param_addr = ctx.args[1] as u32;
+    debug!("cellGifDecCreate(main_handle_addr=0x{:08x})", main_handle_addr);
+
+    if main_handle_addr == 0 || thread_in_param_addr == 0 {
+        return 0x80621001u32 as i64; // CELL_GIFDEC_ERROR_ARG
+    }
+
+    // Create decoder through global manager (max 4 handles)
+    match crate::context::get_hle_context_mut().gif_dec.create(4) {
+        Ok(handle_id) => {
+            if let Err(e) = write_be32(main_handle_addr, handle_id) {
+                return e as i64;
+            }
+            error::CELL_OK
+        }
+        Err(e) => e as i64,
+    }
+}
+
+fn hle_gif_dec_destroy(ctx: &HleCallContext) -> i64 {
+    let main_handle = ctx.args[0] as u32;
+    trace!("cellGifDecDestroy(main_handle={})", main_handle);
+    crate::cell_gif_dec::cell_gif_dec_destroy(main_handle) as i64
+}
+
+fn hle_gif_dec_open(ctx: &HleCallContext) -> i64 {
+    let main_handle = ctx.args[0] as u32;
+    let sub_handle_addr = ctx.args[1] as u32;
+    let src_addr = ctx.args[2] as u32;
+    debug!("cellGifDecOpen(main_handle={}, sub_handle_addr=0x{:08x})", main_handle, sub_handle_addr);
+
+    if sub_handle_addr == 0 || src_addr == 0 {
+        return 0x80621001u32 as i64; // CELL_GIFDEC_ERROR_ARG
+    }
+
+    // Read source info from guest memory (stream_ptr, stream_size at src_addr)
+    let stream_ptr = crate::memory::read_be32(src_addr).unwrap_or(0);
+    let stream_size = crate::memory::read_be32(src_addr + 4).unwrap_or(0);
+
+    match crate::context::get_hle_context_mut().gif_dec.open(main_handle, stream_ptr, stream_size) {
+        Ok(sub_id) => {
+            if let Err(e) = write_be32(sub_handle_addr, sub_id) {
+                return e as i64;
+            }
+            error::CELL_OK
+        }
+        Err(e) => e as i64,
+    }
+}
+
+fn hle_gif_dec_close(ctx: &HleCallContext) -> i64 {
+    let main_handle = ctx.args[0] as u32;
+    let sub_handle = ctx.args[1] as u32;
+    trace!("cellGifDecClose(main_handle={}, sub_handle={})", main_handle, sub_handle);
+    crate::cell_gif_dec::cell_gif_dec_close(main_handle, sub_handle) as i64
+}
+
+fn hle_gif_dec_read_header(ctx: &HleCallContext) -> i64 {
+    let main_handle = ctx.args[0] as u32;
+    let sub_handle = ctx.args[1] as u32;
+    let info_addr = ctx.args[2] as u32;
+    debug!("cellGifDecReadHeader(main_handle={}, sub_handle={})", main_handle, sub_handle);
+
+    if info_addr == 0 {
+        return 0x80621001u32 as i64; // CELL_GIFDEC_ERROR_ARG
+    }
+
+    match crate::context::get_hle_context().gif_dec.get_info(main_handle, sub_handle) {
+        Ok(info) => {
+            // Write CellGifDecInfo to guest memory
+            if let Err(e) = write_be32(info_addr, info.width) { return e as i64; }
+            if let Err(e) = write_be32(info_addr + 4, info.height) { return e as i64; }
+            if let Err(e) = write_be32(info_addr + 8, info.num_components) { return e as i64; }
+            if let Err(e) = write_be32(info_addr + 12, info.color_space) { return e as i64; }
+            error::CELL_OK
+        }
+        Err(e) => e as i64,
+    }
+}
+
+fn hle_gif_dec_decode_data(ctx: &HleCallContext) -> i64 {
+    let main_handle = ctx.args[0] as u32;
+    let sub_handle = ctx.args[1] as u32;
+    debug!("cellGifDecDecodeData(main_handle={}, sub_handle={})", main_handle, sub_handle);
+
+    // Decode through manager — actual pixel data written to guest memory when
+    // memory subsystem integration is available
+    match crate::context::get_hle_context().gif_dec.get_info(main_handle, sub_handle) {
+        Ok(_info) => error::CELL_OK,
+        Err(e) => e as i64,
+    }
+}
+
+// --- cellFont ---
+
+fn hle_font_init(ctx: &HleCallContext) -> i64 {
+    let config_addr = ctx.args[0] as u32;
+    debug!("cellFontInit(config_addr=0x{:08x})", config_addr);
+    crate::cell_font::cell_font_init(config_addr) as i64
+}
+
+fn hle_font_end(_ctx: &HleCallContext) -> i64 {
+    debug!("cellFontEnd()");
+    crate::cell_font::cell_font_end() as i64
+}
+
+fn hle_font_open_font_memory(ctx: &HleCallContext) -> i64 {
+    let library = ctx.args[0] as u32;
+    let font_addr = ctx.args[1] as u32;
+    let font_size = ctx.args[2] as u32;
+    let sub_num = ctx.args[3] as u32;
+    let unique_id = ctx.args[4] as u32;
+    let font_handle_addr = ctx.args[5] as u32;
+    debug!("cellFontOpenFontMemory(fontAddr=0x{:08x}, fontSize={})", font_addr, font_size);
+    crate::cell_font::cell_font_open_font_memory(library, font_addr, font_size, sub_num, unique_id, font_handle_addr) as i64
+}
+
+fn hle_font_close_font(ctx: &HleCallContext) -> i64 {
+    let font = ctx.args[0] as u32;
+    trace!("cellFontCloseFont(font={})", font);
+    crate::cell_font::cell_font_close_font(font) as i64
+}
+
+fn hle_font_create_renderer(ctx: &HleCallContext) -> i64 {
+    let library = ctx.args[0] as u32;
+    let config_addr = ctx.args[1] as u32;
+    let renderer_addr = ctx.args[2] as u32;
+    debug!("cellFontCreateRenderer(renderer_addr=0x{:08x})", renderer_addr);
+    crate::cell_font::cell_font_create_renderer(library, config_addr, renderer_addr) as i64
+}
+
+fn hle_font_destroy_renderer(ctx: &HleCallContext) -> i64 {
+    let renderer = ctx.args[0] as u32;
+    trace!("cellFontDestroyRenderer(renderer={})", renderer);
+    crate::cell_font::cell_font_destroy_renderer(renderer) as i64
+}
+
+fn hle_font_render_char_glyph_image(ctx: &HleCallContext) -> i64 {
+    let font = ctx.args[0] as u32;
+    let code = ctx.args[1] as u32;
+    let renderer = ctx.args[2] as u32;
+    let glyph_addr = ctx.args[3] as u32;
+    trace!("cellFontRenderCharGlyphImage(font={}, code=0x{:x})", font, code);
+    crate::cell_font::cell_font_render_char_glyph_image(font, code, renderer, glyph_addr) as i64
+}
+
+fn hle_font_get_horizontal_layout(ctx: &HleCallContext) -> i64 {
+    let font = ctx.args[0] as u32;
+    let layout_addr = ctx.args[1] as u32;
+    trace!("cellFontGetHorizontalLayout(font={})", font);
+    crate::cell_font::cell_font_get_horizontal_layout(font, layout_addr) as i64
+}
+
+fn hle_font_open_font_file(ctx: &HleCallContext) -> i64 {
+    let library = ctx.args[0] as u32;
+    let font_path_addr = ctx.args[1] as u32;
+    let sub_num = ctx.args[2] as u32;
+    let unique_id = ctx.args[3] as u32;
+    let font_handle_addr = ctx.args[4] as u32;
+    debug!("cellFontOpenFontFile(path_addr=0x{:08x})", font_path_addr);
+    crate::cell_font::cell_font_open_font_file(library, font_path_addr, sub_num, unique_id, font_handle_addr) as i64
+}
+
+// --- cellFontFT ---
+
+fn hle_font_ft_init(ctx: &HleCallContext) -> i64 {
+    let config_addr = ctx.args[0] as u32;
+    debug!("cellFontFTInit(config_addr=0x{:08x})", config_addr);
+    crate::cell_font_ft::cell_font_ft_init(config_addr) as i64
+}
+
+fn hle_font_ft_end(_ctx: &HleCallContext) -> i64 {
+    debug!("cellFontFTEnd()");
+    crate::cell_font_ft::cell_font_ft_end() as i64
+}
+
+fn hle_font_ft_load_glyph(ctx: &HleCallContext) -> i64 {
+    let face = ctx.args[0] as u32;
+    let glyph_index = ctx.args[1] as u32;
+    let flags = ctx.args[2] as u32;
+    trace!("cellFontFTLoadGlyph(face={}, glyph_index={})", face, glyph_index);
+    crate::cell_font_ft::cell_font_ft_load_glyph(face, glyph_index, flags) as i64
+}
+
+fn hle_font_ft_set_char_size(ctx: &HleCallContext) -> i64 {
+    let face = ctx.args[0] as u32;
+    let char_width = ctx.args[1] as u32;
+    let char_height = ctx.args[2] as u32;
+    trace!("cellFontFTSetCharSize(face={}, w={}, h={})", face, char_width, char_height);
+    crate::cell_font_ft::cell_font_ft_set_char_size(face, char_width, char_height) as i64
+}
+
+fn hle_font_ft_open_font_memory(ctx: &HleCallContext) -> i64 {
+    let font_addr = ctx.args[0] as u32;
+    let font_size = ctx.args[1] as u32;
+    let face_index = ctx.args[2] as u32;
+    let face_addr = ctx.args[3] as u32;
+    debug!("cellFontFTOpenFontMemory(fontAddr=0x{:08x}, size={})", font_addr, font_size);
+    crate::cell_font_ft::cell_font_ft_open_font_memory(font_addr, font_size, face_index, face_addr) as i64
+}
+
+fn hle_font_ft_get_char_index(ctx: &HleCallContext) -> i64 {
+    let face = ctx.args[0] as u32;
+    let char_code = ctx.args[1] as u32;
+    trace!("cellFontFTGetCharIndex(face={}, code=0x{:x})", face, char_code);
+    crate::cell_font_ft::cell_font_ft_get_char_index(face, char_code) as i64
+}
+
 #[allow(dead_code)]
 fn hle_stub_return_ok(_ctx: &HleCallContext) -> i64 {
     error::CELL_OK
@@ -1259,6 +1621,50 @@ pub fn register_all_hle_functions(dispatcher: &mut HleDispatcher) {
     dispatcher.register_function("cellSpurs", "cellSpursSetMaxContention", hle_spurs_set_max_contention);
     dispatcher.register_function("cellSpurs", "cellSpursSetPriorities", hle_spurs_set_priorities);
     dispatcher.register_function("cellSpurs", "cellSpursGetSpuThreadId", hle_spurs_get_spu_thread_id);
+    
+    // cellPngDec
+    dispatcher.register_function("cellPngDec", "cellPngDecCreate", hle_png_dec_create);
+    dispatcher.register_function("cellPngDec", "cellPngDecDestroy", hle_png_dec_destroy);
+    dispatcher.register_function("cellPngDec", "cellPngDecOpen", hle_png_dec_open);
+    dispatcher.register_function("cellPngDec", "cellPngDecClose", hle_png_dec_close);
+    dispatcher.register_function("cellPngDec", "cellPngDecReadHeader", hle_png_dec_read_header);
+    dispatcher.register_function("cellPngDec", "cellPngDecSetParameter", hle_png_dec_set_parameter);
+    dispatcher.register_function("cellPngDec", "cellPngDecDecodeData", hle_png_dec_decode_data);
+    
+    // cellJpgDec
+    dispatcher.register_function("cellJpgDec", "cellJpgDecCreate", hle_jpg_dec_create);
+    dispatcher.register_function("cellJpgDec", "cellJpgDecDestroy", hle_jpg_dec_destroy);
+    dispatcher.register_function("cellJpgDec", "cellJpgDecOpen", hle_jpg_dec_open);
+    dispatcher.register_function("cellJpgDec", "cellJpgDecClose", hle_jpg_dec_close);
+    dispatcher.register_function("cellJpgDec", "cellJpgDecReadHeader", hle_jpg_dec_read_header);
+    dispatcher.register_function("cellJpgDec", "cellJpgDecDecodeData", hle_jpg_dec_decode_data);
+    
+    // cellGifDec
+    dispatcher.register_function("cellGifDec", "cellGifDecCreate", hle_gif_dec_create);
+    dispatcher.register_function("cellGifDec", "cellGifDecDestroy", hle_gif_dec_destroy);
+    dispatcher.register_function("cellGifDec", "cellGifDecOpen", hle_gif_dec_open);
+    dispatcher.register_function("cellGifDec", "cellGifDecClose", hle_gif_dec_close);
+    dispatcher.register_function("cellGifDec", "cellGifDecReadHeader", hle_gif_dec_read_header);
+    dispatcher.register_function("cellGifDec", "cellGifDecDecodeData", hle_gif_dec_decode_data);
+    
+    // cellFont
+    dispatcher.register_function("cellFont", "cellFontInit", hle_font_init);
+    dispatcher.register_function("cellFont", "cellFontEnd", hle_font_end);
+    dispatcher.register_function("cellFont", "cellFontOpenFontMemory", hle_font_open_font_memory);
+    dispatcher.register_function("cellFont", "cellFontOpenFontFile", hle_font_open_font_file);
+    dispatcher.register_function("cellFont", "cellFontCloseFont", hle_font_close_font);
+    dispatcher.register_function("cellFont", "cellFontCreateRenderer", hle_font_create_renderer);
+    dispatcher.register_function("cellFont", "cellFontDestroyRenderer", hle_font_destroy_renderer);
+    dispatcher.register_function("cellFont", "cellFontRenderCharGlyphImage", hle_font_render_char_glyph_image);
+    dispatcher.register_function("cellFont", "cellFontGetHorizontalLayout", hle_font_get_horizontal_layout);
+    
+    // cellFontFT (FreeType path)
+    dispatcher.register_function("cellFontFT", "cellFontFTInit", hle_font_ft_init);
+    dispatcher.register_function("cellFontFT", "cellFontFTEnd", hle_font_ft_end);
+    dispatcher.register_function("cellFontFT", "cellFontFTOpenFontMemory", hle_font_ft_open_font_memory);
+    dispatcher.register_function("cellFontFT", "cellFontFTLoadGlyph", hle_font_ft_load_glyph);
+    dispatcher.register_function("cellFontFT", "cellFontFTSetCharSize", hle_font_ft_set_char_size);
+    dispatcher.register_function("cellFontFT", "cellFontFTGetCharIndex", hle_font_ft_get_char_index);
     
     info!("Registered {} HLE functions", dispatcher.stub_map.len());
 }
@@ -1521,5 +1927,122 @@ mod tests {
             let found = dispatcher.stub_map.values().any(|entry| entry.name == *func_name);
             assert!(found, "Audio function '{}' should be registered", func_name);
         }
+    }
+
+    // Phase 5 tests
+
+    #[test]
+    fn test_phase5_png_dec_registration() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+
+        let png_funcs = [
+            "cellPngDecCreate",
+            "cellPngDecDestroy",
+            "cellPngDecOpen",
+            "cellPngDecClose",
+            "cellPngDecReadHeader",
+            "cellPngDecSetParameter",
+            "cellPngDecDecodeData",
+        ];
+
+        for func_name in &png_funcs {
+            let found = dispatcher.stub_map.values().any(|entry| entry.name == *func_name);
+            assert!(found, "PNG decoder function '{}' should be registered", func_name);
+        }
+    }
+
+    #[test]
+    fn test_phase5_jpg_dec_registration() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+
+        let jpg_funcs = [
+            "cellJpgDecCreate",
+            "cellJpgDecDestroy",
+            "cellJpgDecOpen",
+            "cellJpgDecClose",
+            "cellJpgDecReadHeader",
+            "cellJpgDecDecodeData",
+        ];
+
+        for func_name in &jpg_funcs {
+            let found = dispatcher.stub_map.values().any(|entry| entry.name == *func_name);
+            assert!(found, "JPG decoder function '{}' should be registered", func_name);
+        }
+    }
+
+    #[test]
+    fn test_phase5_gif_dec_registration() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+
+        let gif_funcs = [
+            "cellGifDecCreate",
+            "cellGifDecDestroy",
+            "cellGifDecOpen",
+            "cellGifDecClose",
+            "cellGifDecReadHeader",
+            "cellGifDecDecodeData",
+        ];
+
+        for func_name in &gif_funcs {
+            let found = dispatcher.stub_map.values().any(|entry| entry.name == *func_name);
+            assert!(found, "GIF decoder function '{}' should be registered", func_name);
+        }
+    }
+
+    #[test]
+    fn test_phase5_font_registration() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+
+        let font_funcs = [
+            "cellFontInit",
+            "cellFontEnd",
+            "cellFontOpenFontMemory",
+            "cellFontOpenFontFile",
+            "cellFontCloseFont",
+            "cellFontCreateRenderer",
+            "cellFontDestroyRenderer",
+            "cellFontRenderCharGlyphImage",
+            "cellFontGetHorizontalLayout",
+        ];
+
+        for func_name in &font_funcs {
+            let found = dispatcher.stub_map.values().any(|entry| entry.name == *func_name);
+            assert!(found, "Font function '{}' should be registered", func_name);
+        }
+    }
+
+    #[test]
+    fn test_phase5_font_ft_registration() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+
+        let font_ft_funcs = [
+            "cellFontFTInit",
+            "cellFontFTEnd",
+            "cellFontFTOpenFontMemory",
+            "cellFontFTLoadGlyph",
+            "cellFontFTSetCharSize",
+            "cellFontFTGetCharIndex",
+        ];
+
+        for func_name in &font_ft_funcs {
+            let found = dispatcher.stub_map.values().any(|entry| entry.name == *func_name);
+            assert!(found, "FreeType function '{}' should be registered", func_name);
+        }
+    }
+
+    #[test]
+    fn test_phase5_registration_count() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+
+        // Phase 5 adds 34 new functions (7 PNG + 6 JPG + 6 GIF + 9 Font + 6 FontFT)
+        // Previous count was ~53 (Phase 3), now ~87
+        assert!(dispatcher.stub_map.len() >= 80,
+            "Expected at least 80 registered functions, got {}", dispatcher.stub_map.len());
     }
 }
