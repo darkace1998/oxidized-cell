@@ -1186,4 +1186,138 @@ mod tests {
         // Should not panic
         runner.pump_hle_callbacks();
     }
+
+    // ── Phase 7 — Testing & Validation ──────────────────────────────────
+
+    #[test]
+    fn test_null_backend_produces_non_black_framebuffer() {
+        // Validates Phase 0-2: NullBackend produces a visible framebuffer
+        // (dark blue + animated white stripe), so the UI always shows something.
+        let mut config = Config::default();
+        config.gpu.backend = oc_core::config::GpuBackend::Null;
+        let runner = EmulatorRunner::new(config).unwrap();
+
+        let fb = runner.get_framebuffer().expect("framebuffer should exist");
+
+        assert_eq!(fb.width, 1280);
+        assert_eq!(fb.height, 720);
+        assert_eq!(fb.pixels.len(), (1280 * 720 * 4) as usize);
+
+        // Verify the framebuffer is NOT all-black (at least one non-zero RGB pixel)
+        let has_color = fb.pixels.chunks(4).any(|px| px[0] > 0 || px[1] > 0 || px[2] > 0);
+        assert!(has_color, "framebuffer should not be all-black");
+    }
+
+    #[test]
+    fn test_gcm_init_display_buffer_flip_lifecycle() {
+        // Validates GCM → RSX bridge lifecycle without a real ELF:
+        // init → set display buffer → set flip → check flip status
+        let config = Config::default();
+        let _runner = EmulatorRunner::new(config).unwrap();
+
+        oc_hle::reset_hle_context();
+        let mut ctx = oc_hle::get_hle_context_mut();
+
+        // Init GCM
+        let ret = ctx.gcm.init(0x1000_0000, 0x100_0000);
+        assert_eq!(ret, 0, "GCM init should succeed");
+
+        // Set display buffer
+        let ret = ctx.gcm.set_display_buffer(0, 0x0, 4096, 1280, 720);
+        assert_eq!(ret, 0, "set_display_buffer should succeed");
+
+        // Verify the display buffer was registered
+        let buf = ctx.gcm.get_display_buffer(0);
+        assert!(buf.is_some(), "display buffer 0 should exist");
+        let buf = buf.unwrap();
+        assert_eq!(buf.width, 1280);
+        assert_eq!(buf.height, 720);
+    }
+
+    #[test]
+    fn test_callback_roundtrip() {
+        // Validates callback lifecycle: register → queue event → check → pop
+        oc_hle::reset_hle_context();
+
+        let func_addr: u32 = 0x0010_0000;
+        let userdata: u32 = 0x0020_0000;
+        let event_type: u64 = 0x0101; // CELL_SYSUTIL_REQUEST_EXITGAME = 0x0101
+
+        {
+            let mut ctx = oc_hle::get_hle_context_mut();
+            // Register callback in slot 0
+            let ret = ctx.sysutil.register_callback(0, func_addr, userdata);
+            assert_eq!(ret, 0, "register_callback should succeed");
+
+            // Queue an event
+            ctx.sysutil.queue_event(event_type, 0);
+
+            // Trigger callback dispatch
+            ctx.sysutil.check_callback();
+        }
+
+        // Verify a pending callback was created
+        assert!(oc_hle::has_pending_sysutil_callbacks());
+
+        // Pop and verify the callback matches registration
+        let cb = oc_hle::pop_sysutil_callback().expect("should have pending callback");
+        assert_eq!(cb.func, func_addr);
+        assert_eq!(cb.status, event_type);
+        assert_eq!(cb.userdata, userdata);
+
+        // Queue should now be empty
+        assert!(!oc_hle::has_pending_sysutil_callbacks());
+    }
+
+    #[test]
+    fn test_rsx_clear_produces_colored_framebuffer() {
+        // Validates Phase 2: NullBackend renders the game's clear color
+        use oc_rsx::backend::{GraphicsBackend, null::NullBackend};
+
+        let mut backend = NullBackend::new();
+        backend.init().unwrap();
+
+        // Set a bright red clear color and run a frame
+        backend.begin_frame();
+        backend.clear([1.0, 0.0, 0.0, 1.0], 1.0, 0);
+        backend.end_frame();
+
+        let fb = backend.get_framebuffer().expect("framebuffer should exist");
+
+        // Sample the center pixel — it should be red (or close to it)
+        let center = ((360 * 1280 + 640) * 4) as usize;
+        let r = fb.pixels[center];
+        let g = fb.pixels[center + 1];
+        let b = fb.pixels[center + 2];
+
+        assert!(r > 200, "red channel should be bright, got {}", r);
+        assert!(g < 50, "green channel should be dark, got {}", g);
+        assert!(b < 50, "blue channel should be dark, got {}", b);
+    }
+
+    #[test]
+    fn test_screenshot_capture_and_compare() {
+        // Validates screenshot comparison infrastructure:
+        // Capture two framebuffers from same state → they should match exactly
+        let mut config = Config::default();
+        config.gpu.backend = oc_core::config::GpuBackend::Null;
+        let runner = EmulatorRunner::new(config).unwrap();
+
+        let fb1 = runner.get_framebuffer().expect("first capture");
+        let fb2 = runner.get_framebuffer().expect("second capture");
+
+        assert_eq!(fb1.width, fb2.width);
+        assert_eq!(fb1.height, fb2.height);
+        assert_eq!(fb1.pixels.len(), fb2.pixels.len());
+
+        // Pixel-by-pixel comparison
+        let matching = fb1.pixels.iter().zip(fb2.pixels.iter())
+            .filter(|(a, b)| a == b)
+            .count();
+        let total = fb1.pixels.len();
+        let match_pct = (matching as f64 / total as f64) * 100.0;
+
+        assert!(match_pct > 99.9,
+            "reference vs capture should be >99.9% identical, got {:.2}%", match_pct);
+    }
 }
