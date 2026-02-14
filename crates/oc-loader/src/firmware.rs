@@ -410,6 +410,7 @@ impl PupLoader {
         }
 
         // Extract important entries
+        let mut extracted_count = 0u32;
         for entry in &self.entries {
             let extracted = self.extract(pup_data, entry)?;
             
@@ -417,11 +418,17 @@ impl PupLoader {
             let target_path = match entry.id {
                 PupEntryId::Lv2Kernel => Some(target_dir.join("vsh/module/lv2_kernel.self")),
                 PupEntryId::Vsh => Some(target_dir.join("vsh/module/vsh.self")),
-                _ => None,
+                PupEntryId::Lv0 => Some(target_dir.join("sys/internal/lv0.self")),
+                PupEntryId::Lv1 => Some(target_dir.join("sys/internal/lv1.self")),
+                PupEntryId::CoreOs => Some(target_dir.join("sys/internal/core_os.self")),
+                _ => {
+                    // Save unknown entries by raw ID for potential future use
+                    Some(target_dir.join(format!("sys/internal/entry_0x{:03x}.bin", entry.raw_id)))
+                }
             };
 
             if let Some(path) = target_path {
-                debug!("Extracting {:?} to {}", entry.id, path.display());
+                debug!("Extracting {:?} (id=0x{:03x}) to {}", entry.id, entry.raw_id, path.display());
                 
                 if let Some(parent) = path.parent() {
                     fs::create_dir_all(parent).map_err(|e| {
@@ -436,8 +443,12 @@ impl PupLoader {
                 file.write_all(&extracted).map_err(|e| {
                     LoaderError::InvalidPup(format!("Failed to write file {}: {}", path.display(), e))
                 })?;
+                
+                extracted_count += 1;
             }
         }
+        
+        info!("Extracted {} firmware entries", extracted_count);
 
         // Write version info
         let version_file = target_dir.join("version.txt");
@@ -540,6 +551,226 @@ impl Default for PupLoader {
     }
 }
 
+/// HLE handling strategy for a firmware PRX module
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirmwareModuleStrategy {
+    /// Fully handled by HLE — no native PRX needed
+    Hle,
+    /// Partially handled; some functions need native PRX
+    HlePartial,
+    /// Must be loaded natively from firmware
+    Native,
+    /// Not required for typical game execution
+    Optional,
+}
+
+/// Firmware PRX module descriptor
+#[derive(Debug, Clone)]
+pub struct FirmwareModuleInfo {
+    /// Module file name (e.g. "libsysutil_np.sprx")
+    pub filename: &'static str,
+    /// Logical module name used by HLE dispatcher (e.g. "cellSysutil")
+    pub module_name: &'static str,
+    /// Path inside dev_flash (e.g. "sys/external")
+    pub firmware_path: &'static str,
+    /// HLE handling strategy
+    pub strategy: FirmwareModuleStrategy,
+    /// Short description
+    pub description: &'static str,
+}
+
+/// Registry that maps PS3 system PRX modules to their HLE counterparts.
+///
+/// When a game tries to load a system library (via `sys_prx_load_module`),
+/// the registry is consulted:
+///   - If the module is marked [`FirmwareModuleStrategy::Hle`], loading
+///     succeeds immediately and all functions are handled by HLE stubs.
+///   - If the module is [`FirmwareModuleStrategy::Native`], the loader
+///     will attempt to read the actual `.sprx` from the extracted firmware.
+///   - [`FirmwareModuleStrategy::HlePartial`] modules are HLE-handled but
+///     may log warnings for unimplemented functions.
+///   - [`FirmwareModuleStrategy::Optional`] modules return success but are
+///     completely stubbed (no-ops).
+pub struct FirmwareModuleRegistry {
+    modules: Vec<FirmwareModuleInfo>,
+}
+
+impl FirmwareModuleRegistry {
+    /// Create a new registry pre-populated with known PS3 system modules
+    pub fn new() -> Self {
+        let mut registry = Self {
+            modules: Vec::new(),
+        };
+        registry.register_default_modules();
+        registry
+    }
+
+    /// Register all known PS3 system PRX modules
+    fn register_default_modules(&mut self) {
+        use FirmwareModuleStrategy::*;
+
+        // ── Core system libraries ──────────────────────────────────
+        self.add("liblv2.sprx",           "liblv2",       "sys/external", Hle,        "LV2 kernel interface");
+        self.add("libsysmodule.sprx",     "cellSysmodule","sys/external", Hle,        "System module loader");
+        self.add("libsysutil.sprx",       "cellSysutil",  "sys/external", Hle,        "System utility functions");
+        self.add("libsysutil_np.sprx",    "sceNp",        "sys/external", Optional,   "NP (PSN) utilities");
+        self.add("libsysutil_np2.sprx",   "sceNp2",       "sys/external", Optional,   "NP v2 utilities");
+
+        // ── Graphics ───────────────────────────────────────────────
+        self.add("libgcm_sys.sprx",       "cellGcmSys",   "sys/external", Hle,        "GCM graphics interface");
+        self.add("libresc.sprx",          "cellResc",     "sys/external", Hle,        "Resolution converter");
+
+        // ── Audio ──────────────────────────────────────────────────
+        self.add("libmixer.sprx",         "cellAudio",    "sys/external", Hle,        "Audio mixer");
+        self.add("libatrac3plus.sprx",    "cellAtrac",    "sys/external", HlePartial, "ATRAC3+ decoder");
+        self.add("libadec.sprx",          "cellAdec",     "sys/external", HlePartial, "Audio decoder");
+
+        // ── Video ──────────────────────────────────────────────────
+        self.add("libvdec.sprx",          "cellVdec",     "sys/external", HlePartial, "Video decoder");
+        self.add("libdmux.sprx",          "cellDmux",     "sys/external", HlePartial, "Demultiplexer");
+        self.add("libvpost.sprx",         "cellVpost",    "sys/external", HlePartial, "Video post-processor");
+        self.add("libpamf.sprx",          "cellPamf",     "sys/external", HlePartial, "PAMF container");
+
+        // ── Image decoding ─────────────────────────────────────────
+        self.add("libpngdec.sprx",        "cellPngDec",   "sys/external", Hle,        "PNG decoder");
+        self.add("libjpgdec.sprx",        "cellJpgDec",   "sys/external", Hle,        "JPEG decoder");
+        self.add("libgifdec.sprx",        "cellGifDec",   "sys/external", Hle,        "GIF decoder");
+
+        // ── Fonts ──────────────────────────────────────────────────
+        self.add("libfont.sprx",          "cellFont",     "sys/external", Hle,        "Font library");
+        self.add("libfontFT.sprx",        "cellFontFT",   "sys/external", Hle,        "FreeType font library");
+        self.add("libfreetype.sprx",      "cellFreetype", "sys/external", Optional,   "FreeType engine");
+
+        // ── Input ──────────────────────────────────────────────────
+        self.add("libpad.sprx",           "cellPad",      "sys/external", Hle,        "Gamepad input");
+        self.add("libkb.sprx",            "cellKb",       "sys/external", Hle,        "Keyboard input");
+        self.add("libmouse.sprx",         "cellMouse",    "sys/external", Hle,        "Mouse input");
+        self.add("libmic.sprx",           "cellMic",      "sys/external", Hle,        "Microphone input");
+
+        // ── File system / storage ──────────────────────────────────
+        self.add("libfs.sprx",            "cellFs",       "sys/external", Hle,        "File system");
+        self.add("libsavedata.sprx",      "cellSaveData", "sys/external", Hle,        "Save data management");
+        self.add("libgame.sprx",          "cellGame",     "sys/external", Hle,        "Game data management");
+
+        // ── Networking ─────────────────────────────────────────────
+        self.add("libnet.sprx",           "cellNet",      "sys/external", Optional,   "Network core");
+        self.add("libnetctl.sprx",        "cellNetCtl",   "sys/external", Hle,        "Network control");
+        self.add("libhttp.sprx",          "cellHttp",     "sys/external", Hle,        "HTTP client");
+        self.add("libssl.sprx",           "cellSsl",      "sys/external", Hle,        "SSL/TLS");
+
+        // ── SPU / SPURS ────────────────────────────────────────────
+        self.add("libspurs_jq.sprx",      "cellSpursJq",  "sys/external", Hle,        "SPURS job queue");
+        self.add("libsre.sprx",           "libsre",       "sys/external", Hle,        "SPU runtime extensions");
+
+        // ── Miscellaneous ──────────────────────────────────────────
+        self.add("libmsgdialog.sprx",     "cellMsgDialog","sys/external", Hle,        "Message dialog");
+        self.add("libperf.sprx",          "cellPerf",     "sys/external", Optional,   "Performance profiler");
+        self.add("libusbd.sprx",          "cellUsbd",     "sys/external", Optional,   "USB driver");
+        self.add("libcamera.sprx",        "cellCamera",   "sys/external", Optional,   "Camera capture");
+        self.add("libgem.sprx",           "cellGem",      "sys/external", Optional,   "PS Move support");
+
+        debug!("Registered {} firmware module mappings", self.modules.len());
+    }
+
+    fn add(
+        &mut self,
+        filename: &'static str,
+        module_name: &'static str,
+        firmware_path: &'static str,
+        strategy: FirmwareModuleStrategy,
+        description: &'static str,
+    ) {
+        self.modules.push(FirmwareModuleInfo {
+            filename,
+            module_name,
+            firmware_path,
+            strategy,
+            description,
+        });
+    }
+
+    /// Look up a module by its PRX filename (e.g. "libsysutil.sprx")
+    pub fn find_by_filename(&self, filename: &str) -> Option<&FirmwareModuleInfo> {
+        // Normalise: strip leading path components if present
+        let basename = filename.rsplit('/').next().unwrap_or(filename);
+        self.modules.iter().find(|m| m.filename.eq_ignore_ascii_case(basename))
+    }
+
+    /// Look up a module by its HLE module name (e.g. "cellSysutil")
+    pub fn find_by_module_name(&self, module_name: &str) -> Option<&FirmwareModuleInfo> {
+        self.modules.iter().find(|m| m.module_name == module_name)
+    }
+
+    /// Check whether a given PRX filename can be handled by HLE
+    /// (i.e. does not require native firmware loading)
+    pub fn is_hle_handled(&self, filename: &str) -> bool {
+        self.find_by_filename(filename)
+            .map(|m| matches!(m.strategy, FirmwareModuleStrategy::Hle | FirmwareModuleStrategy::HlePartial | FirmwareModuleStrategy::Optional))
+            .unwrap_or(false)
+    }
+
+    /// Get the HLE module name that handles a given PRX filename,
+    /// or `None` if it must be loaded natively.
+    pub fn get_hle_module_name(&self, filename: &str) -> Option<&'static str> {
+        self.find_by_filename(filename)
+            .filter(|m| m.strategy != FirmwareModuleStrategy::Native)
+            .map(|m| m.module_name)
+    }
+
+    /// Resolve a `sys_prx_load_module` path to a handling decision.
+    ///
+    /// `prx_path` is the full PS3 VFS path such as
+    /// `/dev_flash/sys/external/libsysutil.sprx`.
+    ///
+    /// Returns `Some(module_info)` if the module is known, `None` otherwise.
+    pub fn resolve_prx_path(&self, prx_path: &str) -> Option<&FirmwareModuleInfo> {
+        // Extract the basename from the full path
+        let basename = prx_path.rsplit('/').next().unwrap_or(prx_path);
+        self.find_by_filename(basename)
+    }
+
+    /// Get all registered modules
+    pub fn modules(&self) -> &[FirmwareModuleInfo] {
+        &self.modules
+    }
+
+    /// Get modules that require native firmware loading
+    pub fn native_modules(&self) -> Vec<&FirmwareModuleInfo> {
+        self.modules.iter()
+            .filter(|m| m.strategy == FirmwareModuleStrategy::Native)
+            .collect()
+    }
+
+    /// Get modules fully handled by HLE
+    pub fn hle_modules(&self) -> Vec<&FirmwareModuleInfo> {
+        self.modules.iter()
+            .filter(|m| m.strategy == FirmwareModuleStrategy::Hle)
+            .collect()
+    }
+
+    /// Check if all required firmware modules are available
+    ///
+    /// `firmware_dir` should point to the dev_flash root.
+    /// Returns a list of modules that are needed natively but missing from disk.
+    pub fn check_missing_native(&self, firmware_dir: &std::path::Path) -> Vec<&FirmwareModuleInfo> {
+        self.modules.iter()
+            .filter(|m| {
+                if m.strategy != FirmwareModuleStrategy::Native {
+                    return false;
+                }
+                let path = firmware_dir.join(m.firmware_path).join(m.filename);
+                !path.exists()
+            })
+            .collect()
+    }
+}
+
+impl Default for FirmwareModuleRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -572,5 +803,118 @@ mod tests {
         assert_eq!(PupEntryId::from(0x100), PupEntryId::UpdateVersion);
         assert_eq!(PupEntryId::from(0x202), PupEntryId::Lv2Kernel);
         assert_eq!(PupEntryId::from(0x9999), PupEntryId::Unknown);
+    }
+
+    // =================================================================
+    // FirmwareModuleRegistry tests
+    // =================================================================
+
+    #[test]
+    fn test_firmware_module_registry_creation() {
+        let registry = FirmwareModuleRegistry::new();
+        assert!(!registry.modules().is_empty());
+    }
+
+    #[test]
+    fn test_find_by_filename() {
+        let registry = FirmwareModuleRegistry::new();
+        
+        let sysutil = registry.find_by_filename("libsysutil.sprx");
+        assert!(sysutil.is_some());
+        let info = sysutil.unwrap();
+        assert_eq!(info.module_name, "cellSysutil");
+        assert_eq!(info.strategy, FirmwareModuleStrategy::Hle);
+    }
+
+    #[test]
+    fn test_find_by_filename_case_insensitive() {
+        let registry = FirmwareModuleRegistry::new();
+        assert!(registry.find_by_filename("LIBSYSUTIL.SPRX").is_some());
+        assert!(registry.find_by_filename("LibSysUtil.sprx").is_some());
+    }
+
+    #[test]
+    fn test_find_by_module_name() {
+        let registry = FirmwareModuleRegistry::new();
+        
+        let gcm = registry.find_by_module_name("cellGcmSys");
+        assert!(gcm.is_some());
+        assert_eq!(gcm.unwrap().filename, "libgcm_sys.sprx");
+    }
+
+    #[test]
+    fn test_is_hle_handled() {
+        let registry = FirmwareModuleRegistry::new();
+        
+        // Core system modules should be HLE-handled
+        assert!(registry.is_hle_handled("libsysutil.sprx"));
+        assert!(registry.is_hle_handled("libgcm_sys.sprx"));
+        assert!(registry.is_hle_handled("libpad.sprx"));
+        assert!(registry.is_hle_handled("libfs.sprx"));
+        
+        // Optional modules should also be HLE-handled
+        assert!(registry.is_hle_handled("libperf.sprx"));
+        
+        // Unknown module should not be HLE-handled
+        assert!(!registry.is_hle_handled("unknown_module.sprx"));
+    }
+
+    #[test]
+    fn test_get_hle_module_name() {
+        let registry = FirmwareModuleRegistry::new();
+        
+        assert_eq!(registry.get_hle_module_name("libpad.sprx"), Some("cellPad"));
+        assert_eq!(registry.get_hle_module_name("libhttp.sprx"), Some("cellHttp"));
+        assert_eq!(registry.get_hle_module_name("unknown.sprx"), None);
+    }
+
+    #[test]
+    fn test_resolve_prx_path() {
+        let registry = FirmwareModuleRegistry::new();
+        
+        // Full path resolution
+        let info = registry.resolve_prx_path("/dev_flash/sys/external/libsysutil.sprx");
+        assert!(info.is_some());
+        assert_eq!(info.unwrap().module_name, "cellSysutil");
+        
+        // Basename only
+        let info = registry.resolve_prx_path("libnet.sprx");
+        assert!(info.is_some());
+    }
+
+    #[test]
+    fn test_hle_modules_list() {
+        let registry = FirmwareModuleRegistry::new();
+        let hle = registry.hle_modules();
+        
+        // Should have several HLE modules
+        assert!(hle.len() >= 10);
+        
+        // All returned modules should be Hle strategy
+        for m in &hle {
+            assert_eq!(m.strategy, FirmwareModuleStrategy::Hle);
+        }
+    }
+
+    #[test]
+    fn test_firmware_module_registry_covers_all_hle_modules() {
+        let registry = FirmwareModuleRegistry::new();
+        
+        // Verify key modules expected by games
+        let required = [
+            "cellSysutil", "cellGcmSys", "cellPad", "cellFs",
+            "cellAudio", "cellGame", "cellSaveData",
+            "cellFont", "cellPngDec", "cellJpgDec",
+            "cellNetCtl", "cellHttp", "cellSsl",
+            "cellVdec", "cellAdec", "cellDmux",
+        ];
+        
+        for name in &required {
+            assert!(
+                registry.find_by_module_name(name).is_some(),
+                "Missing firmware module mapping for {}",
+                name
+            );
+        }
     }
 }

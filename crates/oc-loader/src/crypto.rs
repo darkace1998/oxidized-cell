@@ -97,6 +97,10 @@ pub struct CryptoEngine {
     firmware_loaded: bool,
     /// Firmware keys directory path
     keys_dir: Option<String>,
+    /// RAP (Rights Activation Package) keys indexed by content ID
+    rap_keys: HashMap<String, [u8; 16]>,
+    /// act.dat key (account activation data, first 16 bytes used)
+    act_dat_key: Option<[u8; 16]>,
 }
 
 impl CryptoEngine {
@@ -107,6 +111,8 @@ impl CryptoEngine {
             self_keys: HashMap::new(),
             firmware_loaded: false,
             keys_dir: None,
+            rap_keys: HashMap::new(),
+            act_dat_key: None,
         };
         
         // Load built-in keys (same as RPCS3's key_vault)
@@ -567,6 +573,159 @@ impl CryptoEngine {
     /// Check if firmware keys are loaded
     pub fn has_firmware_keys(&self) -> bool {
         self.firmware_loaded || !self.self_keys.is_empty() || !self.keys.is_empty()
+    }
+
+    /// Load a RAP (Rights Activation Package) file for NPDRM content
+    ///
+    /// RAP files are 16-byte license keys associated with a content ID.
+    /// They are required to decrypt PSN (digital store) game content.
+    /// The content ID is derived from the filename (without `.rap` extension).
+    pub fn load_rap_file(&mut self, path: &str) -> Result<String, LoaderError> {
+        let data = fs::read(path).map_err(|e| {
+            LoaderError::DecryptionFailed(format!("Failed to read RAP file {}: {}", path, e))
+        })?;
+
+        if data.len() != 16 {
+            return Err(LoaderError::DecryptionFailed(format!(
+                "Invalid RAP file size: expected 16 bytes, got {}",
+                data.len()
+            )));
+        }
+
+        // Content ID is derived from the filename
+        let content_id = Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let mut key = [0u8; 16];
+        key.copy_from_slice(&data);
+
+        info!("Loaded RAP key for content: {}", content_id);
+        self.rap_keys.insert(content_id.clone(), key);
+        Ok(content_id)
+    }
+
+    /// Load all RAP files from a directory
+    ///
+    /// Scans the directory for `.rap` files and loads each one.
+    /// Returns the number of RAP files loaded.
+    pub fn load_rap_directory(&mut self, dir_path: &str) -> Result<usize, LoaderError> {
+        let path = Path::new(dir_path);
+        if !path.exists() {
+            return Ok(0);
+        }
+
+        let entries = fs::read_dir(path).map_err(|e| {
+            LoaderError::DecryptionFailed(format!("Failed to read RAP directory: {}", e))
+        })?;
+
+        let mut loaded = 0;
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            if let Some(ext) = entry_path.extension() {
+                if ext.eq_ignore_ascii_case("rap") {
+                    match self.load_rap_file(&entry_path.to_string_lossy()) {
+                        Ok(content_id) => {
+                            debug!("Loaded RAP: {}", content_id);
+                            loaded += 1;
+                        }
+                        Err(e) => {
+                            warn!("Failed to load RAP file {:?}: {}", entry_path, e);
+                        }
+                    }
+                }
+            }
+        }
+
+        if loaded > 0 {
+            info!("Loaded {} RAP license files from {}", loaded, dir_path);
+        }
+        Ok(loaded)
+    }
+
+    /// Load act.dat (account activation data)
+    ///
+    /// The act.dat file contains account-specific keys used in NPDRM
+    /// decryption. Only the first 16 bytes are used as the key.
+    pub fn load_act_dat(&mut self, path: &str) -> Result<(), LoaderError> {
+        let data = fs::read(path).map_err(|e| {
+            LoaderError::DecryptionFailed(format!("Failed to read act.dat: {}", e))
+        })?;
+
+        if data.len() < 16 {
+            return Err(LoaderError::DecryptionFailed(format!(
+                "Invalid act.dat: expected at least 16 bytes, got {}",
+                data.len()
+            )));
+        }
+
+        let mut key = [0u8; 16];
+        key.copy_from_slice(&data[..16]);
+        self.act_dat_key = Some(key);
+        info!("Loaded act.dat activation data");
+        Ok(())
+    }
+
+    /// Get a RAP key by content ID
+    pub fn get_rap_key(&self, content_id: &str) -> Option<&[u8; 16]> {
+        self.rap_keys.get(content_id)
+    }
+
+    /// Get the act.dat key
+    pub fn get_act_dat_key(&self) -> Option<&[u8; 16]> {
+        self.act_dat_key.as_ref()
+    }
+
+    /// Check if NPDRM keys are available (RAP + act.dat)
+    pub fn has_npdrm_keys(&self) -> bool {
+        !self.rap_keys.is_empty()
+    }
+
+    /// Get count of loaded RAP keys
+    pub fn rap_key_count(&self) -> usize {
+        self.rap_keys.len()
+    }
+
+    /// Load all NPDRM-related keys from common locations
+    ///
+    /// Searches for RAP files and act.dat in standard paths:
+    /// - `dev_hdd0/home/00000001/exdata/` (PS3 standard)
+    /// - `rap/` (convenience directory)
+    /// - `exdata/` (alternative)
+    pub fn load_npdrm_keys(&mut self) -> usize {
+        let mut total = 0;
+
+        // Search common RAP file locations
+        let rap_dirs = [
+            "dev_hdd0/home/00000001/exdata",
+            "rap",
+            "exdata",
+        ];
+
+        for dir in &rap_dirs {
+            if let Ok(count) = self.load_rap_directory(dir) {
+                total += count;
+            }
+        }
+
+        // Search for act.dat
+        let act_paths = [
+            "dev_hdd0/home/00000001/exdata/act.dat",
+            "exdata/act.dat",
+            "act.dat",
+        ];
+
+        for path in &act_paths {
+            if Path::new(path).exists() {
+                if self.load_act_dat(path).is_ok() {
+                    break;
+                }
+            }
+        }
+
+        total
     }
 
     /// Add a key to the database
@@ -1088,5 +1247,107 @@ mod tests {
         // We should have at least the built-in APP keys
         assert!(valid > 0);
         assert!(!results.is_empty());
+    }
+
+    // =================================================================
+    // NPDRM RAP/act.dat tests
+    // =================================================================
+
+    #[test]
+    fn test_rap_key_loading() {
+        let mut engine = CryptoEngine::new();
+        
+        // Create a temporary RAP file
+        let dir = std::env::temp_dir().join("oc_test_rap");
+        let _ = std::fs::create_dir_all(&dir);
+        let rap_path = dir.join("UP0001-NPUB12345_00-TESTGAME00000001.rap");
+        let rap_data = [0x01u8; 16];
+        std::fs::write(&rap_path, rap_data).unwrap();
+        
+        let content_id = engine.load_rap_file(&rap_path.to_string_lossy()).unwrap();
+        assert_eq!(content_id, "UP0001-NPUB12345_00-TESTGAME00000001");
+        assert!(engine.has_npdrm_keys());
+        assert_eq!(engine.rap_key_count(), 1);
+        assert!(engine.get_rap_key(&content_id).is_some());
+        assert_eq!(engine.get_rap_key(&content_id).unwrap(), &rap_data);
+        
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_rap_invalid_size() {
+        let mut engine = CryptoEngine::new();
+        
+        let dir = std::env::temp_dir().join("oc_test_rap_bad");
+        let _ = std::fs::create_dir_all(&dir);
+        let rap_path = dir.join("bad.rap");
+        std::fs::write(&rap_path, [0u8; 8]).unwrap(); // Wrong size
+        
+        assert!(engine.load_rap_file(&rap_path.to_string_lossy()).is_err());
+        
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_act_dat_loading() {
+        let mut engine = CryptoEngine::new();
+        
+        let dir = std::env::temp_dir().join("oc_test_act");
+        let _ = std::fs::create_dir_all(&dir);
+        let act_path = dir.join("act.dat");
+        let act_data = [0xABu8; 32]; // act.dat can be > 16 bytes
+        std::fs::write(&act_path, act_data).unwrap();
+        
+        engine.load_act_dat(&act_path.to_string_lossy()).unwrap();
+        assert!(engine.get_act_dat_key().is_some());
+        assert_eq!(engine.get_act_dat_key().unwrap(), &[0xAB; 16]);
+        
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_act_dat_too_small() {
+        let mut engine = CryptoEngine::new();
+        
+        let dir = std::env::temp_dir().join("oc_test_act_bad");
+        let _ = std::fs::create_dir_all(&dir);
+        let act_path = dir.join("act.dat");
+        std::fs::write(&act_path, [0u8; 4]).unwrap(); // Too small
+        
+        assert!(engine.load_act_dat(&act_path.to_string_lossy()).is_err());
+        
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_load_rap_directory() {
+        let mut engine = CryptoEngine::new();
+        
+        let dir = std::env::temp_dir().join("oc_test_rap_dir");
+        let _ = std::fs::create_dir_all(&dir);
+        
+        // Create multiple RAP files
+        for i in 0..3 {
+            let path = dir.join(format!("CONTENT{}.rap", i));
+            std::fs::write(&path, [i as u8; 16]).unwrap();
+        }
+        
+        // Also create a non-RAP file (should be ignored)
+        std::fs::write(dir.join("readme.txt"), "not a rap").unwrap();
+        
+        let loaded = engine.load_rap_directory(&dir.to_string_lossy()).unwrap();
+        assert_eq!(loaded, 3);
+        assert_eq!(engine.rap_key_count(), 3);
+        
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_npdrm_keys_no_dir() {
+        let mut engine = CryptoEngine::new();
+        // Should return 0 if no RAP directories exist
+        let loaded = engine.load_rap_directory("/nonexistent/path/to/rap");
+        assert_eq!(loaded.unwrap(), 0);
     }
 }

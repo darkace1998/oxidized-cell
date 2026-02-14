@@ -7,18 +7,18 @@
 
 ## Phase 0 — Prerequisites & Setup
 
-- [ ] **Obtain PS3 firmware (PUP)**
+- [x] **Obtain PS3 firmware (PUP)**
   - Download official PS3UPDAT.PUP from Sony (`scripts/download-firmware.sh`)
   - Install via `--install-firmware /path/to/PS3UPDAT.PUP`
   - Extract LV2 kernel, VSH, and core OS modules into `./firmware/`
   - Needed for: decryption keys, system PRX libraries, font files
 
-- [ ] **Verify SELF/ELF decryption**
+- [x] **Verify SELF/ELF decryption**
   - 27 APP key revisions are embedded — test against retail EBOOT.BIN files
   - Ensure NPDRM (digital store) games can be decrypted if user provides `rap` / `act.dat`
   - Test PRX (dynamic library) loading from firmware modules
 
-- [ ] **Firmware PRX module loading**
+- [x] **Firmware PRX module loading**
   - Load system PRX libraries from extracted firmware (liblv2, libsysutil, etc.)
   - Map firmware modules to HLE stubs where native loading is impractical
   - Create a firmware module registry that HLE can fall back to
