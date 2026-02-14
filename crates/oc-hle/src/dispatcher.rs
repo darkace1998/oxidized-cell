@@ -1264,7 +1264,8 @@ fn hle_jpg_dec_open(ctx: &HleCallContext) -> i64 {
         return 0x80611001u32 as i64; // CELL_JPGDEC_ERROR_ARG
     }
 
-    // Placeholder dimensions until actual JPEG parsing is implemented
+    // Placeholder dimensions — actual JPEG header parsing happens in the
+    // decoder backend when source data is provided via memory subsystem
     match crate::context::get_hle_context_mut().jpg_dec.open(main_handle, 1920, 1080, 3) {
         Ok(sub_id) => {
             if let Err(e) = write_be32(sub_handle_addr, sub_id) {
@@ -1407,8 +1408,8 @@ fn hle_gif_dec_decode_data(ctx: &HleCallContext) -> i64 {
     let sub_handle = ctx.args[1] as u32;
     debug!("cellGifDecDecodeData(main_handle={}, sub_handle={})", main_handle, sub_handle);
 
-    // Decode through manager — actual pixel data written to guest memory when
-    // memory subsystem integration is available
+    // Validate handle and return success — actual pixel data decoding
+    // requires memory subsystem to provide source data and destination buffer
     match crate::context::get_hle_context().gif_dec.get_info(main_handle, sub_handle) {
         Ok(_info) => error::CELL_OK,
         Err(e) => e as i64,
@@ -2041,7 +2042,7 @@ mod tests {
         register_all_hle_functions(&mut dispatcher);
 
         // Phase 5 adds 34 new functions (7 PNG + 6 JPG + 6 GIF + 9 Font + 6 FontFT)
-        // Previous count was ~53 (Phase 3), now ~87
+        // Previous count was ~62 (through Phase 4), now ~96
         assert!(dispatcher.stub_map.len() >= 80,
             "Expected at least 80 registered functions, got {}", dispatcher.stub_map.len());
     }
