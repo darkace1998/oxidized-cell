@@ -74,6 +74,9 @@ pub struct EmulatorRunner {
     /// Monotonically increasing SPU thread ID counter
     /// Ensures unique thread IDs even after thread removal
     next_spu_thread_id: AtomicU32,
+    /// Audio backend (cpal) — kept alive for the emulator's lifetime
+    /// so the audio stream continues playing. Dropped when the runner is dropped.
+    _audio_backend: Option<oc_audio::backend::cpal_backend::CpalAudioBackend>,
 }
 
 impl EmulatorRunner {
@@ -143,6 +146,7 @@ impl EmulatorRunner {
 
         // Initialize the cpal audio backend and wire it to the mixer
         let mixer_for_callback = audio_mixer.clone();
+        let mut audio_backend_storage: Option<oc_audio::backend::cpal_backend::CpalAudioBackend> = None;
         match oc_audio::backend::cpal_backend::CpalAudioBackend::new() {
             Ok(mut cpal_backend) => {
                 if cpal_backend.init().is_ok() {
@@ -160,9 +164,7 @@ impl EmulatorRunner {
                     } else {
                         tracing::info!("Audio backend connected: cellAudio HLE <-> CpalBackend");
                     }
-                    // Keep the backend alive — it owns the audio stream.
-                    // Leak it intentionally since it must survive for the emulator's lifetime.
-                    std::mem::forget(cpal_backend);
+                    audio_backend_storage = Some(cpal_backend);
                 } else {
                     tracing::warn!("Audio device init failed — audio output disabled");
                 }
@@ -200,6 +202,7 @@ impl EmulatorRunner {
             target_frame_time,
             next_ppu_thread_id: AtomicU32::new(0),
             next_spu_thread_id: AtomicU32::new(0),
+            _audio_backend: audio_backend_storage,
         })
     }
 

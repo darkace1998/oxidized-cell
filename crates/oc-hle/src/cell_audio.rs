@@ -676,9 +676,10 @@ impl AudioManager {
 
         // Each block is 256 samples at 48000 Hz
         // Time per block = 256 / 48000 seconds = 5333.33... µs
-        // Using integer arithmetic: (tag * 256 * 1_000_000) / 48000
-        let timestamp_us = tag.wrapping_mul(CELL_AUDIO_BLOCK_SAMPLES as u64)
-            .wrapping_mul(1_000_000)
+        // Using saturating arithmetic to avoid silent overflow for very large tags.
+        // At 48 kHz with 256-sample blocks, u64 overflow occurs after ~72 billion years.
+        let timestamp_us = tag.saturating_mul(CELL_AUDIO_BLOCK_SAMPLES as u64)
+            .saturating_mul(1_000_000)
             / CELL_AUDIO_SAMPLE_RATE;
 
         Ok(timestamp_us)
@@ -1004,6 +1005,7 @@ pub fn cell_audio_get_port_timestamp(port_num: u32, tag: u64, stamp_addr: u32) -
     match ctx.audio.get_port_timestamp(port_num, tag) {
         Ok(timestamp) => {
             if let Err(e) = write_be64(stamp_addr, timestamp) {
+                trace!("cellAudioGetPortTimestamp: failed to write timestamp to 0x{:08X}: 0x{:08X}", stamp_addr, e as u32);
                 return e;
             }
             0 // CELL_OK
