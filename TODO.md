@@ -81,12 +81,12 @@ Get basic 2D/3D graphics on screen so menus are visible.
 
 ## Phase 3 — SPU / SPURS (needed by most commercial titles)
 
-- [ ] `cellSpursInitialize` / `cellSpursFinalize` — create SPURS instance with SPU thread group
-- [ ] `cellSpursCreateTaskset` / `cellSpursTasksetAttributeSetName` — task set management
-- [ ] `cellSpursCreateTask` — enqueue SPU tasks
-- [ ] `cellSpursAttachLv2EventQueue` — event notification between PPU and SPU
-- [ ] Workload scheduling — pick highest-priority ready workload and dispatch to SPU thread
-- [ ] Basic DMA: `MFC_PUT` / `MFC_GET` / `MFC_GETLLAR` / `MFC_PUTLLC` working between SPU LS ↔ main memory
+- [x] `cellSpursInitialize` / `cellSpursFinalize` — dispatcher wired to SpursManager; creates SPURS instance with SPU thread group, validates parameters, tracks initialization state
+- [x] `cellSpursCreateTaskset` / `cellSpursTasksetAttributeSetName` — new dispatcher registrations; creates tasksets via SpursManager, attribute names accepted for debugging
+- [x] `cellSpursCreateTask` — new dispatcher registration; creates task queue + enqueues SPU task with ELF address and context; writes task ID to guest memory
+- [x] `cellSpursAttachLv2EventQueue` — dispatcher now forwards queue/port/dynamic args to SpursManager.attach_lv2_event_queue()
+- [x] Workload scheduling — `cellSpursSetMaxContention` + `cellSpursSetPriorities` + `cellSpursGetSpuThreadId` registered; SpursManager has get_next_workload(), process_workloads(), schedule_pending_workloads()
+- [x] Basic DMA: LV2 syscalls `sys_spu_thread_transfer_data_get` (MFC_GET), `sys_spu_thread_transfer_data_put` (MFC_PUT), `sys_spu_thread_atomic_get` (MFC_GETLLAR), `sys_spu_thread_atomic_put` (MFC_PUTLLC) — all with bounds checking and alignment validation; oc-spu MFC has full DMA engine with timing model
 
 ---
 

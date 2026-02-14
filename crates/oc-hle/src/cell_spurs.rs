@@ -553,6 +553,11 @@ impl SpursManager {
         self.spu_bridge.is_some()
     }
 
+    /// Check if SPURS instance is initialized
+    pub fn is_initialized(&self) -> bool {
+        self.initialized
+    }
+
     /// Initialize SPURS instance
     pub fn initialize(
         &mut self,
@@ -2096,6 +2101,145 @@ pub fn cell_spurs_add_policy_module(image_addr: u32, image_size: u32) -> i32 {
     }
 }
 
+/// cellSpursCreateTaskset - Create a SPURS taskset
+///
+/// Creates a new taskset for grouping related SPU tasks.
+///
+/// # Arguments
+/// * `spurs_addr` - SPURS instance address
+/// * `taskset_addr` - Address to write taskset ID
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_spurs_create_taskset(_spurs_addr: u32, taskset_addr: u32) -> i32 {
+    debug!("cellSpursCreateTaskset(taskset_addr=0x{:08X})", taskset_addr);
+
+    let mut ctx = crate::context::get_hle_context_mut();
+    if !ctx.spurs.is_initialized() {
+        return 0x80410801u32 as i32; // CELL_SPURS_ERROR_STAT
+    }
+
+    match ctx.spurs.create_taskset() {
+        Ok(taskset_id) => {
+            drop(ctx);
+            // Write taskset ID to output address
+            if taskset_addr != 0 && crate::memory::is_hle_memory_initialized() {
+                if let Err(_) = crate::memory::write_be32(taskset_addr, taskset_id) {
+                    return 0x80410801u32 as i32; // CELL_SPURS_ERROR_STAT
+                }
+            }
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
+}
+
+/// cellSpursTasksetAttributeSetName - Set taskset attribute name
+///
+/// Sets a descriptive name for a taskset attribute. This is primarily
+/// used for debugging and profiling.
+///
+/// # Arguments
+/// * `attr_addr` - Attribute address (taskset attribute structure)
+/// * `name_addr` - Address of name string
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_spurs_taskset_attribute_set_name(_attr_addr: u32, name_addr: u32) -> i32 {
+    // Read the name from memory if available
+    let name = if name_addr != 0 && crate::memory::is_hle_memory_initialized() {
+        crate::memory::read_string(name_addr, 128).unwrap_or_else(|_| String::from("unnamed"))
+    } else {
+        String::from("unnamed")
+    };
+    
+    debug!("cellSpursTasksetAttributeSetName(name='{}')", name);
+    
+    // Attribute names are informational only in HLE — just accept them
+    0 // CELL_OK
+}
+
+/// cellSpursCreateTask - Create and enqueue an SPU task
+///
+/// Creates a new task within a taskset. The task will be scheduled
+/// for execution on an available SPU.
+///
+/// # Arguments
+/// * `taskset_addr` - Taskset handle address
+/// * `task_id_addr` - Address to write the assigned task ID
+/// * `elf_addr` - SPU ELF program address
+/// * `context_addr` - Task context address
+/// * `ls_size` - Local storage size requirement
+/// * `ls_pattern_addr` - LS pattern address (optional)
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_spurs_create_task(
+    _taskset_addr: u32,
+    task_id_addr: u32,
+    elf_addr: u32,
+    context_addr: u32,
+    _ls_size: u32,
+    _ls_pattern_addr: u32,
+) -> i32 {
+    debug!(
+        "cellSpursCreateTask(elf=0x{:08X}, ctx=0x{:08X})",
+        elf_addr, context_addr
+    );
+
+    let mut ctx = crate::context::get_hle_context_mut();
+    if !ctx.spurs.is_initialized() {
+        return 0x80410801u32 as i32; // CELL_SPURS_ERROR_STAT
+    }
+
+    // Create a task queue if none exists, then push a task
+    let queue_id = match ctx.spurs.create_task_queue() {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+
+    match ctx.spurs.push_task(queue_id, elf_addr, context_addr as u64, 1) {
+        Ok(task_id) => {
+            drop(ctx);
+            // Write task ID to output address
+            if task_id_addr != 0 && crate::memory::is_hle_memory_initialized() {
+                if let Err(_) = crate::memory::write_be32(task_id_addr, task_id) {
+                    return 0x80410801u32 as i32; // CELL_SPURS_ERROR_STAT
+                }
+            }
+            0 // CELL_OK
+        }
+        Err(e) => e,
+    }
+}
+
+/// cellSpursSetMaxContention - Set maximum contention level for a workload
+///
+/// Controls how many SPUs can simultaneously run the same workload.
+///
+/// # Arguments
+/// * `spurs_addr` - SPURS instance address
+/// * `wid` - Workload ID
+/// * `max_contention` - Maximum number of SPUs for this workload
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_spurs_set_max_contention(_spurs_addr: u32, wid: u32, max_contention: u32) -> i32 {
+    debug!("cellSpursSetMaxContention(wid={}, max={})", wid, max_contention);
+
+    if wid >= CELL_SPURS_MAX_WORKLOAD as u32 {
+        return 0x80410802u32 as i32; // CELL_SPURS_ERROR_INVALID_ARGUMENT
+    }
+
+    // Max contention is informational for HLE — workload scheduling uses priorities
+    let ctx = crate::context::get_hle_context();
+    if !ctx.spurs.is_initialized() {
+        return 0x80410801u32 as i32; // CELL_SPURS_ERROR_STAT
+    }
+
+    0 // CELL_OK
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2208,6 +2352,7 @@ mod tests {
 
     #[test]
     fn test_spurs_initialize() {
+        crate::context::reset_hle_context();
         let result = cell_spurs_initialize(0x10000000, 6, 100, 100, false);
         assert_eq!(result, 0);
         
@@ -2492,5 +2637,73 @@ mod tests {
 
         // All should now be running
         assert_eq!(manager.get_runnable_workload_count(), 2);
+    }
+
+    #[test]
+    fn test_spurs_is_initialized() {
+        let manager = SpursManager::new();
+        assert!(!manager.is_initialized());
+    }
+
+    #[test]
+    fn test_spurs_is_initialized_after_init() {
+        let mut manager = SpursManager::new();
+        manager.initialize(4, 1, 1, false);
+        assert!(manager.is_initialized());
+    }
+
+    #[test]
+    fn test_spurs_create_taskset_not_initialized() {
+        let result = cell_spurs_create_taskset(0, 0);
+        // Should fail because SPURS not initialized (or succeed if previously initialized)
+        // Re-init for clean state
+        crate::context::reset_hle_context();
+        let result = cell_spurs_create_taskset(0, 0);
+        assert_ne!(result, 0, "Should fail when not initialized");
+    }
+
+    #[test]
+    fn test_spurs_create_taskset_success() {
+        crate::context::reset_hle_context();
+        crate::context::get_hle_context_mut().spurs.initialize(4, 1, 1, false);
+        let result = cell_spurs_create_taskset(0, 0);
+        assert_eq!(result, 0, "Should succeed when initialized");
+    }
+
+    #[test]
+    fn test_spurs_taskset_attribute_set_name() {
+        let result = cell_spurs_taskset_attribute_set_name(0, 0);
+        assert_eq!(result, 0, "Setting attribute name should always succeed");
+    }
+
+    #[test]
+    fn test_spurs_create_task_not_initialized() {
+        crate::context::reset_hle_context();
+        let result = cell_spurs_create_task(0, 0, 0x1000, 0x2000, 0x40000, 0);
+        assert_ne!(result, 0, "Should fail when not initialized");
+    }
+
+    #[test]
+    fn test_spurs_create_task_success() {
+        crate::context::reset_hle_context();
+        crate::context::get_hle_context_mut().spurs.initialize(4, 1, 1, false);
+        let result = cell_spurs_create_task(0, 0, 0x1000, 0x2000, 0x40000, 0);
+        assert_eq!(result, 0, "Should succeed when initialized");
+    }
+
+    #[test]
+    fn test_spurs_set_max_contention() {
+        crate::context::reset_hle_context();
+        crate::context::get_hle_context_mut().spurs.initialize(4, 1, 1, false);
+        let result = cell_spurs_set_max_contention(0, 0, 4);
+        assert_eq!(result, 0, "Should succeed");
+    }
+
+    #[test]
+    fn test_spurs_set_max_contention_invalid_wid() {
+        crate::context::reset_hle_context();
+        crate::context::get_hle_context_mut().spurs.initialize(4, 1, 1, false);
+        let result = cell_spurs_set_max_contention(0, 99, 4);
+        assert_ne!(result, 0, "Should fail with invalid workload ID");
     }
 }

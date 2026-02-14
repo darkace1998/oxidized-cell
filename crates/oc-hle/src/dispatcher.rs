@@ -1091,20 +1091,94 @@ fn hle_spurs_initialize(ctx: &HleCallContext) -> i64 {
         spurs_ptr, num_spu, spu_priority, ppu_priority, exit_if_no_work
     );
     
-    // SPURS initialization is complex - just return success for now
-    error::CELL_OK
+    crate::cell_spurs::cell_spurs_initialize(spurs_ptr, num_spu, spu_priority, ppu_priority, exit_if_no_work) as i64
 }
 
 fn hle_spurs_finalize(ctx: &HleCallContext) -> i64 {
     let spurs_ptr = ctx.args[0] as u32;
     info!("cellSpursFinalize(spurs=0x{:08x})", spurs_ptr);
-    error::CELL_OK
+    crate::cell_spurs::cell_spurs_finalize(spurs_ptr) as i64
 }
 
 fn hle_spurs_attach_lv2_event_queue(ctx: &HleCallContext) -> i64 {
     let spurs_ptr = ctx.args[0] as u32;
-    debug!("cellSpursAttachLv2EventQueue(spurs=0x{:08x})", spurs_ptr);
-    error::CELL_OK
+    let queue = ctx.args[1] as u32;
+    let port = ctx.args[2] as u32;
+    let is_dynamic = ctx.args[3] != 0;
+    debug!(
+        "cellSpursAttachLv2EventQueue(spurs=0x{:08x}, queue={}, port={}, dynamic={})",
+        spurs_ptr, queue, port, is_dynamic
+    );
+    crate::cell_spurs::cell_spurs_attach_lv2_event_queue(spurs_ptr, queue, port, is_dynamic) as i64
+}
+
+fn hle_spurs_create_taskset(ctx: &HleCallContext) -> i64 {
+    let spurs_ptr = ctx.args[0] as u32;
+    let taskset_ptr = ctx.args[1] as u32;
+    debug!(
+        "cellSpursCreateTaskset(spurs=0x{:08x}, taskset=0x{:08x})",
+        spurs_ptr, taskset_ptr
+    );
+    crate::cell_spurs::cell_spurs_create_taskset(spurs_ptr, taskset_ptr) as i64
+}
+
+fn hle_spurs_taskset_attribute_set_name(ctx: &HleCallContext) -> i64 {
+    let attr_ptr = ctx.args[0] as u32;
+    let name_ptr = ctx.args[1] as u32;
+    debug!(
+        "cellSpursTasksetAttributeSetName(attr=0x{:08x}, name=0x{:08x})",
+        attr_ptr, name_ptr
+    );
+    crate::cell_spurs::cell_spurs_taskset_attribute_set_name(attr_ptr, name_ptr) as i64
+}
+
+fn hle_spurs_create_task(ctx: &HleCallContext) -> i64 {
+    let taskset_ptr = ctx.args[0] as u32;
+    let task_id_ptr = ctx.args[1] as u32;
+    let elf_addr = ctx.args[2] as u32;
+    let context_addr = ctx.args[3] as u32;
+    let ls_size = ctx.args[4] as u32;
+    let ls_pattern_ptr = ctx.args[5] as u32;
+    debug!(
+        "cellSpursCreateTask(taskset=0x{:08x}, taskId=0x{:08x}, elf=0x{:08x}, ctx=0x{:08x}, ls=0x{:x}, pat=0x{:08x})",
+        taskset_ptr, task_id_ptr, elf_addr, context_addr, ls_size, ls_pattern_ptr
+    );
+    crate::cell_spurs::cell_spurs_create_task(
+        taskset_ptr, task_id_ptr, elf_addr, context_addr, ls_size, ls_pattern_ptr,
+    ) as i64
+}
+
+fn hle_spurs_set_max_contention(ctx: &HleCallContext) -> i64 {
+    let spurs_ptr = ctx.args[0] as u32;
+    let wid = ctx.args[1] as u32;
+    let max_contention = ctx.args[2] as u32;
+    debug!(
+        "cellSpursSetMaxContention(spurs=0x{:08x}, wid={}, max={})",
+        spurs_ptr, wid, max_contention
+    );
+    crate::cell_spurs::cell_spurs_set_max_contention(spurs_ptr, wid, max_contention) as i64
+}
+
+fn hle_spurs_set_priorities(ctx: &HleCallContext) -> i64 {
+    let spurs_ptr = ctx.args[0] as u32;
+    let wid = ctx.args[1] as u32;
+    let priorities_addr = ctx.args[2] as u32;
+    debug!(
+        "cellSpursSetPriorities(spurs=0x{:08x}, wid={}, pri=0x{:08x})",
+        spurs_ptr, wid, priorities_addr
+    );
+    crate::cell_spurs::cell_spurs_set_priorities(spurs_ptr, wid, priorities_addr) as i64
+}
+
+fn hle_spurs_get_spu_thread_id(ctx: &HleCallContext) -> i64 {
+    let spurs_ptr = ctx.args[0] as u32;
+    let thread = ctx.args[1] as u32;
+    let thread_id_addr = ctx.args[2] as u32;
+    debug!(
+        "cellSpursGetSpuThreadId(spurs=0x{:08x}, thread={}, out=0x{:08x})",
+        spurs_ptr, thread, thread_id_addr
+    );
+    crate::cell_spurs::cell_spurs_get_spu_thread_id(spurs_ptr, thread, thread_id_addr) as i64
 }
 
 // --- Generic stub ---
@@ -1193,6 +1267,12 @@ pub fn register_all_hle_functions(dispatcher: &mut HleDispatcher) {
     dispatcher.register_function("cellSpurs", "cellSpursInitialize", hle_spurs_initialize);
     dispatcher.register_function("cellSpurs", "cellSpursFinalize", hle_spurs_finalize);
     dispatcher.register_function("cellSpurs", "cellSpursAttachLv2EventQueue", hle_spurs_attach_lv2_event_queue);
+    dispatcher.register_function("cellSpurs", "cellSpursCreateTaskset", hle_spurs_create_taskset);
+    dispatcher.register_function("cellSpurs", "cellSpursTasksetAttributeSetName", hle_spurs_taskset_attribute_set_name);
+    dispatcher.register_function("cellSpurs", "cellSpursCreateTask", hle_spurs_create_task);
+    dispatcher.register_function("cellSpurs", "cellSpursSetMaxContention", hle_spurs_set_max_contention);
+    dispatcher.register_function("cellSpurs", "cellSpursSetPriorities", hle_spurs_set_priorities);
+    dispatcher.register_function("cellSpurs", "cellSpursGetSpuThreadId", hle_spurs_get_spu_thread_id);
     
     info!("Registered {} HLE functions", dispatcher.stub_map.len());
 }
@@ -1388,5 +1468,39 @@ mod tests {
         };
         let result_invalid = dispatcher.dispatch(&ctx_invalid);
         assert_eq!(result_invalid, Some(0), "Invalid video output should return 0");
+    }
+
+    #[test]
+    fn test_phase3_spurs_registration() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+
+        // Verify all Phase 3 SPURS functions are registered
+        let spurs_funcs = [
+            "cellSpursInitialize",
+            "cellSpursFinalize",
+            "cellSpursAttachLv2EventQueue",
+            "cellSpursCreateTaskset",
+            "cellSpursTasksetAttributeSetName",
+            "cellSpursCreateTask",
+            "cellSpursSetMaxContention",
+            "cellSpursSetPriorities",
+            "cellSpursGetSpuThreadId",
+        ];
+
+        for func_name in &spurs_funcs {
+            let found = dispatcher.stub_map.values().any(|entry| entry.name == *func_name);
+            assert!(found, "SPURS function '{}' should be registered", func_name);
+        }
+    }
+
+    #[test]
+    fn test_phase3_registration_count() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+
+        // Phase 3 adds 6 new SPURS functions (was ~47, now ~53)
+        assert!(dispatcher.stub_map.len() >= 50,
+            "Expected at least 50 registered functions, got {}", dispatcher.stub_map.len());
     }
 }
