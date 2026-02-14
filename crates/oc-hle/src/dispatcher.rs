@@ -781,18 +781,12 @@ fn hle_fs_lseek(ctx: &HleCallContext) -> i64 {
 
 fn hle_audio_init(_ctx: &HleCallContext) -> i64 {
     info!("cellAudioInit()");
-    
-    let mut hle_ctx = get_hle_context_mut();
-    hle_ctx.audio.init();
-    error::CELL_OK
+    crate::cell_audio::cell_audio_init() as i64
 }
 
 fn hle_audio_quit(_ctx: &HleCallContext) -> i64 {
     info!("cellAudioQuit()");
-    
-    let mut hle_ctx = get_hle_context_mut();
-    hle_ctx.audio.quit();
-    error::CELL_OK
+    crate::cell_audio::cell_audio_quit() as i64
 }
 
 fn hle_audio_port_open(ctx: &HleCallContext) -> i64 {
@@ -800,43 +794,25 @@ fn hle_audio_port_open(ctx: &HleCallContext) -> i64 {
     let port_num_ptr = ctx.args[1] as u32;
     
     debug!("cellAudioPortOpen(config=0x{:08x}, port_num_ptr=0x{:08x})", config_ptr, port_num_ptr);
-    
-    // Create audio port with default config and return port number
-    let mut hle_ctx = get_hle_context_mut();
-    
-    // Open port with default parameters: 2 channels, 8 blocks, no special attributes, 1.0 volume
-    let port_result = hle_ctx.audio.port_open(2, 8, 0, 1.0);
-    
-    match port_result {
-        Ok(port_num) => {
-            // Write port number to output pointer
-            if port_num_ptr != 0 {
-                if let Err(_) = write_be32(port_num_ptr, port_num) {
-                    return error::CELL_EFAULT;
-                }
-            }
-            error::CELL_OK
-        }
-        Err(e) => e as i64,
-    }
+    crate::cell_audio::cell_audio_port_open(config_ptr, port_num_ptr) as i64
 }
 
 fn hle_audio_port_close(ctx: &HleCallContext) -> i64 {
     let port_num = ctx.args[0] as u32;
     debug!("cellAudioPortClose(port={})", port_num);
-    error::CELL_OK
+    crate::cell_audio::cell_audio_port_close(port_num) as i64
 }
 
 fn hle_audio_port_start(ctx: &HleCallContext) -> i64 {
     let port_num = ctx.args[0] as u32;
     debug!("cellAudioPortStart(port={})", port_num);
-    error::CELL_OK
+    crate::cell_audio::cell_audio_port_start(port_num) as i64
 }
 
 fn hle_audio_port_stop(ctx: &HleCallContext) -> i64 {
     let port_num = ctx.args[0] as u32;
     debug!("cellAudioPortStop(port={})", port_num);
-    error::CELL_OK
+    crate::cell_audio::cell_audio_port_stop(port_num) as i64
 }
 
 fn hle_audio_get_port_config(ctx: &HleCallContext) -> i64 {
@@ -844,7 +820,16 @@ fn hle_audio_get_port_config(ctx: &HleCallContext) -> i64 {
     let config_ptr = ctx.args[1] as u32;
     
     debug!("cellAudioGetPortConfig(port={}, config_ptr=0x{:08x})", port_num, config_ptr);
-    error::CELL_OK
+    crate::cell_audio::cell_audio_get_port_config(port_num, config_ptr) as i64
+}
+
+fn hle_audio_get_port_timestamp(ctx: &HleCallContext) -> i64 {
+    let port_num = ctx.args[0] as u32;
+    let tag = ctx.args[1];
+    let stamp_addr = ctx.args[2] as u32;
+    
+    debug!("cellAudioGetPortTimestamp(port={}, tag={}, stamp=0x{:08x})", port_num, tag, stamp_addr);
+    crate::cell_audio::cell_audio_get_port_timestamp(port_num, tag, stamp_addr) as i64
 }
 
 // --- cellGame ---
@@ -1248,6 +1233,7 @@ pub fn register_all_hle_functions(dispatcher: &mut HleDispatcher) {
     dispatcher.register_function("cellAudio", "cellAudioPortStart", hle_audio_port_start);
     dispatcher.register_function("cellAudio", "cellAudioPortStop", hle_audio_port_stop);
     dispatcher.register_function("cellAudio", "cellAudioGetPortConfig", hle_audio_get_port_config);
+    dispatcher.register_function("cellAudio", "cellAudioGetPortTimestamp", hle_audio_get_port_timestamp);
     
     // cellGame
     dispatcher.register_function("cellGame", "cellGameBootCheck", hle_game_boot_check);
@@ -1502,5 +1488,38 @@ mod tests {
         // Phase 3 adds 6 new SPURS functions (was ~47, now ~53)
         assert!(dispatcher.stub_map.len() >= 50,
             "Expected at least 50 registered functions, got {}", dispatcher.stub_map.len());
+    }
+
+    #[test]
+    fn test_phase4_audio_timestamp_registration() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+
+        // Verify cellAudioGetPortTimestamp is registered
+        let found = dispatcher.stub_map.values().any(|entry| entry.name == "cellAudioGetPortTimestamp");
+        assert!(found, "cellAudioGetPortTimestamp should be registered");
+    }
+
+    #[test]
+    fn test_phase4_audio_functions_wired() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+
+        // All Phase 4 audio functions should be registered
+        let audio_funcs = [
+            "cellAudioInit",
+            "cellAudioQuit",
+            "cellAudioPortOpen",
+            "cellAudioPortClose",
+            "cellAudioPortStart",
+            "cellAudioPortStop",
+            "cellAudioGetPortConfig",
+            "cellAudioGetPortTimestamp",
+        ];
+
+        for func_name in &audio_funcs {
+            let found = dispatcher.stub_map.values().any(|entry| entry.name == *func_name);
+            assert!(found, "Audio function '{}' should be registered", func_name);
+        }
     }
 }

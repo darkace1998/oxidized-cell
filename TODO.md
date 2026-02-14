@@ -92,10 +92,10 @@ Get basic 2D/3D graphics on screen so menus are visible.
 
 ## Phase 4 — Audio Playback
 
-- [ ] `cellAudioInit` / `cellAudioPortOpen` — initialize audio output port
-- [ ] `cellAudioPortStart` — begin pulling PCM samples from game-supplied ring buffer
-- [ ] Wire `oc-audio` cpal backend to the HLE audio port so sound reaches speakers
-- [ ] `cellAudioGetPortTimestamp` — return timing info for A/V sync
+- [x] `cellAudioInit` / `cellAudioPortOpen` — dispatcher stubs wired to real AudioManager implementations that handle port lifecycle, channel layout selection, and mixer source creation
+- [x] `cellAudioPortStart` — dispatcher now calls cell_audio::cell_audio_port_start() to transition port to Started state, enabling audio sample submission
+- [x] Wire `oc-audio` cpal backend to the HLE audio port — EmulatorRunner::new() creates HleAudioMixer, connects it to AudioManager via set_audio_backend(), initializes CpalBackend with mixer callback, audio flows: game → AudioManager::submit_audio() → HleAudioMixer → CpalBackend → speakers
+- [x] `cellAudioGetPortTimestamp` — returns timestamp in microseconds from block tag (256 samples at 48 kHz per block ≈ 5333 µs); registered in dispatcher and wired to AudioManager::get_port_timestamp()
 
 ---
 

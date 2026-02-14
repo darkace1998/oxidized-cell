@@ -49,7 +49,7 @@ pub mod cell_audio;
 pub mod cell_fs;
 
 pub use module::ModuleRegistry;
-pub use context::{HleContext, HLE_CONTEXT, get_hle_context, get_hle_context_mut, reset_hle_context, set_rsx_bridge, has_rsx_bridge, set_spu_bridge, has_spu_bridge, set_input_backend, has_input_backend, poll_input};
+pub use context::{HleContext, HLE_CONTEXT, get_hle_context, get_hle_context_mut, reset_hle_context, set_rsx_bridge, has_rsx_bridge, set_spu_bridge, has_spu_bridge, set_input_backend, has_input_backend, poll_input, set_audio_backend, has_audio_backend, advance_audio};
 pub use context::{pop_sysutil_callback, has_pending_sysutil_callbacks, queue_sysutil_event};
 pub use dispatcher::{
     HleDispatcher, HleCallContext, HleFunctionInfo, HleFn, HLE_DISPATCHER,

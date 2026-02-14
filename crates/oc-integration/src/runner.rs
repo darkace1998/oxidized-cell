@@ -132,6 +132,46 @@ impl EmulatorRunner {
         
         tracing::info!("Input backend connected: cellPad HLE <-> DualShock3Manager");
 
+        // Create audio mixer and connect to cellAudio HLE
+        // The HleAudioMixer is shared between the audio callback (CpalBackend) and
+        // the AudioManager (HLE ports). When games submit audio via cellAudio,
+        // samples flow: game ring buffer → AudioManager → HleAudioMixer → CpalBackend → speakers.
+        let audio_mixer = std::sync::Arc::new(std::sync::RwLock::new(
+            oc_hle::cell_audio::HleAudioMixer::default()
+        ));
+        oc_hle::set_audio_backend(audio_mixer.clone());
+
+        // Initialize the cpal audio backend and wire it to the mixer
+        let mixer_for_callback = audio_mixer.clone();
+        match oc_audio::backend::cpal_backend::CpalAudioBackend::new() {
+            Ok(mut cpal_backend) => {
+                if cpal_backend.init().is_ok() {
+                    cpal_backend.set_callback(move |output: &mut [f32]| {
+                        // Pull mixed audio from the HLE mixer into the cpal output buffer
+                        let frames = output.len() / 2; // stereo: 2 samples per frame
+                        if let Ok(mut mixer) = mixer_for_callback.write() {
+                            mixer.mix(output, frames);
+                        } else {
+                            output.fill(0.0);
+                        }
+                    });
+                    if let Err(e) = cpal_backend.start() {
+                        tracing::warn!("Failed to start audio stream: {}", e);
+                    } else {
+                        tracing::info!("Audio backend connected: cellAudio HLE <-> CpalBackend");
+                    }
+                    // Keep the backend alive — it owns the audio stream.
+                    // Leak it intentionally since it must survive for the emulator's lifetime.
+                    std::mem::forget(cpal_backend);
+                } else {
+                    tracing::warn!("Audio device init failed — audio output disabled");
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to create audio backend: {} — audio output disabled", e);
+            }
+        }
+
         // Create syscall handler with emulator memory access
         let syscall_handler = Arc::new(SyscallHandler::with_emulator_memory(memory.clone()));
 
@@ -446,6 +486,9 @@ impl EmulatorRunner {
 
         // Pump HLE callbacks — invoke pending sysutil callbacks on the PPU
         self.pump_hle_callbacks();
+
+        // Advance audio timing — drives A/V sync timestamps
+        oc_hle::advance_audio();
 
         // Process RSX commands
         self.process_rsx()?;
