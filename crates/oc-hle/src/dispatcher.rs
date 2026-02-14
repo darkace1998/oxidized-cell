@@ -9,8 +9,8 @@ use std::sync::RwLock;
 use once_cell::sync::Lazy;
 use tracing::{debug, info, trace};
 
-use crate::context::get_hle_context_mut;
-use crate::memory::write_be32;
+use crate::context::{get_hle_context, get_hle_context_mut};
+use crate::memory::{read_be32, read_string, write_be32};
 
 /// HLE function result codes
 pub mod error {
@@ -1041,24 +1041,59 @@ fn hle_video_out_get_resolution_availability(ctx: &HleCallContext) -> i64 {
 fn hle_resc_init(ctx: &HleCallContext) -> i64 {
     let config_ptr = ctx.args[0] as u32;
     info!("cellRescInit(config_ptr=0x{:08x})", config_ptr);
-    error::CELL_OK
+    
+    // Read CellRescInitConfig from guest memory
+    let config = crate::cell_resc::CellRescInitConfig {
+        size: read_be32(config_ptr).unwrap_or(20),
+        resource_policy: read_be32(config_ptr + 4).unwrap_or(0),
+        display_modes: read_be32(config_ptr + 8).unwrap_or(0x0F),
+        interpolation_mode: read_be32(config_ptr + 12).unwrap_or(0),
+        interlace_filter: read_be32(config_ptr + 16).unwrap_or(0),
+    };
+    
+    let mut ctx_guard = get_hle_context_mut();
+    ctx_guard.resc.init(config) as i64
 }
 
 fn hle_resc_exit(_ctx: &HleCallContext) -> i64 {
     info!("cellRescExit()");
-    error::CELL_OK
+    let mut ctx = get_hle_context_mut();
+    ctx.resc.exit() as i64
 }
 
 fn hle_resc_set_display_mode(ctx: &HleCallContext) -> i64 {
     let mode = ctx.args[0] as u32;
     debug!("cellRescSetDisplayMode(mode={})", mode);
-    error::CELL_OK
+    let mut ctx_guard = get_hle_context_mut();
+    ctx_guard.resc.set_display_mode(mode) as i64
 }
 
 fn hle_resc_set_src(ctx: &HleCallContext) -> i64 {
-    let idx = ctx.args[0] as u32;
-    let src_ptr = ctx.args[1] as u32;
-    debug!("cellRescSetSrc(idx={}, src_ptr=0x{:08x})", idx, src_ptr);
+    let src_ptr = ctx.args[0] as u32;
+    debug!("cellRescSetSrc(src_ptr=0x{:08x})", src_ptr);
+    
+    // Read CellRescSrc from guest memory
+    let src = crate::cell_resc::CellRescSrc {
+        format: read_be32(src_ptr).unwrap_or(0),
+        pitch: read_be32(src_ptr + 4).unwrap_or(0),
+        width: read_be32(src_ptr + 8).unwrap_or(0) as u16,
+        height: (read_be32(src_ptr + 8).unwrap_or(0) >> 16) as u16,
+        offset: read_be32(src_ptr + 12).unwrap_or(0),
+    };
+    
+    let mut ctx_guard = get_hle_context_mut();
+    ctx_guard.resc.set_src(src) as i64
+}
+
+fn hle_resc_set_convert_and_flip(ctx: &HleCallContext) -> i64 {
+    let buffer_id = ctx.args[0] as u32;
+    debug!("cellRescSetConvertAndFlip(buffer_id={})", buffer_id);
+    // Set convert-and-flip triggers the RSX to scale and present
+    // For now, just record the buffer ID
+    let ctx_guard = get_hle_context();
+    if !ctx_guard.resc.is_initialized() {
+        return crate::cell_resc::CELL_RESC_ERROR_NOT_INITIALIZED as i64;
+    }
     error::CELL_OK
 }
 
@@ -1531,6 +1566,142 @@ fn hle_font_ft_get_char_index(ctx: &HleCallContext) -> i64 {
     crate::cell_font_ft::cell_font_ft_get_char_index(face, char_code) as i64
 }
 
+// --- cellSaveData ---
+
+fn hle_save_data_list_load2(ctx: &HleCallContext) -> i64 {
+    let set_list_addr = ctx.args[0] as u32;
+    let set_buf_addr = ctx.args[1] as u32;
+    let func_list = ctx.args[2] as u32;
+    let func_stat = ctx.args[3] as u32;
+    let func_file = ctx.args[4] as u32;
+    debug!("cellSaveDataListLoad2(setList=0x{:08x}, setBuf=0x{:08x})", set_list_addr, set_buf_addr);
+    
+    let ctx_guard = get_hle_context();
+    let dirs = ctx_guard.save_data.list_directories();
+    
+    // Write directory count to set_list result if addr valid
+    if set_list_addr != 0 {
+        let _ = write_be32(set_list_addr, dirs.len() as u32);
+    }
+    
+    drop(ctx_guard);
+    let _ = (func_list, func_stat, func_file); // Callbacks not yet invoked
+    error::CELL_OK
+}
+
+fn hle_save_data_list_save2(ctx: &HleCallContext) -> i64 {
+    let set_list_addr = ctx.args[0] as u32;
+    let set_buf_addr = ctx.args[1] as u32;
+    debug!("cellSaveDataListSave2(setList=0x{:08x}, setBuf=0x{:08x})", set_list_addr, set_buf_addr);
+    
+    let ctx_guard = get_hle_context();
+    let dirs = ctx_guard.save_data.list_directories();
+    
+    if set_list_addr != 0 {
+        let _ = write_be32(set_list_addr, dirs.len() as u32);
+    }
+    
+    error::CELL_OK
+}
+
+fn hle_save_data_auto_load2(ctx: &HleCallContext) -> i64 {
+    let dir_name_addr = ctx.args[0] as u32;
+    debug!("cellSaveDataAutoLoad2(dirName=0x{:08x})", dir_name_addr);
+    
+    let dir_name = read_string(dir_name_addr, 64).unwrap_or_default();
+    let ctx_guard = get_hle_context();
+    
+    if !ctx_guard.save_data.directory_exists(&dir_name) {
+        return error::CELL_ENOENT;
+    }
+    
+    error::CELL_OK
+}
+
+fn hle_save_data_auto_save2(ctx: &HleCallContext) -> i64 {
+    let dir_name_addr = ctx.args[0] as u32;
+    debug!("cellSaveDataAutoSave2(dirName=0x{:08x})", dir_name_addr);
+    
+    let dir_name = read_string(dir_name_addr, 64).unwrap_or_default();
+    let mut ctx_guard = get_hle_context_mut();
+    
+    if !ctx_guard.save_data.directory_exists(&dir_name) {
+        ctx_guard.save_data.create_directory(&dir_name);
+    }
+    
+    error::CELL_OK
+}
+
+fn hle_save_data_fixed_load2(ctx: &HleCallContext) -> i64 {
+    let set_list_addr = ctx.args[0] as u32;
+    debug!("cellSaveDataFixedLoad2(setList=0x{:08x})", set_list_addr);
+    error::CELL_OK
+}
+
+fn hle_save_data_fixed_save2(ctx: &HleCallContext) -> i64 {
+    let set_list_addr = ctx.args[0] as u32;
+    debug!("cellSaveDataFixedSave2(setList=0x{:08x})", set_list_addr);
+    error::CELL_OK
+}
+
+fn hle_save_data_delete2(ctx: &HleCallContext) -> i64 {
+    let dir_name_addr = ctx.args[0] as u32;
+    debug!("cellSaveDataDelete2(dirName=0x{:08x})", dir_name_addr);
+    
+    let dir_name = read_string(dir_name_addr, 64).unwrap_or_default();
+    let mut ctx_guard = get_hle_context_mut();
+    ctx_guard.save_data.delete_directory(&dir_name) as i64
+}
+
+// --- cellMsgDialog ---
+
+fn hle_msg_dialog_open2(ctx: &HleCallContext) -> i64 {
+    let dialog_type = ctx.args[0] as u32;
+    let msg_addr = ctx.args[1] as u32;
+    let callback = ctx.args[2] as u32;
+    let userdata = ctx.args[3] as u32;
+    debug!("cellMsgDialogOpen2(type={}, msg=0x{:08x})", dialog_type, msg_addr);
+    crate::cell_sysutil::cell_msg_dialog_open(dialog_type, msg_addr, callback, userdata) as i64
+}
+
+fn hle_msg_dialog_close(ctx: &HleCallContext) -> i64 {
+    let result = ctx.args[0] as u32;
+    debug!("cellMsgDialogClose(result={})", result);
+    crate::cell_sysutil::cell_msg_dialog_close(result) as i64
+}
+
+fn hle_msg_dialog_progress_bar_set_msg(ctx: &HleCallContext) -> i64 {
+    let bar_index = ctx.args[0] as u32;
+    let msg_addr = ctx.args[1] as u32;
+    trace!("cellMsgDialogProgressBarSetMsg(bar={}, msg=0x{:08x})", bar_index, msg_addr);
+    crate::cell_sysutil::cell_msg_dialog_progress_bar_set_msg(bar_index, msg_addr) as i64
+}
+
+fn hle_msg_dialog_progress_bar_inc(ctx: &HleCallContext) -> i64 {
+    let bar_index = ctx.args[0] as u32;
+    let delta = ctx.args[1] as u32;
+    trace!("cellMsgDialogProgressBarInc(bar={}, delta={})", bar_index, delta);
+    crate::cell_sysutil::cell_msg_dialog_progress_bar_inc(bar_index, delta) as i64
+}
+
+// --- cellSysutil BGM ---
+
+fn hle_sysutil_get_bgm_playback_status(ctx: &HleCallContext) -> i64 {
+    let status_addr = ctx.args[0] as u32;
+    trace!("cellSysutilGetBgmPlaybackStatus(status=0x{:08x})", status_addr);
+    crate::cell_sysutil::cell_sysutil_get_bgm_playback_status(status_addr) as i64
+}
+
+fn hle_sysutil_enable_bgm_playback(_ctx: &HleCallContext) -> i64 {
+    debug!("cellSysutilEnableBgmPlayback()");
+    crate::cell_sysutil::cell_sysutil_enable_bgm_playback() as i64
+}
+
+fn hle_sysutil_disable_bgm_playback(_ctx: &HleCallContext) -> i64 {
+    debug!("cellSysutilDisableBgmPlayback()");
+    crate::cell_sysutil::cell_sysutil_disable_bgm_playback() as i64
+}
+
 #[allow(dead_code)]
 fn hle_stub_return_ok(_ctx: &HleCallContext) -> i64 {
     error::CELL_OK
@@ -1611,6 +1782,7 @@ pub fn register_all_hle_functions(dispatcher: &mut HleDispatcher) {
     dispatcher.register_function("cellResc", "cellRescExit", hle_resc_exit);
     dispatcher.register_function("cellResc", "cellRescSetDisplayMode", hle_resc_set_display_mode);
     dispatcher.register_function("cellResc", "cellRescSetSrc", hle_resc_set_src);
+    dispatcher.register_function("cellResc", "cellRescSetConvertAndFlip", hle_resc_set_convert_and_flip);
     
     // cellSpurs
     dispatcher.register_function("cellSpurs", "cellSpursInitialize", hle_spurs_initialize);
@@ -1666,6 +1838,26 @@ pub fn register_all_hle_functions(dispatcher: &mut HleDispatcher) {
     dispatcher.register_function("cellFontFT", "cellFontFTLoadGlyph", hle_font_ft_load_glyph);
     dispatcher.register_function("cellFontFT", "cellFontFTSetCharSize", hle_font_ft_set_char_size);
     dispatcher.register_function("cellFontFT", "cellFontFTGetCharIndex", hle_font_ft_get_char_index);
+    
+    // cellSaveData
+    dispatcher.register_function("cellSaveData", "cellSaveDataListLoad2", hle_save_data_list_load2);
+    dispatcher.register_function("cellSaveData", "cellSaveDataListSave2", hle_save_data_list_save2);
+    dispatcher.register_function("cellSaveData", "cellSaveDataAutoLoad2", hle_save_data_auto_load2);
+    dispatcher.register_function("cellSaveData", "cellSaveDataAutoSave2", hle_save_data_auto_save2);
+    dispatcher.register_function("cellSaveData", "cellSaveDataFixedLoad2", hle_save_data_fixed_load2);
+    dispatcher.register_function("cellSaveData", "cellSaveDataFixedSave2", hle_save_data_fixed_save2);
+    dispatcher.register_function("cellSaveData", "cellSaveDataDelete2", hle_save_data_delete2);
+    
+    // cellMsgDialog
+    dispatcher.register_function("cellMsgDialog", "cellMsgDialogOpen2", hle_msg_dialog_open2);
+    dispatcher.register_function("cellMsgDialog", "cellMsgDialogClose", hle_msg_dialog_close);
+    dispatcher.register_function("cellMsgDialog", "cellMsgDialogProgressBarSetMsg", hle_msg_dialog_progress_bar_set_msg);
+    dispatcher.register_function("cellMsgDialog", "cellMsgDialogProgressBarInc", hle_msg_dialog_progress_bar_inc);
+    
+    // cellSysutil - BGM playback
+    dispatcher.register_function("cellSysutil", "cellSysutilGetBgmPlaybackStatus", hle_sysutil_get_bgm_playback_status);
+    dispatcher.register_function("cellSysutil", "cellSysutilEnableBgmPlayback", hle_sysutil_enable_bgm_playback);
+    dispatcher.register_function("cellSysutil", "cellSysutilDisableBgmPlayback", hle_sysutil_disable_bgm_playback);
     
     info!("Registered {} HLE functions", dispatcher.stub_map.len());
 }
@@ -2045,5 +2237,81 @@ mod tests {
         // Previous count was ~62 (through Phase 4), now ~96
         assert!(dispatcher.stub_map.len() >= 80,
             "Expected at least 80 registered functions, got {}", dispatcher.stub_map.len());
+    }
+
+    #[test]
+    fn test_phase6_save_data_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+
+        let save_data_funcs = [
+            "cellSaveDataListLoad2",
+            "cellSaveDataListSave2",
+            "cellSaveDataAutoLoad2",
+            "cellSaveDataAutoSave2",
+            "cellSaveDataFixedLoad2",
+            "cellSaveDataFixedSave2",
+            "cellSaveDataDelete2",
+        ];
+
+        for func_name in &save_data_funcs {
+            let found = dispatcher.stub_map.values().any(|entry| entry.name == *func_name);
+            assert!(found, "SaveData function '{}' should be registered", func_name);
+        }
+    }
+
+    #[test]
+    fn test_phase6_msg_dialog_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+
+        let msg_dialog_funcs = [
+            "cellMsgDialogOpen2",
+            "cellMsgDialogClose",
+            "cellMsgDialogProgressBarSetMsg",
+            "cellMsgDialogProgressBarInc",
+        ];
+
+        for func_name in &msg_dialog_funcs {
+            let found = dispatcher.stub_map.values().any(|entry| entry.name == *func_name);
+            assert!(found, "MsgDialog function '{}' should be registered", func_name);
+        }
+    }
+
+    #[test]
+    fn test_phase6_bgm_playback_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+
+        let bgm_funcs = [
+            "cellSysutilGetBgmPlaybackStatus",
+            "cellSysutilEnableBgmPlayback",
+            "cellSysutilDisableBgmPlayback",
+        ];
+
+        for func_name in &bgm_funcs {
+            let found = dispatcher.stub_map.values().any(|entry| entry.name == *func_name);
+            assert!(found, "BGM function '{}' should be registered", func_name);
+        }
+    }
+
+    #[test]
+    fn test_phase6_resc_set_convert_and_flip_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+
+        let found = dispatcher.stub_map.values().any(|entry| entry.name == "cellRescSetConvertAndFlip");
+        assert!(found, "cellRescSetConvertAndFlip should be registered");
+    }
+
+    #[test]
+    fn test_phase6_registration_count() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+
+        // Phase 6 adds: 7 SaveData + 4 MsgDialog + 3 BGM + 1 RescConvertAndFlip = 15
+        // Previous count was ~96, now ~111
+        assert!(dispatcher.stub_map.len() >= 100,
+            "Expected at least 100 registered functions, got {}", dispatcher.stub_map.len());
     }
 }

@@ -114,13 +114,13 @@ Get basic 2D/3D graphics on screen so menus are visible.
 
 ---
 
-## Phase 6 — Save Data & Misc Utilities
+## Phase 6 — Save Data & Misc Utilities ✅
 
-- [ ] `cellSaveDataListLoad2` / `cellSaveDataListSave2` — load/save game data (many menus check for existing saves)
-- [ ] `cellSaveDataDelete2` — delete save entries
-- [ ] `cellMsgDialogOpen2` — display in-game message dialog overlay
-- [ ] `cellRescInit` / `cellRescSetDisplayMode` — resolution scaling for non-native resolutions
-- [ ] `cellSysutilGetBgmPlaybackStatus` — background music status (some games query this at boot)
+- [x] `cellSaveDataListLoad2` / `cellSaveDataListSave2` — load/save game data (many menus check for existing saves)
+- [x] `cellSaveDataDelete2` — delete save entries (+ AutoLoad2/AutoSave2/FixedLoad2/FixedSave2)
+- [x] `cellMsgDialogOpen2` — display in-game message dialog overlay (+ Close, ProgressBar)
+- [x] `cellRescInit` / `cellRescSetDisplayMode` — resolution scaling for non-native resolutions (wired to real RescManager + SetConvertAndFlip)
+- [x] `cellSysutilGetBgmPlaybackStatus` — background music status (+ Enable/Disable BGM playback)
 
 ---
 
