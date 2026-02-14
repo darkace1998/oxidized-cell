@@ -163,9 +163,7 @@ impl GameLoader {
     /// The caller should use the HLE module name to route function calls
     /// through the HLE dispatcher instead of executing native PRX code.
     pub fn resolve_prx_module(&self, prx_path: &str) -> Option<&'static str> {
-        self.firmware_registry.get_hle_module_name(
-            prx_path.rsplit('/').next().unwrap_or(prx_path)
-        )
+        self.firmware_registry.get_hle_module_name(prx_path)
     }
 
     /// Load a game from a file path
@@ -382,6 +380,8 @@ impl GameLoader {
         let npdrm_count = loader.crypto_mut().load_npdrm_keys();
         if npdrm_count > 0 {
             info!("Loaded {} NPDRM license keys", npdrm_count);
+        } else {
+            debug!("No NPDRM license keys found. PSN games will need RAP files in rap/ or exdata/ directories.");
         }
 
         loader

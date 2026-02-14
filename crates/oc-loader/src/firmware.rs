@@ -423,7 +423,7 @@ impl PupLoader {
                 PupEntryId::CoreOs => Some(target_dir.join("sys/internal/core_os.self")),
                 _ => {
                     // Save unknown entries by raw ID for potential future use
-                    Some(target_dir.join(format!("sys/internal/entry_0x{:03x}.bin", entry.raw_id)))
+                    Some(target_dir.join(format!("sys/internal/entry_0x{:04x}.bin", entry.raw_id)))
                 }
             };
 
@@ -689,10 +689,14 @@ impl FirmwareModuleRegistry {
         });
     }
 
+    /// Extract the basename from a PRX path or filename
+    fn basename(path: &str) -> &str {
+        path.rsplit('/').next().unwrap_or(path)
+    }
+
     /// Look up a module by its PRX filename (e.g. "libsysutil.sprx")
     pub fn find_by_filename(&self, filename: &str) -> Option<&FirmwareModuleInfo> {
-        // Normalise: strip leading path components if present
-        let basename = filename.rsplit('/').next().unwrap_or(filename);
+        let basename = Self::basename(filename);
         self.modules.iter().find(|m| m.filename.eq_ignore_ascii_case(basename))
     }
 
@@ -724,9 +728,7 @@ impl FirmwareModuleRegistry {
     ///
     /// Returns `Some(module_info)` if the module is known, `None` otherwise.
     pub fn resolve_prx_path(&self, prx_path: &str) -> Option<&FirmwareModuleInfo> {
-        // Extract the basename from the full path
-        let basename = prx_path.rsplit('/').next().unwrap_or(prx_path);
-        self.find_by_filename(basename)
+        self.find_by_filename(prx_path)
     }
 
     /// Get all registered modules

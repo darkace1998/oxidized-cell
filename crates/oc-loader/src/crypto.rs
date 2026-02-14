@@ -626,7 +626,14 @@ impl CryptoEngine {
             let entry_path = entry.path();
             if let Some(ext) = entry_path.extension() {
                 if ext.eq_ignore_ascii_case("rap") {
-                    match self.load_rap_file(&entry_path.to_string_lossy()) {
+                    let path_str = match entry_path.to_str() {
+                        Some(s) => s.to_string(),
+                        None => {
+                            warn!("Skipping RAP file with non-UTF-8 path: {:?}", entry_path);
+                            continue;
+                        }
+                    };
+                    match self.load_rap_file(&path_str) {
                         Ok(content_id) => {
                             debug!("Loaded RAP: {}", content_id);
                             loaded += 1;
@@ -678,9 +685,9 @@ impl CryptoEngine {
         self.act_dat_key.as_ref()
     }
 
-    /// Check if NPDRM keys are available (RAP + act.dat)
+    /// Check if NPDRM keys are available (RAP and/or act.dat)
     pub fn has_npdrm_keys(&self) -> bool {
-        !self.rap_keys.is_empty()
+        !self.rap_keys.is_empty() || self.act_dat_key.is_some()
     }
 
     /// Get count of loaded RAP keys
