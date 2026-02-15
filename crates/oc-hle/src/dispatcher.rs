@@ -1705,6 +1705,356 @@ fn hle_sysutil_disable_bgm_playback(_ctx: &HleCallContext) -> i64 {
     crate::cell_sysutil::cell_sysutil_disable_bgm_playback() as i64
 }
 
+// --- cellVdec (Video Decoder) ---
+
+fn hle_vdec_query_attr(ctx: &HleCallContext) -> i64 {
+    let vdec_type_addr = ctx.args[0] as u32;
+    let attr_addr = ctx.args[1] as u32;
+    debug!("cellVdecQueryAttr(type=0x{:08x}, attr=0x{:08x})", vdec_type_addr, attr_addr);
+    unsafe {
+        crate::cell_vdec::cell_vdec_query_attr(
+            vdec_type_addr as *const crate::cell_vdec::CellVdecType,
+            attr_addr as *mut crate::cell_vdec::CellVdecAttr,
+        ) as i64
+    }
+}
+
+fn hle_vdec_open(ctx: &HleCallContext) -> i64 {
+    let vdec_type_addr = ctx.args[0] as u32;
+    let resource_addr = ctx.args[1] as u32;
+    let cb_addr = ctx.args[2] as u32;
+    let handle_addr = ctx.args[3] as u32;
+    debug!("cellVdecOpen(type=0x{:08x}, handle=0x{:08x})", vdec_type_addr, handle_addr);
+    unsafe {
+        crate::cell_vdec::cell_vdec_open(
+            vdec_type_addr as *const crate::cell_vdec::CellVdecType,
+            resource_addr as *const crate::cell_vdec::CellVdecResource,
+            cb_addr as *const crate::cell_vdec::CellVdecCb,
+            handle_addr as *mut crate::cell_vdec::VdecHandle,
+        ) as i64
+    }
+}
+
+fn hle_vdec_close(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    trace!("cellVdecClose(handle={})", handle);
+    crate::cell_vdec::cell_vdec_close(handle) as i64
+}
+
+fn hle_vdec_start_seq(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    trace!("cellVdecStartSeq(handle={})", handle);
+    crate::cell_vdec::cell_vdec_start_seq(handle) as i64
+}
+
+fn hle_vdec_end_seq(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    trace!("cellVdecEndSeq(handle={})", handle);
+    crate::cell_vdec::cell_vdec_end_seq(handle) as i64
+}
+
+fn hle_vdec_decode_au(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let mode = ctx.args[1] as u32;
+    let au_info_addr = ctx.args[2] as u32;
+    debug!("cellVdecDecodeAu(handle={}, mode={})", handle, mode);
+    unsafe {
+        crate::cell_vdec::cell_vdec_decode_au(
+            handle,
+            mode,
+            au_info_addr as *const crate::cell_vdec::CellVdecAuInfo,
+        ) as i64
+    }
+}
+
+fn hle_vdec_get_picture(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let pic_format_addr = ctx.args[1] as u32;
+    let pic_item_addr = ctx.args[2] as u32;
+    debug!("cellVdecGetPicture(handle={})", handle);
+    unsafe {
+        crate::cell_vdec::cell_vdec_get_picture(
+            handle,
+            pic_format_addr as *const crate::cell_vdec::CellVdecPicFormat,
+            pic_item_addr as *mut crate::cell_vdec::CellVdecPicItem,
+        ) as i64
+    }
+}
+
+fn hle_vdec_get_pic_item(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let pic_item_addr = ctx.args[1] as u32;
+    debug!("cellVdecGetPicItem(handle={})", handle);
+    crate::cell_vdec::cell_vdec_get_pic_item(
+        handle,
+        pic_item_addr as *mut u32,
+    ) as i64
+}
+
+fn hle_vdec_set_frame_rate(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let frame_rate = ctx.args[1] as u32;
+    trace!("cellVdecSetFrameRate(handle={}, rate={})", handle, frame_rate);
+    crate::cell_vdec::cell_vdec_set_frame_rate(handle, frame_rate) as i64
+}
+
+// --- cellAdec (Audio Decoder) ---
+
+fn hle_adec_query_attr(ctx: &HleCallContext) -> i64 {
+    let adec_type_addr = ctx.args[0] as u32;
+    let attr_addr = ctx.args[1] as u32;
+    debug!("cellAdecQueryAttr(type=0x{:08x}, attr=0x{:08x})", adec_type_addr, attr_addr);
+    unsafe {
+        crate::cell_adec::cell_adec_query_attr(
+            adec_type_addr as *const crate::cell_adec::CellAdecType,
+            attr_addr as *mut crate::cell_adec::CellAdecAttr,
+        ) as i64
+    }
+}
+
+fn hle_adec_open(ctx: &HleCallContext) -> i64 {
+    let adec_type_addr = ctx.args[0] as u32;
+    let resource_addr = ctx.args[1] as u32;
+    let cb_addr = ctx.args[2] as u32;
+    let handle_addr = ctx.args[3] as u32;
+    debug!("cellAdecOpen(type=0x{:08x}, handle=0x{:08x})", adec_type_addr, handle_addr);
+    unsafe {
+        crate::cell_adec::cell_adec_open(
+            adec_type_addr as *const crate::cell_adec::CellAdecType,
+            resource_addr as *const crate::cell_adec::CellAdecResource,
+            cb_addr as *const crate::cell_adec::CellAdecCb,
+            handle_addr as *mut crate::cell_adec::AdecHandle,
+        ) as i64
+    }
+}
+
+fn hle_adec_close(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    trace!("cellAdecClose(handle={})", handle);
+    crate::cell_adec::cell_adec_close(handle) as i64
+}
+
+fn hle_adec_start_seq(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let param = ctx.args[1] as u32;
+    trace!("cellAdecStartSeq(handle={})", handle);
+    crate::cell_adec::cell_adec_start_seq(handle, param) as i64
+}
+
+fn hle_adec_end_seq(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    trace!("cellAdecEndSeq(handle={})", handle);
+    crate::cell_adec::cell_adec_end_seq(handle) as i64
+}
+
+fn hle_adec_decode_au(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let au_info_addr = ctx.args[1] as u32;
+    debug!("cellAdecDecodeAu(handle={})", handle);
+    unsafe {
+        crate::cell_adec::cell_adec_decode_au(
+            handle,
+            au_info_addr as *const crate::cell_adec::CellAdecAuInfo,
+        ) as i64
+    }
+}
+
+fn hle_adec_get_pcm(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let pcm_item_addr = ctx.args[1] as u32;
+    debug!("cellAdecGetPcm(handle={})", handle);
+    unsafe {
+        crate::cell_adec::cell_adec_get_pcm(
+            handle,
+            pcm_item_addr as *mut crate::cell_adec::CellAdecPcmItem,
+        ) as i64
+    }
+}
+
+fn hle_adec_get_pcm_item(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let pcm_item_addr = ctx.args[1] as u32;
+    debug!("cellAdecGetPcmItem(handle={})", handle);
+    crate::cell_adec::cell_adec_get_pcm_item(
+        handle,
+        pcm_item_addr as *mut u32,
+    ) as i64
+}
+
+// --- cellDmux (Demultiplexer) ---
+
+fn hle_dmux_query_attr(ctx: &HleCallContext) -> i64 {
+    let dmux_type_addr = ctx.args[0] as u32;
+    let resource_addr = ctx.args[1] as u32;
+    let attr_addr = ctx.args[2] as u32;
+    debug!("cellDmuxQueryAttr(type=0x{:08x})", dmux_type_addr);
+    unsafe {
+        crate::cell_dmux::cell_dmux_query_attr(
+            dmux_type_addr as *const crate::cell_dmux::CellDmuxType,
+            resource_addr as *const crate::cell_dmux::CellDmuxResource,
+            attr_addr as *mut crate::cell_dmux::CellDmuxType,
+        ) as i64
+    }
+}
+
+fn hle_dmux_open(ctx: &HleCallContext) -> i64 {
+    let dmux_type_addr = ctx.args[0] as u32;
+    let resource_addr = ctx.args[1] as u32;
+    let cb_addr = ctx.args[2] as u32;
+    let handle_addr = ctx.args[3] as u32;
+    debug!("cellDmuxOpen(type=0x{:08x}, handle=0x{:08x})", dmux_type_addr, handle_addr);
+    unsafe {
+        crate::cell_dmux::cell_dmux_open(
+            dmux_type_addr as *const crate::cell_dmux::CellDmuxType,
+            resource_addr as *const crate::cell_dmux::CellDmuxResource,
+            cb_addr as *const crate::cell_dmux::CellDmuxCb,
+            handle_addr as *mut crate::cell_dmux::DmuxHandle,
+        ) as i64
+    }
+}
+
+fn hle_dmux_close(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    trace!("cellDmuxClose(handle={})", handle);
+    crate::cell_dmux::cell_dmux_close(handle) as i64
+}
+
+fn hle_dmux_set_stream(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let stream_addr = ctx.args[1] as u32;
+    let stream_size = ctx.args[2] as u32;
+    let discontinuity = ctx.args[3] as u32;
+    debug!("cellDmuxSetStream(handle={}, addr=0x{:08x}, size={})", handle, stream_addr, stream_size);
+    crate::cell_dmux::cell_dmux_set_stream(handle, stream_addr, stream_size, discontinuity) as i64
+}
+
+fn hle_dmux_reset_stream(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    trace!("cellDmuxResetStream(handle={})", handle);
+    crate::cell_dmux::cell_dmux_reset_stream(handle) as i64
+}
+
+fn hle_dmux_enable_es(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let es_attr_addr = ctx.args[1] as u32;
+    let es_cb_addr = ctx.args[2] as u32;
+    let es_handle_addr = ctx.args[3] as u32;
+    debug!("cellDmuxEnableEs(handle={})", handle);
+    unsafe {
+        crate::cell_dmux::cell_dmux_enable_es(
+            handle,
+            es_attr_addr as *const crate::cell_dmux::CellDmuxEsAttr,
+            es_cb_addr as *const crate::cell_dmux::CellDmuxEsCb,
+            es_handle_addr as *mut u32,
+        ) as i64
+    }
+}
+
+fn hle_dmux_disable_es(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let es_handle = ctx.args[1] as u32;
+    trace!("cellDmuxDisableEs(handle={}, es={})", handle, es_handle);
+    crate::cell_dmux::cell_dmux_disable_es(handle, es_handle) as i64
+}
+
+fn hle_dmux_reset_es(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let es_handle = ctx.args[1] as u32;
+    trace!("cellDmuxResetEs(handle={}, es={})", handle, es_handle);
+    crate::cell_dmux::cell_dmux_reset_es(handle, es_handle) as i64
+}
+
+fn hle_dmux_get_au(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let es_handle = ctx.args[1] as u32;
+    let au_info_addr = ctx.args[2] as u32;
+    let au_specific_info_addr = ctx.args[3] as u32;
+    debug!("cellDmuxGetAu(handle={}, es={})", handle, es_handle);
+    unsafe {
+        crate::cell_dmux::cell_dmux_get_au(
+            handle,
+            es_handle,
+            au_info_addr as *mut crate::cell_dmux::CellDmuxAuInfo,
+            au_specific_info_addr as *mut u32,
+        ) as i64
+    }
+}
+
+fn hle_dmux_peek_au(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let es_handle = ctx.args[1] as u32;
+    let au_info_addr = ctx.args[2] as u32;
+    let au_specific_info_addr = ctx.args[3] as u32;
+    debug!("cellDmuxPeekAu(handle={}, es={})", handle, es_handle);
+    unsafe {
+        crate::cell_dmux::cell_dmux_peek_au(
+            handle,
+            es_handle,
+            au_info_addr as *mut crate::cell_dmux::CellDmuxAuInfo,
+            au_specific_info_addr as *mut u32,
+        ) as i64
+    }
+}
+
+fn hle_dmux_release_au(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let es_handle = ctx.args[1] as u32;
+    trace!("cellDmuxReleaseAu(handle={}, es={})", handle, es_handle);
+    crate::cell_dmux::cell_dmux_release_au(handle, es_handle) as i64
+}
+
+// --- cellVpost (Video Post-Processor) ---
+
+fn hle_vpost_query_attr(ctx: &HleCallContext) -> i64 {
+    let cfg_addr = ctx.args[0] as u32;
+    let attr_addr = ctx.args[1] as u32;
+    debug!("cellVpostQueryAttr(cfg=0x{:08x}, attr=0x{:08x})", cfg_addr, attr_addr);
+    unsafe {
+        crate::cell_vpost::cell_vpost_query_attr(
+            cfg_addr as *const crate::cell_vpost::CellVpostCfg,
+            attr_addr as *mut crate::cell_vpost::CellVpostResource,
+        ) as i64
+    }
+}
+
+fn hle_vpost_open(ctx: &HleCallContext) -> i64 {
+    let cfg_addr = ctx.args[0] as u32;
+    let resource_addr = ctx.args[1] as u32;
+    let handle_addr = ctx.args[2] as u32;
+    debug!("cellVpostOpen(cfg=0x{:08x}, handle=0x{:08x})", cfg_addr, handle_addr);
+    unsafe {
+        crate::cell_vpost::cell_vpost_open(
+            cfg_addr as *const crate::cell_vpost::CellVpostCfg,
+            resource_addr as *const crate::cell_vpost::CellVpostResource,
+            handle_addr as *mut crate::cell_vpost::VpostHandle,
+        ) as i64
+    }
+}
+
+fn hle_vpost_close(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    trace!("cellVpostClose(handle={})", handle);
+    crate::cell_vpost::cell_vpost_close(handle) as i64
+}
+
+fn hle_vpost_exec(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let in_buffer = ctx.args[1] as u32;
+    let ctrl_param_addr = ctx.args[2] as u32;
+    let out_buffer = ctx.args[3] as u32;
+    let pic_info_addr = ctx.args[4] as u32;
+    debug!("cellVpostExec(handle={})", handle);
+    unsafe {
+        crate::cell_vpost::cell_vpost_exec(
+            handle,
+            in_buffer as *const u8,
+            ctrl_param_addr as *const crate::cell_vpost::CellVpostCtrlParam,
+            out_buffer as *mut u8,
+            pic_info_addr as *mut crate::cell_vpost::CellVpostPictureInfo,
+        ) as i64
+    }
+}
+
 #[allow(dead_code)]
 fn hle_stub_return_ok(_ctx: &HleCallContext) -> i64 {
     error::CELL_OK
@@ -1861,6 +2211,46 @@ pub fn register_all_hle_functions(dispatcher: &mut HleDispatcher) {
     dispatcher.register_function("cellSysutil", "cellSysutilGetBgmPlaybackStatus", hle_sysutil_get_bgm_playback_status);
     dispatcher.register_function("cellSysutil", "cellSysutilEnableBgmPlayback", hle_sysutil_enable_bgm_playback);
     dispatcher.register_function("cellSysutil", "cellSysutilDisableBgmPlayback", hle_sysutil_disable_bgm_playback);
+    
+    // cellVdec - Video Decoder
+    dispatcher.register_function("cellVdec", "cellVdecQueryAttr", hle_vdec_query_attr);
+    dispatcher.register_function("cellVdec", "cellVdecOpen", hle_vdec_open);
+    dispatcher.register_function("cellVdec", "cellVdecClose", hle_vdec_close);
+    dispatcher.register_function("cellVdec", "cellVdecStartSeq", hle_vdec_start_seq);
+    dispatcher.register_function("cellVdec", "cellVdecEndSeq", hle_vdec_end_seq);
+    dispatcher.register_function("cellVdec", "cellVdecDecodeAu", hle_vdec_decode_au);
+    dispatcher.register_function("cellVdec", "cellVdecGetPicture", hle_vdec_get_picture);
+    dispatcher.register_function("cellVdec", "cellVdecGetPicItem", hle_vdec_get_pic_item);
+    dispatcher.register_function("cellVdec", "cellVdecSetFrameRate", hle_vdec_set_frame_rate);
+    
+    // cellAdec - Audio Decoder
+    dispatcher.register_function("cellAdec", "cellAdecQueryAttr", hle_adec_query_attr);
+    dispatcher.register_function("cellAdec", "cellAdecOpen", hle_adec_open);
+    dispatcher.register_function("cellAdec", "cellAdecClose", hle_adec_close);
+    dispatcher.register_function("cellAdec", "cellAdecStartSeq", hle_adec_start_seq);
+    dispatcher.register_function("cellAdec", "cellAdecEndSeq", hle_adec_end_seq);
+    dispatcher.register_function("cellAdec", "cellAdecDecodeAu", hle_adec_decode_au);
+    dispatcher.register_function("cellAdec", "cellAdecGetPcm", hle_adec_get_pcm);
+    dispatcher.register_function("cellAdec", "cellAdecGetPcmItem", hle_adec_get_pcm_item);
+    
+    // cellDmux - Demultiplexer
+    dispatcher.register_function("cellDmux", "cellDmuxQueryAttr", hle_dmux_query_attr);
+    dispatcher.register_function("cellDmux", "cellDmuxOpen", hle_dmux_open);
+    dispatcher.register_function("cellDmux", "cellDmuxClose", hle_dmux_close);
+    dispatcher.register_function("cellDmux", "cellDmuxSetStream", hle_dmux_set_stream);
+    dispatcher.register_function("cellDmux", "cellDmuxResetStream", hle_dmux_reset_stream);
+    dispatcher.register_function("cellDmux", "cellDmuxEnableEs", hle_dmux_enable_es);
+    dispatcher.register_function("cellDmux", "cellDmuxDisableEs", hle_dmux_disable_es);
+    dispatcher.register_function("cellDmux", "cellDmuxResetEs", hle_dmux_reset_es);
+    dispatcher.register_function("cellDmux", "cellDmuxGetAu", hle_dmux_get_au);
+    dispatcher.register_function("cellDmux", "cellDmuxPeekAu", hle_dmux_peek_au);
+    dispatcher.register_function("cellDmux", "cellDmuxReleaseAu", hle_dmux_release_au);
+    
+    // cellVpost - Video Post-Processor
+    dispatcher.register_function("cellVpost", "cellVpostQueryAttr", hle_vpost_query_attr);
+    dispatcher.register_function("cellVpost", "cellVpostOpen", hle_vpost_open);
+    dispatcher.register_function("cellVpost", "cellVpostClose", hle_vpost_close);
+    dispatcher.register_function("cellVpost", "cellVpostExec", hle_vpost_exec);
     
     info!("Registered {} HLE functions", dispatcher.stub_map.len());
 }
@@ -2316,5 +2706,86 @@ mod tests {
         // Previous count was ~96, now ~111
         assert!(dispatcher.stub_map.len() >= 100,
             "Expected at least 100 registered functions, got {}", dispatcher.stub_map.len());
+    }
+    
+    // Phase 2 (todo.md) media module registration tests
+    
+    #[test]
+    fn test_vdec_functions_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        let vdec_functions = [
+            "cellVdecQueryAttr", "cellVdecOpen", "cellVdecClose",
+            "cellVdecStartSeq", "cellVdecEndSeq", "cellVdecDecodeAu",
+            "cellVdecGetPicture", "cellVdecGetPicItem", "cellVdecSetFrameRate",
+        ];
+        
+        for func_name in &vdec_functions {
+            let found = dispatcher.stub_map.values().any(|info| info.name == *func_name);
+            assert!(found, "cellVdec function '{}' not registered", func_name);
+        }
+    }
+    
+    #[test]
+    fn test_adec_functions_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        let adec_functions = [
+            "cellAdecQueryAttr", "cellAdecOpen", "cellAdecClose",
+            "cellAdecStartSeq", "cellAdecEndSeq", "cellAdecDecodeAu",
+            "cellAdecGetPcm", "cellAdecGetPcmItem",
+        ];
+        
+        for func_name in &adec_functions {
+            let found = dispatcher.stub_map.values().any(|info| info.name == *func_name);
+            assert!(found, "cellAdec function '{}' not registered", func_name);
+        }
+    }
+    
+    #[test]
+    fn test_dmux_functions_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        let dmux_functions = [
+            "cellDmuxQueryAttr", "cellDmuxOpen", "cellDmuxClose",
+            "cellDmuxSetStream", "cellDmuxResetStream",
+            "cellDmuxEnableEs", "cellDmuxDisableEs", "cellDmuxResetEs",
+            "cellDmuxGetAu", "cellDmuxPeekAu", "cellDmuxReleaseAu",
+        ];
+        
+        for func_name in &dmux_functions {
+            let found = dispatcher.stub_map.values().any(|info| info.name == *func_name);
+            assert!(found, "cellDmux function '{}' not registered", func_name);
+        }
+    }
+    
+    #[test]
+    fn test_vpost_functions_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        let vpost_functions = [
+            "cellVpostQueryAttr", "cellVpostOpen", "cellVpostClose", "cellVpostExec",
+        ];
+        
+        for func_name in &vpost_functions {
+            let found = dispatcher.stub_map.values().any(|info| info.name == *func_name);
+            assert!(found, "cellVpost function '{}' not registered", func_name);
+        }
+    }
+    
+    #[test]
+    fn test_media_module_total_count() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        // Phase 2 adds: 9 cellVdec + 8 cellAdec + 11 cellDmux + 4 cellVpost = 32
+        // Previous count was ~111, now ~143
+        assert!(dispatcher.stub_map.len() >= 140,
+            "Expected at least 140 registered functions after media module wiring, got {}",
+            dispatcher.stub_map.len());
     }
 }

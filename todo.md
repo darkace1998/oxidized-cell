@@ -81,19 +81,19 @@ draw pipeline is not fully connected. This is the single biggest blocker for vis
 114 functions are registered in the HLE dispatcher, but several important modules have full
 implementations that are **not wired** to the dispatcher. Games will crash on unresolved imports.
 
-- [ ] **Register cellVdec (Video Decoder) functions**
+- [x] **Register cellVdec (Video Decoder) functions**
   - Full H.264/MPEG-2 decoders exist in `cell_vdec.rs` — just needs dispatcher entries
   - Required for: FMV cutscenes, video playback
 
-- [ ] **Register cellAdec (Audio Decoder) functions**
+- [x] **Register cellAdec (Audio Decoder) functions**
   - LPCM, AC3, ATRAC3, MP3, AAC, WMA decoders in `cell_adec.rs`
   - Required for: in-game audio, music tracks
 
-- [ ] **Register cellDmux (Demultiplexer) functions**
+- [x] **Register cellDmux (Demultiplexer) functions**
   - PAMF, MPEG2-PS/TS, MP4 parser in `cell_dmux.rs`
   - Required for: multimedia playback pipeline (feeds VDEC + ADEC)
 
-- [ ] **Register cellVpost (Video Post-Processor) functions**
+- [x] **Register cellVpost (Video Post-Processor) functions**
   - Scaling, color conversion in `cell_vpost.rs`
   - Required for: video output scaling, color space conversion
 
