@@ -3,7 +3,7 @@
 use crate::objects::{KernelObject, ObjectId, ObjectManager, ObjectType};
 use oc_core::error::KernelError;
 use parking_lot::Mutex;
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, VecDeque};
 use std::sync::Arc;
 
 /// Maximum number of SPU threads per thread group
@@ -153,6 +153,7 @@ struct SpuThreadState {
     status: SpuThreadStatus,
     local_storage: Vec<u8>,
     signals: SpuSignals,
+    mailbox: SpuMailbox,
 }
 
 /// SPU signal management
@@ -160,6 +161,24 @@ struct SpuThreadState {
 struct SpuSignals {
     signal1: u32,
     signal2: u32,
+}
+
+/// SPU mailbox state for SPU↔PPU communication
+#[derive(Debug, Clone)]
+struct SpuMailbox {
+    /// Outbound mailbox: SPU writes, PPU reads (FIFO, up to 4 entries)
+    outbound: VecDeque<u32>,
+    /// Inbound mailbox: PPU writes, SPU reads (FIFO, up to 4 entries)
+    inbound: VecDeque<u32>,
+}
+
+impl SpuMailbox {
+    fn new() -> Self {
+        Self {
+            outbound: VecDeque::with_capacity(4),
+            inbound: VecDeque::with_capacity(4),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +203,7 @@ impl SpuThread {
                     signal1: 0,
                     signal2: 0,
                 },
+                mailbox: SpuMailbox::new(),
             }),
             _attributes: attributes,
         }
@@ -248,6 +268,52 @@ impl SpuThread {
         }
         
         Ok(state.local_storage[addr..addr + size].to_vec())
+    }
+
+    /// Write a value to the SPU outbound mailbox (SPU → PPU)
+    pub fn write_outbound_mailbox(&self, value: u32) -> Result<(), KernelError> {
+        let mut state = self.inner.lock();
+        if state.mailbox.outbound.len() >= 4 {
+            return Err(KernelError::ResourceLimit);
+        }
+        state.mailbox.outbound.push_back(value);
+        tracing::debug!("SPU thread {} outbound mailbox write: 0x{:08x}", self.id, value);
+        Ok(())
+    }
+
+    /// Read a value from the SPU outbound mailbox (PPU reads what SPU wrote)
+    pub fn read_outbound_mailbox(&self) -> Result<u32, KernelError> {
+        let mut state = self.inner.lock();
+        state.mailbox.outbound.pop_front()
+            .ok_or(KernelError::WouldBlock)
+    }
+
+    /// Write a value to the SPU inbound mailbox (PPU → SPU)
+    pub fn write_inbound_mailbox(&self, value: u32) -> Result<(), KernelError> {
+        let mut state = self.inner.lock();
+        if state.mailbox.inbound.len() >= 4 {
+            return Err(KernelError::ResourceLimit);
+        }
+        state.mailbox.inbound.push_back(value);
+        tracing::debug!("SPU thread {} inbound mailbox write: 0x{:08x}", self.id, value);
+        Ok(())
+    }
+
+    /// Read a value from the SPU inbound mailbox (SPU reads what PPU wrote)
+    pub fn read_inbound_mailbox(&self) -> Result<u32, KernelError> {
+        let mut state = self.inner.lock();
+        state.mailbox.inbound.pop_front()
+            .ok_or(KernelError::WouldBlock)
+    }
+
+    /// Get number of pending outbound mailbox entries
+    pub fn outbound_mailbox_count(&self) -> usize {
+        self.inner.lock().mailbox.outbound.len()
+    }
+
+    /// Get number of pending inbound mailbox entries
+    pub fn inbound_mailbox_count(&self) -> usize {
+        self.inner.lock().mailbox.inbound.len()
     }
 }
 
@@ -523,6 +589,77 @@ pub mod syscalls {
         // at the system level (individual MFC instances track their own)
         main_memory[ea_start..ea_start + 128].copy_from_slice(&data);
         Ok(true)
+    }
+
+    /// sys_spu_thread_write_mailbox — PPU writes to SPU inbound mailbox
+    ///
+    /// Sends a 32-bit value from PPU to the SPU's inbound mailbox.
+    ///
+    /// # Arguments
+    /// * `thread_id` - SPU thread to write to
+    /// * `value` - 32-bit value to send
+    pub fn sys_spu_thread_write_mailbox(
+        manager: &ObjectManager,
+        thread_id: ObjectId,
+        value: u32,
+    ) -> Result<(), KernelError> {
+        let thread: Arc<SpuThread> = manager.get(thread_id)?;
+        thread.write_inbound_mailbox(value)
+    }
+
+    /// sys_spu_thread_read_mailbox — PPU reads from SPU outbound mailbox
+    ///
+    /// Reads a 32-bit value that the SPU wrote to its outbound mailbox.
+    ///
+    /// # Arguments
+    /// * `thread_id` - SPU thread to read from
+    ///
+    /// # Returns
+    /// * `Ok(value)` if a value was available
+    /// * `Err(WouldBlock)` if the mailbox is empty
+    pub fn sys_spu_thread_read_mailbox(
+        manager: &ObjectManager,
+        thread_id: ObjectId,
+    ) -> Result<u32, KernelError> {
+        let thread: Arc<SpuThread> = manager.get(thread_id)?;
+        thread.read_outbound_mailbox()
+    }
+
+    /// sys_spu_thread_transfer_data_list — MFC list DMA operation
+    ///
+    /// Transfer a list of DMA operations (scatter-gather) between
+    /// SPU local storage and main memory.
+    ///
+    /// Each entry in the list is an (ea_addr, ls_addr, size) tuple.
+    /// All individual transfers follow the same rules as GET/PUT.
+    ///
+    /// # Arguments
+    /// * `thread_id` - SPU thread
+    /// * `entries` - List of (ls_addr, ea_addr, size) transfer descriptors
+    /// * `is_get` - true for GET (main→LS), false for PUT (LS→main)
+    /// * `main_memory` - Main memory slice
+    pub fn sys_spu_thread_transfer_data_list(
+        manager: &ObjectManager,
+        thread_id: ObjectId,
+        entries: &[(u32, u64, u32)],
+        is_get: bool,
+        main_memory: &mut [u8],
+    ) -> Result<(), KernelError> {
+        let thread: Arc<SpuThread> = manager.get(thread_id)?;
+
+        for &(ls_addr, ea_addr, size) in entries {
+            validate_dma_size(size)?;
+            if is_get {
+                let (ea_start, ea_end) = validate_ea_bounds(ea_addr, size, main_memory.len())?;
+                thread.write_ls(ls_addr, &main_memory[ea_start..ea_end])?;
+            } else {
+                let data = thread.read_ls(ls_addr, size)?;
+                let (ea_start, ea_end) = validate_ea_bounds(ea_addr, size, main_memory.len())?;
+                main_memory[ea_start..ea_end].copy_from_slice(&data);
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -1223,6 +1360,154 @@ mod tests {
             &manager, thread_id, 0x0000, 0, 16385, &big_memory,
         );
         assert!(result.is_err(), "Size > 16384 should be rejected");
+    }
+
+    #[test]
+    fn test_spu_mailbox_outbound() {
+        let manager = ObjectManager::new();
+        let group_id = syscalls::sys_spu_thread_group_create(
+            &manager, SpuThreadGroupAttributes::default(), 1, 100,
+        ).unwrap();
+        let thread_id = syscalls::sys_spu_thread_initialize(
+            &manager, group_id, 0, SpuThreadAttributes::default(),
+        ).unwrap();
+
+        let thread: Arc<SpuThread> = manager.get(thread_id).unwrap();
+
+        // Outbound: SPU writes, PPU reads
+        thread.write_outbound_mailbox(0xDEADBEEF).unwrap();
+        thread.write_outbound_mailbox(0xCAFEBABE).unwrap();
+
+        // PPU reads FIFO order
+        assert_eq!(thread.read_outbound_mailbox().unwrap(), 0xDEADBEEF);
+        assert_eq!(thread.read_outbound_mailbox().unwrap(), 0xCAFEBABE);
+
+        // Empty mailbox returns WouldBlock
+        assert!(thread.read_outbound_mailbox().is_err());
+    }
+
+    #[test]
+    fn test_spu_mailbox_inbound() {
+        let manager = ObjectManager::new();
+        let group_id = syscalls::sys_spu_thread_group_create(
+            &manager, SpuThreadGroupAttributes::default(), 1, 100,
+        ).unwrap();
+        let thread_id = syscalls::sys_spu_thread_initialize(
+            &manager, group_id, 0, SpuThreadAttributes::default(),
+        ).unwrap();
+
+        // PPU writes to inbound, SPU reads
+        syscalls::sys_spu_thread_write_mailbox(&manager, thread_id, 0x12345678).unwrap();
+        syscalls::sys_spu_thread_write_mailbox(&manager, thread_id, 0xABCDEF00).unwrap();
+
+        let thread: Arc<SpuThread> = manager.get(thread_id).unwrap();
+        assert_eq!(thread.read_inbound_mailbox().unwrap(), 0x12345678);
+        assert_eq!(thread.read_inbound_mailbox().unwrap(), 0xABCDEF00);
+    }
+
+    #[test]
+    fn test_spu_mailbox_syscall_read() {
+        let manager = ObjectManager::new();
+        let group_id = syscalls::sys_spu_thread_group_create(
+            &manager, SpuThreadGroupAttributes::default(), 1, 100,
+        ).unwrap();
+        let thread_id = syscalls::sys_spu_thread_initialize(
+            &manager, group_id, 0, SpuThreadAttributes::default(),
+        ).unwrap();
+
+        let thread: Arc<SpuThread> = manager.get(thread_id).unwrap();
+        thread.write_outbound_mailbox(0x42).unwrap();
+
+        // PPU reads via syscall
+        let value = syscalls::sys_spu_thread_read_mailbox(&manager, thread_id).unwrap();
+        assert_eq!(value, 0x42);
+
+        // Empty
+        assert!(syscalls::sys_spu_thread_read_mailbox(&manager, thread_id).is_err());
+    }
+
+    #[test]
+    fn test_spu_mailbox_capacity() {
+        let manager = ObjectManager::new();
+        let group_id = syscalls::sys_spu_thread_group_create(
+            &manager, SpuThreadGroupAttributes::default(), 1, 100,
+        ).unwrap();
+        let thread_id = syscalls::sys_spu_thread_initialize(
+            &manager, group_id, 0, SpuThreadAttributes::default(),
+        ).unwrap();
+
+        let thread: Arc<SpuThread> = manager.get(thread_id).unwrap();
+
+        // Fill outbound mailbox to capacity (4)
+        for i in 0..4 {
+            thread.write_outbound_mailbox(i).unwrap();
+        }
+        assert_eq!(thread.outbound_mailbox_count(), 4);
+
+        // 5th write should fail
+        assert!(thread.write_outbound_mailbox(4).is_err());
+    }
+
+    #[test]
+    fn test_spu_list_dma_get() {
+        let manager = ObjectManager::new();
+        let group_id = syscalls::sys_spu_thread_group_create(
+            &manager, SpuThreadGroupAttributes::default(), 1, 100,
+        ).unwrap();
+        let thread_id = syscalls::sys_spu_thread_initialize(
+            &manager, group_id, 0, SpuThreadAttributes::default(),
+        ).unwrap();
+
+        let mut main_memory = vec![0u8; 4096];
+        main_memory[100..104].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
+        main_memory[200..204].copy_from_slice(&[0x11, 0x22, 0x33, 0x44]);
+
+        // Two GET entries
+        let entries = vec![
+            (0x0000u32, 100u64, 4u32),
+            (0x0100u32, 200u64, 4u32),
+        ];
+
+        syscalls::sys_spu_thread_transfer_data_list(
+            &manager, thread_id, &entries, true, &mut main_memory,
+        ).unwrap();
+
+        // Verify LS contents
+        let data1 = syscalls::sys_spu_thread_read_ls(&manager, thread_id, 0x0000, 4).unwrap();
+        assert_eq!(data1, vec![0xAA, 0xBB, 0xCC, 0xDD]);
+
+        let data2 = syscalls::sys_spu_thread_read_ls(&manager, thread_id, 0x0100, 4).unwrap();
+        assert_eq!(data2, vec![0x11, 0x22, 0x33, 0x44]);
+    }
+
+    #[test]
+    fn test_spu_list_dma_put() {
+        let manager = ObjectManager::new();
+        let group_id = syscalls::sys_spu_thread_group_create(
+            &manager, SpuThreadGroupAttributes::default(), 1, 100,
+        ).unwrap();
+        let thread_id = syscalls::sys_spu_thread_initialize(
+            &manager, group_id, 0, SpuThreadAttributes::default(),
+        ).unwrap();
+
+        // Write to LS first
+        syscalls::sys_spu_thread_write_ls(&manager, thread_id, 0, &[0xDE, 0xAD]).unwrap();
+        syscalls::sys_spu_thread_write_ls(&manager, thread_id, 0x100, &[0xBE, 0xEF]).unwrap();
+
+        let mut main_memory = vec![0u8; 4096];
+
+        // Two PUT entries
+        let entries = vec![
+            (0x0000u32, 500u64, 2u32),
+            (0x0100u32, 600u64, 2u32),
+        ];
+
+        syscalls::sys_spu_thread_transfer_data_list(
+            &manager, thread_id, &entries, false, &mut main_memory,
+        ).unwrap();
+
+        assert_eq!(&main_memory[500..502], &[0xDE, 0xAD]);
+        assert_eq!(&main_memory[600..602], &[0xBE, 0xEF]);
     }
 }
 

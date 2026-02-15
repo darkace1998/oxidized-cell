@@ -1201,6 +1201,194 @@ fn hle_spurs_get_spu_thread_id(ctx: &HleCallContext) -> i64 {
     crate::cell_spurs::cell_spurs_get_spu_thread_id(spurs_ptr, thread, thread_id_addr) as i64
 }
 
+fn hle_spurs_detach_lv2_event_queue(ctx: &HleCallContext) -> i64 {
+    let spurs_ptr = ctx.args[0] as u32;
+    let port = ctx.args[1] as u32;
+    debug!(
+        "cellSpursDetachLv2EventQueue(spurs=0x{:08x}, port={})",
+        spurs_ptr, port
+    );
+    crate::cell_spurs::cell_spurs_detach_lv2_event_queue(spurs_ptr, port) as i64
+}
+
+fn hle_spurs_add_policy_module(ctx: &HleCallContext) -> i64 {
+    let image_addr = ctx.args[0] as u32;
+    let image_size = ctx.args[1] as u32;
+    debug!(
+        "cellSpursAddPolicyModule(addr=0x{:08x}, size={})",
+        image_addr, image_size
+    );
+    crate::cell_spurs::cell_spurs_add_policy_module(image_addr, image_size) as i64
+}
+
+fn hle_spurs_initialize_with_attribute(ctx: &HleCallContext) -> i64 {
+    let spurs_ptr = ctx.args[0] as u32;
+    let attr_ptr = ctx.args[1] as u32;
+    debug!(
+        "cellSpursInitializeWithAttribute(spurs=0x{:08x}, attr=0x{:08x})",
+        spurs_ptr, attr_ptr
+    );
+    crate::cell_spurs::cell_spurs_initialize_with_attribute(spurs_ptr, attr_ptr) as i64
+}
+
+fn hle_spurs_attribute_initialize(ctx: &HleCallContext) -> i64 {
+    let attr_ptr = ctx.args[0] as u32;
+    let n_spus = ctx.args[1] as u32;
+    let spu_priority = ctx.args[2] as u32;
+    let ppu_priority = ctx.args[3] as u32;
+    let exit_if_no_work = ctx.args[4] != 0;
+    debug!(
+        "cellSpursAttributeInitialize(attr=0x{:08x}, nSpus={}, spuPri={}, ppuPri={})",
+        attr_ptr, n_spus, spu_priority, ppu_priority
+    );
+    crate::cell_spurs::cell_spurs_attribute_initialize(
+        attr_ptr, n_spus, spu_priority, ppu_priority, exit_if_no_work,
+    ) as i64
+}
+
+fn hle_spurs_attribute_set_name_prefix(ctx: &HleCallContext) -> i64 {
+    let attr_ptr = ctx.args[0] as u32;
+    let prefix_addr = ctx.args[1] as u32;
+    let size = ctx.args[2] as u32;
+    debug!(
+        "cellSpursAttributeSetNamePrefix(attr=0x{:08x}, prefix=0x{:08x}, size={})",
+        attr_ptr, prefix_addr, size
+    );
+    crate::cell_spurs::cell_spurs_attribute_set_name_prefix(attr_ptr, prefix_addr, size) as i64
+}
+
+fn hle_spurs_get_info(ctx: &HleCallContext) -> i64 {
+    let spurs_ptr = ctx.args[0] as u32;
+    let info_addr = ctx.args[1] as u32;
+    debug!(
+        "cellSpursGetInfo(spurs=0x{:08x}, info=0x{:08x})",
+        spurs_ptr, info_addr
+    );
+    crate::cell_spurs::cell_spurs_get_info(spurs_ptr, info_addr) as i64
+}
+
+fn hle_spurs_wake_up(ctx: &HleCallContext) -> i64 {
+    let spurs_ptr = ctx.args[0] as u32;
+    debug!("cellSpursWakeUp(spurs=0x{:08x})", spurs_ptr);
+    crate::cell_spurs::cell_spurs_wake_up(spurs_ptr) as i64
+}
+
+fn hle_spurs_request_idle_spu(ctx: &HleCallContext) -> i64 {
+    let spurs_ptr = ctx.args[0] as u32;
+    let spu_id_addr = ctx.args[1] as u32;
+    debug!(
+        "cellSpursRequestIdleSpu(spurs=0x{:08x}, out=0x{:08x})",
+        spurs_ptr, spu_id_addr
+    );
+    crate::cell_spurs::cell_spurs_request_idle_spu(spurs_ptr, spu_id_addr) as i64
+}
+
+fn hle_spurs_get_spu_thread_group_id(ctx: &HleCallContext) -> i64 {
+    let spurs_ptr = ctx.args[0] as u32;
+    let group_id_addr = ctx.args[1] as u32;
+    debug!(
+        "cellSpursGetSpuThreadGroupId(spurs=0x{:08x}, out=0x{:08x})",
+        spurs_ptr, group_id_addr
+    );
+    crate::cell_spurs::cell_spurs_get_spu_thread_group_id(spurs_ptr, group_id_addr) as i64
+}
+
+fn hle_spurs_shutdown_taskset(ctx: &HleCallContext) -> i64 {
+    let taskset_ptr = ctx.args[0] as u32;
+    debug!("cellSpursShutdownTaskset(taskset=0x{:08x})", taskset_ptr);
+    crate::cell_spurs::cell_spurs_shutdown_taskset(taskset_ptr) as i64
+}
+
+fn hle_spurs_join_taskset(ctx: &HleCallContext) -> i64 {
+    let taskset_ptr = ctx.args[0] as u32;
+    debug!("cellSpursJoinTaskset(taskset=0x{:08x})", taskset_ptr);
+    crate::cell_spurs::cell_spurs_join_taskset(taskset_ptr) as i64
+}
+
+fn hle_spurs_create_taskset_with_attribute(ctx: &HleCallContext) -> i64 {
+    let spurs_ptr = ctx.args[0] as u32;
+    let taskset_ptr = ctx.args[1] as u32;
+    let attr_ptr = ctx.args[2] as u32;
+    debug!(
+        "cellSpursCreateTasksetWithAttribute(spurs=0x{:08x}, taskset=0x{:08x}, attr=0x{:08x})",
+        spurs_ptr, taskset_ptr, attr_ptr
+    );
+    crate::cell_spurs::cell_spurs_create_taskset_with_attribute(spurs_ptr, taskset_ptr, attr_ptr) as i64
+}
+
+// --- libsre (SPU Runtime Extensions / Regular Expressions) ---
+
+fn hle_sre_compile(ctx: &HleCallContext) -> i64 {
+    let pattern_addr = ctx.args[0] as u32;
+    let flags = ctx.args[1] as u32;
+    let compiled_addr = ctx.args[2] as u32;
+    debug!(
+        "cellSreCompile(pattern=0x{:08x}, flags={}, out=0x{:08x})",
+        pattern_addr, flags, compiled_addr
+    );
+    // Read pattern from memory and compile
+    if pattern_addr == 0 || compiled_addr == 0 {
+        return crate::libsre::SRE_ERROR_INVALID_PARAMETER as i64;
+    }
+    let pattern_str = if crate::memory::is_hle_memory_initialized() {
+        crate::memory::read_string(pattern_addr, 256).unwrap_or_default()
+    } else {
+        return crate::libsre::SRE_ERROR_INVALID_PARAMETER as i64;
+    };
+    match crate::context::get_hle_context_mut().regex.compile(&pattern_str, flags) {
+        Ok(pattern_id) => {
+            if crate::memory::is_hle_memory_initialized() {
+                let _ = crate::memory::write_be32(compiled_addr, pattern_id);
+            }
+            0i64
+        }
+        Err(e) => e as i64,
+    }
+}
+
+fn hle_sre_free(ctx: &HleCallContext) -> i64 {
+    let pattern = ctx.args[0] as u32;
+    debug!("cellSreFree(pattern={})", pattern);
+    crate::context::get_hle_context_mut().regex.free(pattern) as i64
+}
+
+fn hle_sre_match(ctx: &HleCallContext) -> i64 {
+    let pattern = ctx.args[0] as u32;
+    let _text_addr = ctx.args[1] as u32;
+    let _text_len = ctx.args[2] as u32;
+    let _matches_addr = ctx.args[3] as u32;
+    let _max_matches = ctx.args[4] as u32;
+    let _num_matches_addr = ctx.args[5] as u32;
+    debug!("cellSreMatch(pattern={})", pattern);
+    // Stub: return success with 0 matches
+    if _num_matches_addr != 0 && crate::memory::is_hle_memory_initialized() {
+        let _ = crate::memory::write_be32(_num_matches_addr, 0);
+    }
+    0i64
+}
+
+fn hle_sre_search(ctx: &HleCallContext) -> i64 {
+    let pattern = ctx.args[0] as u32;
+    debug!("cellSreSearch(pattern={})", pattern);
+    // Stub: return not found
+    -1i64
+}
+
+fn hle_sre_replace(ctx: &HleCallContext) -> i64 {
+    let pattern = ctx.args[0] as u32;
+    debug!("cellSreReplace(pattern={})", pattern);
+    // Stub: return error (no replacement done)
+    crate::libsre::SRE_ERROR_INVALID_PARAMETER as i64
+}
+
+fn hle_sre_get_error(ctx: &HleCallContext) -> i64 {
+    let error_code = ctx.args[0] as i32;
+    let _buffer_addr = ctx.args[1] as u32;
+    let _buffer_size = ctx.args[2] as u32;
+    debug!("cellSreGetError(code={})", error_code);
+    0i64
+}
+
 // --- Generic stub ---
 
 // --- cellPngDec ---
@@ -2472,6 +2660,26 @@ pub fn register_all_hle_functions(dispatcher: &mut HleDispatcher) {
     dispatcher.register_function("cellSpurs", "cellSpursSetMaxContention", hle_spurs_set_max_contention);
     dispatcher.register_function("cellSpurs", "cellSpursSetPriorities", hle_spurs_set_priorities);
     dispatcher.register_function("cellSpurs", "cellSpursGetSpuThreadId", hle_spurs_get_spu_thread_id);
+    dispatcher.register_function("cellSpurs", "cellSpursDetachLv2EventQueue", hle_spurs_detach_lv2_event_queue);
+    dispatcher.register_function("cellSpurs", "cellSpursAddPolicyModule", hle_spurs_add_policy_module);
+    dispatcher.register_function("cellSpurs", "cellSpursInitializeWithAttribute", hle_spurs_initialize_with_attribute);
+    dispatcher.register_function("cellSpurs", "cellSpursAttributeInitialize", hle_spurs_attribute_initialize);
+    dispatcher.register_function("cellSpurs", "cellSpursAttributeSetNamePrefix", hle_spurs_attribute_set_name_prefix);
+    dispatcher.register_function("cellSpurs", "cellSpursGetInfo", hle_spurs_get_info);
+    dispatcher.register_function("cellSpurs", "cellSpursWakeUp", hle_spurs_wake_up);
+    dispatcher.register_function("cellSpurs", "cellSpursRequestIdleSpu", hle_spurs_request_idle_spu);
+    dispatcher.register_function("cellSpurs", "cellSpursGetSpuThreadGroupId", hle_spurs_get_spu_thread_group_id);
+    dispatcher.register_function("cellSpurs", "cellSpursShutdownTaskset", hle_spurs_shutdown_taskset);
+    dispatcher.register_function("cellSpurs", "cellSpursJoinTaskset", hle_spurs_join_taskset);
+    dispatcher.register_function("cellSpurs", "cellSpursCreateTasksetWithAttribute", hle_spurs_create_taskset_with_attribute);
+    
+    // libsre (SPU Runtime Extensions / Regular Expressions)
+    dispatcher.register_function("libsre", "cellSreCompile", hle_sre_compile);
+    dispatcher.register_function("libsre", "cellSreFree", hle_sre_free);
+    dispatcher.register_function("libsre", "cellSreMatch", hle_sre_match);
+    dispatcher.register_function("libsre", "cellSreSearch", hle_sre_search);
+    dispatcher.register_function("libsre", "cellSreReplace", hle_sre_replace);
+    dispatcher.register_function("libsre", "cellSreGetError", hle_sre_get_error);
     
     // cellPngDec
     dispatcher.register_function("cellPngDec", "cellPngDecCreate", hle_png_dec_create);
@@ -3270,9 +3478,53 @@ mod tests {
         let mut dispatcher = HleDispatcher::new();
         register_all_hle_functions(&mut dispatcher);
         
-        // All modules: ~143 (media) + 9 netctl + 12 http + 11 ssl + 8 kb + 7 mouse = ~190
-        assert!(dispatcher.stub_map.len() >= 185,
-            "Expected at least 185 registered functions after all module wiring, got {}",
+        // Previous ~190 + 13 SPURS + 6 libsre = ~209
+        assert!(dispatcher.stub_map.len() >= 200,
+            "Expected at least 200 registered functions after all module wiring, got {}",
             dispatcher.stub_map.len());
+    }
+
+    #[test]
+    fn test_spurs_extended_functions_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        let spurs_functions = [
+            "cellSpursDetachLv2EventQueue",
+            "cellSpursAddPolicyModule",
+            "cellSpursInitializeWithAttribute",
+            "cellSpursAttributeInitialize",
+            "cellSpursAttributeSetNamePrefix",
+            "cellSpursGetInfo",
+            "cellSpursWakeUp",
+            "cellSpursRequestIdleSpu",
+            "cellSpursGetSpuThreadGroupId",
+            "cellSpursShutdownTaskset",
+            "cellSpursJoinTaskset",
+            "cellSpursCreateTasksetWithAttribute",
+        ];
+        for func_name in &spurs_functions {
+            let found = dispatcher.stub_map.values().any(|info| info.name == *func_name);
+            assert!(found, "SPURS function '{}' not registered", func_name);
+        }
+    }
+
+    #[test]
+    fn test_libsre_functions_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        let sre_functions = [
+            "cellSreCompile",
+            "cellSreFree",
+            "cellSreMatch",
+            "cellSreSearch",
+            "cellSreReplace",
+            "cellSreGetError",
+        ];
+        for func_name in &sre_functions {
+            let found = dispatcher.stub_map.values().any(|info| info.name == *func_name);
+            assert!(found, "libsre function '{}' not registered", func_name);
+        }
     }
 }

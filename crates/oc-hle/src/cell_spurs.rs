@@ -2244,6 +2244,219 @@ pub fn cell_spurs_set_max_contention(_spurs_addr: u32, wid: u32, max_contention:
     0 // CELL_OK
 }
 
+/// cellSpursInitializeWithAttribute - Initialize SPURS with attribute structure
+///
+/// # Arguments
+/// * `spurs_addr` - SPURS instance address
+/// * `attr_addr` - Attribute structure address
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_spurs_initialize_with_attribute(_spurs_addr: u32, _attr_addr: u32) -> i32 {
+    debug!("cellSpursInitializeWithAttribute()");
+
+    // Use default parameters when initializing from attribute struct
+    crate::context::get_hle_context_mut().spurs.initialize(6, 100, 100, false)
+}
+
+/// cellSpursAttributeInitialize - Initialize SPURS attribute structure
+///
+/// # Arguments
+/// * `attr_addr` - Attribute structure address to initialize
+/// * `n_spus` - Number of SPUs
+/// * `spu_priority` - SPU thread priority
+/// * `ppu_priority` - PPU thread priority
+/// * `exit_if_no_work` - Exit when no work available
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_spurs_attribute_initialize(
+    _attr_addr: u32,
+    _n_spus: u32,
+    _spu_priority: u32,
+    _ppu_priority: u32,
+    _exit_if_no_work: bool,
+) -> i32 {
+    debug!("cellSpursAttributeInitialize(nSpus={}, spuPri={}, ppuPri={})",
+        _n_spus, _spu_priority, _ppu_priority);
+
+    // Attribute initialization is informational for HLE — just accept
+    0 // CELL_OK
+}
+
+/// cellSpursAttributeSetNamePrefix - Set SPURS instance name prefix
+///
+/// # Arguments
+/// * `attr_addr` - Attribute structure address
+/// * `prefix_addr` - Name prefix string address
+/// * `size` - Prefix length
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_spurs_attribute_set_name_prefix(
+    _attr_addr: u32,
+    prefix_addr: u32,
+    _size: u32,
+) -> i32 {
+    let name = if prefix_addr != 0 && crate::memory::is_hle_memory_initialized() {
+        crate::memory::read_string(prefix_addr, 128).unwrap_or_else(|_| String::from("SPURS"))
+    } else {
+        String::from("SPURS")
+    };
+    debug!("cellSpursAttributeSetNamePrefix(name='{}')", name);
+
+    0 // CELL_OK
+}
+
+/// cellSpursGetInfo - Get SPURS instance information
+///
+/// # Arguments
+/// * `spurs_addr` - SPURS instance address
+/// * `info_addr` - Output info structure address
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_spurs_get_info(_spurs_addr: u32, info_addr: u32) -> i32 {
+    debug!("cellSpursGetInfo(info=0x{:08X})", info_addr);
+
+    let ctx = crate::context::get_hle_context();
+    if !ctx.spurs.is_initialized() {
+        return CELL_SPURS_ERROR_STAT;
+    }
+
+    // Write basic info: number of SPUs (at offset 0)
+    if info_addr != 0 && crate::memory::is_hle_memory_initialized() {
+        let _ = crate::memory::write_be32(info_addr, ctx.spurs.get_num_spus());
+    }
+
+    0 // CELL_OK
+}
+
+/// cellSpursWakeUp - Wake up SPURS kernel
+///
+/// # Arguments
+/// * `spurs_addr` - SPURS instance address
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_spurs_wake_up(_spurs_addr: u32) -> i32 {
+    debug!("cellSpursWakeUp()");
+
+    let ctx = crate::context::get_hle_context();
+    if !ctx.spurs.is_initialized() {
+        return CELL_SPURS_ERROR_STAT;
+    }
+
+    // Wake-up is a no-op in HLE mode — workloads are dispatched immediately
+    0 // CELL_OK
+}
+
+/// cellSpursRequestIdleSpu - Request an idle SPU for exclusive use
+///
+/// # Arguments
+/// * `spurs_addr` - SPURS instance address
+/// * `spu_id_addr` - Output address for assigned SPU ID
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_spurs_request_idle_spu(_spurs_addr: u32, spu_id_addr: u32) -> i32 {
+    debug!("cellSpursRequestIdleSpu(out=0x{:08X})", spu_id_addr);
+
+    let ctx = crate::context::get_hle_context();
+    if !ctx.spurs.is_initialized() {
+        return CELL_SPURS_ERROR_STAT;
+    }
+
+    // Return SPU 0 as the idle SPU (HLE stub)
+    if spu_id_addr != 0 && crate::memory::is_hle_memory_initialized() {
+        let _ = crate::memory::write_be32(spu_id_addr, 0);
+    }
+
+    0 // CELL_OK
+}
+
+/// cellSpursGetSpuThreadGroupId - Get the SPU thread group ID
+///
+/// # Arguments
+/// * `spurs_addr` - SPURS instance address
+/// * `group_id_addr` - Output address for thread group ID
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_spurs_get_spu_thread_group_id(_spurs_addr: u32, group_id_addr: u32) -> i32 {
+    debug!("cellSpursGetSpuThreadGroupId(out=0x{:08X})", group_id_addr);
+
+    let ctx = crate::context::get_hle_context();
+    if !ctx.spurs.is_initialized() {
+        return CELL_SPURS_ERROR_STAT;
+    }
+
+    // Return the SPURS group ID (default 1)
+    if group_id_addr != 0 && crate::memory::is_hle_memory_initialized() {
+        let _ = crate::memory::write_be32(group_id_addr, 1);
+    }
+
+    0 // CELL_OK
+}
+
+/// cellSpursShutdownTaskset - Shut down a taskset
+///
+/// # Arguments
+/// * `taskset_addr` - Taskset handle address
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_spurs_shutdown_taskset(_taskset_addr: u32) -> i32 {
+    debug!("cellSpursShutdownTaskset()");
+
+    let ctx = crate::context::get_hle_context();
+    if !ctx.spurs.is_initialized() {
+        return CELL_SPURS_ERROR_STAT;
+    }
+
+    // Shutdown is a no-op in HLE mode — tasks are not truly running
+    0 // CELL_OK
+}
+
+/// cellSpursJoinTaskset - Wait for a taskset to complete
+///
+/// # Arguments
+/// * `taskset_addr` - Taskset handle address
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_spurs_join_taskset(_taskset_addr: u32) -> i32 {
+    debug!("cellSpursJoinTaskset()");
+
+    let ctx = crate::context::get_hle_context();
+    if !ctx.spurs.is_initialized() {
+        return CELL_SPURS_ERROR_STAT;
+    }
+
+    // In HLE mode, tasks complete synchronously
+    0 // CELL_OK
+}
+
+/// cellSpursCreateTasksetWithAttribute - Create taskset with attribute structure
+///
+/// # Arguments
+/// * `spurs_addr` - SPURS instance address
+/// * `taskset_addr` - Output taskset address
+/// * `attr_addr` - Attribute structure address
+///
+/// # Returns
+/// * 0 on success
+pub fn cell_spurs_create_taskset_with_attribute(
+    spurs_addr: u32,
+    taskset_addr: u32,
+    _attr_addr: u32,
+) -> i32 {
+    debug!("cellSpursCreateTasksetWithAttribute()");
+
+    // Delegate to the normal create taskset (attributes are informational in HLE)
+    cell_spurs_create_taskset(spurs_addr, taskset_addr)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

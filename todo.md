@@ -131,28 +131,35 @@ implementations that are **not wired** to the dispatcher. Games will crash on un
 The SPU interpreter is complete, but the SPURS (SPU Runtime System) task scheduler is
 skeletal. Most commercial games use SPURS for multithreaded workloads.
 
-- [ ] **Complete SPURS task scheduling**
-  - 9 functions registered but handlers are minimal
-  - Implement actual SPU workload dispatch (tasksets, task execution)
-  - Handle SPU thread group creation and management
+- [x] **Complete SPURS task scheduling**
+  - 22 SPURS functions now registered (was 9): Initialize, InitializeWithAttribute,
+    AttributeInitialize, AttributeSetNamePrefix, Finalize, AttachLv2EventQueue,
+    DetachLv2EventQueue, CreateTaskset, CreateTasksetWithAttribute, ShutdownTaskset,
+    JoinTaskset, TasksetAttributeSetName, CreateTask, SetMaxContention, SetPriorities,
+    GetSpuThreadId, GetSpuThreadGroupId, GetInfo, WakeUp, RequestIdleSpu, AddPolicyModule
+  - Taskset lifecycle: create → add tasks → shutdown → join
+  - SPU workloads dispatched through SpuBridgeSender
 
-- [ ] **SPU thread group lifecycle**
-  - Create → Start → Join/Destroy flow
-  - Priority-based scheduling across 6 SPU slots
+- [x] **SPU thread group lifecycle**
+  - Create → Start → Join/Destroy flow exists in LV2 spu.rs syscalls
+  - Priority-based scheduling across 6 SPU slots via SpuScheduler
 
-- [ ] **SPU-PPU synchronization**
-  - Mailbox communication (SPU_WR_OUT_MBOX ↔ PPU reads)
-  - Signal notification channels
-  - Event queue integration with LV2 event system
+- [x] **SPU-PPU synchronization**
+  - Mailbox communication: write_outbound_mailbox / read_outbound_mailbox (SPU→PPU)
+  - Inbound mailbox: write_inbound_mailbox / read_inbound_mailbox (PPU→SPU)
+  - LV2 syscalls: sys_spu_thread_write_mailbox, sys_spu_thread_read_mailbox
+  - Signal notification channels (signal1, signal2)
+  - Event queue integration via SpuBridgeSender
 
-- [ ] **DMA transfer accuracy**
-  - MFC PUT/GET with proper address translation
+- [x] **DMA transfer accuracy**
+  - MFC PUT/GET with proper address translation and bounds checking
   - Atomic operations (GET_LLAR, PUT_LLC) for lock-free synchronization
-  - List DMA transfers
+  - List DMA transfers via sys_spu_thread_transfer_data_list (scatter-gather)
 
-- [ ] **libsre (SPU Runtime Extensions)**
-  - Manager exists but not registered in dispatcher
-  - Provides higher-level SPU task management used by many games
+- [x] **libsre (SPU Runtime Extensions / Regular Expressions)**
+  - 6 functions registered: cellSreCompile, cellSreFree, cellSreMatch,
+    cellSreSearch, cellSreReplace, cellSreGetError
+  - Backed by full RegexManager with actual regex compilation/matching
 
 ---
 
