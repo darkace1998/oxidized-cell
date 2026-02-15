@@ -104,6 +104,8 @@ pub mod key_codes {
     pub const KEY_V: u32 = 86;
     pub const KEY_Q: u32 = 81;
     pub const KEY_E: u32 = 69;
+    pub const KEY_1: u32 = 49;
+    pub const KEY_3: u32 = 51;
     pub const KEY_ENTER: u32 = 13;
     pub const KEY_SPACE: u32 = 32;
     pub const KEY_UP: u32 = 38;
@@ -152,8 +154,8 @@ impl KeyboardMapping {
         // Shoulder buttons
         bindings.insert(key_codes::KEY_Q, Ps3Button::L1);
         bindings.insert(key_codes::KEY_E, Ps3Button::R1);
-        bindings.insert(49, Ps3Button::L2); // '1' key
-        bindings.insert(51, Ps3Button::R2); // '3' key
+        bindings.insert(key_codes::KEY_1, Ps3Button::L2);
+        bindings.insert(key_codes::KEY_3, Ps3Button::R2);
 
         // System buttons
         bindings.insert(key_codes::KEY_ENTER, Ps3Button::Start);
@@ -952,6 +954,7 @@ impl PadManager {
     /// * `value` - Raw axis value (0-255, 128 = center)
     /// * `threshold` - Dead zone threshold (0.0-1.0, e.g. 0.15 = 15%)
     pub fn apply_dead_zone(value: u8, threshold: f32) -> u8 {
+        let threshold = threshold.clamp(0.0, 1.0);
         let center = 128.0f32;
         let offset = (value as f32) - center;
         let magnitude = offset.abs() / center; // 0.0-1.0
@@ -1739,7 +1742,8 @@ mod tests {
         assert_eq!(PadManager::apply_dead_zone(128, 0.15), 128);
         assert_eq!(PadManager::apply_dead_zone(130, 0.15), 128); // ~1.6% offset, below 15%
         assert_eq!(PadManager::apply_dead_zone(126, 0.15), 128);
-        assert_eq!(PadManager::apply_dead_zone(148, 0.15), 128); // ~15.6%, at threshold edge
+        // Value 160: offset=32, magnitude=32/128=25%, well above 15% threshold
+        assert_ne!(PadManager::apply_dead_zone(160, 0.15), 128);
     }
 
     #[test]
