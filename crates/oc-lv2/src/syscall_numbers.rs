@@ -23,6 +23,7 @@ pub const SYS_PPU_THREAD_GET_AFFINITY_MASK: u64 = 52;
 pub const SYS_PPU_THREAD_SET_AFFINITY_MASK: u64 = 54;
 pub const SYS_PPU_THREAD_GET_TLS: u64 = 55;
 pub const SYS_PPU_THREAD_SET_TLS: u64 = 56;
+pub const SYS_PPU_THREAD_GET_TLS_ADDR: u64 = 69;
 
 // Mutex
 pub const SYS_MUTEX_CREATE: u64 = 100;
@@ -91,7 +92,14 @@ pub const SYS_MEMORY_FREE: u64 = 325;
 pub const SYS_MEMORY_GET_PAGE_ATTRIBUTE: u64 = 327;
 pub const SYS_MEMORY_GET_USER_MEMORY_SIZE: u64 = 352;
 pub const SYS_MMAPPER_ALLOCATE_MEMORY: u64 = 330;
+pub const SYS_MMAPPER_FREE_MEMORY: u64 = 332;
 pub const SYS_MMAPPER_MAP_MEMORY: u64 = 331;
+pub const SYS_MMAPPER_UNMAP_MEMORY: u64 = 334;
+
+// Virtual memory
+pub const SYS_VM_MEMORY_MAP: u64 = 312;
+pub const SYS_VM_UNMAP: u64 = 313;
+pub const SYS_VM_GET_STATISTICS: u64 = 315;
 
 // File system
 pub const SYS_FS_OPEN: u64 = 800;

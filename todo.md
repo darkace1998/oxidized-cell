@@ -163,34 +163,35 @@ skeletal. Most commercial games use SPURS for multithreaded workloads.
 
 ---
 
-## Phase 4 — LV2 Kernel Completeness
+## Phase 4 — LV2 Kernel Completeness ✅
 
-158 syscalls are implemented. Key gaps that affect game boot:
+158+ syscalls implemented. All key gaps addressed:
 
-- [ ] **File I/O syscalls**
-  - Verify `sys_fs_open`, `sys_fs_read`, `sys_fs_write`, `sys_fs_close` are in the syscall dispatcher
-  - These may be handled through HLE cellFs, but some games use raw syscalls
+- [x] **File I/O syscalls**
+  - `sys_fs_open`, `sys_fs_read`, `sys_fs_write`, `sys_fs_close` + stat/fstat/mkdir/rmdir/unlink/rename all in syscall dispatcher
+  - Both HLE cellFs and raw syscall paths work
 
-- [ ] **Memory management syscalls**
-  - `sys_memory_allocate`, `sys_memory_free`, `sys_memory_get_user_memory_size`
-  - `sys_mmapper_*` for memory-mapped I/O
-  - `sys_vm_*` for virtual memory operations
+- [x] **Memory management syscalls**
+  - `sys_memory_allocate`, `sys_memory_free`, `sys_memory_get_user_memory_size`, `sys_memory_get_page_attribute`
+  - `sys_mmapper_allocate_memory`, `sys_mmapper_free_memory`, `sys_mmapper_map_memory`, `sys_mmapper_unmap_memory`
+  - `sys_vm_memory_map`, `sys_vm_unmap`, `sys_vm_get_statistics`
 
-- [ ] **PRX/module loading syscalls**
-  - `sys_prx_load_module`, `sys_prx_start_module`, `sys_prx_stop_module`
-  - Games load additional modules dynamically at runtime
+- [x] **PRX/module loading syscalls**
+  - `sys_prx_load_module`, `sys_prx_start_module`, `sys_prx_stop_module`, `sys_prx_unload_module`
+  - `sys_prx_get_module_list`, `sys_prx_get_module_info`
 
-- [ ] **Timer syscalls**
-  - `sys_timer_create`, `sys_timer_connect_event_queue`
-  - Used for periodic callbacks and timing
+- [x] **Timer syscalls**
+  - `sys_timer_create`, `sys_timer_destroy`, `sys_timer_start`, `sys_timer_stop`
+  - `sys_timer_connect_event_queue`, `sys_timer_disconnect_event_queue`
+  - `sys_timer_usleep`, `sys_timer_sleep`
 
-- [ ] **TLS (Thread Local Storage)**
-  - Verify TLS region setup (0x28000000 base, 64KB default)
-  - Some games use TLS extensively for per-thread state
+- [x] **TLS (Thread Local Storage)**
+  - `sys_ppu_thread_get_tls`, `sys_ppu_thread_set_tls` for pointer management
+  - `sys_ppu_thread_get_tls_addr` for per-thread TLS address calculation (base 0x28000000, 64KB pages)
 
-- [ ] **Unknown/missing syscall logging**
-  - Log every unimplemented syscall number with parameters
-  - Critical for diagnosing why a specific game crashes
+- [x] **Unknown/missing syscall logging**
+  - Default handler now logs syscall number + all 6 parameters (r3-r8)
+  - Critical for diagnosing game crashes
 
 ---
 

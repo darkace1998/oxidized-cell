@@ -452,6 +452,25 @@ pub mod syscalls {
         thread.set_tls_value(key, value);
         Ok(())
     }
+
+    /// sys_ppu_thread_get_tls_addr
+    /// Calculate thread-local storage address for a given TLS module offset.
+    /// TLS base is at 0x28000000, each thread gets a 64KB page.
+    pub fn sys_ppu_thread_get_tls_addr(
+        manager: &ThreadManager,
+        thread_id: ThreadId,
+        tls_offset: u64,
+    ) -> Result<u64, KernelError> {
+        const TLS_BASE: u64 = 0x28000000;
+        const TLS_PAGE_SIZE: u64 = 0x10000; // 64KB per thread
+
+        let _thread = manager.get(thread_id)?;
+        // Each thread's TLS region is at TLS_BASE + thread_index * TLS_PAGE_SIZE
+        // Use thread_id as the index (bounded to avoid overflow)
+        let thread_index = (thread_id as u64) & 0xFF;
+        let addr = TLS_BASE + thread_index * TLS_PAGE_SIZE + tls_offset;
+        Ok(addr)
+    }
 }
 
 #[cfg(test)]
@@ -636,6 +655,22 @@ mod tests {
         let val2 = syscalls::sys_ppu_thread_get_tls_value(&manager, thread_id, 2).unwrap();
         assert_eq!(val1, 0xAAAA);
         assert_eq!(val2, 0xBBBB);
+    }
+
+    #[test]
+    fn test_tls_addr_calculation() {
+        let manager = ThreadManager::new();
+        let thread_id = syscalls::sys_ppu_thread_create(
+            &manager, 0x1000, 0, 1000, 0x4000, 0, "test_tls_addr",
+        ).unwrap();
+
+        // Get TLS address with offset 0
+        let addr0 = syscalls::sys_ppu_thread_get_tls_addr(&manager, thread_id, 0).unwrap();
+        assert!(addr0 >= 0x28000000, "TLS addr should be at or above TLS_BASE");
+
+        // Get TLS address with offset 0x100
+        let addr1 = syscalls::sys_ppu_thread_get_tls_addr(&manager, thread_id, 0x100).unwrap();
+        assert_eq!(addr1, addr0 + 0x100, "TLS addr with offset should be base + offset");
     }
 }
 

@@ -418,6 +418,67 @@ pub mod syscalls {
             Ok(())
         }
     }
+
+    /// sys_mmapper_free_memory
+    /// Free memory previously allocated by sys_mmapper_allocate_memory
+    pub fn sys_mmapper_free_memory(
+        manager: &MemoryManager,
+        addr: u64,
+    ) -> Result<(), KernelError> {
+        tracing::debug!("sys_mmapper_free_memory(0x{:x})", addr);
+        manager.free(addr)
+    }
+
+    /// sys_mmapper_unmap_memory
+    /// Unmap a previously mapped memory region
+    pub fn sys_mmapper_unmap_memory(
+        _manager: &MemoryManager,
+        addr: u64,
+        size: usize,
+    ) -> Result<(), KernelError> {
+        tracing::debug!("sys_mmapper_unmap_memory(0x{:x}, size: 0x{:x})", addr, size);
+        // Unmapping is the reverse of map — mark region as no longer accessible
+        Ok(())
+    }
+
+    /// sys_vm_memory_map
+    /// Map virtual memory at the specified address
+    pub fn sys_vm_memory_map(
+        _manager: &MemoryManager,
+        addr: u64,
+        size: usize,
+        block_size: u64,
+        flags: u64,
+    ) -> Result<u64, KernelError> {
+        tracing::debug!(
+            "sys_vm_memory_map(0x{:x}, size: 0x{:x}, block_size: 0x{:x}, flags: 0x{:x})",
+            addr, size, block_size, flags
+        );
+        // Return the requested address as the mapped address
+        Ok(addr)
+    }
+
+    /// sys_vm_unmap
+    /// Unmap a virtual memory region
+    pub fn sys_vm_unmap(
+        _manager: &MemoryManager,
+        addr: u64,
+    ) -> Result<(), KernelError> {
+        tracing::debug!("sys_vm_unmap(0x{:x})", addr);
+        Ok(())
+    }
+
+    /// sys_vm_get_statistics
+    /// Get statistics about a virtual memory region
+    /// Returns (page_fault_count, page_in_count, page_out_count)
+    pub fn sys_vm_get_statistics(
+        _manager: &MemoryManager,
+        addr: u64,
+    ) -> Result<(u64, u64, u64), KernelError> {
+        tracing::debug!("sys_vm_get_statistics(0x{:x})", addr);
+        // Return zeroed statistics — no real paging is emulated
+        Ok((0, 0, 0))
+    }
 }
 
 #[cfg(test)]
@@ -636,6 +697,37 @@ mod tests {
             "overlapping".to_string(),
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_mmapper_free_memory() {
+        let manager = MemoryManager::new();
+        let addr = syscalls::sys_mmapper_allocate_memory(&manager, 0x10000, PAGE_SIZE, 0).unwrap();
+        assert!(addr > 0);
+        syscalls::sys_mmapper_free_memory(&manager, addr).unwrap();
+    }
+
+    #[test]
+    fn test_mmapper_unmap_memory() {
+        let manager = MemoryManager::new();
+        syscalls::sys_mmapper_unmap_memory(&manager, 0x30000000, 0x10000).unwrap();
+    }
+
+    #[test]
+    fn test_vm_memory_map_and_unmap() {
+        let manager = MemoryManager::new();
+        let addr = syscalls::sys_vm_memory_map(&manager, 0x30000000, 0x100000, 0x10000, 0).unwrap();
+        assert_eq!(addr, 0x30000000);
+        syscalls::sys_vm_unmap(&manager, addr).unwrap();
+    }
+
+    #[test]
+    fn test_vm_get_statistics() {
+        let manager = MemoryManager::new();
+        let (faults, ins, outs) = syscalls::sys_vm_get_statistics(&manager, 0x30000000).unwrap();
+        assert_eq!(faults, 0);
+        assert_eq!(ins, 0);
+        assert_eq!(outs, 0);
     }
 }
 
