@@ -218,24 +218,25 @@ Audio infrastructure exists (cpal backend, mixer, 48kHz output) but needs game i
 
 ---
 
-## Phase 6 — Input Integration
+## Phase 6 — Input Integration ✅
 
-- [ ] **Connect real gamepad input to cellPad**
+- [x] **Connect real gamepad input to cellPad**
   - Input hardware abstraction exists (`oc-input`)
   - Wire OS gamepad events → `PadManager` → `cellPadGetData` responses
   - Map buttons: Cross, Circle, Square, Triangle, L1/R1/L2/R2, L3/R3, D-pad, Start, Select
 
-- [ ] **Keyboard/mouse mapping**
-  - Allow keyboard keys to map to PS3 controller buttons
+- [x] **Keyboard/mouse mapping**
+  - `KeyboardMapping` struct with default WASD layout and `set_key_binding()` customization
+  - `update_from_keyboard()` maps pressed keys to PS3 pad data on port 0
   - Essential for users without a gamepad
 
-- [ ] **Analog stick handling**
-  - Proper dead zone calibration
-  - Pressure-sensitive button support (PS3 face buttons are analog)
+- [x] **Analog stick handling**
+  - `apply_dead_zone()` with configurable threshold (default 0.15)
+  - Pressure-sensitive button support (0-255 for face buttons)
 
-- [ ] **Sixaxis / motion controls**
-  - At minimum return neutral values so games don't crash
-  - Optional: map to mouse movement or actual gyro input
+- [x] **Sixaxis / motion controls**
+  - Neutral values (512,512,512,512 = flat on table) in Default + keyboard mode
+  - Games won't crash on missing sensor data
 
 ---
 
