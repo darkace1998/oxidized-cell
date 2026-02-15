@@ -85,6 +85,8 @@ impl GraphicsBackend for NullBackend {
 
     fn bind_texture(&mut self, _slot: u32, _offset: u32) {}
 
+    fn upload_texture(&mut self, _info: &super::TextureUploadInfo, _data: &[u8]) {}
+
     fn set_viewport(&mut self, _x: f32, _y: f32, _width: f32, _height: f32, _min_depth: f32, _max_depth: f32) {}
 
     fn set_scissor(&mut self, _x: u32, _y: u32, _width: u32, _height: u32) {}
@@ -96,6 +98,10 @@ impl GraphicsBackend for NullBackend {
     fn submit_index_buffer(&mut self, _data: &[u8], _index_type: u32) {
         self.index_buffer_submitted = true;
     }
+    
+    fn load_shaders(&mut self, _vertex_spirv: &[u32], _fragment_spirv: &[u32]) {}
+    
+    fn present_frame(&mut self, _buffer_id: u32) {}
     
     fn get_framebuffer(&self) -> Option<FramebufferData> {
         let mut fb = FramebufferData::new(self.width, self.height);

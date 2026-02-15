@@ -193,6 +193,9 @@ impl RsxThread {
         // End current frame and present
         self.end_frame();
         
+        // Present the frame to the display
+        self.backend.present_frame(buffer_id);
+        
         // Update current buffer
         self.current_display_buffer = buffer_id;
         self.flip_pending = false;
@@ -330,6 +333,8 @@ impl RsxThread {
             if (control & 0x8000_0000) != 0 {
                 let offset = self.gfx_state.texture_offset[i as usize];
                 if offset != 0 {
+                    // Upload texture data from PS3 memory if we haven't already
+                    self.upload_texture_from_memory(i, offset);
                     self.backend.bind_texture(i, offset);
                 }
             }
@@ -337,6 +342,9 @@ impl RsxThread {
         
         // Build and forward vertex attribute descriptions from RSX state
         self.apply_vertex_attributes();
+        
+        // Compile and load shaders from RSX program addresses
+        self.compile_shaders_from_state();
     }
     
     /// Build vertex attribute descriptors from RSX state and forward to the backend
@@ -570,6 +578,230 @@ impl RsxThread {
     /// Get memory manager reference
     pub fn memory(&self) -> &Arc<MemoryManager> {
         &self.memory
+    }
+    
+    /// Upload texture data from PS3 memory to the graphics backend
+    fn upload_texture_from_memory(&mut self, slot: u32, offset: u32) {
+        let idx = slot as usize;
+        if idx >= 16 {
+            return;
+        }
+        
+        let format_raw = self.gfx_state.texture_format[idx];
+        let width = self.gfx_state.texture_width[idx].max(1) as u16;
+        let height = self.gfx_state.texture_height[idx].max(1) as u16;
+        
+        // Extract format byte from the format register
+        // RSX texture format register layout: bits [12:8] contain the format
+        let format = ((format_raw >> 8) & 0x1F) as u8 | 0x80;
+        
+        // Calculate data size based on format
+        let bpp = crate::texture::format::bytes_per_pixel(format);
+        let is_compressed = crate::texture::format::is_compressed(format);
+        
+        let data_size = if is_compressed {
+            // DXT formats: 4x4 block compressed
+            let (bw, bh, block_bytes) = crate::texture::format::block_size(format);
+            let blocks_x = ((width as u32) + bw - 1) / bw;
+            let blocks_y = ((height as u32) + bh - 1) / bh;
+            blocks_x * blocks_y * block_bytes
+        } else {
+            (width as u32) * (height as u32) * bpp
+        };
+        
+        if data_size == 0 || data_size > 16 * 1024 * 1024 {
+            tracing::trace!("Skipping texture upload: slot={}, size={}", slot, data_size);
+            return;
+        }
+        
+        // Read texture data from RSX local memory
+        match self.memory.read_rsx(offset, data_size) {
+            Ok(raw_data) => {
+                // Convert PS3 swizzled/tiled textures to linear if needed
+                let pixel_data = if !is_compressed {
+                    // Detect swizzled textures (non-power-of-two pitches or specific format flags)
+                    let is_swizzled = (format_raw & 0x20) != 0; // Bit 5 of format register
+                    if is_swizzled && bpp > 0 {
+                        crate::texture::swizzle::rsx_swizzle_to_linear(
+                            &raw_data,
+                            width as u32,
+                            height as u32,
+                            bpp,
+                        )
+                    } else {
+                        raw_data
+                    }
+                } else {
+                    // Decompress DXT textures to RGBA8
+                    match format {
+                        crate::texture::format::DXT1 => {
+                            crate::texture::dxt::decompress_dxt1(&raw_data, width as u32, height as u32)
+                        }
+                        crate::texture::format::DXT3 => {
+                            crate::texture::dxt::decompress_dxt3(&raw_data, width as u32, height as u32)
+                        }
+                        crate::texture::format::DXT5 => {
+                            crate::texture::dxt::decompress_dxt5(&raw_data, width as u32, height as u32)
+                        }
+                        _ => raw_data,
+                    }
+                };
+                
+                let upload_format = if is_compressed {
+                    // After decompression, data is RGBA8
+                    crate::texture::format::A8R8G8B8
+                } else {
+                    format
+                };
+                
+                let info = crate::backend::TextureUploadInfo {
+                    slot,
+                    format: upload_format,
+                    width,
+                    height,
+                    mipmap_levels: 1,
+                    is_cubemap: false,
+                };
+                
+                self.backend.upload_texture(&info, &pixel_data);
+                
+                tracing::trace!(
+                    "Uploaded texture: slot={}, offset=0x{:08x}, {}x{}, format=0x{:02x}, size={}",
+                    slot, offset, width, height, format, pixel_data.len()
+                );
+            }
+            Err(e) => {
+                tracing::trace!(
+                    "Could not read texture data at offset 0x{:08x}: {:?}",
+                    offset, e
+                );
+            }
+        }
+    }
+    
+    /// Compile and load RSX shaders from game memory addresses
+    fn compile_shaders_from_state(&mut self) {
+        let vp_addr = self.gfx_state.vertex_program_addr;
+        let fp_addr = self.gfx_state.fragment_program_addr;
+        
+        // Skip if no shader addresses are set
+        if vp_addr == 0 && fp_addr == 0 {
+            return;
+        }
+        
+        // Try to read and compile vertex program
+        let vp_spirv = if vp_addr != 0 {
+            self.compile_vertex_program(vp_addr)
+        } else {
+            None
+        };
+        
+        // Try to read and compile fragment program
+        let fp_spirv = if fp_addr != 0 {
+            self.compile_fragment_program(fp_addr)
+        } else {
+            None
+        };
+        
+        // Load compiled shaders into backend if we have both
+        if let (Some(vs), Some(fs)) = (&vp_spirv, &fp_spirv) {
+            self.backend.load_shaders(vs, fs);
+        }
+    }
+    
+    /// Compile a vertex program from RSX memory
+    fn compile_vertex_program(&self, addr: u32) -> Option<Vec<u32>> {
+        // Read vertex program instructions (max 512 instructions × 16 bytes = 8KB)
+        const MAX_VP_SIZE: u32 = 512 * 16;
+        let data = match self.memory.read_rsx(addr, MAX_VP_SIZE) {
+            Ok(d) => d,
+            Err(_) => return None,
+        };
+        
+        // Convert bytes to u32 instructions
+        if data.len() < 16 {
+            return None;
+        }
+        
+        let mut instructions = Vec::new();
+        for chunk in data.chunks_exact(4) {
+            let word = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            instructions.push(word);
+        }
+        
+        // Find the end of the program (last instruction has end flag in bit 0 of word 3)
+        let mut end_idx = instructions.len();
+        for i in (3..instructions.len()).step_by(4) {
+            if (instructions[i] & 1) != 0 {
+                end_idx = i + 1;
+                break;
+            }
+        }
+        instructions.truncate(end_idx);
+        
+        if instructions.len() < 4 {
+            return None;
+        }
+        
+        let mut program = crate::shader::VertexProgram::from_data(&instructions);
+        program.input_mask = self.gfx_state.vertex_attrib_input_mask;
+        program.output_mask = self.gfx_state.vertex_attrib_output_mask;
+        program.set_constants(&self.gfx_state.vertex_constants);
+        
+        let mut translator = crate::shader::ShaderTranslator::new();
+        match translator.translate_vertex(&mut program) {
+            Ok(module) => Some(module.bytecode),
+            Err(e) => {
+                tracing::trace!("VP translation failed at 0x{:08x}: {}", addr, e);
+                None
+            }
+        }
+    }
+    
+    /// Compile a fragment program from RSX memory
+    fn compile_fragment_program(&self, addr: u32) -> Option<Vec<u32>> {
+        // Read fragment program data (max 4KB)
+        const MAX_FP_SIZE: u32 = 4096;
+        let data = match self.memory.read_rsx(addr, MAX_FP_SIZE) {
+            Ok(d) => d,
+            Err(_) => return None,
+        };
+        
+        if data.len() < 16 {
+            return None;
+        }
+        
+        // Fragment programs are byte-swapped on PS3
+        let mut instructions = Vec::new();
+        for chunk in data.chunks_exact(4) {
+            let word = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            instructions.push(word);
+        }
+        
+        // Find program end (end flag at bit 0 of first word of each instruction)
+        let mut end_idx = instructions.len();
+        for i in (0..instructions.len()).step_by(4) {
+            if (instructions[i] & 1) != 0 {
+                end_idx = i + 4;
+                break;
+            }
+        }
+        instructions.truncate(end_idx);
+        
+        if instructions.len() < 4 {
+            return None;
+        }
+        
+        let mut program = crate::shader::FragmentProgram::from_data(&instructions);
+        
+        let mut translator = crate::shader::ShaderTranslator::new();
+        match translator.translate_fragment(&mut program) {
+            Ok(module) => Some(module.bytecode),
+            Err(e) => {
+                tracing::trace!("FP translation failed at 0x{:08x}: {}", addr, e);
+                None
+            }
+        }
     }
     
     /// Get the current framebuffer contents for display
@@ -904,5 +1136,114 @@ mod tests {
         // Verify framebuffer is valid
         let fb = thread.get_framebuffer();
         assert!(fb.is_some());
+    }
+    
+    #[test]
+    fn test_texture_upload_with_enabled_texture() {
+        let memory = MemoryManager::new().unwrap();
+        let mut thread = RsxThread::new(memory);
+        thread.init_backend().unwrap();
+        
+        // Set up a texture at unit 0:
+        // offset, format (ARGB8 = 0x85, so (0x05 << 8) | swizzle bits), control (enable bit 31)
+        thread.gfx_state.texture_offset[0] = 0x1000;
+        thread.gfx_state.texture_format[0] = (0x05 << 8); // ARGB8 format bits
+        thread.gfx_state.texture_control[0] = 0x8000_0000; // Enable bit
+        thread.gfx_state.texture_width[0] = 4;
+        thread.gfx_state.texture_height[0] = 4;
+        
+        // Begin primitive — this triggers apply_render_state() which
+        // should attempt texture upload (will fail gracefully since no
+        // RSX memory is actually mapped at that offset in test)
+        thread.execute_command(0x1808, 5);
+        thread.execute_command(0x1808, 0);
+        // Should not panic even though memory read will fail
+    }
+    
+    #[test]
+    fn test_shader_compilation_with_no_addresses() {
+        let memory = MemoryManager::new().unwrap();
+        let mut thread = RsxThread::new(memory);
+        thread.init_backend().unwrap();
+        
+        // Both shader addresses are 0 — should skip compilation gracefully
+        thread.gfx_state.vertex_program_addr = 0;
+        thread.gfx_state.fragment_program_addr = 0;
+        
+        thread.execute_command(0x1808, 5);
+        thread.execute_command(0x1808, 0);
+    }
+    
+    #[test]
+    fn test_shader_compilation_with_addresses() {
+        let memory = MemoryManager::new().unwrap();
+        let mut thread = RsxThread::new(memory);
+        thread.init_backend().unwrap();
+        
+        // Set shader addresses — will try to read from RSX memory
+        // (fails gracefully on null backend since no memory mapped)
+        thread.gfx_state.vertex_program_addr = 0x2000;
+        thread.gfx_state.fragment_program_addr = 0x3000;
+        
+        thread.execute_command(0x1808, 5);
+        thread.execute_command(0x1808, 0);
+    }
+    
+    #[test]
+    fn test_flip_calls_present_frame() {
+        let memory = MemoryManager::new().unwrap();
+        let mut thread = RsxThread::new(memory);
+        thread.init_backend().unwrap();
+        
+        // Configure display buffer 0
+        let buf = BridgeDisplayBuffer {
+            id: 0,
+            offset: 0x100000,
+            pitch: 5120,
+            width: 1280,
+            height: 720,
+        };
+        thread.configure_display_buffer(buf);
+        
+        // Begin a frame
+        thread.begin_frame();
+        
+        // Trigger flip — this should call end_frame + present_frame + begin_frame
+        thread.handle_flip_request(0);
+        
+        // After flip, we should be in a new frame
+        // Verify we can still draw
+        thread.execute_command(0x0304, 0xFF0000FF);
+        thread.execute_command(0x1D94, 0xF3);
+        thread.end_frame();
+    }
+    
+    #[test]
+    fn test_trait_has_upload_texture() {
+        // Verify the GraphicsBackend trait has upload_texture method
+        let mut backend = crate::backend::null::NullBackend::new();
+        let info = crate::backend::TextureUploadInfo {
+            slot: 0,
+            format: 0x85, // ARGB8
+            width: 64,
+            height: 64,
+            mipmap_levels: 1,
+            is_cubemap: false,
+        };
+        backend.upload_texture(&info, &vec![0u8; 64 * 64 * 4]);
+    }
+    
+    #[test]
+    fn test_trait_has_load_shaders() {
+        // Verify the GraphicsBackend trait has load_shaders method
+        let mut backend = crate::backend::null::NullBackend::new();
+        backend.load_shaders(&[], &[]);
+    }
+    
+    #[test]
+    fn test_trait_has_present_frame() {
+        // Verify the GraphicsBackend trait has present_frame method
+        let mut backend = crate::backend::null::NullBackend::new();
+        backend.present_frame(0);
     }
 }

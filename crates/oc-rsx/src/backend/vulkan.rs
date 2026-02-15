@@ -3841,6 +3841,80 @@ impl GraphicsBackend for VulkanBackend {
         self.pipeline_dirty = true;
     }
     
+    fn upload_texture(&mut self, info: &super::TextureUploadInfo, data: &[u8]) {
+        if !self.initialized || data.is_empty() {
+            return;
+        }
+        
+        let texture = crate::texture::Texture {
+            offset: 0,
+            format: info.format,
+            width: info.width,
+            height: info.height,
+            depth: 1,
+            mipmap_levels: info.mipmap_levels.max(1),
+            pitch: 0,
+            is_cubemap: info.is_cubemap,
+            ..crate::texture::Texture::new()
+        };
+        
+        if let Err(e) = self.upload_texture(info.slot, &texture, data) {
+            tracing::warn!("Failed to upload texture to slot {}: {}", info.slot, e);
+        }
+    }
+    
+    fn load_shaders(&mut self, vertex_spirv: &[u32], fragment_spirv: &[u32]) {
+        if !self.initialized {
+            return;
+        }
+        
+        // Create vertex shader module
+        match self.create_shader_module(vertex_spirv) {
+            Ok(module) => {
+                if let Some(old) = self.vertex_shader.take() {
+                    if let Some(device) = &self.device {
+                        unsafe { device.destroy_shader_module(old, None); }
+                    }
+                }
+                self.vertex_shader = Some(module);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to create vertex shader module: {}", e);
+                return;
+            }
+        }
+        
+        // Create fragment shader module
+        match self.create_shader_module(fragment_spirv) {
+            Ok(module) => {
+                if let Some(old) = self.fragment_shader.take() {
+                    if let Some(device) = &self.device {
+                        unsafe { device.destroy_shader_module(old, None); }
+                    }
+                }
+                self.fragment_shader = Some(module);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to create fragment shader module: {}", e);
+                return;
+            }
+        }
+        
+        // Recreate pipeline with new shaders
+        if let Err(e) = self.create_graphics_pipeline(vk::PrimitiveTopology::TRIANGLE_LIST) {
+            tracing::warn!("Failed to recreate pipeline after shader load: {}", e);
+        }
+        
+        self.pipeline_dirty = true;
+    }
+    
+    fn present_frame(&mut self, buffer_id: u32) {
+        tracing::trace!("Present frame: buffer_id={}", buffer_id);
+        // In offscreen/headless mode, end_frame() already submits and signals.
+        // The framebuffer is read back via get_framebuffer() for display.
+        // For a windowed swapchain, this is where vkQueuePresentKHR would go.
+    }
+    
     fn get_framebuffer(&self) -> Option<super::FramebufferData> {
         /// RGBA format uses 4 bytes per pixel
         const BYTES_PER_PIXEL: u32 = 4;

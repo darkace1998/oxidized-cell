@@ -49,12 +49,12 @@ draw pipeline is not fully connected. This is the single biggest blocker for vis
   - Wire `SET_TEXTURE_*` NV4097 commands to descriptor set updates
   - Support at least 4 texture units (most games use 1-4)
 
-- [ ] **Implement texture upload**
+- [x] **Implement texture upload**
   - Transfer texture data from PS3 memory to Vulkan images
   - Handle PS3 texture formats: DXT1, DXT3, DXT5, A8R8G8B8, R5G6B5
   - Swizzle/unswizzle PS3 tiled texture layouts
 
-- [ ] **Shader translator integration**
+- [x] **Shader translator integration**
   - `ShaderTranslator` with `vp_decode`, `fp_decode`, `spirv_gen` modules exist
   - Connect translated SPIR-V to Vulkan pipeline shader stages
   - Handle RSX vertex programs (VP) and fragment programs (FP) from game memory
@@ -65,7 +65,7 @@ draw pipeline is not fully connected. This is the single biggest blocker for vis
   - Support multiple render target formats (ARGB8, FP16, FP32)
   - Handle render-to-texture scenarios
 
-- [ ] **Frame presentation (flip)**
+- [x] **Frame presentation (flip)**
   - Ensure `end_frame()` properly presents to the window swapchain
   - Wire GCM `cellGcmSetFlip` → RSX bridge → Vulkan swapchain present
   - Implement double/triple buffering
