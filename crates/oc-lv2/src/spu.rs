@@ -645,6 +645,10 @@ pub mod syscalls {
         is_get: bool,
         main_memory: &mut [u8],
     ) -> Result<(), KernelError> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
         let thread: Arc<SpuThread> = manager.get(thread_id)?;
 
         for &(ls_addr, ea_addr, size) in entries {

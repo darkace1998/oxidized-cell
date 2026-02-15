@@ -156,7 +156,7 @@ skeletal. Most commercial games use SPURS for multithreaded workloads.
   - Atomic operations (GET_LLAR, PUT_LLC) for lock-free synchronization
   - List DMA transfers via sys_spu_thread_transfer_data_list (scatter-gather)
 
-- [x] **libsre (SPU Runtime Extensions / Regular Expressions)**
+- [x] **libsre (Regular Expression Library)**
   - 6 functions registered: cellSreCompile, cellSreFree, cellSreMatch,
     cellSreSearch, cellSreReplace, cellSreGetError
   - Backed by full RegexManager with actual regex compilation/matching

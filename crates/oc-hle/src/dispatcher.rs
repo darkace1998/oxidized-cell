@@ -1316,7 +1316,7 @@ fn hle_spurs_create_taskset_with_attribute(ctx: &HleCallContext) -> i64 {
     crate::cell_spurs::cell_spurs_create_taskset_with_attribute(spurs_ptr, taskset_ptr, attr_ptr) as i64
 }
 
-// --- libsre (SPU Runtime Extensions / Regular Expressions) ---
+// --- libsre (Regular Expression Library) ---
 
 fn hle_sre_compile(ctx: &HleCallContext) -> i64 {
     let pattern_addr = ctx.args[0] as u32;
@@ -1358,11 +1358,11 @@ fn hle_sre_match(ctx: &HleCallContext) -> i64 {
     let _text_len = ctx.args[2] as u32;
     let _matches_addr = ctx.args[3] as u32;
     let _max_matches = ctx.args[4] as u32;
-    let _num_matches_addr = ctx.args[5] as u32;
+    let num_matches_addr = ctx.args[5] as u32;
     debug!("cellSreMatch(pattern={})", pattern);
     // Stub: return success with 0 matches
-    if _num_matches_addr != 0 && crate::memory::is_hle_memory_initialized() {
-        let _ = crate::memory::write_be32(_num_matches_addr, 0);
+    if num_matches_addr != 0 && crate::memory::is_hle_memory_initialized() {
+        let _ = crate::memory::write_be32(num_matches_addr, 0);
     }
     0i64
 }
@@ -2673,7 +2673,7 @@ pub fn register_all_hle_functions(dispatcher: &mut HleDispatcher) {
     dispatcher.register_function("cellSpurs", "cellSpursJoinTaskset", hle_spurs_join_taskset);
     dispatcher.register_function("cellSpurs", "cellSpursCreateTasksetWithAttribute", hle_spurs_create_taskset_with_attribute);
     
-    // libsre (SPU Runtime Extensions / Regular Expressions)
+    // libsre (Regular Expression Library)
     dispatcher.register_function("libsre", "cellSreCompile", hle_sre_compile);
     dispatcher.register_function("libsre", "cellSreFree", hle_sre_free);
     dispatcher.register_function("libsre", "cellSreMatch", hle_sre_match);
