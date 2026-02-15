@@ -276,6 +276,8 @@ pub struct AudioManager {
     notify_event_queues: Vec<u64>,
     /// Decoded audio queue from cellAdec — PCM frames ready for mixing
     decoded_audio_queue: VecDeque<Vec<f32>>,
+    /// Reusable buffer for backend mixing (avoids allocation per mix_audio call)
+    backend_mix_buf: Vec<f32>,
 }
 
 /// Public port info for querying
@@ -297,6 +299,7 @@ impl AudioManager {
             block_index: 0,
             notify_event_queues: Vec::new(),
             decoded_audio_queue: VecDeque::new(),
+            backend_mix_buf: Vec::new(),
         }
     }
 
@@ -652,16 +655,17 @@ impl AudioManager {
             }
 
             // Read PCM from shared memory if buffer address is set
-            if port.buffer_addr != 0 {
+            if port.buffer_addr != 0 && port.num_blocks > 0 {
                 let block_offset = (self.block_index as usize % port.num_blocks as usize)
                     * CELL_AUDIO_BLOCK_SAMPLES
                     * port.num_channels as usize;
                 let samples_to_read = (CELL_AUDIO_BLOCK_SAMPLES * port.num_channels as usize)
                     .min(samples_needed);
+                let base_addr = port.buffer_addr
+                    .wrapping_add(block_offset as u32 * 4);
 
                 for i in 0..samples_to_read {
-                    let addr = port.buffer_addr
-                        .wrapping_add((block_offset + i) as u32 * 4);
+                    let addr = base_addr.wrapping_add(i as u32 * 4);
                     if let Ok(bits) = read_be32(addr) {
                         let sample = f32::from_bits(bits) * port.volume * self.master_volume;
                         let out_idx = if port.num_channels <= 2 {
@@ -690,10 +694,13 @@ impl AudioManager {
         // Use mixer backend for any additional sources
         if let Some(backend) = &self.audio_backend {
             if let Ok(mut mixer) = backend.write() {
-                // Mix additional sources from the backend on top
-                let mut backend_buf = vec![0.0f32; samples_needed];
-                mixer.mix(&mut backend_buf, frames);
-                for (i, &s) in backend_buf.iter().enumerate() {
+                // Reuse backend buffer to avoid allocation per mix call
+                self.backend_mix_buf.resize(samples_needed, 0.0);
+                for s in self.backend_mix_buf.iter_mut() {
+                    *s = 0.0;
+                }
+                mixer.mix(&mut self.backend_mix_buf, frames);
+                for (i, &s) in self.backend_mix_buf.iter().enumerate() {
                     if i < samples_needed {
                         output[i] += s;
                     }
