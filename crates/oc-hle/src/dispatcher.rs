@@ -2055,6 +2055,331 @@ fn hle_vpost_exec(ctx: &HleCallContext) -> i64 {
     }
 }
 
+// --- cellNetCtl (Network Control) ---
+
+fn hle_net_ctl_init(_ctx: &HleCallContext) -> i64 {
+    debug!("cellNetCtlInit()");
+    crate::cell_net_ctl::cell_net_ctl_init() as i64
+}
+
+fn hle_net_ctl_term(_ctx: &HleCallContext) -> i64 {
+    debug!("cellNetCtlTerm()");
+    crate::cell_net_ctl::cell_net_ctl_term() as i64
+}
+
+fn hle_net_ctl_get_state(ctx: &HleCallContext) -> i64 {
+    let state_addr = ctx.args[0] as u32;
+    trace!("cellNetCtlGetState(state=0x{:08x})", state_addr);
+    crate::cell_net_ctl::cell_net_ctl_get_state(state_addr) as i64
+}
+
+fn hle_net_ctl_get_info(ctx: &HleCallContext) -> i64 {
+    let code = ctx.args[0] as u32;
+    let info_addr = ctx.args[1] as u32;
+    trace!("cellNetCtlGetInfo(code={}, info=0x{:08x})", code, info_addr);
+    crate::cell_net_ctl::cell_net_ctl_get_info(code, info_addr) as i64
+}
+
+fn hle_net_ctl_net_start_dialog_load_async(ctx: &HleCallContext) -> i64 {
+    let param_addr = ctx.args[0] as u32;
+    debug!("cellNetCtlNetStartDialogLoadAsync(param=0x{:08x})", param_addr);
+    crate::cell_net_ctl::cell_net_ctl_net_start_dialog_load_async(param_addr) as i64
+}
+
+fn hle_net_ctl_net_start_dialog_unload_async(ctx: &HleCallContext) -> i64 {
+    let result_addr = ctx.args[0] as u32;
+    debug!("cellNetCtlNetStartDialogUnloadAsync(result=0x{:08x})", result_addr);
+    crate::cell_net_ctl::cell_net_ctl_net_start_dialog_unload_async(result_addr) as i64
+}
+
+fn hle_net_ctl_get_nat_info(ctx: &HleCallContext) -> i64 {
+    let nat_info_addr = ctx.args[0] as u32;
+    trace!("cellNetCtlGetNatInfo(info=0x{:08x})", nat_info_addr);
+    crate::cell_net_ctl::cell_net_ctl_get_nat_info(nat_info_addr) as i64
+}
+
+fn hle_net_ctl_add_handler(ctx: &HleCallContext) -> i64 {
+    let handler = ctx.args[0] as u32;
+    let arg = ctx.args[1] as u32;
+    let hid_addr = ctx.args[2] as u32;
+    debug!("cellNetCtlAddHandler(handler=0x{:08x}, hid=0x{:08x})", handler, hid_addr);
+    crate::cell_net_ctl::cell_net_ctl_add_handler(handler, arg, hid_addr) as i64
+}
+
+fn hle_net_ctl_del_handler(ctx: &HleCallContext) -> i64 {
+    let hid = ctx.args[0] as u32;
+    trace!("cellNetCtlDelHandler(hid={})", hid);
+    crate::cell_net_ctl::cell_net_ctl_del_handler(hid) as i64
+}
+
+// --- cellHttp (HTTP Client) ---
+
+fn hle_http_init(ctx: &HleCallContext) -> i64 {
+    let pool_size = ctx.args[0] as u32;
+    debug!("cellHttpInit(pool_size={})", pool_size);
+    crate::cell_http::cell_http_init(pool_size) as i64
+}
+
+fn hle_http_end(_ctx: &HleCallContext) -> i64 {
+    debug!("cellHttpEnd()");
+    crate::cell_http::cell_http_end() as i64
+}
+
+fn hle_http_create_client(ctx: &HleCallContext) -> i64 {
+    let client_addr = ctx.args[0] as u32;
+    debug!("cellHttpCreateClient(client=0x{:08x})", client_addr);
+    crate::cell_http::cell_http_create_client(client_addr) as i64
+}
+
+fn hle_http_destroy_client(ctx: &HleCallContext) -> i64 {
+    let client = ctx.args[0] as u32;
+    trace!("cellHttpDestroyClient(client={})", client);
+    crate::cell_http::cell_http_destroy_client(client) as i64
+}
+
+fn hle_http_create_transaction(ctx: &HleCallContext) -> i64 {
+    let client = ctx.args[0] as u32;
+    let method = ctx.args[1] as u32;
+    let url_addr = ctx.args[2] as u32;
+    let transaction_addr = ctx.args[3] as u32;
+    debug!("cellHttpCreateTransaction(client={}, method={})", client, method);
+    crate::cell_http::cell_http_create_transaction(client, method, url_addr, transaction_addr) as i64
+}
+
+fn hle_http_destroy_transaction(ctx: &HleCallContext) -> i64 {
+    let transaction = ctx.args[0] as u32;
+    trace!("cellHttpDestroyTransaction(transaction={})", transaction);
+    crate::cell_http::cell_http_destroy_transaction(transaction) as i64
+}
+
+fn hle_http_send_request(ctx: &HleCallContext) -> i64 {
+    let transaction = ctx.args[0] as u32;
+    let data_addr = ctx.args[1] as u32;
+    let size = ctx.args[2];
+    debug!("cellHttpSendRequest(transaction={}, size={})", transaction, size);
+    crate::cell_http::cell_http_send_request(transaction, data_addr, size) as i64
+}
+
+fn hle_http_recv_response(ctx: &HleCallContext) -> i64 {
+    let transaction = ctx.args[0] as u32;
+    let data_addr = ctx.args[1] as u32;
+    let size = ctx.args[2];
+    debug!("cellHttpRecvResponse(transaction={}, size={})", transaction, size);
+    crate::cell_http::cell_http_recv_response(transaction, data_addr, size)
+}
+
+fn hle_http_add_request_header(ctx: &HleCallContext) -> i64 {
+    let transaction = ctx.args[0] as u32;
+    let name_addr = ctx.args[1] as u32;
+    let value_addr = ctx.args[2] as u32;
+    trace!("cellHttpAddRequestHeader(transaction={})", transaction);
+    crate::cell_http::cell_http_add_request_header(transaction, name_addr, value_addr) as i64
+}
+
+fn hle_http_get_status_code(ctx: &HleCallContext) -> i64 {
+    let transaction = ctx.args[0] as u32;
+    let status_code_addr = ctx.args[1] as u32;
+    trace!("cellHttpGetStatusCode(transaction={})", transaction);
+    crate::cell_http::cell_http_get_status_code(transaction, status_code_addr) as i64
+}
+
+fn hle_http_get_response_header(ctx: &HleCallContext) -> i64 {
+    let transaction = ctx.args[0] as u32;
+    let name_addr = ctx.args[1] as u32;
+    let value_addr = ctx.args[2] as u32;
+    let value_len_addr = ctx.args[3] as u32;
+    trace!("cellHttpGetResponseHeader(transaction={})", transaction);
+    crate::cell_http::cell_http_get_response_header(transaction, name_addr, value_addr, value_len_addr) as i64
+}
+
+fn hle_http_set_proxy(ctx: &HleCallContext) -> i64 {
+    let client = ctx.args[0] as u32;
+    let host_addr = ctx.args[1] as u32;
+    let port = ctx.args[2] as u16;
+    debug!("cellHttpSetProxy(client={}, port={})", client, port);
+    crate::cell_http::cell_http_set_proxy(client, host_addr, port) as i64
+}
+
+// --- cellSsl (SSL/TLS) ---
+
+fn hle_ssl_init(ctx: &HleCallContext) -> i64 {
+    let pool_size = ctx.args[0] as u32;
+    debug!("cellSslInit(pool_size={})", pool_size);
+    crate::cell_ssl::cell_ssl_init(pool_size) as i64
+}
+
+fn hle_ssl_end(_ctx: &HleCallContext) -> i64 {
+    debug!("cellSslEnd()");
+    crate::cell_ssl::cell_ssl_end() as i64
+}
+
+fn hle_ssl_cert_get_serial_number(ctx: &HleCallContext) -> i64 {
+    let cert_id = ctx.args[0] as u32;
+    let serial_addr = ctx.args[1] as u32;
+    let length_addr = ctx.args[2] as u32;
+    trace!("cellSslCertGetSerialNumber(cert={})", cert_id);
+    crate::cell_ssl::cell_ssl_cert_get_serial_number(cert_id, serial_addr as *mut u8, length_addr as *mut u32) as i64
+}
+
+fn hle_ssl_cert_get_public_key(ctx: &HleCallContext) -> i64 {
+    let cert_id = ctx.args[0] as u32;
+    let key_addr = ctx.args[1] as u32;
+    let length_addr = ctx.args[2] as u32;
+    trace!("cellSslCertGetPublicKey(cert={})", cert_id);
+    crate::cell_ssl::cell_ssl_cert_get_public_key(cert_id, key_addr as *mut u8, length_addr as *mut u32) as i64
+}
+
+fn hle_ssl_cert_get_rsa_public_key_modulus(ctx: &HleCallContext) -> i64 {
+    let cert_id = ctx.args[0] as u32;
+    let modulus_addr = ctx.args[1] as u32;
+    let length_addr = ctx.args[2] as u32;
+    trace!("cellSslCertGetRsaPublicKeyModulus(cert={})", cert_id);
+    crate::cell_ssl::cell_ssl_cert_get_rsa_public_key_modulus(cert_id, modulus_addr as *mut u8, length_addr as *mut u32) as i64
+}
+
+fn hle_ssl_cert_get_rsa_public_key_exponent(ctx: &HleCallContext) -> i64 {
+    let cert_id = ctx.args[0] as u32;
+    let exponent_addr = ctx.args[1] as u32;
+    let length_addr = ctx.args[2] as u32;
+    trace!("cellSslCertGetRsaPublicKeyExponent(cert={})", cert_id);
+    crate::cell_ssl::cell_ssl_cert_get_rsa_public_key_exponent(cert_id, exponent_addr as *mut u8, length_addr as *mut u32) as i64
+}
+
+fn hle_ssl_cert_get_not_before(ctx: &HleCallContext) -> i64 {
+    let cert_id = ctx.args[0] as u32;
+    let begin_addr = ctx.args[1] as u32;
+    trace!("cellSslCertGetNotBefore(cert={})", cert_id);
+    crate::cell_ssl::cell_ssl_cert_get_not_before(cert_id, begin_addr as *mut u64) as i64
+}
+
+fn hle_ssl_cert_get_not_after(ctx: &HleCallContext) -> i64 {
+    let cert_id = ctx.args[0] as u32;
+    let limit_addr = ctx.args[1] as u32;
+    trace!("cellSslCertGetNotAfter(cert={})", cert_id);
+    crate::cell_ssl::cell_ssl_cert_get_not_after(cert_id, limit_addr as *mut u64) as i64
+}
+
+fn hle_ssl_cert_get_subject_name(ctx: &HleCallContext) -> i64 {
+    let cert_id = ctx.args[0] as u32;
+    let subject_addr = ctx.args[1] as u32;
+    let length_addr = ctx.args[2] as u32;
+    trace!("cellSslCertGetSubjectName(cert={})", cert_id);
+    crate::cell_ssl::cell_ssl_cert_get_subject_name(cert_id, subject_addr as *mut u8, length_addr as *mut u32) as i64
+}
+
+fn hle_ssl_cert_get_issuer_name(ctx: &HleCallContext) -> i64 {
+    let cert_id = ctx.args[0] as u32;
+    let issuer_addr = ctx.args[1] as u32;
+    let length_addr = ctx.args[2] as u32;
+    trace!("cellSslCertGetIssuerName(cert={})", cert_id);
+    crate::cell_ssl::cell_ssl_cert_get_issuer_name(cert_id, issuer_addr as *mut u8, length_addr as *mut u32) as i64
+}
+
+fn hle_ssl_cert_unload(ctx: &HleCallContext) -> i64 {
+    let cert_id = ctx.args[0] as u32;
+    trace!("cellSslCertUnload(cert={})", cert_id);
+    crate::cell_ssl::cell_ssl_cert_unload(cert_id) as i64
+}
+
+// --- cellKb (Keyboard Input) ---
+
+fn hle_kb_init(ctx: &HleCallContext) -> i64 {
+    let max_connect = ctx.args[0] as u32;
+    debug!("cellKbInit(max_connect={})", max_connect);
+    crate::cell_kb::cell_kb_init(max_connect) as i64
+}
+
+fn hle_kb_end(_ctx: &HleCallContext) -> i64 {
+    debug!("cellKbEnd()");
+    crate::cell_kb::cell_kb_end() as i64
+}
+
+fn hle_kb_get_info(ctx: &HleCallContext) -> i64 {
+    let info_addr = ctx.args[0] as u32;
+    trace!("cellKbGetInfo(info=0x{:08x})", info_addr);
+    crate::cell_kb::cell_kb_get_info(info_addr) as i64
+}
+
+fn hle_kb_read(ctx: &HleCallContext) -> i64 {
+    let port = ctx.args[0] as u32;
+    let data_addr = ctx.args[1] as u32;
+    trace!("cellKbRead(port={}, data=0x{:08x})", port, data_addr);
+    crate::cell_kb::cell_kb_read(port, data_addr) as i64
+}
+
+fn hle_kb_set_read_mode(ctx: &HleCallContext) -> i64 {
+    let port = ctx.args[0] as u32;
+    let read_mode = ctx.args[1] as u32;
+    trace!("cellKbSetReadMode(port={}, mode={})", port, read_mode);
+    crate::cell_kb::cell_kb_set_read_mode(port, read_mode) as i64
+}
+
+fn hle_kb_set_code_type(ctx: &HleCallContext) -> i64 {
+    let port = ctx.args[0] as u32;
+    let code_type = ctx.args[1] as u32;
+    trace!("cellKbSetCodeType(port={}, type={})", port, code_type);
+    crate::cell_kb::cell_kb_set_code_type(port, code_type) as i64
+}
+
+fn hle_kb_set_led_status(ctx: &HleCallContext) -> i64 {
+    let port = ctx.args[0] as u32;
+    let led = ctx.args[1] as u32;
+    trace!("cellKbSetLedStatus(port={}, led={})", port, led);
+    crate::cell_kb::cell_kb_set_led_status(port, led) as i64
+}
+
+fn hle_kb_clear_buf(ctx: &HleCallContext) -> i64 {
+    let port = ctx.args[0] as u32;
+    trace!("cellKbClearBuf(port={})", port);
+    crate::cell_kb::cell_kb_clear_buf(port) as i64
+}
+
+// --- cellMouse (Mouse Input) ---
+
+fn hle_mouse_init(ctx: &HleCallContext) -> i64 {
+    let max_connect = ctx.args[0] as u32;
+    debug!("cellMouseInit(max_connect={})", max_connect);
+    crate::cell_mouse::cell_mouse_init(max_connect) as i64
+}
+
+fn hle_mouse_end(_ctx: &HleCallContext) -> i64 {
+    debug!("cellMouseEnd()");
+    crate::cell_mouse::cell_mouse_end() as i64
+}
+
+fn hle_mouse_get_info(ctx: &HleCallContext) -> i64 {
+    let info_addr = ctx.args[0] as u32;
+    trace!("cellMouseGetInfo(info=0x{:08x})", info_addr);
+    crate::cell_mouse::cell_mouse_get_info(info_addr) as i64
+}
+
+fn hle_mouse_get_data(ctx: &HleCallContext) -> i64 {
+    let port = ctx.args[0] as u32;
+    let data_addr = ctx.args[1] as u32;
+    trace!("cellMouseGetData(port={}, data=0x{:08x})", port, data_addr);
+    crate::cell_mouse::cell_mouse_get_data(port, data_addr) as i64
+}
+
+fn hle_mouse_get_data_list(ctx: &HleCallContext) -> i64 {
+    let port = ctx.args[0] as u32;
+    let data_addr = ctx.args[1] as u32;
+    trace!("cellMouseGetDataList(port={}, data=0x{:08x})", port, data_addr);
+    crate::cell_mouse::cell_mouse_get_data_list(port, data_addr) as i64
+}
+
+fn hle_mouse_get_raw_data(ctx: &HleCallContext) -> i64 {
+    let port = ctx.args[0] as u32;
+    let data_addr = ctx.args[1] as u32;
+    trace!("cellMouseGetRawData(port={}, data=0x{:08x})", port, data_addr);
+    crate::cell_mouse::cell_mouse_get_raw_data(port, data_addr) as i64
+}
+
+fn hle_mouse_clear_buf(ctx: &HleCallContext) -> i64 {
+    let port = ctx.args[0] as u32;
+    trace!("cellMouseClearBuf(port={})", port);
+    crate::cell_mouse::cell_mouse_clear_buf(port) as i64
+}
+
 #[allow(dead_code)]
 fn hle_stub_return_ok(_ctx: &HleCallContext) -> i64 {
     error::CELL_OK
@@ -2251,6 +2576,63 @@ pub fn register_all_hle_functions(dispatcher: &mut HleDispatcher) {
     dispatcher.register_function("cellVpost", "cellVpostOpen", hle_vpost_open);
     dispatcher.register_function("cellVpost", "cellVpostClose", hle_vpost_close);
     dispatcher.register_function("cellVpost", "cellVpostExec", hle_vpost_exec);
+    
+    // cellNetCtl - Network Control
+    dispatcher.register_function("cellNetCtl", "cellNetCtlInit", hle_net_ctl_init);
+    dispatcher.register_function("cellNetCtl", "cellNetCtlTerm", hle_net_ctl_term);
+    dispatcher.register_function("cellNetCtl", "cellNetCtlGetState", hle_net_ctl_get_state);
+    dispatcher.register_function("cellNetCtl", "cellNetCtlGetInfo", hle_net_ctl_get_info);
+    dispatcher.register_function("cellNetCtl", "cellNetCtlNetStartDialogLoadAsync", hle_net_ctl_net_start_dialog_load_async);
+    dispatcher.register_function("cellNetCtl", "cellNetCtlNetStartDialogUnloadAsync", hle_net_ctl_net_start_dialog_unload_async);
+    dispatcher.register_function("cellNetCtl", "cellNetCtlGetNatInfo", hle_net_ctl_get_nat_info);
+    dispatcher.register_function("cellNetCtl", "cellNetCtlAddHandler", hle_net_ctl_add_handler);
+    dispatcher.register_function("cellNetCtl", "cellNetCtlDelHandler", hle_net_ctl_del_handler);
+    
+    // cellHttp - HTTP Client
+    dispatcher.register_function("cellHttp", "cellHttpInit", hle_http_init);
+    dispatcher.register_function("cellHttp", "cellHttpEnd", hle_http_end);
+    dispatcher.register_function("cellHttp", "cellHttpCreateClient", hle_http_create_client);
+    dispatcher.register_function("cellHttp", "cellHttpDestroyClient", hle_http_destroy_client);
+    dispatcher.register_function("cellHttp", "cellHttpCreateTransaction", hle_http_create_transaction);
+    dispatcher.register_function("cellHttp", "cellHttpDestroyTransaction", hle_http_destroy_transaction);
+    dispatcher.register_function("cellHttp", "cellHttpSendRequest", hle_http_send_request);
+    dispatcher.register_function("cellHttp", "cellHttpRecvResponse", hle_http_recv_response);
+    dispatcher.register_function("cellHttp", "cellHttpAddRequestHeader", hle_http_add_request_header);
+    dispatcher.register_function("cellHttp", "cellHttpGetStatusCode", hle_http_get_status_code);
+    dispatcher.register_function("cellHttp", "cellHttpGetResponseHeader", hle_http_get_response_header);
+    dispatcher.register_function("cellHttp", "cellHttpSetProxy", hle_http_set_proxy);
+    
+    // cellSsl - SSL/TLS
+    dispatcher.register_function("cellSsl", "cellSslInit", hle_ssl_init);
+    dispatcher.register_function("cellSsl", "cellSslEnd", hle_ssl_end);
+    dispatcher.register_function("cellSsl", "cellSslCertGetSerialNumber", hle_ssl_cert_get_serial_number);
+    dispatcher.register_function("cellSsl", "cellSslCertGetPublicKey", hle_ssl_cert_get_public_key);
+    dispatcher.register_function("cellSsl", "cellSslCertGetRsaPublicKeyModulus", hle_ssl_cert_get_rsa_public_key_modulus);
+    dispatcher.register_function("cellSsl", "cellSslCertGetRsaPublicKeyExponent", hle_ssl_cert_get_rsa_public_key_exponent);
+    dispatcher.register_function("cellSsl", "cellSslCertGetNotBefore", hle_ssl_cert_get_not_before);
+    dispatcher.register_function("cellSsl", "cellSslCertGetNotAfter", hle_ssl_cert_get_not_after);
+    dispatcher.register_function("cellSsl", "cellSslCertGetSubjectName", hle_ssl_cert_get_subject_name);
+    dispatcher.register_function("cellSsl", "cellSslCertGetIssuerName", hle_ssl_cert_get_issuer_name);
+    dispatcher.register_function("cellSsl", "cellSslCertUnload", hle_ssl_cert_unload);
+    
+    // cellKb - Keyboard Input
+    dispatcher.register_function("cellKb", "cellKbInit", hle_kb_init);
+    dispatcher.register_function("cellKb", "cellKbEnd", hle_kb_end);
+    dispatcher.register_function("cellKb", "cellKbGetInfo", hle_kb_get_info);
+    dispatcher.register_function("cellKb", "cellKbRead", hle_kb_read);
+    dispatcher.register_function("cellKb", "cellKbSetReadMode", hle_kb_set_read_mode);
+    dispatcher.register_function("cellKb", "cellKbSetCodeType", hle_kb_set_code_type);
+    dispatcher.register_function("cellKb", "cellKbSetLedStatus", hle_kb_set_led_status);
+    dispatcher.register_function("cellKb", "cellKbClearBuf", hle_kb_clear_buf);
+    
+    // cellMouse - Mouse Input
+    dispatcher.register_function("cellMouse", "cellMouseInit", hle_mouse_init);
+    dispatcher.register_function("cellMouse", "cellMouseEnd", hle_mouse_end);
+    dispatcher.register_function("cellMouse", "cellMouseGetInfo", hle_mouse_get_info);
+    dispatcher.register_function("cellMouse", "cellMouseGetData", hle_mouse_get_data);
+    dispatcher.register_function("cellMouse", "cellMouseGetDataList", hle_mouse_get_data_list);
+    dispatcher.register_function("cellMouse", "cellMouseGetRawData", hle_mouse_get_raw_data);
+    dispatcher.register_function("cellMouse", "cellMouseClearBuf", hle_mouse_clear_buf);
     
     info!("Registered {} HLE functions", dispatcher.stub_map.len());
 }
@@ -2786,6 +3168,111 @@ mod tests {
         // Previous count was ~111, now ~143
         assert!(dispatcher.stub_map.len() >= 140,
             "Expected at least 140 registered functions after media module wiring, got {}",
+            dispatcher.stub_map.len());
+    }
+    
+    // Phase 2 continued: network, HTTP, SSL, keyboard, mouse registration tests
+    
+    #[test]
+    fn test_net_ctl_functions_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        let net_ctl_functions = [
+            "cellNetCtlInit", "cellNetCtlTerm", "cellNetCtlGetState",
+            "cellNetCtlGetInfo", "cellNetCtlNetStartDialogLoadAsync",
+            "cellNetCtlNetStartDialogUnloadAsync", "cellNetCtlGetNatInfo",
+            "cellNetCtlAddHandler", "cellNetCtlDelHandler",
+        ];
+        
+        for func_name in &net_ctl_functions {
+            let found = dispatcher.stub_map.values().any(|info| info.name == *func_name);
+            assert!(found, "cellNetCtl function '{}' not registered", func_name);
+        }
+    }
+    
+    #[test]
+    fn test_http_functions_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        let http_functions = [
+            "cellHttpInit", "cellHttpEnd", "cellHttpCreateClient",
+            "cellHttpDestroyClient", "cellHttpCreateTransaction",
+            "cellHttpDestroyTransaction", "cellHttpSendRequest",
+            "cellHttpRecvResponse", "cellHttpAddRequestHeader",
+            "cellHttpGetStatusCode", "cellHttpGetResponseHeader",
+            "cellHttpSetProxy",
+        ];
+        
+        for func_name in &http_functions {
+            let found = dispatcher.stub_map.values().any(|info| info.name == *func_name);
+            assert!(found, "cellHttp function '{}' not registered", func_name);
+        }
+    }
+    
+    #[test]
+    fn test_ssl_functions_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        let ssl_functions = [
+            "cellSslInit", "cellSslEnd",
+            "cellSslCertGetSerialNumber", "cellSslCertGetPublicKey",
+            "cellSslCertGetRsaPublicKeyModulus", "cellSslCertGetRsaPublicKeyExponent",
+            "cellSslCertGetNotBefore", "cellSslCertGetNotAfter",
+            "cellSslCertGetSubjectName", "cellSslCertGetIssuerName",
+            "cellSslCertUnload",
+        ];
+        
+        for func_name in &ssl_functions {
+            let found = dispatcher.stub_map.values().any(|info| info.name == *func_name);
+            assert!(found, "cellSsl function '{}' not registered", func_name);
+        }
+    }
+    
+    #[test]
+    fn test_kb_functions_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        let kb_functions = [
+            "cellKbInit", "cellKbEnd", "cellKbGetInfo", "cellKbRead",
+            "cellKbSetReadMode", "cellKbSetCodeType", "cellKbSetLedStatus",
+            "cellKbClearBuf",
+        ];
+        
+        for func_name in &kb_functions {
+            let found = dispatcher.stub_map.values().any(|info| info.name == *func_name);
+            assert!(found, "cellKb function '{}' not registered", func_name);
+        }
+    }
+    
+    #[test]
+    fn test_mouse_functions_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        let mouse_functions = [
+            "cellMouseInit", "cellMouseEnd", "cellMouseGetInfo",
+            "cellMouseGetData", "cellMouseGetDataList",
+            "cellMouseGetRawData", "cellMouseClearBuf",
+        ];
+        
+        for func_name in &mouse_functions {
+            let found = dispatcher.stub_map.values().any(|info| info.name == *func_name);
+            assert!(found, "cellMouse function '{}' not registered", func_name);
+        }
+    }
+    
+    #[test]
+    fn test_all_modules_total_count() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        // All modules: ~143 (media) + 9 netctl + 12 http + 11 ssl + 8 kb + 7 mouse = ~190
+        assert!(dispatcher.stub_map.len() >= 185,
+            "Expected at least 185 registered functions after all module wiring, got {}",
             dispatcher.stub_map.len());
     }
 }

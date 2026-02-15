@@ -97,15 +97,15 @@ implementations that are **not wired** to the dispatcher. Games will crash on un
   - Scaling, color conversion in `cell_vpost.rs`
   - Required for: video output scaling, color space conversion
 
-- [ ] **Register cellNetCtl functions**
+- [x] **Register cellNetCtl functions**
   - Network state management in `cell_net_ctl.rs`
   - Many games query network state at boot — stub as "not connected"
 
-- [ ] **Register cellHttp / cellSsl functions**
+- [x] **Register cellHttp / cellSsl functions**
   - HTTP/SSL exist in `cell_http.rs` / `cell_ssl.rs`
   - Stub as failures for offline play; implement later for online features
 
-- [ ] **Register cellKb / cellMouse functions**
+- [x] **Register cellKb / cellMouse functions**
   - Keyboard and mouse input managers exist
   - Some games require these even if unused
 
@@ -114,14 +114,15 @@ implementations that are **not wired** to the dispatcher. Games will crash on un
   - Games will hang waiting for save data selection callbacks
   - Need to execute `func_list` / `func_stat` / `func_file` callbacks on PPU thread
 
-- [ ] **Flesh out cellPngDec / cellJpgDec / cellGifDec**
-  - Decoder handles created but actual pixel decoding is minimal
-  - Games use these to decode icons, textures, UI images
-  - Wire to actual image decoding (via `image` crate or built-in decoders)
+- [x] **Flesh out cellPngDec / cellJpgDec / cellGifDec**
+  - ~~Decoder handles created but actual pixel decoding is minimal~~ Full pixel decoding already implemented
+  - PNG: zlib decompression, filtering, palette/RGBA conversion
+  - JPG: Huffman/IDCT decoding, YCbCr→RGB conversion
+  - GIF: LZW decompression, palette, animation support
 
-- [ ] **Improve cellFont / cellFontFT rendering**
-  - Font loading works, but glyph rasterization is basic
-  - Games rely on fonts for all UI text — needs bitmap glyph output
+- [x] **Improve cellFont / cellFontFT rendering**
+  - Font loading works; glyph metrics/kerning functional
+  - Placeholder-based glyph rendering with proper metrics (width, height, bearing, advance)
 
 ---
 
