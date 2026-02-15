@@ -1836,9 +1836,9 @@ fn hle_adec_close(ctx: &HleCallContext) -> i64 {
 
 fn hle_adec_start_seq(ctx: &HleCallContext) -> i64 {
     let handle = ctx.args[0] as u32;
-    let param = ctx.args[1] as u32;
+    let start_param = ctx.args[1] as u32;
     trace!("cellAdecStartSeq(handle={})", handle);
-    crate::cell_adec::cell_adec_start_seq(handle, param) as i64
+    crate::cell_adec::cell_adec_start_seq(handle, start_param) as i64
 }
 
 fn hle_adec_end_seq(ctx: &HleCallContext) -> i64 {
