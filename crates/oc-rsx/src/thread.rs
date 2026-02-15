@@ -13,6 +13,10 @@ const DRAW_FIRST_MASK: u32 = 0xFFFFFF;
 const DRAW_COUNT_SHIFT: u32 = 24;
 const DRAW_COUNT_MASK: u32 = 0xFF;
 
+/// Maximum texture data size to upload (16 MB) — guards against reading
+/// bogus sizes from uninitialized RSX state
+const MAX_TEXTURE_UPLOAD_SIZE: u32 = 16 * 1024 * 1024;
+
 /// Display buffer configuration received from GCM
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DisplayBuffer {
@@ -609,7 +613,7 @@ impl RsxThread {
             (width as u32) * (height as u32) * bpp
         };
         
-        if data_size == 0 || data_size > 16 * 1024 * 1024 {
+        if data_size == 0 || data_size > MAX_TEXTURE_UPLOAD_SIZE {
             tracing::trace!("Skipping texture upload: slot={}, size={}", slot, data_size);
             return;
         }
@@ -711,7 +715,8 @@ impl RsxThread {
     
     /// Compile a vertex program from RSX memory
     fn compile_vertex_program(&self, addr: u32) -> Option<Vec<u32>> {
-        // Read vertex program instructions (max 512 instructions × 16 bytes = 8KB)
+        // RSX hardware supports up to 512 vertex program instructions,
+        // each 128 bits (16 bytes) = max 8KB per program
         const MAX_VP_SIZE: u32 = 512 * 16;
         let data = match self.memory.read_rsx(addr, MAX_VP_SIZE) {
             Ok(d) => d,
@@ -760,7 +765,8 @@ impl RsxThread {
     
     /// Compile a fragment program from RSX memory
     fn compile_fragment_program(&self, addr: u32) -> Option<Vec<u32>> {
-        // Read fragment program data (max 4KB)
+        // RSX fragment programs are stored in RSX local memory with 128-bit
+        // instructions; practical programs rarely exceed 4KB
         const MAX_FP_SIZE: u32 = 4096;
         let data = match self.memory.read_rsx(addr, MAX_FP_SIZE) {
             Ok(d) => d,

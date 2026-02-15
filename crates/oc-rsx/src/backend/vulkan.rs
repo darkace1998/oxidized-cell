@@ -3858,7 +3858,8 @@ impl GraphicsBackend for VulkanBackend {
             ..crate::texture::Texture::new()
         };
         
-        if let Err(e) = self.upload_texture(info.slot, &texture, data) {
+        // Call the internal Vulkan upload method (inherent impl, not trait)
+        if let Err(e) = VulkanBackend::upload_texture(self, info.slot, &texture, data) {
             tracing::warn!("Failed to upload texture to slot {}: {}", info.slot, e);
         }
     }
