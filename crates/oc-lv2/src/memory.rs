@@ -434,10 +434,10 @@ pub mod syscalls {
     pub fn sys_mmapper_unmap_memory(
         _manager: &MemoryManager,
         addr: u64,
-        size: usize,
+        _size: usize,
     ) -> Result<(), KernelError> {
-        tracing::debug!("sys_mmapper_unmap_memory(0x{:x}, size: 0x{:x})", addr, size);
-        // Unmapping is the reverse of map — mark region as no longer accessible
+        tracing::debug!("sys_mmapper_unmap_memory(0x{:x})", addr);
+        // TODO: track mapped regions and actually unmap them
         Ok(())
     }
 
@@ -446,14 +446,12 @@ pub mod syscalls {
     pub fn sys_vm_memory_map(
         _manager: &MemoryManager,
         addr: u64,
-        size: usize,
-        block_size: u64,
-        flags: u64,
+        _size: usize,
+        _block_size: u64,
+        _flags: u64,
     ) -> Result<u64, KernelError> {
-        tracing::debug!(
-            "sys_vm_memory_map(0x{:x}, size: 0x{:x}, block_size: 0x{:x}, flags: 0x{:x})",
-            addr, size, block_size, flags
-        );
+        tracing::debug!("sys_vm_memory_map(0x{:x})", addr);
+        // TODO: implement real virtual memory page management
         // Return the requested address as the mapped address
         Ok(addr)
     }

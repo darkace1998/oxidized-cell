@@ -464,9 +464,10 @@ pub mod syscalls {
         const TLS_BASE: u64 = 0x28000000;
         const TLS_PAGE_SIZE: u64 = 0x10000; // 64KB per thread
 
+        // Validate the thread exists
         let _thread = manager.get(thread_id)?;
-        // Each thread's TLS region is at TLS_BASE + thread_index * TLS_PAGE_SIZE
-        // Use thread_id as the index (bounded to avoid overflow)
+        // Mask to 8 bits — supports up to 256 concurrent threads, matching the
+        // practical limit of the Cell BE (limited SPU + PPU hardware threads).
         let thread_index = (thread_id as u64) & 0xFF;
         let addr = TLS_BASE + thread_index * TLS_PAGE_SIZE + tls_offset;
         Ok(addr)
