@@ -3,7 +3,7 @@
 //! This module provides HLE implementations for PS3 audio output.
 //! It provides full audio mixing support compatible with the oc-audio subsystem.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, RwLock};
 use tracing::{debug, trace};
 use crate::memory::{read_be32, write_be32, write_be64};
@@ -274,6 +274,8 @@ pub struct AudioManager {
     block_index: u64,
     /// Notification event queues (keyed by event queue key)
     notify_event_queues: Vec<u64>,
+    /// Decoded audio queue from cellAdec — PCM frames ready for mixing
+    decoded_audio_queue: VecDeque<Vec<f32>>,
 }
 
 /// Public port info for querying
@@ -294,6 +296,7 @@ impl AudioManager {
             master_volume: 1.0,
             block_index: 0,
             notify_event_queues: Vec::new(),
+            decoded_audio_queue: VecDeque::new(),
         }
     }
 
@@ -340,6 +343,9 @@ impl AudioManager {
         
         // Clear all notification event queues
         self.notify_event_queues.clear();
+        
+        // Clear decoded audio queue
+        self.decoded_audio_queue.clear();
         
         self.initialized = false;
 
@@ -619,8 +625,9 @@ impl AudioManager {
 
     /// Mix audio from multiple ports
     /// 
-    /// Mixes audio from all active ports into a single output buffer.
-    /// This is called by the audio thread to generate the final output.
+    /// Reads PCM samples from port shared memory buffers (where games write
+    /// samples directly) and decoded audio queue (from cellAdec), mixes them
+    /// into a single output buffer. This is called by the audio thread.
     /// 
     /// # Arguments
     /// * `output` - Output buffer to fill with mixed audio
@@ -630,13 +637,73 @@ impl AudioManager {
             return 0x80310702u32 as i32; // CELL_AUDIO_ERROR_AUDIOSYSTEM
         }
 
-        trace!("AudioManager::mix_audio: frames={}", frames);
+        let samples_needed = frames * 2; // stereo output
+        trace!("AudioManager::mix_audio: frames={}, samples_needed={}", frames, samples_needed);
 
-        // Use mixer backend if available
+        // Zero output buffer
+        for s in output.iter_mut().take(samples_needed) {
+            *s = 0.0;
+        }
+
+        // Read PCM from port shared memory buffers and mix into output
+        for port in &self.ports {
+            if port.state != AudioPortState::Started {
+                continue;
+            }
+
+            // Read PCM from shared memory if buffer address is set
+            if port.buffer_addr != 0 {
+                let block_offset = (self.block_index as usize % port.num_blocks as usize)
+                    * CELL_AUDIO_BLOCK_SAMPLES
+                    * port.num_channels as usize;
+                let samples_to_read = (CELL_AUDIO_BLOCK_SAMPLES * port.num_channels as usize)
+                    .min(samples_needed);
+
+                for i in 0..samples_to_read {
+                    let addr = port.buffer_addr
+                        .wrapping_add((block_offset + i) as u32 * 4);
+                    if let Ok(bits) = read_be32(addr) {
+                        let sample = f32::from_bits(bits) * port.volume * self.master_volume;
+                        let out_idx = if port.num_channels <= 2 {
+                            i
+                        } else {
+                            // Downmix multi-channel to stereo
+                            i % 2
+                        };
+                        if out_idx < samples_needed {
+                            output[out_idx] += sample;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Mix decoded audio from cellAdec queue
+        if let Some(decoded) = self.decoded_audio_queue.pop_front() {
+            for (i, &sample) in decoded.iter().enumerate() {
+                if i < samples_needed {
+                    output[i] += sample * self.master_volume;
+                }
+            }
+        }
+
+        // Use mixer backend for any additional sources
         if let Some(backend) = &self.audio_backend {
             if let Ok(mut mixer) = backend.write() {
-                mixer.mix(output, frames);
+                // Mix additional sources from the backend on top
+                let mut backend_buf = vec![0.0f32; samples_needed];
+                mixer.mix(&mut backend_buf, frames);
+                for (i, &s) in backend_buf.iter().enumerate() {
+                    if i < samples_needed {
+                        output[i] += s;
+                    }
+                }
             }
+        }
+
+        // Clamp to prevent clipping
+        for s in output.iter_mut().take(samples_needed) {
+            *s = s.clamp(-1.0, 1.0);
         }
 
         // Increment block index for timing
@@ -703,6 +770,35 @@ impl AudioManager {
     /// Check if backend is connected
     pub fn is_backend_connected(&self) -> bool {
         self.audio_backend.is_some()
+    }
+
+    // ========================================================================
+    // Decoded Audio Queue (cellAdec integration)
+    // ========================================================================
+
+    /// Submit decoded PCM audio from cellAdec to the mixer queue
+    ///
+    /// cellAdec decoders (ATRAC3, AAC, MP3, etc.) produce PCM samples
+    /// which are queued here for mixing into the audio output.
+    ///
+    /// # Arguments
+    /// * `pcm_samples` - Decoded PCM samples (f32, interleaved stereo)
+    pub fn submit_decoded_audio(&mut self, pcm_samples: Vec<f32>) {
+        if pcm_samples.is_empty() {
+            return;
+        }
+        trace!("AudioManager: queued {} decoded PCM samples", pcm_samples.len());
+        self.decoded_audio_queue.push_back(pcm_samples);
+    }
+
+    /// Get the number of pending decoded audio buffers
+    pub fn decoded_audio_pending(&self) -> usize {
+        self.decoded_audio_queue.len()
+    }
+
+    /// Clear the decoded audio queue
+    pub fn clear_decoded_audio(&mut self) {
+        self.decoded_audio_queue.clear();
     }
 
     // ========================================================================
@@ -1227,5 +1323,141 @@ mod tests {
     #[test]
     fn test_sample_rate_constant() {
         assert_eq!(CELL_AUDIO_SAMPLE_RATE, 48000);
+    }
+
+    #[test]
+    fn test_mix_audio_produces_output() {
+        let mut manager = AudioManager::new();
+        let mixer = Arc::new(RwLock::new(HleAudioMixer::default()));
+        manager.set_audio_backend(mixer.clone());
+        manager.init();
+
+        let port_num = manager.port_open(2, CELL_AUDIO_BLOCK_8, 0, 1.0).unwrap();
+        manager.port_start(port_num);
+
+        // Submit samples through submit_audio (writes to mixer source)
+        let samples = vec![0.5f32; 512];
+        manager.submit_audio(port_num, &samples);
+
+        // mix_audio should produce non-zero output from backend
+        let mut output = vec![0.0f32; 512];
+        let result = manager.mix_audio(&mut output, 256);
+        assert_eq!(result, 0);
+        let has_audio = output.iter().any(|&s| s != 0.0);
+        assert!(has_audio, "mix_audio should produce non-zero output from submitted samples");
+
+        manager.quit();
+    }
+
+    #[test]
+    fn test_mix_audio_increments_block_index() {
+        let mut manager = AudioManager::new();
+        manager.init();
+
+        assert_eq!(manager.get_block_index(), 0);
+        let mut output = vec![0.0f32; 512];
+        manager.mix_audio(&mut output, 256);
+        assert_eq!(manager.get_block_index(), 1);
+        manager.mix_audio(&mut output, 256);
+        assert_eq!(manager.get_block_index(), 2);
+
+        manager.quit();
+    }
+
+    #[test]
+    fn test_decoded_audio_queue() {
+        let mut manager = AudioManager::new();
+        manager.init();
+
+        assert_eq!(manager.decoded_audio_pending(), 0);
+
+        // Submit decoded PCM from cellAdec
+        let pcm = vec![0.25f32; 512];
+        manager.submit_decoded_audio(pcm);
+        assert_eq!(manager.decoded_audio_pending(), 1);
+
+        // Mix should drain the decoded queue
+        let mut output = vec![0.0f32; 512];
+        manager.mix_audio(&mut output, 256);
+        assert_eq!(manager.decoded_audio_pending(), 0);
+
+        // Output should contain the decoded audio
+        let has_audio = output.iter().any(|&s| s != 0.0);
+        assert!(has_audio, "mix_audio should include decoded audio queue samples");
+
+        manager.quit();
+    }
+
+    #[test]
+    fn test_decoded_audio_empty_ignored() {
+        let mut manager = AudioManager::new();
+        manager.init();
+
+        // Empty samples should be ignored
+        manager.submit_decoded_audio(Vec::new());
+        assert_eq!(manager.decoded_audio_pending(), 0);
+
+        manager.quit();
+    }
+
+    #[test]
+    fn test_decoded_audio_cleared_on_quit() {
+        let mut manager = AudioManager::new();
+        manager.init();
+
+        manager.submit_decoded_audio(vec![0.5f32; 256]);
+        assert_eq!(manager.decoded_audio_pending(), 1);
+
+        manager.quit();
+
+        // Re-init and verify queue is cleared
+        manager.init();
+        assert_eq!(manager.decoded_audio_pending(), 0);
+        manager.quit();
+    }
+
+    #[test]
+    fn test_mix_audio_clamps_output() {
+        let mut manager = AudioManager::new();
+        let mixer = Arc::new(RwLock::new(HleAudioMixer::default()));
+        manager.set_audio_backend(mixer.clone());
+        manager.init();
+
+        let port_num = manager.port_open(2, CELL_AUDIO_BLOCK_8, 0, 1.0).unwrap();
+        manager.port_start(port_num);
+
+        // Submit very loud samples
+        let samples = vec![2.0f32; 512];
+        manager.submit_audio(port_num, &samples);
+
+        let mut output = vec![0.0f32; 512];
+        manager.mix_audio(&mut output, 256);
+
+        // All samples should be clamped to [-1.0, 1.0]
+        for &s in &output[..512] {
+            assert!(s >= -1.0 && s <= 1.0, "Sample {} should be clamped", s);
+        }
+
+        manager.quit();
+    }
+
+    #[test]
+    fn test_block_timestamp_consistency() {
+        let mut manager = AudioManager::new();
+        manager.init();
+        let port_num = manager.port_open(2, CELL_AUDIO_BLOCK_8, 0, 1.0).unwrap();
+
+        // Block 0 = 0µs, Block 1 = 5333µs, Block 9 = 48000µs
+        let t0 = manager.get_port_timestamp(port_num, 0).unwrap();
+        let t1 = manager.get_port_timestamp(port_num, 1).unwrap();
+        let t9 = manager.get_port_timestamp(port_num, 9).unwrap();
+
+        assert_eq!(t0, 0);
+        assert_eq!(t1, 5333); // 256 * 1_000_000 / 48000
+        assert_eq!(t9, 48000); // 9 * 256 * 1_000_000 / 48000
+        assert!(t9 > t1);
+        assert!(t1 > t0);
+
+        manager.quit();
     }
 }

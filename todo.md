@@ -199,20 +199,20 @@ skeletal. Most commercial games use SPURS for multithreaded workloads.
 
 Audio infrastructure exists (cpal backend, mixer, 48kHz output) but needs game integration.
 
-- [ ] **Connect cellAudio ports to actual audio output**
+- [x] **Connect cellAudio ports to actual audio output**
   - `AudioManager` creates ports, but verify samples flow to `CpalAudioBackend`
   - Games write PCM samples to shared memory → audio mixer → speakers
 
-- [ ] **Audio timing synchronization**
+- [x] **Audio timing synchronization**
   - Block size = 256 samples at 48kHz ≈ 5.33ms per block
   - Games poll `cellAudioGetPortTimestamp` for sync — must return accurate values
   - Audio thread must run independently of video frame rate
 
-- [ ] **Background music (BGM) playback**
+- [x] **Background music (BGM) playback**
   - `cellBgmPlaybackEnable` / `cellBgmPlaybackDisable` registered but minimal
   - Some games use BGM APIs for menu music
 
-- [ ] **Audio decoder integration**
+- [x] **Audio decoder integration**
   - Wire cellAdec decoded audio to audio mixer
   - Support format conversion (ATRAC3 → PCM, AAC → PCM, etc.)
 

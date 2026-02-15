@@ -1893,6 +1893,12 @@ fn hle_sysutil_disable_bgm_playback(_ctx: &HleCallContext) -> i64 {
     crate::cell_sysutil::cell_sysutil_disable_bgm_playback() as i64
 }
 
+fn hle_sysutil_set_bgm_playback_volume(ctx: &HleCallContext) -> i64 {
+    let volume = ctx.args[0] as u32;
+    debug!("cellSysutilSetBgmPlaybackVolume(volume={})", volume);
+    crate::cell_sysutil::cell_sysutil_set_bgm_playback_volume(volume) as i64
+}
+
 // --- cellVdec (Video Decoder) ---
 
 fn hle_vdec_query_attr(ctx: &HleCallContext) -> i64 {
@@ -2744,6 +2750,7 @@ pub fn register_all_hle_functions(dispatcher: &mut HleDispatcher) {
     dispatcher.register_function("cellSysutil", "cellSysutilGetBgmPlaybackStatus", hle_sysutil_get_bgm_playback_status);
     dispatcher.register_function("cellSysutil", "cellSysutilEnableBgmPlayback", hle_sysutil_enable_bgm_playback);
     dispatcher.register_function("cellSysutil", "cellSysutilDisableBgmPlayback", hle_sysutil_disable_bgm_playback);
+    dispatcher.register_function("cellSysutil", "cellSysutilSetBgmPlaybackVolume", hle_sysutil_set_bgm_playback_volume);
     
     // cellVdec - Video Decoder
     dispatcher.register_function("cellVdec", "cellVdecQueryAttr", hle_vdec_query_attr);
@@ -3270,6 +3277,7 @@ mod tests {
             "cellSysutilGetBgmPlaybackStatus",
             "cellSysutilEnableBgmPlayback",
             "cellSysutilDisableBgmPlayback",
+            "cellSysutilSetBgmPlaybackVolume",
         ];
 
         for func_name in &bgm_funcs {
