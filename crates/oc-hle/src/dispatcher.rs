@@ -1201,6 +1201,194 @@ fn hle_spurs_get_spu_thread_id(ctx: &HleCallContext) -> i64 {
     crate::cell_spurs::cell_spurs_get_spu_thread_id(spurs_ptr, thread, thread_id_addr) as i64
 }
 
+fn hle_spurs_detach_lv2_event_queue(ctx: &HleCallContext) -> i64 {
+    let spurs_ptr = ctx.args[0] as u32;
+    let port = ctx.args[1] as u32;
+    debug!(
+        "cellSpursDetachLv2EventQueue(spurs=0x{:08x}, port={})",
+        spurs_ptr, port
+    );
+    crate::cell_spurs::cell_spurs_detach_lv2_event_queue(spurs_ptr, port) as i64
+}
+
+fn hle_spurs_add_policy_module(ctx: &HleCallContext) -> i64 {
+    let image_addr = ctx.args[0] as u32;
+    let image_size = ctx.args[1] as u32;
+    debug!(
+        "cellSpursAddPolicyModule(addr=0x{:08x}, size={})",
+        image_addr, image_size
+    );
+    crate::cell_spurs::cell_spurs_add_policy_module(image_addr, image_size) as i64
+}
+
+fn hle_spurs_initialize_with_attribute(ctx: &HleCallContext) -> i64 {
+    let spurs_ptr = ctx.args[0] as u32;
+    let attr_ptr = ctx.args[1] as u32;
+    debug!(
+        "cellSpursInitializeWithAttribute(spurs=0x{:08x}, attr=0x{:08x})",
+        spurs_ptr, attr_ptr
+    );
+    crate::cell_spurs::cell_spurs_initialize_with_attribute(spurs_ptr, attr_ptr) as i64
+}
+
+fn hle_spurs_attribute_initialize(ctx: &HleCallContext) -> i64 {
+    let attr_ptr = ctx.args[0] as u32;
+    let n_spus = ctx.args[1] as u32;
+    let spu_priority = ctx.args[2] as u32;
+    let ppu_priority = ctx.args[3] as u32;
+    let exit_if_no_work = ctx.args[4] != 0;
+    debug!(
+        "cellSpursAttributeInitialize(attr=0x{:08x}, nSpus={}, spuPri={}, ppuPri={})",
+        attr_ptr, n_spus, spu_priority, ppu_priority
+    );
+    crate::cell_spurs::cell_spurs_attribute_initialize(
+        attr_ptr, n_spus, spu_priority, ppu_priority, exit_if_no_work,
+    ) as i64
+}
+
+fn hle_spurs_attribute_set_name_prefix(ctx: &HleCallContext) -> i64 {
+    let attr_ptr = ctx.args[0] as u32;
+    let prefix_addr = ctx.args[1] as u32;
+    let size = ctx.args[2] as u32;
+    debug!(
+        "cellSpursAttributeSetNamePrefix(attr=0x{:08x}, prefix=0x{:08x}, size={})",
+        attr_ptr, prefix_addr, size
+    );
+    crate::cell_spurs::cell_spurs_attribute_set_name_prefix(attr_ptr, prefix_addr, size) as i64
+}
+
+fn hle_spurs_get_info(ctx: &HleCallContext) -> i64 {
+    let spurs_ptr = ctx.args[0] as u32;
+    let info_addr = ctx.args[1] as u32;
+    debug!(
+        "cellSpursGetInfo(spurs=0x{:08x}, info=0x{:08x})",
+        spurs_ptr, info_addr
+    );
+    crate::cell_spurs::cell_spurs_get_info(spurs_ptr, info_addr) as i64
+}
+
+fn hle_spurs_wake_up(ctx: &HleCallContext) -> i64 {
+    let spurs_ptr = ctx.args[0] as u32;
+    debug!("cellSpursWakeUp(spurs=0x{:08x})", spurs_ptr);
+    crate::cell_spurs::cell_spurs_wake_up(spurs_ptr) as i64
+}
+
+fn hle_spurs_request_idle_spu(ctx: &HleCallContext) -> i64 {
+    let spurs_ptr = ctx.args[0] as u32;
+    let spu_id_addr = ctx.args[1] as u32;
+    debug!(
+        "cellSpursRequestIdleSpu(spurs=0x{:08x}, out=0x{:08x})",
+        spurs_ptr, spu_id_addr
+    );
+    crate::cell_spurs::cell_spurs_request_idle_spu(spurs_ptr, spu_id_addr) as i64
+}
+
+fn hle_spurs_get_spu_thread_group_id(ctx: &HleCallContext) -> i64 {
+    let spurs_ptr = ctx.args[0] as u32;
+    let group_id_addr = ctx.args[1] as u32;
+    debug!(
+        "cellSpursGetSpuThreadGroupId(spurs=0x{:08x}, out=0x{:08x})",
+        spurs_ptr, group_id_addr
+    );
+    crate::cell_spurs::cell_spurs_get_spu_thread_group_id(spurs_ptr, group_id_addr) as i64
+}
+
+fn hle_spurs_shutdown_taskset(ctx: &HleCallContext) -> i64 {
+    let taskset_ptr = ctx.args[0] as u32;
+    debug!("cellSpursShutdownTaskset(taskset=0x{:08x})", taskset_ptr);
+    crate::cell_spurs::cell_spurs_shutdown_taskset(taskset_ptr) as i64
+}
+
+fn hle_spurs_join_taskset(ctx: &HleCallContext) -> i64 {
+    let taskset_ptr = ctx.args[0] as u32;
+    debug!("cellSpursJoinTaskset(taskset=0x{:08x})", taskset_ptr);
+    crate::cell_spurs::cell_spurs_join_taskset(taskset_ptr) as i64
+}
+
+fn hle_spurs_create_taskset_with_attribute(ctx: &HleCallContext) -> i64 {
+    let spurs_ptr = ctx.args[0] as u32;
+    let taskset_ptr = ctx.args[1] as u32;
+    let attr_ptr = ctx.args[2] as u32;
+    debug!(
+        "cellSpursCreateTasksetWithAttribute(spurs=0x{:08x}, taskset=0x{:08x}, attr=0x{:08x})",
+        spurs_ptr, taskset_ptr, attr_ptr
+    );
+    crate::cell_spurs::cell_spurs_create_taskset_with_attribute(spurs_ptr, taskset_ptr, attr_ptr) as i64
+}
+
+// --- libsre (Regular Expression Library) ---
+
+fn hle_sre_compile(ctx: &HleCallContext) -> i64 {
+    let pattern_addr = ctx.args[0] as u32;
+    let flags = ctx.args[1] as u32;
+    let compiled_addr = ctx.args[2] as u32;
+    debug!(
+        "cellSreCompile(pattern=0x{:08x}, flags={}, out=0x{:08x})",
+        pattern_addr, flags, compiled_addr
+    );
+    // Read pattern from memory and compile
+    if pattern_addr == 0 || compiled_addr == 0 {
+        return crate::libsre::SRE_ERROR_INVALID_PARAMETER as i64;
+    }
+    let pattern_str = if crate::memory::is_hle_memory_initialized() {
+        crate::memory::read_string(pattern_addr, 256).unwrap_or_default()
+    } else {
+        return crate::libsre::SRE_ERROR_INVALID_PARAMETER as i64;
+    };
+    match crate::context::get_hle_context_mut().regex.compile(&pattern_str, flags) {
+        Ok(pattern_id) => {
+            if crate::memory::is_hle_memory_initialized() {
+                let _ = crate::memory::write_be32(compiled_addr, pattern_id);
+            }
+            0i64
+        }
+        Err(e) => e as i64,
+    }
+}
+
+fn hle_sre_free(ctx: &HleCallContext) -> i64 {
+    let pattern = ctx.args[0] as u32;
+    debug!("cellSreFree(pattern={})", pattern);
+    crate::context::get_hle_context_mut().regex.free(pattern) as i64
+}
+
+fn hle_sre_match(ctx: &HleCallContext) -> i64 {
+    let pattern = ctx.args[0] as u32;
+    let _text_addr = ctx.args[1] as u32;
+    let _text_len = ctx.args[2] as u32;
+    let _matches_addr = ctx.args[3] as u32;
+    let _max_matches = ctx.args[4] as u32;
+    let num_matches_addr = ctx.args[5] as u32;
+    debug!("cellSreMatch(pattern={})", pattern);
+    // Stub: return success with 0 matches
+    if num_matches_addr != 0 && crate::memory::is_hle_memory_initialized() {
+        let _ = crate::memory::write_be32(num_matches_addr, 0);
+    }
+    0i64
+}
+
+fn hle_sre_search(ctx: &HleCallContext) -> i64 {
+    let pattern = ctx.args[0] as u32;
+    debug!("cellSreSearch(pattern={})", pattern);
+    // Stub: return not found
+    -1i64
+}
+
+fn hle_sre_replace(ctx: &HleCallContext) -> i64 {
+    let pattern = ctx.args[0] as u32;
+    debug!("cellSreReplace(pattern={})", pattern);
+    // Stub: return error (no replacement done)
+    crate::libsre::SRE_ERROR_INVALID_PARAMETER as i64
+}
+
+fn hle_sre_get_error(ctx: &HleCallContext) -> i64 {
+    let error_code = ctx.args[0] as i32;
+    let _buffer_addr = ctx.args[1] as u32;
+    let _buffer_size = ctx.args[2] as u32;
+    debug!("cellSreGetError(code={})", error_code);
+    0i64
+}
+
 // --- Generic stub ---
 
 // --- cellPngDec ---
@@ -1705,6 +1893,687 @@ fn hle_sysutil_disable_bgm_playback(_ctx: &HleCallContext) -> i64 {
     crate::cell_sysutil::cell_sysutil_disable_bgm_playback() as i64
 }
 
+fn hle_sysutil_set_bgm_playback_volume(ctx: &HleCallContext) -> i64 {
+    let volume = ctx.args[0] as u32;
+    debug!("cellSysutilSetBgmPlaybackVolume(volume={})", volume);
+    crate::cell_sysutil::cell_sysutil_set_bgm_playback_volume(volume) as i64
+}
+
+// --- cellVdec (Video Decoder) ---
+
+fn hle_vdec_query_attr(ctx: &HleCallContext) -> i64 {
+    let vdec_type_addr = ctx.args[0] as u32;
+    let attr_addr = ctx.args[1] as u32;
+    debug!("cellVdecQueryAttr(type=0x{:08x}, attr=0x{:08x})", vdec_type_addr, attr_addr);
+    unsafe {
+        crate::cell_vdec::cell_vdec_query_attr(
+            vdec_type_addr as *const crate::cell_vdec::CellVdecType,
+            attr_addr as *mut crate::cell_vdec::CellVdecAttr,
+        ) as i64
+    }
+}
+
+fn hle_vdec_open(ctx: &HleCallContext) -> i64 {
+    let vdec_type_addr = ctx.args[0] as u32;
+    let resource_addr = ctx.args[1] as u32;
+    let cb_addr = ctx.args[2] as u32;
+    let handle_addr = ctx.args[3] as u32;
+    debug!("cellVdecOpen(type=0x{:08x}, handle=0x{:08x})", vdec_type_addr, handle_addr);
+    unsafe {
+        crate::cell_vdec::cell_vdec_open(
+            vdec_type_addr as *const crate::cell_vdec::CellVdecType,
+            resource_addr as *const crate::cell_vdec::CellVdecResource,
+            cb_addr as *const crate::cell_vdec::CellVdecCb,
+            handle_addr as *mut crate::cell_vdec::VdecHandle,
+        ) as i64
+    }
+}
+
+fn hle_vdec_close(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    trace!("cellVdecClose(handle={})", handle);
+    crate::cell_vdec::cell_vdec_close(handle) as i64
+}
+
+fn hle_vdec_start_seq(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    trace!("cellVdecStartSeq(handle={})", handle);
+    crate::cell_vdec::cell_vdec_start_seq(handle) as i64
+}
+
+fn hle_vdec_end_seq(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    trace!("cellVdecEndSeq(handle={})", handle);
+    crate::cell_vdec::cell_vdec_end_seq(handle) as i64
+}
+
+fn hle_vdec_decode_au(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let mode = ctx.args[1] as u32;
+    let au_info_addr = ctx.args[2] as u32;
+    debug!("cellVdecDecodeAu(handle={}, mode={})", handle, mode);
+    unsafe {
+        crate::cell_vdec::cell_vdec_decode_au(
+            handle,
+            mode,
+            au_info_addr as *const crate::cell_vdec::CellVdecAuInfo,
+        ) as i64
+    }
+}
+
+fn hle_vdec_get_picture(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let pic_format_addr = ctx.args[1] as u32;
+    let pic_item_addr = ctx.args[2] as u32;
+    debug!("cellVdecGetPicture(handle={})", handle);
+    unsafe {
+        crate::cell_vdec::cell_vdec_get_picture(
+            handle,
+            pic_format_addr as *const crate::cell_vdec::CellVdecPicFormat,
+            pic_item_addr as *mut crate::cell_vdec::CellVdecPicItem,
+        ) as i64
+    }
+}
+
+fn hle_vdec_get_pic_item(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let pic_item_addr = ctx.args[1] as u32;
+    debug!("cellVdecGetPicItem(handle={})", handle);
+    crate::cell_vdec::cell_vdec_get_pic_item(
+        handle,
+        pic_item_addr as *mut u32,
+    ) as i64
+}
+
+fn hle_vdec_set_frame_rate(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let frame_rate = ctx.args[1] as u32;
+    trace!("cellVdecSetFrameRate(handle={}, rate={})", handle, frame_rate);
+    crate::cell_vdec::cell_vdec_set_frame_rate(handle, frame_rate) as i64
+}
+
+// --- cellAdec (Audio Decoder) ---
+
+fn hle_adec_query_attr(ctx: &HleCallContext) -> i64 {
+    let adec_type_addr = ctx.args[0] as u32;
+    let attr_addr = ctx.args[1] as u32;
+    debug!("cellAdecQueryAttr(type=0x{:08x}, attr=0x{:08x})", adec_type_addr, attr_addr);
+    unsafe {
+        crate::cell_adec::cell_adec_query_attr(
+            adec_type_addr as *const crate::cell_adec::CellAdecType,
+            attr_addr as *mut crate::cell_adec::CellAdecAttr,
+        ) as i64
+    }
+}
+
+fn hle_adec_open(ctx: &HleCallContext) -> i64 {
+    let adec_type_addr = ctx.args[0] as u32;
+    let resource_addr = ctx.args[1] as u32;
+    let cb_addr = ctx.args[2] as u32;
+    let handle_addr = ctx.args[3] as u32;
+    debug!("cellAdecOpen(type=0x{:08x}, handle=0x{:08x})", adec_type_addr, handle_addr);
+    unsafe {
+        crate::cell_adec::cell_adec_open(
+            adec_type_addr as *const crate::cell_adec::CellAdecType,
+            resource_addr as *const crate::cell_adec::CellAdecResource,
+            cb_addr as *const crate::cell_adec::CellAdecCb,
+            handle_addr as *mut crate::cell_adec::AdecHandle,
+        ) as i64
+    }
+}
+
+fn hle_adec_close(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    trace!("cellAdecClose(handle={})", handle);
+    crate::cell_adec::cell_adec_close(handle) as i64
+}
+
+fn hle_adec_start_seq(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let start_param = ctx.args[1] as u32;
+    trace!("cellAdecStartSeq(handle={})", handle);
+    crate::cell_adec::cell_adec_start_seq(handle, start_param) as i64
+}
+
+fn hle_adec_end_seq(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    trace!("cellAdecEndSeq(handle={})", handle);
+    crate::cell_adec::cell_adec_end_seq(handle) as i64
+}
+
+fn hle_adec_decode_au(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let au_info_addr = ctx.args[1] as u32;
+    debug!("cellAdecDecodeAu(handle={})", handle);
+    unsafe {
+        crate::cell_adec::cell_adec_decode_au(
+            handle,
+            au_info_addr as *const crate::cell_adec::CellAdecAuInfo,
+        ) as i64
+    }
+}
+
+fn hle_adec_get_pcm(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let pcm_item_addr = ctx.args[1] as u32;
+    debug!("cellAdecGetPcm(handle={})", handle);
+    unsafe {
+        crate::cell_adec::cell_adec_get_pcm(
+            handle,
+            pcm_item_addr as *mut crate::cell_adec::CellAdecPcmItem,
+        ) as i64
+    }
+}
+
+fn hle_adec_get_pcm_item(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let pcm_item_addr = ctx.args[1] as u32;
+    debug!("cellAdecGetPcmItem(handle={})", handle);
+    crate::cell_adec::cell_adec_get_pcm_item(
+        handle,
+        pcm_item_addr as *mut u32,
+    ) as i64
+}
+
+// --- cellDmux (Demultiplexer) ---
+
+fn hle_dmux_query_attr(ctx: &HleCallContext) -> i64 {
+    let dmux_type_addr = ctx.args[0] as u32;
+    let resource_addr = ctx.args[1] as u32;
+    let attr_addr = ctx.args[2] as u32;
+    debug!("cellDmuxQueryAttr(type=0x{:08x})", dmux_type_addr);
+    unsafe {
+        crate::cell_dmux::cell_dmux_query_attr(
+            dmux_type_addr as *const crate::cell_dmux::CellDmuxType,
+            resource_addr as *const crate::cell_dmux::CellDmuxResource,
+            attr_addr as *mut crate::cell_dmux::CellDmuxType,
+        ) as i64
+    }
+}
+
+fn hle_dmux_open(ctx: &HleCallContext) -> i64 {
+    let dmux_type_addr = ctx.args[0] as u32;
+    let resource_addr = ctx.args[1] as u32;
+    let cb_addr = ctx.args[2] as u32;
+    let handle_addr = ctx.args[3] as u32;
+    debug!("cellDmuxOpen(type=0x{:08x}, handle=0x{:08x})", dmux_type_addr, handle_addr);
+    unsafe {
+        crate::cell_dmux::cell_dmux_open(
+            dmux_type_addr as *const crate::cell_dmux::CellDmuxType,
+            resource_addr as *const crate::cell_dmux::CellDmuxResource,
+            cb_addr as *const crate::cell_dmux::CellDmuxCb,
+            handle_addr as *mut crate::cell_dmux::DmuxHandle,
+        ) as i64
+    }
+}
+
+fn hle_dmux_close(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    trace!("cellDmuxClose(handle={})", handle);
+    crate::cell_dmux::cell_dmux_close(handle) as i64
+}
+
+fn hle_dmux_set_stream(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let stream_addr = ctx.args[1] as u32;
+    let stream_size = ctx.args[2] as u32;
+    let discontinuity = ctx.args[3] as u32;
+    debug!("cellDmuxSetStream(handle={}, addr=0x{:08x}, size={})", handle, stream_addr, stream_size);
+    crate::cell_dmux::cell_dmux_set_stream(handle, stream_addr, stream_size, discontinuity) as i64
+}
+
+fn hle_dmux_reset_stream(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    trace!("cellDmuxResetStream(handle={})", handle);
+    crate::cell_dmux::cell_dmux_reset_stream(handle) as i64
+}
+
+fn hle_dmux_enable_es(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let es_attr_addr = ctx.args[1] as u32;
+    let es_cb_addr = ctx.args[2] as u32;
+    let es_handle_addr = ctx.args[3] as u32;
+    debug!("cellDmuxEnableEs(handle={})", handle);
+    unsafe {
+        crate::cell_dmux::cell_dmux_enable_es(
+            handle,
+            es_attr_addr as *const crate::cell_dmux::CellDmuxEsAttr,
+            es_cb_addr as *const crate::cell_dmux::CellDmuxEsCb,
+            es_handle_addr as *mut u32,
+        ) as i64
+    }
+}
+
+fn hle_dmux_disable_es(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let es_handle = ctx.args[1] as u32;
+    trace!("cellDmuxDisableEs(handle={}, es={})", handle, es_handle);
+    crate::cell_dmux::cell_dmux_disable_es(handle, es_handle) as i64
+}
+
+fn hle_dmux_reset_es(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let es_handle = ctx.args[1] as u32;
+    trace!("cellDmuxResetEs(handle={}, es={})", handle, es_handle);
+    crate::cell_dmux::cell_dmux_reset_es(handle, es_handle) as i64
+}
+
+fn hle_dmux_get_au(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let es_handle = ctx.args[1] as u32;
+    let au_info_addr = ctx.args[2] as u32;
+    let au_specific_info_addr = ctx.args[3] as u32;
+    debug!("cellDmuxGetAu(handle={}, es={})", handle, es_handle);
+    unsafe {
+        crate::cell_dmux::cell_dmux_get_au(
+            handle,
+            es_handle,
+            au_info_addr as *mut crate::cell_dmux::CellDmuxAuInfo,
+            au_specific_info_addr as *mut u32,
+        ) as i64
+    }
+}
+
+fn hle_dmux_peek_au(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let es_handle = ctx.args[1] as u32;
+    let au_info_addr = ctx.args[2] as u32;
+    let au_specific_info_addr = ctx.args[3] as u32;
+    debug!("cellDmuxPeekAu(handle={}, es={})", handle, es_handle);
+    unsafe {
+        crate::cell_dmux::cell_dmux_peek_au(
+            handle,
+            es_handle,
+            au_info_addr as *mut crate::cell_dmux::CellDmuxAuInfo,
+            au_specific_info_addr as *mut u32,
+        ) as i64
+    }
+}
+
+fn hle_dmux_release_au(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let es_handle = ctx.args[1] as u32;
+    trace!("cellDmuxReleaseAu(handle={}, es={})", handle, es_handle);
+    crate::cell_dmux::cell_dmux_release_au(handle, es_handle) as i64
+}
+
+// --- cellVpost (Video Post-Processor) ---
+
+fn hle_vpost_query_attr(ctx: &HleCallContext) -> i64 {
+    let cfg_addr = ctx.args[0] as u32;
+    let attr_addr = ctx.args[1] as u32;
+    debug!("cellVpostQueryAttr(cfg=0x{:08x}, attr=0x{:08x})", cfg_addr, attr_addr);
+    unsafe {
+        crate::cell_vpost::cell_vpost_query_attr(
+            cfg_addr as *const crate::cell_vpost::CellVpostCfg,
+            attr_addr as *mut crate::cell_vpost::CellVpostResource,
+        ) as i64
+    }
+}
+
+fn hle_vpost_open(ctx: &HleCallContext) -> i64 {
+    let cfg_addr = ctx.args[0] as u32;
+    let resource_addr = ctx.args[1] as u32;
+    let handle_addr = ctx.args[2] as u32;
+    debug!("cellVpostOpen(cfg=0x{:08x}, handle=0x{:08x})", cfg_addr, handle_addr);
+    unsafe {
+        crate::cell_vpost::cell_vpost_open(
+            cfg_addr as *const crate::cell_vpost::CellVpostCfg,
+            resource_addr as *const crate::cell_vpost::CellVpostResource,
+            handle_addr as *mut crate::cell_vpost::VpostHandle,
+        ) as i64
+    }
+}
+
+fn hle_vpost_close(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    trace!("cellVpostClose(handle={})", handle);
+    crate::cell_vpost::cell_vpost_close(handle) as i64
+}
+
+fn hle_vpost_exec(ctx: &HleCallContext) -> i64 {
+    let handle = ctx.args[0] as u32;
+    let in_buffer = ctx.args[1] as u32;
+    let ctrl_param_addr = ctx.args[2] as u32;
+    let out_buffer = ctx.args[3] as u32;
+    let pic_info_addr = ctx.args[4] as u32;
+    debug!("cellVpostExec(handle={})", handle);
+    unsafe {
+        crate::cell_vpost::cell_vpost_exec(
+            handle,
+            in_buffer as *const u8,
+            ctrl_param_addr as *const crate::cell_vpost::CellVpostCtrlParam,
+            out_buffer as *mut u8,
+            pic_info_addr as *mut crate::cell_vpost::CellVpostPictureInfo,
+        ) as i64
+    }
+}
+
+// --- cellNetCtl (Network Control) ---
+
+fn hle_net_ctl_init(_ctx: &HleCallContext) -> i64 {
+    debug!("cellNetCtlInit()");
+    crate::cell_net_ctl::cell_net_ctl_init() as i64
+}
+
+fn hle_net_ctl_term(_ctx: &HleCallContext) -> i64 {
+    debug!("cellNetCtlTerm()");
+    crate::cell_net_ctl::cell_net_ctl_term() as i64
+}
+
+fn hle_net_ctl_get_state(ctx: &HleCallContext) -> i64 {
+    let state_addr = ctx.args[0] as u32;
+    trace!("cellNetCtlGetState(state=0x{:08x})", state_addr);
+    crate::cell_net_ctl::cell_net_ctl_get_state(state_addr) as i64
+}
+
+fn hle_net_ctl_get_info(ctx: &HleCallContext) -> i64 {
+    let code = ctx.args[0] as u32;
+    let info_addr = ctx.args[1] as u32;
+    trace!("cellNetCtlGetInfo(code={}, info=0x{:08x})", code, info_addr);
+    crate::cell_net_ctl::cell_net_ctl_get_info(code, info_addr) as i64
+}
+
+fn hle_net_ctl_net_start_dialog_load_async(ctx: &HleCallContext) -> i64 {
+    let param_addr = ctx.args[0] as u32;
+    debug!("cellNetCtlNetStartDialogLoadAsync(param=0x{:08x})", param_addr);
+    crate::cell_net_ctl::cell_net_ctl_net_start_dialog_load_async(param_addr) as i64
+}
+
+fn hle_net_ctl_net_start_dialog_unload_async(ctx: &HleCallContext) -> i64 {
+    let result_addr = ctx.args[0] as u32;
+    debug!("cellNetCtlNetStartDialogUnloadAsync(result=0x{:08x})", result_addr);
+    crate::cell_net_ctl::cell_net_ctl_net_start_dialog_unload_async(result_addr) as i64
+}
+
+fn hle_net_ctl_get_nat_info(ctx: &HleCallContext) -> i64 {
+    let nat_info_addr = ctx.args[0] as u32;
+    trace!("cellNetCtlGetNatInfo(info=0x{:08x})", nat_info_addr);
+    crate::cell_net_ctl::cell_net_ctl_get_nat_info(nat_info_addr) as i64
+}
+
+fn hle_net_ctl_add_handler(ctx: &HleCallContext) -> i64 {
+    let handler = ctx.args[0] as u32;
+    let arg = ctx.args[1] as u32;
+    let hid_addr = ctx.args[2] as u32;
+    debug!("cellNetCtlAddHandler(handler=0x{:08x}, hid=0x{:08x})", handler, hid_addr);
+    crate::cell_net_ctl::cell_net_ctl_add_handler(handler, arg, hid_addr) as i64
+}
+
+fn hle_net_ctl_del_handler(ctx: &HleCallContext) -> i64 {
+    let hid = ctx.args[0] as u32;
+    trace!("cellNetCtlDelHandler(hid={})", hid);
+    crate::cell_net_ctl::cell_net_ctl_del_handler(hid) as i64
+}
+
+// --- cellHttp (HTTP Client) ---
+
+fn hle_http_init(ctx: &HleCallContext) -> i64 {
+    let pool_size = ctx.args[0] as u32;
+    debug!("cellHttpInit(pool_size={})", pool_size);
+    crate::cell_http::cell_http_init(pool_size) as i64
+}
+
+fn hle_http_end(_ctx: &HleCallContext) -> i64 {
+    debug!("cellHttpEnd()");
+    crate::cell_http::cell_http_end() as i64
+}
+
+fn hle_http_create_client(ctx: &HleCallContext) -> i64 {
+    let client_addr = ctx.args[0] as u32;
+    debug!("cellHttpCreateClient(client=0x{:08x})", client_addr);
+    crate::cell_http::cell_http_create_client(client_addr) as i64
+}
+
+fn hle_http_destroy_client(ctx: &HleCallContext) -> i64 {
+    let client = ctx.args[0] as u32;
+    trace!("cellHttpDestroyClient(client={})", client);
+    crate::cell_http::cell_http_destroy_client(client) as i64
+}
+
+fn hle_http_create_transaction(ctx: &HleCallContext) -> i64 {
+    let client = ctx.args[0] as u32;
+    let method = ctx.args[1] as u32;
+    let url_addr = ctx.args[2] as u32;
+    let transaction_addr = ctx.args[3] as u32;
+    debug!("cellHttpCreateTransaction(client={}, method={})", client, method);
+    crate::cell_http::cell_http_create_transaction(client, method, url_addr, transaction_addr) as i64
+}
+
+fn hle_http_destroy_transaction(ctx: &HleCallContext) -> i64 {
+    let transaction = ctx.args[0] as u32;
+    trace!("cellHttpDestroyTransaction(transaction={})", transaction);
+    crate::cell_http::cell_http_destroy_transaction(transaction) as i64
+}
+
+fn hle_http_send_request(ctx: &HleCallContext) -> i64 {
+    let transaction = ctx.args[0] as u32;
+    let data_addr = ctx.args[1] as u32;
+    let size = ctx.args[2];
+    debug!("cellHttpSendRequest(transaction={}, size={})", transaction, size);
+    crate::cell_http::cell_http_send_request(transaction, data_addr, size) as i64
+}
+
+fn hle_http_recv_response(ctx: &HleCallContext) -> i64 {
+    let transaction = ctx.args[0] as u32;
+    let data_addr = ctx.args[1] as u32;
+    let size = ctx.args[2];
+    debug!("cellHttpRecvResponse(transaction={}, size={})", transaction, size);
+    crate::cell_http::cell_http_recv_response(transaction, data_addr, size)
+}
+
+fn hle_http_add_request_header(ctx: &HleCallContext) -> i64 {
+    let transaction = ctx.args[0] as u32;
+    let name_addr = ctx.args[1] as u32;
+    let value_addr = ctx.args[2] as u32;
+    trace!("cellHttpAddRequestHeader(transaction={})", transaction);
+    crate::cell_http::cell_http_add_request_header(transaction, name_addr, value_addr) as i64
+}
+
+fn hle_http_get_status_code(ctx: &HleCallContext) -> i64 {
+    let transaction = ctx.args[0] as u32;
+    let status_code_addr = ctx.args[1] as u32;
+    trace!("cellHttpGetStatusCode(transaction={})", transaction);
+    crate::cell_http::cell_http_get_status_code(transaction, status_code_addr) as i64
+}
+
+fn hle_http_get_response_header(ctx: &HleCallContext) -> i64 {
+    let transaction = ctx.args[0] as u32;
+    let name_addr = ctx.args[1] as u32;
+    let value_addr = ctx.args[2] as u32;
+    let value_len_addr = ctx.args[3] as u32;
+    trace!("cellHttpGetResponseHeader(transaction={})", transaction);
+    crate::cell_http::cell_http_get_response_header(transaction, name_addr, value_addr, value_len_addr) as i64
+}
+
+fn hle_http_set_proxy(ctx: &HleCallContext) -> i64 {
+    let client = ctx.args[0] as u32;
+    let host_addr = ctx.args[1] as u32;
+    let port = ctx.args[2] as u16;
+    debug!("cellHttpSetProxy(client={}, port={})", client, port);
+    crate::cell_http::cell_http_set_proxy(client, host_addr, port) as i64
+}
+
+// --- cellSsl (SSL/TLS) ---
+
+fn hle_ssl_init(ctx: &HleCallContext) -> i64 {
+    let pool_size = ctx.args[0] as u32;
+    debug!("cellSslInit(pool_size={})", pool_size);
+    crate::cell_ssl::cell_ssl_init(pool_size) as i64
+}
+
+fn hle_ssl_end(_ctx: &HleCallContext) -> i64 {
+    debug!("cellSslEnd()");
+    crate::cell_ssl::cell_ssl_end() as i64
+}
+
+fn hle_ssl_cert_get_serial_number(ctx: &HleCallContext) -> i64 {
+    let cert_id = ctx.args[0] as u32;
+    let serial_addr = ctx.args[1] as u32;
+    let length_addr = ctx.args[2] as u32;
+    trace!("cellSslCertGetSerialNumber(cert={})", cert_id);
+    crate::cell_ssl::cell_ssl_cert_get_serial_number(cert_id, serial_addr as *mut u8, length_addr as *mut u32) as i64
+}
+
+fn hle_ssl_cert_get_public_key(ctx: &HleCallContext) -> i64 {
+    let cert_id = ctx.args[0] as u32;
+    let key_addr = ctx.args[1] as u32;
+    let length_addr = ctx.args[2] as u32;
+    trace!("cellSslCertGetPublicKey(cert={})", cert_id);
+    crate::cell_ssl::cell_ssl_cert_get_public_key(cert_id, key_addr as *mut u8, length_addr as *mut u32) as i64
+}
+
+fn hle_ssl_cert_get_rsa_public_key_modulus(ctx: &HleCallContext) -> i64 {
+    let cert_id = ctx.args[0] as u32;
+    let modulus_addr = ctx.args[1] as u32;
+    let length_addr = ctx.args[2] as u32;
+    trace!("cellSslCertGetRsaPublicKeyModulus(cert={})", cert_id);
+    crate::cell_ssl::cell_ssl_cert_get_rsa_public_key_modulus(cert_id, modulus_addr as *mut u8, length_addr as *mut u32) as i64
+}
+
+fn hle_ssl_cert_get_rsa_public_key_exponent(ctx: &HleCallContext) -> i64 {
+    let cert_id = ctx.args[0] as u32;
+    let exponent_addr = ctx.args[1] as u32;
+    let length_addr = ctx.args[2] as u32;
+    trace!("cellSslCertGetRsaPublicKeyExponent(cert={})", cert_id);
+    crate::cell_ssl::cell_ssl_cert_get_rsa_public_key_exponent(cert_id, exponent_addr as *mut u8, length_addr as *mut u32) as i64
+}
+
+fn hle_ssl_cert_get_not_before(ctx: &HleCallContext) -> i64 {
+    let cert_id = ctx.args[0] as u32;
+    let begin_addr = ctx.args[1] as u32;
+    trace!("cellSslCertGetNotBefore(cert={})", cert_id);
+    crate::cell_ssl::cell_ssl_cert_get_not_before(cert_id, begin_addr as *mut u64) as i64
+}
+
+fn hle_ssl_cert_get_not_after(ctx: &HleCallContext) -> i64 {
+    let cert_id = ctx.args[0] as u32;
+    let limit_addr = ctx.args[1] as u32;
+    trace!("cellSslCertGetNotAfter(cert={})", cert_id);
+    crate::cell_ssl::cell_ssl_cert_get_not_after(cert_id, limit_addr as *mut u64) as i64
+}
+
+fn hle_ssl_cert_get_subject_name(ctx: &HleCallContext) -> i64 {
+    let cert_id = ctx.args[0] as u32;
+    let subject_addr = ctx.args[1] as u32;
+    let length_addr = ctx.args[2] as u32;
+    trace!("cellSslCertGetSubjectName(cert={})", cert_id);
+    crate::cell_ssl::cell_ssl_cert_get_subject_name(cert_id, subject_addr as *mut u8, length_addr as *mut u32) as i64
+}
+
+fn hle_ssl_cert_get_issuer_name(ctx: &HleCallContext) -> i64 {
+    let cert_id = ctx.args[0] as u32;
+    let issuer_addr = ctx.args[1] as u32;
+    let length_addr = ctx.args[2] as u32;
+    trace!("cellSslCertGetIssuerName(cert={})", cert_id);
+    crate::cell_ssl::cell_ssl_cert_get_issuer_name(cert_id, issuer_addr as *mut u8, length_addr as *mut u32) as i64
+}
+
+fn hle_ssl_cert_unload(ctx: &HleCallContext) -> i64 {
+    let cert_id = ctx.args[0] as u32;
+    trace!("cellSslCertUnload(cert={})", cert_id);
+    crate::cell_ssl::cell_ssl_cert_unload(cert_id) as i64
+}
+
+// --- cellKb (Keyboard Input) ---
+
+fn hle_kb_init(ctx: &HleCallContext) -> i64 {
+    let max_connect = ctx.args[0] as u32;
+    debug!("cellKbInit(max_connect={})", max_connect);
+    crate::cell_kb::cell_kb_init(max_connect) as i64
+}
+
+fn hle_kb_end(_ctx: &HleCallContext) -> i64 {
+    debug!("cellKbEnd()");
+    crate::cell_kb::cell_kb_end() as i64
+}
+
+fn hle_kb_get_info(ctx: &HleCallContext) -> i64 {
+    let info_addr = ctx.args[0] as u32;
+    trace!("cellKbGetInfo(info=0x{:08x})", info_addr);
+    crate::cell_kb::cell_kb_get_info(info_addr) as i64
+}
+
+fn hle_kb_read(ctx: &HleCallContext) -> i64 {
+    let port = ctx.args[0] as u32;
+    let data_addr = ctx.args[1] as u32;
+    trace!("cellKbRead(port={}, data=0x{:08x})", port, data_addr);
+    crate::cell_kb::cell_kb_read(port, data_addr) as i64
+}
+
+fn hle_kb_set_read_mode(ctx: &HleCallContext) -> i64 {
+    let port = ctx.args[0] as u32;
+    let read_mode = ctx.args[1] as u32;
+    trace!("cellKbSetReadMode(port={}, mode={})", port, read_mode);
+    crate::cell_kb::cell_kb_set_read_mode(port, read_mode) as i64
+}
+
+fn hle_kb_set_code_type(ctx: &HleCallContext) -> i64 {
+    let port = ctx.args[0] as u32;
+    let code_type = ctx.args[1] as u32;
+    trace!("cellKbSetCodeType(port={}, type={})", port, code_type);
+    crate::cell_kb::cell_kb_set_code_type(port, code_type) as i64
+}
+
+fn hle_kb_set_led_status(ctx: &HleCallContext) -> i64 {
+    let port = ctx.args[0] as u32;
+    let led = ctx.args[1] as u32;
+    trace!("cellKbSetLedStatus(port={}, led={})", port, led);
+    crate::cell_kb::cell_kb_set_led_status(port, led) as i64
+}
+
+fn hle_kb_clear_buf(ctx: &HleCallContext) -> i64 {
+    let port = ctx.args[0] as u32;
+    trace!("cellKbClearBuf(port={})", port);
+    crate::cell_kb::cell_kb_clear_buf(port) as i64
+}
+
+// --- cellMouse (Mouse Input) ---
+
+fn hle_mouse_init(ctx: &HleCallContext) -> i64 {
+    let max_connect = ctx.args[0] as u32;
+    debug!("cellMouseInit(max_connect={})", max_connect);
+    crate::cell_mouse::cell_mouse_init(max_connect) as i64
+}
+
+fn hle_mouse_end(_ctx: &HleCallContext) -> i64 {
+    debug!("cellMouseEnd()");
+    crate::cell_mouse::cell_mouse_end() as i64
+}
+
+fn hle_mouse_get_info(ctx: &HleCallContext) -> i64 {
+    let info_addr = ctx.args[0] as u32;
+    trace!("cellMouseGetInfo(info=0x{:08x})", info_addr);
+    crate::cell_mouse::cell_mouse_get_info(info_addr) as i64
+}
+
+fn hle_mouse_get_data(ctx: &HleCallContext) -> i64 {
+    let port = ctx.args[0] as u32;
+    let data_addr = ctx.args[1] as u32;
+    trace!("cellMouseGetData(port={}, data=0x{:08x})", port, data_addr);
+    crate::cell_mouse::cell_mouse_get_data(port, data_addr) as i64
+}
+
+fn hle_mouse_get_data_list(ctx: &HleCallContext) -> i64 {
+    let port = ctx.args[0] as u32;
+    let data_addr = ctx.args[1] as u32;
+    trace!("cellMouseGetDataList(port={}, data=0x{:08x})", port, data_addr);
+    crate::cell_mouse::cell_mouse_get_data_list(port, data_addr) as i64
+}
+
+fn hle_mouse_get_raw_data(ctx: &HleCallContext) -> i64 {
+    let port = ctx.args[0] as u32;
+    let data_addr = ctx.args[1] as u32;
+    trace!("cellMouseGetRawData(port={}, data=0x{:08x})", port, data_addr);
+    crate::cell_mouse::cell_mouse_get_raw_data(port, data_addr) as i64
+}
+
+fn hle_mouse_clear_buf(ctx: &HleCallContext) -> i64 {
+    let port = ctx.args[0] as u32;
+    trace!("cellMouseClearBuf(port={})", port);
+    crate::cell_mouse::cell_mouse_clear_buf(port) as i64
+}
+
 #[allow(dead_code)]
 fn hle_stub_return_ok(_ctx: &HleCallContext) -> i64 {
     error::CELL_OK
@@ -1797,6 +2666,26 @@ pub fn register_all_hle_functions(dispatcher: &mut HleDispatcher) {
     dispatcher.register_function("cellSpurs", "cellSpursSetMaxContention", hle_spurs_set_max_contention);
     dispatcher.register_function("cellSpurs", "cellSpursSetPriorities", hle_spurs_set_priorities);
     dispatcher.register_function("cellSpurs", "cellSpursGetSpuThreadId", hle_spurs_get_spu_thread_id);
+    dispatcher.register_function("cellSpurs", "cellSpursDetachLv2EventQueue", hle_spurs_detach_lv2_event_queue);
+    dispatcher.register_function("cellSpurs", "cellSpursAddPolicyModule", hle_spurs_add_policy_module);
+    dispatcher.register_function("cellSpurs", "cellSpursInitializeWithAttribute", hle_spurs_initialize_with_attribute);
+    dispatcher.register_function("cellSpurs", "cellSpursAttributeInitialize", hle_spurs_attribute_initialize);
+    dispatcher.register_function("cellSpurs", "cellSpursAttributeSetNamePrefix", hle_spurs_attribute_set_name_prefix);
+    dispatcher.register_function("cellSpurs", "cellSpursGetInfo", hle_spurs_get_info);
+    dispatcher.register_function("cellSpurs", "cellSpursWakeUp", hle_spurs_wake_up);
+    dispatcher.register_function("cellSpurs", "cellSpursRequestIdleSpu", hle_spurs_request_idle_spu);
+    dispatcher.register_function("cellSpurs", "cellSpursGetSpuThreadGroupId", hle_spurs_get_spu_thread_group_id);
+    dispatcher.register_function("cellSpurs", "cellSpursShutdownTaskset", hle_spurs_shutdown_taskset);
+    dispatcher.register_function("cellSpurs", "cellSpursJoinTaskset", hle_spurs_join_taskset);
+    dispatcher.register_function("cellSpurs", "cellSpursCreateTasksetWithAttribute", hle_spurs_create_taskset_with_attribute);
+    
+    // libsre (Regular Expression Library)
+    dispatcher.register_function("libsre", "cellSreCompile", hle_sre_compile);
+    dispatcher.register_function("libsre", "cellSreFree", hle_sre_free);
+    dispatcher.register_function("libsre", "cellSreMatch", hle_sre_match);
+    dispatcher.register_function("libsre", "cellSreSearch", hle_sre_search);
+    dispatcher.register_function("libsre", "cellSreReplace", hle_sre_replace);
+    dispatcher.register_function("libsre", "cellSreGetError", hle_sre_get_error);
     
     // cellPngDec
     dispatcher.register_function("cellPngDec", "cellPngDecCreate", hle_png_dec_create);
@@ -1861,6 +2750,104 @@ pub fn register_all_hle_functions(dispatcher: &mut HleDispatcher) {
     dispatcher.register_function("cellSysutil", "cellSysutilGetBgmPlaybackStatus", hle_sysutil_get_bgm_playback_status);
     dispatcher.register_function("cellSysutil", "cellSysutilEnableBgmPlayback", hle_sysutil_enable_bgm_playback);
     dispatcher.register_function("cellSysutil", "cellSysutilDisableBgmPlayback", hle_sysutil_disable_bgm_playback);
+    dispatcher.register_function("cellSysutil", "cellSysutilSetBgmPlaybackVolume", hle_sysutil_set_bgm_playback_volume);
+    
+    // cellVdec - Video Decoder
+    dispatcher.register_function("cellVdec", "cellVdecQueryAttr", hle_vdec_query_attr);
+    dispatcher.register_function("cellVdec", "cellVdecOpen", hle_vdec_open);
+    dispatcher.register_function("cellVdec", "cellVdecClose", hle_vdec_close);
+    dispatcher.register_function("cellVdec", "cellVdecStartSeq", hle_vdec_start_seq);
+    dispatcher.register_function("cellVdec", "cellVdecEndSeq", hle_vdec_end_seq);
+    dispatcher.register_function("cellVdec", "cellVdecDecodeAu", hle_vdec_decode_au);
+    dispatcher.register_function("cellVdec", "cellVdecGetPicture", hle_vdec_get_picture);
+    dispatcher.register_function("cellVdec", "cellVdecGetPicItem", hle_vdec_get_pic_item);
+    dispatcher.register_function("cellVdec", "cellVdecSetFrameRate", hle_vdec_set_frame_rate);
+    
+    // cellAdec - Audio Decoder
+    dispatcher.register_function("cellAdec", "cellAdecQueryAttr", hle_adec_query_attr);
+    dispatcher.register_function("cellAdec", "cellAdecOpen", hle_adec_open);
+    dispatcher.register_function("cellAdec", "cellAdecClose", hle_adec_close);
+    dispatcher.register_function("cellAdec", "cellAdecStartSeq", hle_adec_start_seq);
+    dispatcher.register_function("cellAdec", "cellAdecEndSeq", hle_adec_end_seq);
+    dispatcher.register_function("cellAdec", "cellAdecDecodeAu", hle_adec_decode_au);
+    dispatcher.register_function("cellAdec", "cellAdecGetPcm", hle_adec_get_pcm);
+    dispatcher.register_function("cellAdec", "cellAdecGetPcmItem", hle_adec_get_pcm_item);
+    
+    // cellDmux - Demultiplexer
+    dispatcher.register_function("cellDmux", "cellDmuxQueryAttr", hle_dmux_query_attr);
+    dispatcher.register_function("cellDmux", "cellDmuxOpen", hle_dmux_open);
+    dispatcher.register_function("cellDmux", "cellDmuxClose", hle_dmux_close);
+    dispatcher.register_function("cellDmux", "cellDmuxSetStream", hle_dmux_set_stream);
+    dispatcher.register_function("cellDmux", "cellDmuxResetStream", hle_dmux_reset_stream);
+    dispatcher.register_function("cellDmux", "cellDmuxEnableEs", hle_dmux_enable_es);
+    dispatcher.register_function("cellDmux", "cellDmuxDisableEs", hle_dmux_disable_es);
+    dispatcher.register_function("cellDmux", "cellDmuxResetEs", hle_dmux_reset_es);
+    dispatcher.register_function("cellDmux", "cellDmuxGetAu", hle_dmux_get_au);
+    dispatcher.register_function("cellDmux", "cellDmuxPeekAu", hle_dmux_peek_au);
+    dispatcher.register_function("cellDmux", "cellDmuxReleaseAu", hle_dmux_release_au);
+    
+    // cellVpost - Video Post-Processor
+    dispatcher.register_function("cellVpost", "cellVpostQueryAttr", hle_vpost_query_attr);
+    dispatcher.register_function("cellVpost", "cellVpostOpen", hle_vpost_open);
+    dispatcher.register_function("cellVpost", "cellVpostClose", hle_vpost_close);
+    dispatcher.register_function("cellVpost", "cellVpostExec", hle_vpost_exec);
+    
+    // cellNetCtl - Network Control
+    dispatcher.register_function("cellNetCtl", "cellNetCtlInit", hle_net_ctl_init);
+    dispatcher.register_function("cellNetCtl", "cellNetCtlTerm", hle_net_ctl_term);
+    dispatcher.register_function("cellNetCtl", "cellNetCtlGetState", hle_net_ctl_get_state);
+    dispatcher.register_function("cellNetCtl", "cellNetCtlGetInfo", hle_net_ctl_get_info);
+    dispatcher.register_function("cellNetCtl", "cellNetCtlNetStartDialogLoadAsync", hle_net_ctl_net_start_dialog_load_async);
+    dispatcher.register_function("cellNetCtl", "cellNetCtlNetStartDialogUnloadAsync", hle_net_ctl_net_start_dialog_unload_async);
+    dispatcher.register_function("cellNetCtl", "cellNetCtlGetNatInfo", hle_net_ctl_get_nat_info);
+    dispatcher.register_function("cellNetCtl", "cellNetCtlAddHandler", hle_net_ctl_add_handler);
+    dispatcher.register_function("cellNetCtl", "cellNetCtlDelHandler", hle_net_ctl_del_handler);
+    
+    // cellHttp - HTTP Client
+    dispatcher.register_function("cellHttp", "cellHttpInit", hle_http_init);
+    dispatcher.register_function("cellHttp", "cellHttpEnd", hle_http_end);
+    dispatcher.register_function("cellHttp", "cellHttpCreateClient", hle_http_create_client);
+    dispatcher.register_function("cellHttp", "cellHttpDestroyClient", hle_http_destroy_client);
+    dispatcher.register_function("cellHttp", "cellHttpCreateTransaction", hle_http_create_transaction);
+    dispatcher.register_function("cellHttp", "cellHttpDestroyTransaction", hle_http_destroy_transaction);
+    dispatcher.register_function("cellHttp", "cellHttpSendRequest", hle_http_send_request);
+    dispatcher.register_function("cellHttp", "cellHttpRecvResponse", hle_http_recv_response);
+    dispatcher.register_function("cellHttp", "cellHttpAddRequestHeader", hle_http_add_request_header);
+    dispatcher.register_function("cellHttp", "cellHttpGetStatusCode", hle_http_get_status_code);
+    dispatcher.register_function("cellHttp", "cellHttpGetResponseHeader", hle_http_get_response_header);
+    dispatcher.register_function("cellHttp", "cellHttpSetProxy", hle_http_set_proxy);
+    
+    // cellSsl - SSL/TLS
+    dispatcher.register_function("cellSsl", "cellSslInit", hle_ssl_init);
+    dispatcher.register_function("cellSsl", "cellSslEnd", hle_ssl_end);
+    dispatcher.register_function("cellSsl", "cellSslCertGetSerialNumber", hle_ssl_cert_get_serial_number);
+    dispatcher.register_function("cellSsl", "cellSslCertGetPublicKey", hle_ssl_cert_get_public_key);
+    dispatcher.register_function("cellSsl", "cellSslCertGetRsaPublicKeyModulus", hle_ssl_cert_get_rsa_public_key_modulus);
+    dispatcher.register_function("cellSsl", "cellSslCertGetRsaPublicKeyExponent", hle_ssl_cert_get_rsa_public_key_exponent);
+    dispatcher.register_function("cellSsl", "cellSslCertGetNotBefore", hle_ssl_cert_get_not_before);
+    dispatcher.register_function("cellSsl", "cellSslCertGetNotAfter", hle_ssl_cert_get_not_after);
+    dispatcher.register_function("cellSsl", "cellSslCertGetSubjectName", hle_ssl_cert_get_subject_name);
+    dispatcher.register_function("cellSsl", "cellSslCertGetIssuerName", hle_ssl_cert_get_issuer_name);
+    dispatcher.register_function("cellSsl", "cellSslCertUnload", hle_ssl_cert_unload);
+    
+    // cellKb - Keyboard Input
+    dispatcher.register_function("cellKb", "cellKbInit", hle_kb_init);
+    dispatcher.register_function("cellKb", "cellKbEnd", hle_kb_end);
+    dispatcher.register_function("cellKb", "cellKbGetInfo", hle_kb_get_info);
+    dispatcher.register_function("cellKb", "cellKbRead", hle_kb_read);
+    dispatcher.register_function("cellKb", "cellKbSetReadMode", hle_kb_set_read_mode);
+    dispatcher.register_function("cellKb", "cellKbSetCodeType", hle_kb_set_code_type);
+    dispatcher.register_function("cellKb", "cellKbSetLedStatus", hle_kb_set_led_status);
+    dispatcher.register_function("cellKb", "cellKbClearBuf", hle_kb_clear_buf);
+    
+    // cellMouse - Mouse Input
+    dispatcher.register_function("cellMouse", "cellMouseInit", hle_mouse_init);
+    dispatcher.register_function("cellMouse", "cellMouseEnd", hle_mouse_end);
+    dispatcher.register_function("cellMouse", "cellMouseGetInfo", hle_mouse_get_info);
+    dispatcher.register_function("cellMouse", "cellMouseGetData", hle_mouse_get_data);
+    dispatcher.register_function("cellMouse", "cellMouseGetDataList", hle_mouse_get_data_list);
+    dispatcher.register_function("cellMouse", "cellMouseGetRawData", hle_mouse_get_raw_data);
+    dispatcher.register_function("cellMouse", "cellMouseClearBuf", hle_mouse_clear_buf);
     
     info!("Registered {} HLE functions", dispatcher.stub_map.len());
 }
@@ -2290,6 +3277,7 @@ mod tests {
             "cellSysutilGetBgmPlaybackStatus",
             "cellSysutilEnableBgmPlayback",
             "cellSysutilDisableBgmPlayback",
+            "cellSysutilSetBgmPlaybackVolume",
         ];
 
         for func_name in &bgm_funcs {
@@ -2316,5 +3304,235 @@ mod tests {
         // Previous count was ~96, now ~111
         assert!(dispatcher.stub_map.len() >= 100,
             "Expected at least 100 registered functions, got {}", dispatcher.stub_map.len());
+    }
+    
+    // Phase 2 (todo.md) media module registration tests
+    
+    #[test]
+    fn test_vdec_functions_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        let vdec_functions = [
+            "cellVdecQueryAttr", "cellVdecOpen", "cellVdecClose",
+            "cellVdecStartSeq", "cellVdecEndSeq", "cellVdecDecodeAu",
+            "cellVdecGetPicture", "cellVdecGetPicItem", "cellVdecSetFrameRate",
+        ];
+        
+        for func_name in &vdec_functions {
+            let found = dispatcher.stub_map.values().any(|info| info.name == *func_name);
+            assert!(found, "cellVdec function '{}' not registered", func_name);
+        }
+    }
+    
+    #[test]
+    fn test_adec_functions_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        let adec_functions = [
+            "cellAdecQueryAttr", "cellAdecOpen", "cellAdecClose",
+            "cellAdecStartSeq", "cellAdecEndSeq", "cellAdecDecodeAu",
+            "cellAdecGetPcm", "cellAdecGetPcmItem",
+        ];
+        
+        for func_name in &adec_functions {
+            let found = dispatcher.stub_map.values().any(|info| info.name == *func_name);
+            assert!(found, "cellAdec function '{}' not registered", func_name);
+        }
+    }
+    
+    #[test]
+    fn test_dmux_functions_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        let dmux_functions = [
+            "cellDmuxQueryAttr", "cellDmuxOpen", "cellDmuxClose",
+            "cellDmuxSetStream", "cellDmuxResetStream",
+            "cellDmuxEnableEs", "cellDmuxDisableEs", "cellDmuxResetEs",
+            "cellDmuxGetAu", "cellDmuxPeekAu", "cellDmuxReleaseAu",
+        ];
+        
+        for func_name in &dmux_functions {
+            let found = dispatcher.stub_map.values().any(|info| info.name == *func_name);
+            assert!(found, "cellDmux function '{}' not registered", func_name);
+        }
+    }
+    
+    #[test]
+    fn test_vpost_functions_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        let vpost_functions = [
+            "cellVpostQueryAttr", "cellVpostOpen", "cellVpostClose", "cellVpostExec",
+        ];
+        
+        for func_name in &vpost_functions {
+            let found = dispatcher.stub_map.values().any(|info| info.name == *func_name);
+            assert!(found, "cellVpost function '{}' not registered", func_name);
+        }
+    }
+    
+    #[test]
+    fn test_media_module_total_count() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        // Phase 2 adds: 9 cellVdec + 8 cellAdec + 11 cellDmux + 4 cellVpost = 32
+        // Previous count was ~111, now ~143
+        assert!(dispatcher.stub_map.len() >= 140,
+            "Expected at least 140 registered functions after media module wiring, got {}",
+            dispatcher.stub_map.len());
+    }
+    
+    // Phase 2 continued: network, HTTP, SSL, keyboard, mouse registration tests
+    
+    #[test]
+    fn test_net_ctl_functions_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        let net_ctl_functions = [
+            "cellNetCtlInit", "cellNetCtlTerm", "cellNetCtlGetState",
+            "cellNetCtlGetInfo", "cellNetCtlNetStartDialogLoadAsync",
+            "cellNetCtlNetStartDialogUnloadAsync", "cellNetCtlGetNatInfo",
+            "cellNetCtlAddHandler", "cellNetCtlDelHandler",
+        ];
+        
+        for func_name in &net_ctl_functions {
+            let found = dispatcher.stub_map.values().any(|info| info.name == *func_name);
+            assert!(found, "cellNetCtl function '{}' not registered", func_name);
+        }
+    }
+    
+    #[test]
+    fn test_http_functions_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        let http_functions = [
+            "cellHttpInit", "cellHttpEnd", "cellHttpCreateClient",
+            "cellHttpDestroyClient", "cellHttpCreateTransaction",
+            "cellHttpDestroyTransaction", "cellHttpSendRequest",
+            "cellHttpRecvResponse", "cellHttpAddRequestHeader",
+            "cellHttpGetStatusCode", "cellHttpGetResponseHeader",
+            "cellHttpSetProxy",
+        ];
+        
+        for func_name in &http_functions {
+            let found = dispatcher.stub_map.values().any(|info| info.name == *func_name);
+            assert!(found, "cellHttp function '{}' not registered", func_name);
+        }
+    }
+    
+    #[test]
+    fn test_ssl_functions_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        let ssl_functions = [
+            "cellSslInit", "cellSslEnd",
+            "cellSslCertGetSerialNumber", "cellSslCertGetPublicKey",
+            "cellSslCertGetRsaPublicKeyModulus", "cellSslCertGetRsaPublicKeyExponent",
+            "cellSslCertGetNotBefore", "cellSslCertGetNotAfter",
+            "cellSslCertGetSubjectName", "cellSslCertGetIssuerName",
+            "cellSslCertUnload",
+        ];
+        
+        for func_name in &ssl_functions {
+            let found = dispatcher.stub_map.values().any(|info| info.name == *func_name);
+            assert!(found, "cellSsl function '{}' not registered", func_name);
+        }
+    }
+    
+    #[test]
+    fn test_kb_functions_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        let kb_functions = [
+            "cellKbInit", "cellKbEnd", "cellKbGetInfo", "cellKbRead",
+            "cellKbSetReadMode", "cellKbSetCodeType", "cellKbSetLedStatus",
+            "cellKbClearBuf",
+        ];
+        
+        for func_name in &kb_functions {
+            let found = dispatcher.stub_map.values().any(|info| info.name == *func_name);
+            assert!(found, "cellKb function '{}' not registered", func_name);
+        }
+    }
+    
+    #[test]
+    fn test_mouse_functions_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        let mouse_functions = [
+            "cellMouseInit", "cellMouseEnd", "cellMouseGetInfo",
+            "cellMouseGetData", "cellMouseGetDataList",
+            "cellMouseGetRawData", "cellMouseClearBuf",
+        ];
+        
+        for func_name in &mouse_functions {
+            let found = dispatcher.stub_map.values().any(|info| info.name == *func_name);
+            assert!(found, "cellMouse function '{}' not registered", func_name);
+        }
+    }
+    
+    #[test]
+    fn test_all_modules_total_count() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        // Previous ~190 + 13 SPURS + 6 libsre = ~209
+        assert!(dispatcher.stub_map.len() >= 200,
+            "Expected at least 200 registered functions after all module wiring, got {}",
+            dispatcher.stub_map.len());
+    }
+
+    #[test]
+    fn test_spurs_extended_functions_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        let spurs_functions = [
+            "cellSpursDetachLv2EventQueue",
+            "cellSpursAddPolicyModule",
+            "cellSpursInitializeWithAttribute",
+            "cellSpursAttributeInitialize",
+            "cellSpursAttributeSetNamePrefix",
+            "cellSpursGetInfo",
+            "cellSpursWakeUp",
+            "cellSpursRequestIdleSpu",
+            "cellSpursGetSpuThreadGroupId",
+            "cellSpursShutdownTaskset",
+            "cellSpursJoinTaskset",
+            "cellSpursCreateTasksetWithAttribute",
+        ];
+        for func_name in &spurs_functions {
+            let found = dispatcher.stub_map.values().any(|info| info.name == *func_name);
+            assert!(found, "SPURS function '{}' not registered", func_name);
+        }
+    }
+
+    #[test]
+    fn test_libsre_functions_registered() {
+        let mut dispatcher = HleDispatcher::new();
+        register_all_hle_functions(&mut dispatcher);
+        
+        let sre_functions = [
+            "cellSreCompile",
+            "cellSreFree",
+            "cellSreMatch",
+            "cellSreSearch",
+            "cellSreReplace",
+            "cellSreGetError",
+        ];
+        for func_name in &sre_functions {
+            let found = dispatcher.stub_map.values().any(|info| info.name == *func_name);
+            assert!(found, "libsre function '{}' not registered", func_name);
+        }
     }
 }

@@ -289,6 +289,15 @@ impl SyscallHandler {
                 Ok(0)
             }
 
+            SYS_PPU_THREAD_GET_TLS_ADDR => {
+                let thread_id = args[0];
+                let tls_offset = args[1];
+                let addr = thread_sc::sys_ppu_thread_get_tls_addr(
+                    &self.thread_manager, thread_id, tls_offset,
+                )?;
+                Ok(addr as i64)
+            }
+
             // Mutex
             SYS_MUTEX_CREATE => {
                 let id = mutex::syscalls::sys_mutex_create(
@@ -841,6 +850,44 @@ impl SyscallHandler {
                 Ok(0)
             }
 
+            SYS_MMAPPER_FREE_MEMORY => {
+                let addr = args[0];
+                memory_sc::sys_mmapper_free_memory(&self.memory_manager, addr)?;
+                Ok(0)
+            }
+
+            SYS_MMAPPER_UNMAP_MEMORY => {
+                let addr = args[0];
+                let size = args[1] as usize;
+                memory_sc::sys_mmapper_unmap_memory(&self.memory_manager, addr, size)?;
+                Ok(0)
+            }
+
+            SYS_VM_MEMORY_MAP => {
+                let addr = args[0];
+                let size = args[1] as usize;
+                let block_size = args[2];
+                let flags = args[3];
+                let mapped = memory_sc::sys_vm_memory_map(
+                    &self.memory_manager, addr, size, block_size, flags,
+                )?;
+                Ok(mapped as i64)
+            }
+
+            SYS_VM_UNMAP => {
+                let addr = args[0];
+                memory_sc::sys_vm_unmap(&self.memory_manager, addr)?;
+                Ok(0)
+            }
+
+            SYS_VM_GET_STATISTICS => {
+                let addr = args[0];
+                let (_faults, _ins, _outs) = memory_sc::sys_vm_get_statistics(
+                    &self.memory_manager, addr,
+                )?;
+                Ok(0)
+            }
+
             // PRX modules
             SYS_PRX_LOAD_MODULE => {
                 // Read path from emulator memory at args[0]
@@ -1088,7 +1135,10 @@ impl SyscallHandler {
             }
 
             _ => {
-                tracing::warn!("Unknown syscall {}", syscall_num);
+                tracing::warn!(
+                    "Unknown syscall {} (args: 0x{:x}, 0x{:x}, 0x{:x}, 0x{:x}, 0x{:x}, 0x{:x})",
+                    syscall_num, args[0], args[1], args[2], args[3], args[4], args[5]
+                );
                 Err(KernelError::UnknownSyscall(syscall_num))
             }
         }
@@ -1443,6 +1493,92 @@ mod tests {
         // Verify
         let new_tls = handler.handle(SYS_PPU_THREAD_GET_TLS, &tls_args).unwrap();
         assert_eq!(new_tls, 0xDEADBEEF);
+    }
+
+    #[test]
+    fn test_mmapper_free_and_unmap_syscalls() {
+        let handler = SyscallHandler::new();
+
+        // Allocate with mmapper
+        let mut args = [0u64; 8];
+        args[0] = 0x10000; // size
+        args[1] = 0; // page_size
+        args[2] = 0; // flags
+        let addr = handler.handle(SYS_MMAPPER_ALLOCATE_MEMORY, &args).unwrap();
+        assert!(addr > 0);
+
+        // Map the memory
+        let mut map_args = [0u64; 8];
+        map_args[0] = addr as u64;
+        map_args[1] = 0x10000;
+        map_args[2] = 0;
+        handler.handle(SYS_MMAPPER_MAP_MEMORY, &map_args).unwrap();
+
+        // Unmap the memory
+        let mut unmap_args = [0u64; 8];
+        unmap_args[0] = addr as u64;
+        unmap_args[1] = 0x10000;
+        handler.handle(SYS_MMAPPER_UNMAP_MEMORY, &unmap_args).unwrap();
+
+        // Free the memory
+        let mut free_args = [0u64; 8];
+        free_args[0] = addr as u64;
+        handler.handle(SYS_MMAPPER_FREE_MEMORY, &free_args).unwrap();
+    }
+
+    #[test]
+    fn test_vm_syscalls() {
+        let handler = SyscallHandler::new();
+
+        // Map virtual memory
+        let mut args = [0u64; 8];
+        args[0] = 0x30000000; // addr
+        args[1] = 0x100000; // size (1MB)
+        args[2] = 0x10000; // block_size (64KB)
+        args[3] = 0; // flags
+        let mapped = handler.handle(SYS_VM_MEMORY_MAP, &args).unwrap();
+        assert_eq!(mapped, 0x30000000);
+
+        // Get statistics
+        let mut stat_args = [0u64; 8];
+        stat_args[0] = 0x30000000;
+        handler.handle(SYS_VM_GET_STATISTICS, &stat_args).unwrap();
+
+        // Unmap
+        let mut unmap_args = [0u64; 8];
+        unmap_args[0] = 0x30000000;
+        handler.handle(SYS_VM_UNMAP, &unmap_args).unwrap();
+    }
+
+    #[test]
+    fn test_tls_addr_syscall() {
+        let handler = SyscallHandler::new();
+
+        // Create a thread
+        let mut args = [0u64; 8];
+        args[0] = 0x1000; // entry point
+        args[1] = 0; // arg
+        args[2] = 1000; // priority
+        args[3] = 0x4000; // stack size
+        args[4] = 0; // flags
+        let thread_id = handler.handle(SYS_PPU_THREAD_CREATE, &args).unwrap();
+        assert!(thread_id > 0);
+
+        // Get TLS address for offset 0x100
+        let mut tls_args = [0u64; 8];
+        tls_args[0] = thread_id as u64;
+        tls_args[1] = 0x100; // offset
+        let addr = handler.handle(SYS_PPU_THREAD_GET_TLS_ADDR, &tls_args).unwrap();
+        // TLS_BASE (0x28000000) + thread_index * 0x10000 + offset (0x100)
+        assert!(addr > 0x28000000);
+    }
+
+    #[test]
+    fn test_unknown_syscall_returns_error() {
+        let handler = SyscallHandler::new();
+        let args = [0x11u64, 0x22, 0x33, 0x44, 0x55, 0x66, 0, 0];
+        let result = handler.handle(99999, &args);
+        assert!(result.is_err());
     }
 }
 

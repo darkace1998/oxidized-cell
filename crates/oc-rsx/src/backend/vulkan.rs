@@ -155,6 +155,8 @@ pub struct VulkanBackend {
     dynamic_states_enabled: Vec<vk::DynamicState>,
     /// Per-attachment blend states (up to 4 MRT)
     per_attachment_blend: [BlendAttachmentConfig; 4],
+    /// Whether pipeline state needs to be re-bound before the next draw call
+    pipeline_dirty: bool,
 }
 
 /// Small buffer suballocation pool
@@ -759,6 +761,7 @@ impl VulkanBackend {
             compute_descriptor_set_layout: None,
             dynamic_states_enabled: vec![vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR],
             per_attachment_blend: [BlendAttachmentConfig::default(); 4],
+            pipeline_dirty: true,
         }
     }
 
@@ -2855,6 +2858,90 @@ impl VulkanBackend {
             }
         }
     }
+    
+    /// Ensure a render pass is active, starting one if needed
+    fn ensure_render_pass(&mut self) {
+        if self.in_render_pass {
+            return;
+        }
+        if let (Some(device), Some(cmd_buffer), Some(render_pass), Some(framebuffer)) =
+            (&self.device, self.current_cmd_buffer, self.render_pass, self.framebuffer)
+        {
+            let clear_values = [
+                vk::ClearValue {
+                    color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 1.0] },
+                },
+                vk::ClearValue {
+                    depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 },
+                },
+            ];
+            let render_pass_info = vk::RenderPassBeginInfo::default()
+                .render_pass(render_pass)
+                .framebuffer(framebuffer)
+                .render_area(vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent: vk::Extent2D { width: self.width, height: self.height },
+                })
+                .clear_values(&clear_values);
+            unsafe {
+                device.cmd_begin_render_pass(cmd_buffer, &render_pass_info, vk::SubpassContents::INLINE);
+            }
+            self.in_render_pass = true;
+        }
+    }
+    
+    /// Ensure pipeline and descriptor sets are bound before a draw call
+    fn ensure_pipeline_bound(&mut self) {
+        // Ensure we have a render pass active
+        self.ensure_render_pass();
+        
+        // Only re-bind if state is dirty (pipeline/buffer changes since last bind)
+        if !self.pipeline_dirty {
+            return;
+        }
+        
+        // Bind pipeline if available
+        if let (Some(device), Some(cmd_buffer), Some(pipeline)) = 
+            (&self.device, self.current_cmd_buffer, self.pipeline) 
+        {
+            unsafe {
+                device.cmd_bind_pipeline(cmd_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            }
+            
+            // Bind descriptor sets
+            if let Some(layout) = self.pipeline_layout {
+                if self.descriptor_sets.len() > self.current_frame {
+                    let descriptor_set = self.descriptor_sets[self.current_frame];
+                    unsafe {
+                        device.cmd_bind_descriptor_sets(
+                            cmd_buffer,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            layout,
+                            0,
+                            &[descriptor_set],
+                            &[],
+                        );
+                    }
+                }
+            }
+            
+            // Re-bind vertex buffers that were previously submitted
+            for &(binding, buffer, _, _) in &self.vertex_buffers {
+                unsafe {
+                    device.cmd_bind_vertex_buffers(cmd_buffer, binding, &[buffer], &[0]);
+                }
+            }
+            
+            // Re-bind index buffer if available
+            if let Some((buffer, _, _, index_type)) = &self.index_buffer {
+                unsafe {
+                    device.cmd_bind_index_buffer(cmd_buffer, *buffer, 0, *index_type);
+                }
+            }
+            
+            self.pipeline_dirty = false;
+        }
+    }
 }
 
 impl Default for VulkanBackend {
@@ -3207,6 +3294,9 @@ impl GraphicsBackend for VulkanBackend {
                     tracing::error!("Failed to begin command buffer: {:?}", e);
                 }
             }
+            
+            // Pipeline state needs to be re-bound for the new command buffer
+            self.pipeline_dirty = true;
         }
     }
 
@@ -3263,38 +3353,72 @@ impl GraphicsBackend for VulkanBackend {
             stencil
         );
 
-        // Begin render pass with clear values if we have a framebuffer
-        if let (Some(device), Some(cmd_buffer), Some(render_pass), Some(framebuffer)) =
-            (&self.device, self.current_cmd_buffer, self.render_pass, self.framebuffer)
-        {
-            let clear_values = [
-                vk::ClearValue {
-                    color: vk::ClearColorValue { float32: color },
-                },
-                vk::ClearValue {
-                    depth_stencil: vk::ClearDepthStencilValue {
-                        depth,
-                        stencil: stencil as u32,
+        if let (Some(device), Some(cmd_buffer)) = (&self.device, self.current_cmd_buffer) {
+            if self.in_render_pass {
+                // Already in a render pass — use vkCmdClearAttachments for in-pass clears
+                let clear_rect = vk::ClearRect {
+                    rect: vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: vk::Extent2D { width: self.width, height: self.height },
                     },
-                },
-            ];
-
-            let render_pass_info = vk::RenderPassBeginInfo::default()
-                .render_pass(render_pass)
-                .framebuffer(framebuffer)
-                .render_area(vk::Rect2D {
-                    offset: vk::Offset2D { x: 0, y: 0 },
-                    extent: vk::Extent2D {
-                        width: self.width,
-                        height: self.height,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                };
+                
+                let attachments = [
+                    vk::ClearAttachment {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        color_attachment: 0,
+                        clear_value: vk::ClearValue {
+                            color: vk::ClearColorValue { float32: color },
+                        },
                     },
-                })
-                .clear_values(&clear_values);
+                    vk::ClearAttachment {
+                        aspect_mask: vk::ImageAspectFlags::DEPTH | vk::ImageAspectFlags::STENCIL,
+                        color_attachment: 0,
+                        clear_value: vk::ClearValue {
+                            depth_stencil: vk::ClearDepthStencilValue {
+                                depth,
+                                stencil: stencil as u32,
+                            },
+                        },
+                    },
+                ];
+                
+                unsafe {
+                    device.cmd_clear_attachments(cmd_buffer, &attachments, &[clear_rect]);
+                }
+            } else if let (Some(render_pass), Some(framebuffer)) = (self.render_pass, self.framebuffer) {
+                // Not in a render pass — begin one with clear values
+                let clear_values = [
+                    vk::ClearValue {
+                        color: vk::ClearColorValue { float32: color },
+                    },
+                    vk::ClearValue {
+                        depth_stencil: vk::ClearDepthStencilValue {
+                            depth,
+                            stencil: stencil as u32,
+                        },
+                    },
+                ];
 
-            unsafe {
-                device.cmd_begin_render_pass(cmd_buffer, &render_pass_info, vk::SubpassContents::INLINE);
+                let render_pass_info = vk::RenderPassBeginInfo::default()
+                    .render_pass(render_pass)
+                    .framebuffer(framebuffer)
+                    .render_area(vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: vk::Extent2D {
+                            width: self.width,
+                            height: self.height,
+                        },
+                    })
+                    .clear_values(&clear_values);
+
+                unsafe {
+                    device.cmd_begin_render_pass(cmd_buffer, &render_pass_info, vk::SubpassContents::INLINE);
+                }
+                self.in_render_pass = true;
             }
-            self.in_render_pass = true;
         }
     }
 
@@ -3309,6 +3433,9 @@ impl GraphicsBackend for VulkanBackend {
             first,
             count
         );
+
+        // Ensure pipeline, descriptor sets, and buffers are bound
+        self.ensure_pipeline_bound();
 
         // Record draw command into command buffer
         if let (Some(device), Some(cmd_buffer)) = (&self.device, self.current_cmd_buffer) {
@@ -3345,6 +3472,9 @@ impl GraphicsBackend for VulkanBackend {
             first,
             count
         );
+
+        // Ensure pipeline, descriptor sets, and buffers are bound
+        self.ensure_pipeline_bound();
 
         // Record indexed draw command into command buffer
         if let (Some(device), Some(cmd_buffer)) = (&self.device, self.current_cmd_buffer) {
@@ -3596,6 +3726,7 @@ impl GraphicsBackend for VulkanBackend {
         }
 
         tracing::trace!("Vertex buffer submitted and bound for binding {}", binding);
+        self.pipeline_dirty = true;
     }
     
     fn submit_index_buffer(&mut self, data: &[u8], index_type: u32) {
@@ -3707,6 +3838,82 @@ impl GraphicsBackend for VulkanBackend {
         }
 
         tracing::trace!("Index buffer submitted and bound");
+        self.pipeline_dirty = true;
+    }
+    
+    fn upload_texture(&mut self, info: &super::TextureUploadInfo, data: &[u8]) {
+        if !self.initialized || data.is_empty() {
+            return;
+        }
+        
+        let texture = crate::texture::Texture {
+            offset: 0,
+            format: info.format,
+            width: info.width,
+            height: info.height,
+            depth: 1,
+            mipmap_levels: info.mipmap_levels.max(1),
+            pitch: 0,
+            is_cubemap: info.is_cubemap,
+            ..crate::texture::Texture::new()
+        };
+        
+        // Call the internal Vulkan upload method (inherent impl, not trait)
+        if let Err(e) = VulkanBackend::upload_texture(self, info.slot, &texture, data) {
+            tracing::warn!("Failed to upload texture to slot {}: {}", info.slot, e);
+        }
+    }
+    
+    fn load_shaders(&mut self, vertex_spirv: &[u32], fragment_spirv: &[u32]) {
+        if !self.initialized {
+            return;
+        }
+        
+        // Create vertex shader module
+        match self.create_shader_module(vertex_spirv) {
+            Ok(module) => {
+                if let Some(old) = self.vertex_shader.take() {
+                    if let Some(device) = &self.device {
+                        unsafe { device.destroy_shader_module(old, None); }
+                    }
+                }
+                self.vertex_shader = Some(module);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to create vertex shader module: {}", e);
+                return;
+            }
+        }
+        
+        // Create fragment shader module
+        match self.create_shader_module(fragment_spirv) {
+            Ok(module) => {
+                if let Some(old) = self.fragment_shader.take() {
+                    if let Some(device) = &self.device {
+                        unsafe { device.destroy_shader_module(old, None); }
+                    }
+                }
+                self.fragment_shader = Some(module);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to create fragment shader module: {}", e);
+                return;
+            }
+        }
+        
+        // Recreate pipeline with new shaders
+        if let Err(e) = self.create_graphics_pipeline(vk::PrimitiveTopology::TRIANGLE_LIST) {
+            tracing::warn!("Failed to recreate pipeline after shader load: {}", e);
+        }
+        
+        self.pipeline_dirty = true;
+    }
+    
+    fn present_frame(&mut self, buffer_id: u32) {
+        tracing::trace!("Present frame: buffer_id={}", buffer_id);
+        // In offscreen/headless mode, end_frame() already submits and signals.
+        // The framebuffer is read back via get_framebuffer() for display.
+        // For a windowed swapchain, this is where vkQueuePresentKHR would go.
     }
     
     fn get_framebuffer(&self) -> Option<super::FramebufferData> {

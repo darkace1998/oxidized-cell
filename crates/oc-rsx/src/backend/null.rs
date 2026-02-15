@@ -18,6 +18,12 @@ pub struct NullBackend {
     has_cleared: bool,
     /// Draw call count this frame (for activity indicator)
     draw_calls_this_frame: u32,
+    /// Number of vertex buffers submitted this frame
+    vertex_buffers_submitted: u32,
+    /// Whether an index buffer was submitted this frame
+    index_buffer_submitted: bool,
+    /// Number of vertex attributes configured
+    vertex_attributes_set: u32,
 }
 
 impl NullBackend {
@@ -29,6 +35,9 @@ impl NullBackend {
             clear_color: [0.0, 0.0, 0.3, 1.0], // Dark blue default
             has_cleared: false,
             draw_calls_this_frame: 0,
+            vertex_buffers_submitted: 0,
+            index_buffer_submitted: false,
+            vertex_attributes_set: 0,
         }
     }
 }
@@ -48,6 +57,9 @@ impl GraphicsBackend for NullBackend {
 
     fn begin_frame(&mut self) {
         self.draw_calls_this_frame = 0;
+        self.vertex_buffers_submitted = 0;
+        self.index_buffer_submitted = false;
+        self.vertex_attributes_set = 0;
     }
 
     fn end_frame(&mut self) {
@@ -67,17 +79,29 @@ impl GraphicsBackend for NullBackend {
         self.draw_calls_this_frame += 1;
     }
 
-    fn set_vertex_attributes(&mut self, _attributes: &[VertexAttribute]) {}
+    fn set_vertex_attributes(&mut self, attributes: &[VertexAttribute]) {
+        self.vertex_attributes_set = attributes.len() as u32;
+    }
 
     fn bind_texture(&mut self, _slot: u32, _offset: u32) {}
+
+    fn upload_texture(&mut self, _info: &super::TextureUploadInfo, _data: &[u8]) {}
 
     fn set_viewport(&mut self, _x: f32, _y: f32, _width: f32, _height: f32, _min_depth: f32, _max_depth: f32) {}
 
     fn set_scissor(&mut self, _x: u32, _y: u32, _width: u32, _height: u32) {}
     
-    fn submit_vertex_buffer(&mut self, _binding: u32, _data: &[u8], _stride: u32) {}
+    fn submit_vertex_buffer(&mut self, _binding: u32, _data: &[u8], _stride: u32) {
+        self.vertex_buffers_submitted += 1;
+    }
     
-    fn submit_index_buffer(&mut self, _data: &[u8], _index_type: u32) {}
+    fn submit_index_buffer(&mut self, _data: &[u8], _index_type: u32) {
+        self.index_buffer_submitted = true;
+    }
+    
+    fn load_shaders(&mut self, _vertex_spirv: &[u32], _fragment_spirv: &[u32]) {}
+    
+    fn present_frame(&mut self, _buffer_id: u32) {}
     
     fn get_framebuffer(&self) -> Option<FramebufferData> {
         let mut fb = FramebufferData::new(self.width, self.height);
@@ -193,5 +217,47 @@ mod tests {
         let fb10 = backend.get_framebuffer().unwrap();
         // The framebuffers should differ (stripe moved)
         assert_ne!(fb0.pixels, fb10.pixels, "Framebuffer should change over time (animated stripe)");
+    }
+    
+    #[test]
+    fn test_null_backend_vertex_buffer_tracking() {
+        let mut backend = NullBackend::new();
+        backend.begin_frame();
+        assert_eq!(backend.vertex_buffers_submitted, 0);
+        backend.submit_vertex_buffer(0, &[0u8; 64], 16);
+        assert_eq!(backend.vertex_buffers_submitted, 1);
+        backend.submit_vertex_buffer(1, &[0u8; 32], 8);
+        assert_eq!(backend.vertex_buffers_submitted, 2);
+        backend.end_frame();
+        // Reset on new frame
+        backend.begin_frame();
+        assert_eq!(backend.vertex_buffers_submitted, 0);
+    }
+    
+    #[test]
+    fn test_null_backend_index_buffer_tracking() {
+        let mut backend = NullBackend::new();
+        backend.begin_frame();
+        assert!(!backend.index_buffer_submitted);
+        backend.submit_index_buffer(&[0u8; 12], 2);
+        assert!(backend.index_buffer_submitted);
+        backend.end_frame();
+        // Reset on new frame
+        backend.begin_frame();
+        assert!(!backend.index_buffer_submitted);
+    }
+    
+    #[test]
+    fn test_null_backend_vertex_attributes_tracking() {
+        let mut backend = NullBackend::new();
+        backend.begin_frame();
+        assert_eq!(backend.vertex_attributes_set, 0);
+        
+        let attrs = vec![
+            VertexAttribute::new(0),
+            VertexAttribute::new(1),
+        ];
+        backend.set_vertex_attributes(&attrs);
+        assert_eq!(backend.vertex_attributes_set, 2);
     }
 }

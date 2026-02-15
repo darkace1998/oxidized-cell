@@ -8,7 +8,7 @@ use oc_core::error::{EmulatorError, LoaderError, MemoryError};
 use oc_core::Result;
 use oc_hle::{init_hle_dispatcher, get_dispatcher_mut};
 use oc_loader::elf::{pt, sht};
-use oc_loader::{ElfLoader, PrxLoader, SelfLoader};
+use oc_loader::{ElfLoader, PrxLoader, SelfLoader, FirmwareModuleRegistry};
 use oc_memory::MemoryManager;
 use oc_vfs::IsoReader;
 use std::fs::File;
@@ -133,6 +133,8 @@ pub struct GameLoader {
     prx_loader: PrxLoader,
     /// Next available PRX base address
     next_prx_addr: u32,
+    /// Firmware module registry for PRX → HLE mapping
+    firmware_registry: FirmwareModuleRegistry,
 }
 
 impl GameLoader {
@@ -142,7 +144,26 @@ impl GameLoader {
             memory,
             prx_loader: PrxLoader::new(),
             next_prx_addr: PRX_BASE_ADDR,
+            firmware_registry: FirmwareModuleRegistry::new(),
         }
+    }
+
+    /// Get a reference to the firmware module registry
+    pub fn firmware_registry(&self) -> &FirmwareModuleRegistry {
+        &self.firmware_registry
+    }
+
+    /// Resolve a PRX module load request.
+    ///
+    /// When a game calls `sys_prx_load_module("/dev_flash/sys/external/libfoo.sprx")`,
+    /// this method checks the firmware module registry:
+    ///  - If the module is HLE-handled, returns `Ok(Some(hle_module_name))`.
+    ///  - If the module must be loaded natively, returns `Ok(None)`.
+    ///
+    /// The caller should use the HLE module name to route function calls
+    /// through the HLE dispatcher instead of executing native PRX code.
+    pub fn resolve_prx_module(&self, prx_path: &str) -> Option<&'static str> {
+        self.firmware_registry.get_hle_module_name(prx_path)
     }
 
     /// Load a game from a file path
@@ -319,34 +340,51 @@ impl GameLoader {
             "./PS3/dev_flash/",
         ];
 
+        let mut loader_result = None;
+
         for path in &firmware_paths {
             if Path::new(path).exists() {
                 if let Ok(loader) = SelfLoader::with_firmware(path) {
                     info!("Loaded firmware keys from: {}", path);
-                    return loader;
+                    loader_result = Some(loader);
+                    break;
                 }
             }
         }
 
-        // Try keys.txt files
-        let keys_files = [
-            "keys.txt",
-            "firmware/keys.txt",
-            "dev_flash/keys.txt",
-        ];
+        if loader_result.is_none() {
+            // Try keys.txt files
+            let keys_files = [
+                "keys.txt",
+                "firmware/keys.txt",
+                "dev_flash/keys.txt",
+            ];
 
-        for path in &keys_files {
-            if Path::new(path).exists() {
-                if let Ok(loader) = SelfLoader::with_keys_file(path) {
-                    info!("Loaded keys from: {}", path);
-                    return loader;
+            for path in &keys_files {
+                if Path::new(path).exists() {
+                    if let Ok(loader) = SelfLoader::with_keys_file(path) {
+                        info!("Loaded keys from: {}", path);
+                        loader_result = Some(loader);
+                        break;
+                    }
                 }
             }
         }
 
-        // Return default loader (will fail on encrypted files)
-        warn!("No firmware keys found. Encrypted SELF files cannot be decrypted.");
-        SelfLoader::new()
+        let mut loader = loader_result.unwrap_or_else(|| {
+            warn!("No firmware keys found. Encrypted SELF files cannot be decrypted.");
+            SelfLoader::new()
+        });
+
+        // Load NPDRM keys (RAP files + act.dat) for PSN game support
+        let npdrm_count = loader.crypto_mut().load_npdrm_keys();
+        if npdrm_count > 0 {
+            info!("Loaded {} NPDRM license keys", npdrm_count);
+        } else {
+            debug!("No NPDRM license keys found. PSN games will need RAP files in rap/ or exdata/ directories.");
+        }
+
+        loader
     }
 
     /// Load executable from an ISO disc image

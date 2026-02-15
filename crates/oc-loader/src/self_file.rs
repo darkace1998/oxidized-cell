@@ -112,6 +112,29 @@ impl SelfLoader {
         self.crypto.has_firmware_keys()
     }
 
+    /// Verify that a SELF file can be decrypted with the current key set.
+    ///
+    /// Returns `Ok(true)` if decryption produces valid ELF data,
+    /// `Ok(false)` if the key set cannot decrypt this file (wrong keys),
+    /// or `Err` if the file is not a valid SELF.
+    pub fn verify_decryption(&self, data: &[u8]) -> Result<bool, LoaderError> {
+        if !Self::is_self(data) {
+            return Err(LoaderError::InvalidSelf("Not a SELF file".to_string()));
+        }
+
+        match self.decrypt(data) {
+            Ok(elf_data) => {
+                // Check for valid ELF magic
+                if elf_data.len() >= 4 && elf_data[0..4] == [0x7F, b'E', b'L', b'F'] {
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+            Err(_) => Ok(false),
+        }
+    }
+
     /// Check if data is a SELF file
     pub fn is_self(data: &[u8]) -> bool {
         data.len() >= 4 && data[0..4] == SELF_MAGIC

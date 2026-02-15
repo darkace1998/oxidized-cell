@@ -3,6 +3,7 @@
 //! This module provides HLE implementations for PS3 controller input.
 //! It bridges to the oc-input subsystem.
 
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tracing::{debug, trace};
 use oc_input::{DualShock3Manager, dualshock3::PadData as OcInputPadData, pad::PadButtons};
@@ -57,6 +58,141 @@ pub enum CellPadDeviceType {
     /// Drum controller
     Drum = 6,
 }
+
+/// PS3 controller button identifiers for keyboard mapping
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Ps3Button {
+    Cross,
+    Circle,
+    Square,
+    Triangle,
+    L1,
+    R1,
+    L2,
+    R2,
+    L3,
+    R3,
+    Start,
+    Select,
+    DpadUp,
+    DpadDown,
+    DpadLeft,
+    DpadRight,
+}
+
+/// Virtual key codes for keyboard-to-pad mapping
+///
+/// Uses u32 key codes matching winit's VirtualKeyCode values.
+/// Common codes: W=87, A=65, S=83, D=68, I=73, J=74, K=75, L=76,
+/// Z=90, X=88, C=67, V=86, Enter=13, Space=32, Up=38, Down=40,
+/// Left=37, Right=39, Q=81, E=69
+pub type KeyCode = u32;
+
+/// Key code constants matching common keyboard layouts
+pub mod key_codes {
+    pub const KEY_W: u32 = 87;
+    pub const KEY_A: u32 = 65;
+    pub const KEY_S: u32 = 83;
+    pub const KEY_D: u32 = 68;
+    pub const KEY_I: u32 = 73;
+    pub const KEY_J: u32 = 74;
+    pub const KEY_K: u32 = 75;
+    pub const KEY_L: u32 = 76;
+    pub const KEY_Z: u32 = 90;
+    pub const KEY_X: u32 = 88;
+    pub const KEY_C: u32 = 67;
+    pub const KEY_V: u32 = 86;
+    pub const KEY_Q: u32 = 81;
+    pub const KEY_E: u32 = 69;
+    pub const KEY_1: u32 = 49;
+    pub const KEY_3: u32 = 51;
+    pub const KEY_ENTER: u32 = 13;
+    pub const KEY_SPACE: u32 = 32;
+    pub const KEY_UP: u32 = 38;
+    pub const KEY_DOWN: u32 = 40;
+    pub const KEY_LEFT: u32 = 37;
+    pub const KEY_RIGHT: u32 = 39;
+}
+
+/// Maps keyboard keys to PS3 controller buttons
+///
+/// Provides a default WASD layout and allows customization via `set_key_binding()`.
+#[derive(Debug, Clone)]
+pub struct KeyboardMapping {
+    /// Map from keyboard key code to PS3 button
+    bindings: HashMap<KeyCode, Ps3Button>,
+}
+
+impl KeyboardMapping {
+    /// Create a new keyboard mapping with default WASD layout:
+    /// - WASD = D-pad / Left stick directions
+    /// - Z = Cross, X = Circle, C = Square, V = Triangle
+    /// - Q = L1, E = R1, 1 = L2, 3 = R2
+    /// - Enter = Start, Space = Select
+    /// - Arrow keys = D-pad (alternate)
+    pub fn new() -> Self {
+        let mut bindings = HashMap::new();
+
+        // D-pad / left stick via WASD
+        bindings.insert(key_codes::KEY_W, Ps3Button::DpadUp);
+        bindings.insert(key_codes::KEY_A, Ps3Button::DpadLeft);
+        bindings.insert(key_codes::KEY_S, Ps3Button::DpadDown);
+        bindings.insert(key_codes::KEY_D, Ps3Button::DpadRight);
+
+        // Arrow keys as alternate D-pad
+        bindings.insert(key_codes::KEY_UP, Ps3Button::DpadUp);
+        bindings.insert(key_codes::KEY_LEFT, Ps3Button::DpadLeft);
+        bindings.insert(key_codes::KEY_DOWN, Ps3Button::DpadDown);
+        bindings.insert(key_codes::KEY_RIGHT, Ps3Button::DpadRight);
+
+        // Face buttons
+        bindings.insert(key_codes::KEY_Z, Ps3Button::Cross);
+        bindings.insert(key_codes::KEY_X, Ps3Button::Circle);
+        bindings.insert(key_codes::KEY_C, Ps3Button::Square);
+        bindings.insert(key_codes::KEY_V, Ps3Button::Triangle);
+
+        // Shoulder buttons
+        bindings.insert(key_codes::KEY_Q, Ps3Button::L1);
+        bindings.insert(key_codes::KEY_E, Ps3Button::R1);
+        bindings.insert(key_codes::KEY_1, Ps3Button::L2);
+        bindings.insert(key_codes::KEY_3, Ps3Button::R2);
+
+        // System buttons
+        bindings.insert(key_codes::KEY_ENTER, Ps3Button::Start);
+        bindings.insert(key_codes::KEY_SPACE, Ps3Button::Select);
+
+        Self { bindings }
+    }
+
+    /// Set or override a key binding
+    pub fn set_key_binding(&mut self, key: KeyCode, button: Ps3Button) {
+        self.bindings.insert(key, button);
+    }
+
+    /// Remove a key binding
+    pub fn remove_key_binding(&mut self, key: KeyCode) {
+        self.bindings.remove(&key);
+    }
+
+    /// Get the PS3 button mapped to a key, if any
+    pub fn get_button(&self, key: KeyCode) -> Option<&Ps3Button> {
+        self.bindings.get(&key)
+    }
+
+    /// Get all bindings
+    pub fn bindings(&self) -> &HashMap<KeyCode, Ps3Button> {
+        &self.bindings
+    }
+}
+
+impl Default for KeyboardMapping {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Default dead zone threshold for analog sticks
+pub const DEFAULT_DEAD_ZONE: f32 = 0.15;
 
 /// Pad info structure
 #[repr(C)]
@@ -314,6 +450,10 @@ pub struct PadManager {
     pad_data: [CellPadData; CELL_PAD_MAX_PORT_NUM],
     /// Rumble/vibration state for each port
     rumble_states: [RumbleState; CELL_PAD_MAX_PORT_NUM],
+    /// Keyboard-to-pad mapping for users without a gamepad
+    keyboard_mapping: KeyboardMapping,
+    /// Dead zone threshold for analog sticks (0.0-1.0)
+    dead_zone: f32,
 }
 
 impl PadManager {
@@ -326,6 +466,8 @@ impl PadManager {
             input_backend: None,
             pad_data: [CellPadData::default(); CELL_PAD_MAX_PORT_NUM],
             rumble_states: [RumbleState::default(); CELL_PAD_MAX_PORT_NUM],
+            keyboard_mapping: KeyboardMapping::new(),
+            dead_zone: DEFAULT_DEAD_ZONE,
         }
     }
 
@@ -684,11 +826,12 @@ impl PadManager {
         pad.button[0] = btn0 as u16;
         pad.button[1] = btn1 as u16;
         
-        // Analog sticks (oc-input already uses 0-255 format with 128 center)
-        pad.right_stick_x = input.right_x;
-        pad.right_stick_y = input.right_y;
-        pad.left_stick_x = input.left_x;
-        pad.left_stick_y = input.left_y;
+        // Analog sticks with dead zone applied
+        // oc-input already uses 0-255 format with 128 center
+        pad.right_stick_x = Self::apply_dead_zone(input.right_x, self.dead_zone);
+        pad.right_stick_y = Self::apply_dead_zone(input.right_y, self.dead_zone);
+        pad.left_stick_x = Self::apply_dead_zone(input.left_x, self.dead_zone);
+        pad.left_stick_y = Self::apply_dead_zone(input.left_y, self.dead_zone);
         
         // Pressure-sensitive button values
         // PS3 pressure order: RIGHT, LEFT, UP, DOWN, TRIANGLE, CIRCLE, CROSS, SQUARE, L1, R1, L2, R2
@@ -800,6 +943,125 @@ impl PadManager {
         
         
         (normalized * 255.0) as u8
+    }
+
+    /// Apply dead zone to an analog stick axis value
+    ///
+    /// Values within the dead zone around center (128) are snapped to center.
+    /// Values outside the dead zone are rescaled to use the full 0-255 range.
+    ///
+    /// # Arguments
+    /// * `value` - Raw axis value (0-255, 128 = center)
+    /// * `threshold` - Dead zone threshold (0.0-1.0, e.g. 0.15 = 15%)
+    pub fn apply_dead_zone(value: u8, threshold: f32) -> u8 {
+        let threshold = threshold.clamp(0.0, 1.0);
+        let center = 128.0f32;
+        let offset = (value as f32) - center;
+        let magnitude = offset.abs() / center; // 0.0-1.0
+
+        if magnitude < threshold {
+            128 // Snap to center
+        } else {
+            // Rescale: map [threshold..1.0] → [0.0..1.0]
+            let rescaled = (magnitude - threshold) / (1.0 - threshold);
+            let sign = offset.signum();
+            (center + sign * rescaled * center).clamp(0.0, 255.0) as u8
+        }
+    }
+
+    /// Set the dead zone threshold for analog sticks
+    ///
+    /// # Arguments
+    /// * `threshold` - Dead zone threshold (0.0-1.0, default 0.15)
+    pub fn set_dead_zone(&mut self, threshold: f32) {
+        self.dead_zone = threshold.clamp(0.0, 1.0);
+    }
+
+    /// Get the current dead zone threshold
+    pub fn dead_zone(&self) -> f32 {
+        self.dead_zone
+    }
+
+    /// Get a reference to the keyboard mapping
+    pub fn keyboard_mapping(&self) -> &KeyboardMapping {
+        &self.keyboard_mapping
+    }
+
+    /// Get a mutable reference to the keyboard mapping for customization
+    pub fn keyboard_mapping_mut(&mut self) -> &mut KeyboardMapping {
+        &mut self.keyboard_mapping
+    }
+
+    /// Update pad data from keyboard state (for users without a gamepad)
+    ///
+    /// This maps keyboard keys to PS3 controller buttons using the configured
+    /// `KeyboardMapping`. Updated data is written to pad port 0.
+    ///
+    /// # Arguments
+    /// * `pressed_keys` - Set of currently pressed key codes
+    pub fn update_from_keyboard(&mut self, pressed_keys: &[KeyCode]) {
+        if !self.initialized {
+            return;
+        }
+
+        let pad = &mut self.pad_data[0];
+        pad.len = CELL_PAD_DATA_LEN_WITH_SENSORS;
+
+        let mut btn0: u16 = 0;
+        let mut btn1: u16 = 0;
+
+        for &key in pressed_keys {
+            if let Some(&button) = self.keyboard_mapping.get_button(key) {
+                match button {
+                    // button[0] - D-pad and system buttons
+                    Ps3Button::DpadLeft => btn0 |= button_codes::CELL_PAD_CTRL_LEFT,
+                    Ps3Button::DpadDown => btn0 |= button_codes::CELL_PAD_CTRL_DOWN,
+                    Ps3Button::DpadRight => btn0 |= button_codes::CELL_PAD_CTRL_RIGHT,
+                    Ps3Button::DpadUp => btn0 |= button_codes::CELL_PAD_CTRL_UP,
+                    Ps3Button::Start => btn0 |= button_codes::CELL_PAD_CTRL_START,
+                    Ps3Button::Select => btn0 |= button_codes::CELL_PAD_CTRL_SELECT,
+                    Ps3Button::L3 => btn0 |= button_codes::CELL_PAD_CTRL_L3,
+                    Ps3Button::R3 => btn0 |= button_codes::CELL_PAD_CTRL_R3,
+                    // button[1] - Face and shoulder buttons
+                    Ps3Button::Cross => btn1 |= button_codes_2::CELL_PAD_CTRL_CROSS,
+                    Ps3Button::Circle => btn1 |= button_codes_2::CELL_PAD_CTRL_CIRCLE,
+                    Ps3Button::Square => btn1 |= button_codes_2::CELL_PAD_CTRL_SQUARE,
+                    Ps3Button::Triangle => btn1 |= button_codes_2::CELL_PAD_CTRL_TRIANGLE,
+                    Ps3Button::L1 => btn1 |= button_codes_2::CELL_PAD_CTRL_L1,
+                    Ps3Button::R1 => btn1 |= button_codes_2::CELL_PAD_CTRL_R1,
+                    Ps3Button::L2 => btn1 |= button_codes_2::CELL_PAD_CTRL_L2,
+                    Ps3Button::R2 => btn1 |= button_codes_2::CELL_PAD_CTRL_R2,
+                }
+            }
+        }
+
+        pad.button[0] = btn0;
+        pad.button[1] = btn1;
+
+        // Set pressure-sensitive values for pressed face buttons (255 = fully pressed)
+        pad.pressure[6] = if btn1 & button_codes_2::CELL_PAD_CTRL_CROSS != 0 { 255 } else { 0 };
+        pad.pressure[5] = if btn1 & button_codes_2::CELL_PAD_CTRL_CIRCLE != 0 { 255 } else { 0 };
+        pad.pressure[4] = if btn1 & button_codes_2::CELL_PAD_CTRL_TRIANGLE != 0 { 255 } else { 0 };
+        pad.pressure[7] = if btn1 & button_codes_2::CELL_PAD_CTRL_SQUARE != 0 { 255 } else { 0 };
+        pad.pressure[8] = if btn1 & button_codes_2::CELL_PAD_CTRL_L1 != 0 { 255 } else { 0 };
+        pad.pressure[9] = if btn1 & button_codes_2::CELL_PAD_CTRL_R1 != 0 { 255 } else { 0 };
+        pad.pressure[10] = if btn1 & button_codes_2::CELL_PAD_CTRL_L2 != 0 { 255 } else { 0 };
+        pad.pressure[11] = if btn1 & button_codes_2::CELL_PAD_CTRL_R2 != 0 { 255 } else { 0 };
+
+        // Analog sticks at center (keyboard doesn't have analog input)
+        pad.left_stick_x = 128;
+        pad.left_stick_y = 128;
+        pad.right_stick_x = 128;
+        pad.right_stick_y = 128;
+
+        // Ensure sixaxis stays at neutral
+        pad.sensor_x = 512;
+        pad.sensor_y = 512;
+        pad.sensor_z = 512;
+        pad.sensor_g = 512;
+
+        // Mark pad 0 as connected when keyboard is in use
+        self.connected_pads |= 1;
     }
 
     /// Check if backend is connected
@@ -1407,5 +1669,146 @@ mod tests {
         assert_eq!(pressure_index::R1, 9);
         assert_eq!(pressure_index::L2, 10);
         assert_eq!(pressure_index::R2, 11);
+    }
+
+    #[test]
+    fn test_keyboard_mapping_default() {
+        let mapping = KeyboardMapping::new();
+
+        // WASD maps to D-pad
+        assert_eq!(mapping.get_button(key_codes::KEY_W), Some(&Ps3Button::DpadUp));
+        assert_eq!(mapping.get_button(key_codes::KEY_A), Some(&Ps3Button::DpadLeft));
+        assert_eq!(mapping.get_button(key_codes::KEY_S), Some(&Ps3Button::DpadDown));
+        assert_eq!(mapping.get_button(key_codes::KEY_D), Some(&Ps3Button::DpadRight));
+
+        // Face buttons
+        assert_eq!(mapping.get_button(key_codes::KEY_Z), Some(&Ps3Button::Cross));
+        assert_eq!(mapping.get_button(key_codes::KEY_X), Some(&Ps3Button::Circle));
+        assert_eq!(mapping.get_button(key_codes::KEY_C), Some(&Ps3Button::Square));
+        assert_eq!(mapping.get_button(key_codes::KEY_V), Some(&Ps3Button::Triangle));
+
+        // System
+        assert_eq!(mapping.get_button(key_codes::KEY_ENTER), Some(&Ps3Button::Start));
+        assert_eq!(mapping.get_button(key_codes::KEY_SPACE), Some(&Ps3Button::Select));
+
+        // Shoulders
+        assert_eq!(mapping.get_button(key_codes::KEY_Q), Some(&Ps3Button::L1));
+        assert_eq!(mapping.get_button(key_codes::KEY_E), Some(&Ps3Button::R1));
+    }
+
+    #[test]
+    fn test_keyboard_mapping_custom() {
+        let mut mapping = KeyboardMapping::new();
+
+        // Override Z from Cross to Circle
+        mapping.set_key_binding(key_codes::KEY_Z, Ps3Button::Circle);
+        assert_eq!(mapping.get_button(key_codes::KEY_Z), Some(&Ps3Button::Circle));
+
+        // Remove a binding
+        mapping.remove_key_binding(key_codes::KEY_W);
+        assert_eq!(mapping.get_button(key_codes::KEY_W), None);
+
+        // Unmapped key returns None
+        assert_eq!(mapping.get_button(999), None);
+    }
+
+    #[test]
+    fn test_update_from_keyboard() {
+        let mut pad = PadManager::new();
+        pad.init(1);
+
+        // Press Cross (Z key) + DpadUp (W key)
+        pad.update_from_keyboard(&[key_codes::KEY_Z, key_codes::KEY_W]);
+        let data = pad.get_data(0).unwrap();
+
+        // Cross should be in button[1]
+        assert_ne!(data.button[1] & button_codes_2::CELL_PAD_CTRL_CROSS, 0);
+        // DpadUp should be in button[0]
+        assert_ne!(data.button[0] & button_codes::CELL_PAD_CTRL_UP, 0);
+        // Pressure for Cross should be 255
+        assert_eq!(data.pressure[6], 255);
+        // Sticks should be centered
+        assert_eq!(data.left_stick_x, 128);
+        assert_eq!(data.right_stick_y, 128);
+        // Sixaxis should be neutral
+        assert_eq!(data.sensor_x, 512);
+        // Pad should be connected
+        assert!(pad.connected_pads & 1 != 0);
+    }
+
+    #[test]
+    fn test_dead_zone_center() {
+        // Values near center should snap to 128
+        assert_eq!(PadManager::apply_dead_zone(128, 0.15), 128);
+        assert_eq!(PadManager::apply_dead_zone(130, 0.15), 128); // ~1.6% offset, below 15%
+        assert_eq!(PadManager::apply_dead_zone(126, 0.15), 128);
+        // Value 160: offset=32, magnitude=32/128=25%, well above 15% threshold
+        assert_ne!(PadManager::apply_dead_zone(160, 0.15), 128);
+    }
+
+    #[test]
+    fn test_dead_zone_extremes() {
+        // Full stick deflection should still reach near-max values
+        assert_eq!(PadManager::apply_dead_zone(0, 0.15), 0);
+        // At max deflection with dead zone, rescaling may not hit exactly 255
+        assert!(PadManager::apply_dead_zone(255, 0.15) >= 253);
+
+        // Zero dead zone should pass values through unchanged
+        assert_eq!(PadManager::apply_dead_zone(100, 0.0), 100);
+        assert_eq!(PadManager::apply_dead_zone(200, 0.0), 200);
+    }
+
+    #[test]
+    fn test_set_dead_zone() {
+        let mut pad = PadManager::new();
+        assert!((pad.dead_zone() - DEFAULT_DEAD_ZONE).abs() < f32::EPSILON);
+
+        pad.set_dead_zone(0.25);
+        assert!((pad.dead_zone() - 0.25).abs() < f32::EPSILON);
+
+        // Clamped to valid range
+        pad.set_dead_zone(-0.5);
+        assert!((pad.dead_zone() - 0.0).abs() < f32::EPSILON);
+        pad.set_dead_zone(1.5);
+        assert!((pad.dead_zone() - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_sixaxis_neutral_default() {
+        let pad = CellPadData::default();
+        // Sixaxis should default to neutral (512 = flat on table)
+        assert_eq!(pad.sensor_x, 512);
+        assert_eq!(pad.sensor_y, 512);
+        assert_eq!(pad.sensor_z, 512);
+        assert_eq!(pad.sensor_g, 512);
+    }
+
+    #[test]
+    fn test_keyboard_no_keys_pressed() {
+        let mut pad = PadManager::new();
+        pad.init(1);
+
+        pad.update_from_keyboard(&[]);
+        let data = pad.get_data(0).unwrap();
+
+        // No buttons pressed
+        assert_eq!(data.button[0], 0);
+        assert_eq!(data.button[1], 0);
+        // All pressure values zero
+        for p in &data.pressure {
+            assert_eq!(*p, 0);
+        }
+    }
+
+    #[test]
+    fn test_ps3_button_enum_coverage() {
+        // Ensure all 16 PS3 buttons are represented
+        let buttons = [
+            Ps3Button::Cross, Ps3Button::Circle, Ps3Button::Square, Ps3Button::Triangle,
+            Ps3Button::L1, Ps3Button::R1, Ps3Button::L2, Ps3Button::R2,
+            Ps3Button::L3, Ps3Button::R3, Ps3Button::Start, Ps3Button::Select,
+            Ps3Button::DpadUp, Ps3Button::DpadDown, Ps3Button::DpadLeft, Ps3Button::DpadRight,
+        ];
+        assert_eq!(buttons.len(), 16);
     }
 }

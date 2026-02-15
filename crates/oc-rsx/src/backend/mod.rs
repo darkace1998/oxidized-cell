@@ -60,6 +60,23 @@ pub enum PrimitiveType {
     Polygon = 10,
 }
 
+/// Texture upload descriptor passed from RSX thread to backend
+#[derive(Debug, Clone)]
+pub struct TextureUploadInfo {
+    /// Texture slot (0-15)
+    pub slot: u32,
+    /// Texture format (RSX format constant)
+    pub format: u8,
+    /// Width in pixels
+    pub width: u16,
+    /// Height in pixels
+    pub height: u16,
+    /// Mipmap levels (1 = no mipmaps)
+    pub mipmap_levels: u8,
+    /// Whether this is a cubemap
+    pub is_cubemap: bool,
+}
+
 /// Graphics backend trait
 pub trait GraphicsBackend {
     /// Initialize the backend
@@ -89,6 +106,13 @@ pub trait GraphicsBackend {
     /// Bind texture to a slot
     fn bind_texture(&mut self, slot: u32, offset: u32);
 
+    /// Upload texture data to the GPU
+    ///
+    /// # Arguments
+    /// * `info` - Texture descriptor (slot, format, dimensions)
+    /// * `data` - Raw pixel/compressed data to upload
+    fn upload_texture(&mut self, info: &TextureUploadInfo, data: &[u8]);
+
     /// Set viewport
     fn set_viewport(&mut self, x: f32, y: f32, width: f32, height: f32, min_depth: f32, max_depth: f32);
 
@@ -110,6 +134,19 @@ pub trait GraphicsBackend {
     /// * `index_type` - The index type (2 for u16, 4 for u32)
     fn submit_index_buffer(&mut self, data: &[u8], index_type: u32);
     
+    /// Load SPIR-V shaders for the vertex and fragment stages
+    ///
+    /// # Arguments
+    /// * `vertex_spirv` - SPIR-V bytecode for the vertex shader
+    /// * `fragment_spirv` - SPIR-V bytecode for the fragment shader
+    fn load_shaders(&mut self, vertex_spirv: &[u32], fragment_spirv: &[u32]);
+    
+    /// Present the current frame for display (flip)
+    ///
+    /// # Arguments
+    /// * `buffer_id` - Display buffer to present
+    fn present_frame(&mut self, buffer_id: u32);
+
     /// Get the current framebuffer contents as RGBA pixels
     /// Returns None if the framebuffer is not available
     fn get_framebuffer(&self) -> Option<FramebufferData>;
